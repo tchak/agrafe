@@ -1,4 +1,4 @@
-//! files: encrypted, scanned file storage with previews.
+//! agrafe: encrypted, scanned file storage with previews.
 
 pub mod api;
 pub mod app;

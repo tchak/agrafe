@@ -1,4 +1,4 @@
-# files — design
+# agrafe — design
 
 A file storage service. Rust server, Postgres for metadata, an object store for
 bytes. Two HTTP interfaces on two ports: a **private** one for the backend that
@@ -339,8 +339,8 @@ enqueue function is swapped for a broker and the table becomes the outbox.
 
 ## Configuration
 
-One TOML file, path from `--config` or `FILES_CONFIG`, every key overridable
-by environment variables prefixed `FILES_` with `__` as the nesting separator.
+One TOML file, path from `--config` or `AGRAFE_CONFIG`, every key overridable
+by environment variables prefixed `AGRAFE_` with `__` as the nesting separator.
 Secrets (database URL, KEKs, signing keys, bucket credentials) are expected
 from the environment in production. See `config/example.toml`.
 

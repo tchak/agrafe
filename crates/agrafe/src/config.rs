@@ -1,4 +1,4 @@
-//! Configuration: one TOML file plus `FILES_` environment overrides.
+//! Configuration: one TOML file plus `AGRAFE_` environment overrides.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -37,7 +37,7 @@ impl Config {
             figment = figment.merge(Toml::file_exact(path));
         }
         let config: Config = figment
-            .merge(Env::prefixed("FILES_").split("__"))
+            .merge(Env::prefixed("AGRAFE_").split("__"))
             .extract()
             .context("invalid configuration")?;
         config.validate()?;

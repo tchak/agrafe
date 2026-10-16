@@ -1,7 +1,7 @@
-# files — configuration reference.
+# agrafe — configuration reference.
 #
-# Every key can be overridden by an environment variable prefixed with FILES_
-# and nested with a double underscore: FILES_DATABASE__URL, FILES_SIGNING__CURRENT_KEY.
+# Every key can be overridden by an environment variable prefixed with AGRAFE_
+# and nested with a double underscore: AGRAFE_DATABASE__URL, AGRAFE_SIGNING__CURRENT_KEY.
 # Secrets should come from the environment in production.
 
 [server]
@@ -16,7 +16,7 @@ public_base_url = "http://127.0.0.1:8081"
 role = "all"
 
 [database]
-url = "postgres://localhost/files_dev"
+url = "postgres://localhost/agrafe_dev"
 max_connections = 10
 
 [storage]
@@ -27,11 +27,11 @@ backend = "local"
 path = "./data"
 
 # [storage.s3]
-# bucket = "files"
+# bucket = "agrafe"
 # region = "fr-par"
 # endpoint = "https://s3.fr-par.scw.cloud"
-# access_key_id = ""        # prefer FILES_STORAGE__S3__ACCESS_KEY_ID
-# secret_access_key = ""    # prefer FILES_STORAGE__S3__SECRET_ACCESS_KEY
+# access_key_id = ""        # prefer AGRAFE_STORAGE__S3__ACCESS_KEY_ID
+# secret_access_key = ""    # prefer AGRAFE_STORAGE__S3__SECRET_ACCESS_KEY
 
 [signing]
 # Key used to mint new tokens. All keys in [signing.keys] remain valid for

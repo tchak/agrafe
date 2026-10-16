@@ -1,5 +1,5 @@
 /target
 /data
-/config/files.toml
+/config/agrafe.toml
 .env
 .env.local

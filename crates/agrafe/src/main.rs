@@ -2,21 +2,21 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use files::app::AppState;
-use files::config::{Config, Role};
-use files::{api, db};
+use agrafe::app::AppState;
+use agrafe::config::{Config, Role};
+use agrafe::{api, db};
 use futures::FutureExt;
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 #[command(
-    name = "files",
+    name = "agrafe",
     about = "Encrypted, scanned file storage with previews"
 )]
 struct Cli {
     /// Path to the TOML configuration file.
-    #[arg(long, env = "FILES_CONFIG", global = true)]
+    #[arg(long, env = "AGRAFE_CONFIG", global = true)]
     config: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,

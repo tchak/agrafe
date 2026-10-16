@@ -1,6 +1,6 @@
 //! Integration tests against the real routers and a real Postgres database.
 //!
-//! `DATABASE_URL` selects the database (default `postgres://localhost/files_test`).
+//! `DATABASE_URL` selects the database (default `postgres://localhost/agrafe_test`).
 //! Tests share it and serialise through a mutex.
 
 use axum::Router;
@@ -8,10 +8,10 @@ use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use files::api;
-use files::app::AppState;
-use files::config::Config;
-use files::db;
+use agrafe::api;
+use agrafe::app::AppState;
+use agrafe::config::Config;
+use agrafe::db;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, MutexGuard};
@@ -30,7 +30,7 @@ async fn setup() -> TestApp {
     let guard = LOCK.lock().await;
     let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
         let user = std::env::var("USER").unwrap_or_else(|_| "postgres".to_string());
-        format!("postgres://{user}@localhost/files_test")
+        format!("postgres://{user}@localhost/agrafe_test")
     });
     let key = STANDARD.encode([42u8; 32]);
     let toml = format!(
@@ -38,7 +38,7 @@ async fn setup() -> TestApp {
         [server]
         private_addr = "127.0.0.1:0"
         public_addr = "127.0.0.1:0"
-        public_base_url = "https://files.test"
+        public_base_url = "https://agrafe.test"
         [database]
         url = "{db_url}"
         max_connections = 2
@@ -56,10 +56,10 @@ async fn setup() -> TestApp {
         metadata = "2h"
         read = "24h"
         "#,
-        tmp = std::env::temp_dir().join("files-test-storage").display(),
+        tmp = std::env::temp_dir().join("agrafe-test-storage").display(),
     );
     let dir = tempdir();
-    let path = dir.join("files.toml");
+    let path = dir.join("agrafe.toml");
     std::fs::write(&path, toml).unwrap();
     let config = Config::load(Some(&path)).unwrap();
 
@@ -80,7 +80,7 @@ async fn setup() -> TestApp {
 }
 
 fn tempdir() -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("files-test-{}", uuid::Uuid::now_v7()));
+    let dir = std::env::temp_dir().join(format!("agrafe-test-{}", uuid::Uuid::now_v7()));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -127,7 +127,7 @@ fn raw_blob() -> Value {
 
 /// Strip the base so the URL can be sent to the public router.
 fn public_path(url: &str) -> String {
-    url.strip_prefix("https://files.test").unwrap().to_string()
+    url.strip_prefix("https://agrafe.test").unwrap().to_string()
 }
 
 #[tokio::test]
@@ -464,8 +464,8 @@ async fn delete_enqueues_purge_when_stored() {
 
 #[tokio::test]
 async fn state_machine_transitions() {
-    use files::blob::BlobState;
-    use files::blob::repo::{self, Transition};
+    use agrafe::blob::BlobState;
+    use agrafe::blob::repo::{self, Transition};
 
     let app = setup().await;
     let (_, created) = call(&app.private, json_req(Method::POST, "/blobs", raw_blob())).await;

@@ -3,6 +3,41 @@
 version = 4
 
 [[package]]
+name = "agrafe"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.23.1",
+ "bytes",
+ "bytesize",
+ "chrono",
+ "clap",
+ "figment",
+ "form_urlencoded",
+ "futures",
+ "hmac",
+ "http",
+ "http-body-util",
+ "humantime-serde",
+ "mime",
+ "object_store",
+ "percent-encoding",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "toml 1.1.8+spec-1.1.0",
+ "tower",
+ "tower-http 0.7.1",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -633,41 +668,6 @@ dependencies = [
  "toml 0.8.23",
  "uncased",
  "version_check",
-]
-
-[[package]]
-name = "files"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "base64 0.23.1",
- "bytes",
- "bytesize",
- "chrono",
- "clap",
- "figment",
- "form_urlencoded",
- "futures",
- "hmac",
- "http",
- "http-body-util",
- "humantime-serde",
- "mime",
- "object_store",
- "percent-encoding",
- "serde",
- "serde_json",
- "sha2 0.11.1",
- "sqlx",
- "thiserror",
- "tokio",
- "toml 1.1.8+spec-1.1.0",
- "tower",
- "tower-http 0.7.1",
- "tracing",
- "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]
