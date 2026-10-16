@@ -40,7 +40,7 @@ No signature. Reachable only from trusted networks.
 | `POST` | `/blobs` | Create a blob (metadata only, no bytes yet) |
 | `GET` | `/blobs` | List blobs, cursor paginated, filterable |
 | `GET` | `/blobs/:id` | Full metadata plus ready-made signed public URLs |
-| `PUT` | `/blobs/:id` | Upload bytes (all input types) |
+| `PUT` | `/blobs/:id` | Upload bytes (all input types). Re-uploads carry `X-Agrafe-Checksum` and `X-Agrafe-Size` |
 | `DELETE` | `/blobs/:id` | Soft delete, bucket objects purged asynchronously |
 | `POST` | `/blobs/:id/urls` | Mint signed public URLs with a chosen TTL and query parameters |
 | `GET` | `/blobs/:id/original/:filename` | Original bytes, supports `Range` |
@@ -205,9 +205,11 @@ any ──► deleted
 Transitions are conditional updates (`UPDATE ... WHERE state = $from`) so two
 concurrent requests cannot both win. Write-once is enforced by refusing `PUT`
 from any state other than `created`. For mutable blobs, `PUT` is also allowed
-from `ready`, must carry a new checksum and size in headers, writes to a new
-object key and swaps the pointer on the row. Readers mid-stream keep the old
-object; the reaper deletes it.
+from `ready`, must carry the new checksum and size in the `X-Agrafe-Checksum`
+(base64 SHA-256) and `X-Agrafe-Size` headers, writes to a new object key and
+swaps the pointer on the row. The headers are honoured on the private port
+only; on a first upload they must agree with what the blob was created with.
+Readers mid-stream keep the old object; a purge job deletes it.
 
 A failed or stale upload leaves `uploading` for the state it came from, decided
 by whether an object exists: `created` when `storage_key` is null, `ready`
@@ -228,8 +230,13 @@ sort by creation time. Filters: `content_type`, `category`, `state`,
 ### Classification
 
 Content type is mapped to a category at creation and re-checked against sniffed
-magic bytes during upload. A mismatch between declared and sniffed type is
-rejected with `422`. Categories:
+magic bytes during upload (`infer`, on the first 8 KiB). A mismatch between
+declared and sniffed type is rejected with `422`. The check is lenient where
+rejecting would be wrong: aliases (`image/jpg`), a declared container of the
+sniffed type in either direction (a DOCX is a ZIP), text sniffers (HTML, XML,
+shell) against any `text/*` declaration, and `application/octet-stream`,
+which declares nothing. Siblings such as DOCX against XLSX are rejected. The
+rules live in `sniff.rs`. Categories:
 
 `image`, `document`, `spreadsheet`, `presentation`, `archive`, `audio`,
 `video`, `text`, `other`.
@@ -250,10 +257,18 @@ Bytes flow once through a chain of consumers:
 5. Chunked AEAD encryption (see below).
 6. Multipart upload to the object store.
 
-A failed check aborts the multipart upload, resets the blob to `created` and
-returns `422` (checksum, size, type) or `409` (state). On success the blob
-moves to `uploaded`, jobs are enqueued in the same transaction, and the blob
-moves to `ready` immediately if the scan was inline or skipped.
+A failed check aborts the multipart upload, hands the blob back to the state
+it came from and returns `422` (checksum, size, type) or `409` (state). On
+success the blob moves to `uploaded`, or straight to `ready` when the scan was
+inline or skipped, and the next jobs are enqueued in the same transaction: a
+`scan` for a blob waiting in `uploaded`, `thumbnail` and `preview` for one
+that is `ready`, plus a `purge` of the object a re-upload replaced. The scan
+job enqueues the representations once the file is clean, so nothing renders
+a file that has not been scanned.
+
+Objects are keyed `<blob id>/<version>/original`; `version` increments on
+every upload, so a re-upload never overwrites. Representations of a version
+will live under the same prefix, which is what a purge deletes.
 
 ## Encryption at rest
 
@@ -265,10 +280,13 @@ chunks and sync-only seek make range requests awkward.
 Instead: **envelope encryption with a chunked streaming AEAD.**
 
 - Each blob gets a random 256-bit data key when its upload starts, wrapped
-  with a key-encryption key (KEK) from config. The wrapped key and the `kek_id` are
-  stored on the blob row. Rotating a KEK is a database update that rewraps keys,
-  with zero bucket traffic. Moving KEKs to a KMS later changes nothing in the
-  object format.
+  with a key-encryption key (KEK) from config: AES-256-GCM with a random
+  nonce and the blob id as associated data, so a wrapped key moved to another
+  row does not unwrap. The wrapped key and the `kek_id` are stored on the blob
+  row. Rotating a KEK is a database update that rewraps keys, with zero bucket
+  traffic. Moving KEKs to a KMS later changes nothing in the object format.
+- The stream's associated data is the object key, so a ciphertext copied to
+  another key does not decrypt.
 - Payload follows **Tink's AES-GCM-HKDF-STREAMING** wire format. It is a
   published spec with reference implementations in Go and Java, so our
   implementation can be validated against cross-language test vectors.
@@ -277,14 +295,19 @@ Instead: **envelope encryption with a chunked streaming AEAD.**
   on the row so it can change without migrating objects.
 - Per-chunk nonce is `nonce_prefix || counter || last_flag`, which prevents
   reordering, truncation and chunk swapping between blobs.
-- Random access is arithmetic: chunk `i` starts at `header + i * (chunk + 16)`.
-  A `Range` request maps to a chunk range, one byte-range `GET` to the bucket,
-  decrypt, trim, stream. `Content-Length` is exact.
+- Random access is arithmetic. The 40-byte header (salt and nonce prefix)
+  shares the first chunk with the plaintext, so chunk `0` holds
+  `chunk - 16 - 40` plaintext bytes and every later chunk `chunk - 16`; chunk
+  `i > 0` starts at ciphertext offset `i * chunk`. The header is also cached
+  on the blob row (`encryption_header`), so a `Range` request maps to a chunk
+  range, one byte-range `GET` to the bucket, decrypt, trim, stream.
+  `Content-Length` is exact.
 
 The crypto code is small (a few hundred lines on RustCrypto `aes-gcm` and
-`hkdf`) and owned by us. It gets known-answer tests from Tink, tamper tests and
-truncation tests, and lives in its own crate so it can be reviewed in
-isolation.
+`hkdf`) and owned by us, in the `agrafe-crypto` crate so it can be reviewed in
+isolation. It has tamper and truncation tests, and a known-answer test against
+a ciphertext produced by Tink's Python implementation (the reverse direction,
+Tink decrypting ours, was checked by hand when the vector was made).
 
 Server-side encryption on the bucket is deliberately not relied on: the
 requirement is that the provider cannot read the data, which SSE does not give.
@@ -313,6 +336,22 @@ enqueues a generation job (if none is pending) and serves the placeholder. Each
 representation records the variant version it was built with
 (`thumbnail_variant_version`, `preview_variant_version`); bumping the
 version in config regenerates everything on demand through this path.
+
+### Original
+
+Served only from `ready`; any other state answers `409` on both ports (the
+public port already answers `404` for terminal states). Single-range `Range`
+requests are honoured with `206`; multiple ranges, and a `Range` whose
+`If-Range` names another `ETag`, get the whole file. The `ETag` is the
+SHA-256 of the content, so `If-None-Match` works across re-uploads of a
+mutable blob. Write-once blobs are served `immutable` for a year, mutable ones
+`no-cache`.
+
+Every original carries `X-Content-Type-Options: nosniff` and
+`Content-Security-Policy: sandbox`: user content is served from this origin,
+and an HTML or SVG upload must never run as a page of it. The signed query
+parameters `disposition` (`inline`, the default, or `attachment`) and
+`filename` set `Content-Disposition`.
 
 ### Thumbnail
 
@@ -391,7 +430,8 @@ is redacted so a dumped config cannot leak them. See `config/example.toml`.
 | Object store | `object_store` (local filesystem, S3, GCS, Azure behind one trait) |
 | Config | `figment` with TOML and env providers |
 | Signing | `hmac` + `sha2` |
-| Encryption | `aes-gcm` + `hkdf`, Tink streaming format, own crate |
+| Encryption | `aes-gcm` + `hkdf`, Tink streaming format, own crate (`agrafe-crypto`) |
+| Sniffing | `infer` |
 | Scanning | clamd `INSTREAM` client |
 | Images | libvips subprocess, `image` for pure-Rust cases |
 | PDF | `pdfium-render` |
@@ -401,10 +441,12 @@ is redacted so a dumped config cannot leak them. See `config/example.toml`.
 ## Build order
 
 1. Config, two listeners, schema, blob state machine, `POST/GET/DELETE /blobs`,
-   listing, signed URL minting and verification. **← current**
+   listing, signed URL minting and verification.
 2. `raw` and `multipart` upload with hashing, size enforcement, sniffing,
    encryption, bucket write. Streaming `GET /original` with ranges.
-3. Job runner. ClamAV scanning inline and deferred.
+3. Job runner. ClamAV scanning inline and deferred. **← current**. Until it
+   exists every scanned blob waits in `uploaded`; only `skip_virus_scan`
+   blobs become readable.
 4. Thumbnail and preview workers, icon fallback, autorotate, PDF render,
    embedded image extraction.
 5. Expiration, reaper, purge.

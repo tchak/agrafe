@@ -13,6 +13,8 @@ squash, bookmarks and pushing. `jj st`, `jj diff`, `jj log`, `jj describe -m`,
 ## Layout
 
 - `crates/agrafe` — the server binary and library.
+- `crates/agrafe-crypto` — streaming AEAD and key wrapping, reviewed in
+  isolation; no dependency on the server crate.
 - `migrations/` — sqlx migrations, plain SQL, forward only.
 - `config/example.toml` — documented configuration reference.
 
