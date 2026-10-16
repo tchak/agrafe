@@ -39,6 +39,13 @@ impl Source {
             _ => true,
         }
     }
+
+    /// Whether the source needs the whole original, which is what
+    /// `media.max_source_size` bounds. A text sample reads a few KiB
+    /// whatever the file's size.
+    pub fn reads_whole_file(self) -> bool {
+        self != Source::TextSample
+    }
 }
 
 /// The sources for a content type, in order. Empty when the file cannot be
@@ -141,5 +148,7 @@ mod tests {
         assert!(Source::TextSample.serves(Representation::Thumbnail));
         assert!(!Source::TextSample.serves(Representation::Preview));
         assert!(Source::FirstPage.serves(Representation::Preview));
+        assert!(!Source::TextSample.reads_whole_file());
+        assert!(Source::Image.reads_whole_file());
     }
 }

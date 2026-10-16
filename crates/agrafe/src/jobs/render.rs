@@ -37,15 +37,15 @@ pub async fn run(state: &AppState, job: &Job) -> Result<(), JobError> {
     let media = &state.config().media;
     let version = media.variant_version;
 
-    let sources: Vec<Source> = media::sources(&blob.content_type)
-        .iter()
-        .copied()
-        .filter(|source| source.serves(kind))
-        .collect();
     let too_large = blob
         .size
         .is_some_and(|size| size as u64 > media.max_source_size.as_u64());
-    if sources.is_empty() || too_large {
+    let sources: Vec<Source> = media::sources(&blob.content_type)
+        .iter()
+        .copied()
+        .filter(|source| source.serves(kind) && !(too_large && source.reads_whole_file()))
+        .collect();
+    if sources.is_empty() {
         tracing::info!(content_type = %blob.content_type, too_large, "nothing to render a {kind} from");
         repo::finish_representation(
             state.pool(),

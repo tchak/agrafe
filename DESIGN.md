@@ -442,7 +442,8 @@ Only files with a known source are attempted:
   ImageMagick, more attack surface than it is worth, and gets the icon;
 - PDF, DOCX and ODT, through the sources below;
 - text files (the `text` category plus CSV and TSV), thumbnails only;
-- originals at most `media.max_source_size` (default 512 MiB).
+- originals at most `media.max_source_size` (default 512 MiB), except for
+  the text thumbnail, which reads the first 8 KiB whatever the size.
 
 The allowlist above is by declared type, and the upload sniffer lets
 through anything `infer` does not recognise. vips, though, picks its loader

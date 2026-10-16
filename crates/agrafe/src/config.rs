@@ -332,7 +332,8 @@ pub struct MediaConfig {
     /// executable.
     #[serde(default)]
     pub agrafe_command: Option<PathBuf>,
-    /// Originals above this size get no representations.
+    /// Originals above this size get no representations, except the text
+    /// thumbnail, which reads only the first few KiB.
     #[serde(default = "default_max_source_size")]
     pub max_source_size: ByteSize,
     /// Where the workers unpack originals while rendering; the system

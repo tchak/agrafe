@@ -371,10 +371,17 @@ async fn oversized_originals_get_no_representations() {
     .await;
     let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
     let id = id_of(&blob);
+    // A text file over the limit still gets its thumbnail: the sample is
+    // the first few KiB, however long the file.
+    let long: Vec<u8> = b"line\n".repeat(400);
+    let text = ready_file(&app, "long.txt", "text/plain", &long).await;
     render_all(&app).await;
     let blob = get_blob(&app, id).await;
     assert_eq!(blob["thumbnail_state"], "unavailable");
     assert_eq!(blob["preview_state"], "unavailable");
+    let text = get_blob(&app, id_of(&text)).await;
+    assert_eq!(text["thumbnail_state"], "ready");
+    assert_eq!(text["preview_state"], "unavailable");
 }
 
 #[tokio::test]
