@@ -52,6 +52,8 @@ async fn setup() -> TestApp {
         backend = "local"
         [storage.local]
         path = "{tmp}"
+        [upload]
+        max_size = "16 KiB"
         [signing]
         current_key = "k1"
         window = "1h"
@@ -615,6 +617,20 @@ async fn multipart_upload_public() {
     // Not a multipart body at all.
     let (status, body) = call(&app.public, put_raw(&upload, bytes.clone())).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    // The route body limit is `upload.max_size` plus 1 MiB of slack; a body
+    // that blows through it on the way to the `file` part is a 413 and the
+    // blob is untouched.
+    let junk = vec![b'x'; 1024 * 1024 + 32 * 1024];
+    let (status, body) = call(
+        &app.public,
+        put_multipart(&upload, &[("comment", &junk), ("file", &bytes)]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{body}");
+    assert_eq!(body["error"]["code"], "payload_too_large");
+    let (_, got) = call(&app.private, req(Method::GET, &format!("/blobs/{id}"))).await;
+    assert_eq!(got["state"], "created");
 
     // A raw body on the public port works too.
     let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;

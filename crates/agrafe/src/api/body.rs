@@ -1,9 +1,11 @@
 //! Turning a `PUT` request into the stream of file bytes the upload pipeline
 //! consumes, according to the blob's input type.
 
+use axum::RequestExt;
 use axum::extract::multipart::Multipart;
 use axum::extract::{FromRequest, Request};
 use futures::TryStreamExt;
+use http_body_util::LengthLimitError;
 
 use crate::app::AppState;
 use crate::blob::{Blob, InputType};
@@ -21,10 +23,12 @@ pub async fn upload(
 ) -> ApiResult<Blob> {
     match blob.input_type {
         InputType::Raw => {
+            // `into_limited_body` applies the route's `DefaultBodyLimit`,
+            // which a bare `Request` does not; `Multipart` does it itself.
             let body = req
-                .into_body()
+                .into_limited_body()
                 .into_data_stream()
-                .map_err(|e| ApiError::BadRequest(format!("reading the request body: {e}")));
+                .map_err(body_error);
             upload::run(state, blob, declared, body).await
         }
         InputType::Multipart => {
@@ -47,6 +51,14 @@ pub async fn upload(
         }
         InputType::Rows | InputType::Archive => Err(ApiError::NotImplemented),
     }
+}
+
+fn body_error(e: axum::Error) -> ApiError {
+    let inner = e.into_inner();
+    if inner.downcast_ref::<LengthLimitError>().is_some() {
+        return ApiError::PayloadTooLarge("request body exceeds the upload size limit".into());
+    }
+    ApiError::BadRequest(format!("reading the request body: {inner}"))
 }
 
 fn multipart_error(e: axum::extract::multipart::MultipartError) -> ApiError {

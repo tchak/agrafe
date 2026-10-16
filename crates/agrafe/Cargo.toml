@@ -20,6 +20,7 @@ clap = { version = "4.6.7", features = ["derive", "env"] }
 figment = { version = "0.10.19", features = ["toml", "env"] }
 form_urlencoded = "1.2.2"
 futures = "0.3.34"
+http-body-util = "0.1.5"
 hmac = "0.13.0"
 http = "1.5.0"
 humantime-serde = "1.1.1"
@@ -43,7 +44,6 @@ uuid = { version = "1.28.0", features = ["v7", "serde"] }
 
 [dev-dependencies]
 futures = "0.3"
-http-body-util = "0.1.5"
 object_store = "0.14.2"
 sha2 = "0.11.1"
 tower = { version = "0.5.3", features = ["util"] }

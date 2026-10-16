@@ -247,7 +247,10 @@ The mapping table lives in code (`classify.rs`). PDF is a `document`.
 
 Bytes flow once through a chain of consumers:
 
-1. Size counter, rejects on exceeding declared size or `upload.max_size`.
+1. Size counter, rejects on exceeding the declared size, itself capped at
+   `upload.max_size` when declared. The HTTP body limit on the upload routes
+   is `max_size` plus slack for multipart framing, a backstop that the
+   counter normally reaches first.
 2. SHA-256 hasher, compared against the declared checksum at the end.
 3. Magic-byte sniffer on the first chunk, compared against the declared
    content type.

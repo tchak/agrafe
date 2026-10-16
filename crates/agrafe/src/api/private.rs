@@ -26,7 +26,9 @@ use crate::classify::Category;
 use crate::error::{ApiError, ApiResult};
 use crate::upload;
 
-/// `body_limit` caps the request body of the upload route.
+/// `body_limit` caps the request body of the upload route. It is a backstop:
+/// the pipeline stops at the declared size, which is at most
+/// `upload.max_size`; the limit only matters for multipart framing around it.
 pub fn routes(body_limit: usize) -> Router<AppState> {
     Router::new()
         .route("/blobs", post(create_blob).get(list_blobs))
