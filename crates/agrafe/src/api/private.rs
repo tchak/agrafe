@@ -60,16 +60,25 @@ async fn list_blobs(
     Query(q): Query<ListQuery>,
 ) -> ApiResult<Json<ListResponse>> {
     let content_type = match q.content_type {
-        Some(ct) => Some(create::normalize_content_type(&ct)?),
+        Some(ct) => {
+            Some(create::normalize_content_type(&ct).map_err(|m| ApiError::BadRequest(m.into()))?)
+        }
         None => None,
     };
+    let limit = q.limit.unwrap_or(repo::DEFAULT_LIMIT);
+    if !(1..=repo::MAX_LIMIT).contains(&limit) {
+        return Err(ApiError::BadRequest(format!(
+            "limit must be between 1 and {}",
+            repo::MAX_LIMIT
+        )));
+    }
     let params = ListParams {
         content_type,
         category: q.category,
         state: q.state,
         scan_state: q.scan_state,
         cursor: q.cursor,
-        limit: q.limit.unwrap_or(repo::DEFAULT_LIMIT),
+        limit,
     };
     let page = repo::list(state.pool(), &params).await?;
     let now = SystemTime::now();

@@ -56,6 +56,7 @@ pub struct ListParams {
     pub state: Option<BlobState>,
     pub scan_state: Option<ScanState>,
     pub cursor: Option<Uuid>,
+    /// Already validated to lie in `1..=MAX_LIMIT`.
     pub limit: usize,
 }
 
@@ -69,7 +70,7 @@ pub struct Page {
 
 /// Newest first, keyset paginated on the UUID v7 id.
 pub async fn list(exec: impl PgExecutor<'_>, params: &ListParams) -> sqlx::Result<Page> {
-    let limit = params.limit.clamp(1, MAX_LIMIT);
+    let limit = params.limit;
     let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("SELECT * FROM blobs WHERE true");
     if let Some(ct) = &params.content_type {
         qb.push(" AND content_type = ").push_bind(ct);

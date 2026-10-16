@@ -435,6 +435,15 @@ async fn list_filters_and_pagination() {
     let (status, body) = call(&app.private, req(Method::GET, "/blobs?state=bogus")).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"]["code"], "bad_request", "{body}");
+
+    // Out-of-range or malformed filters are rejected, not silently adjusted.
+    for query in ["limit=0", "limit=201", "content_type=bogus"] {
+        let (status, body) = call(&app.private, req(Method::GET, &format!("/blobs?{query}"))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{query}: {body}");
+        assert_eq!(body["error"]["code"], "bad_request", "{query}");
+    }
+    let (status, _) = call(&app.private, req(Method::GET, "/blobs?limit=200")).await;
+    assert_eq!(status, StatusCode::OK);
 }
 
 #[tokio::test]

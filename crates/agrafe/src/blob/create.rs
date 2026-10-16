@@ -59,7 +59,7 @@ pub fn validate(
     now: DateTime<Utc>,
 ) -> Result<NewBlob, ApiError> {
     let filename = validate_filename(&req.filename)?;
-    let content_type = normalize_content_type(&req.content_type)?;
+    let content_type = normalize_content_type(&req.content_type).map_err(unprocessable)?;
     let category = classify::classify(&content_type);
 
     let (checksum_sha256, size) = if req.input_type.is_direct() {
@@ -143,14 +143,16 @@ fn validate_filename(filename: &str) -> Result<String, ApiError> {
     Ok(filename.to_string())
 }
 
-/// Parse and reduce to `type/subtype`, lowercase, parameters dropped.
-pub fn normalize_content_type(raw: &str) -> Result<String, ApiError> {
+/// Parse and reduce to `type/subtype`, lowercase, parameters dropped. The
+/// error is a message; callers pick the status (422 on create, 400 as a
+/// list filter).
+pub fn normalize_content_type(raw: &str) -> Result<String, &'static str> {
     let mime: mime::Mime = raw
         .trim()
         .parse()
-        .map_err(|_| unprocessable("content_type is not a valid media type"))?;
+        .map_err(|_| "content_type is not a valid media type")?;
     if mime.type_() == "*" || mime.subtype() == "*" {
-        return Err(unprocessable("content_type must not contain wildcards"));
+        return Err("content_type must not contain wildcards");
     }
     Ok(format!("{}/{}", mime.type_(), mime.subtype()).to_ascii_lowercase())
 }
