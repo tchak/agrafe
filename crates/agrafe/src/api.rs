@@ -1,6 +1,7 @@
 //! HTTP interfaces. `private` is unsigned and trusted; `public` verifies a
 //! signature on every route before touching the database.
 
+pub mod body;
 pub mod extract;
 pub mod json;
 pub mod private;
@@ -16,11 +17,12 @@ use tower_http::trace::TraceLayer;
 
 use crate::app::AppState;
 use crate::error::ApiError;
+use crate::upload;
 
 pub fn private_router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
-        .merge(private::routes())
+        .merge(private::routes(upload::body_limit(&state.config().upload)))
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
         .layer(TraceLayer::new_for_http())
@@ -40,7 +42,7 @@ pub fn public_router(state: AppState) -> Router {
     });
     Router::new()
         .route("/healthz", get(healthz))
-        .merge(public::routes())
+        .merge(public::routes(upload::body_limit(&state.config().upload)))
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
         .layer(trace)

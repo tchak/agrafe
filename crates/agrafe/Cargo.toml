@@ -10,9 +10,11 @@ description = "File storage service: encrypted, scanned, with previews"
 workspace = true
 
 [dependencies]
+agrafe-crypto = { version = "0.1.0", path = "../agrafe-crypto" }
 anyhow = "1.0.104"
 axum = { version = "0.8.9", features = ["macros", "multipart"] }
 base64 = "0.23.1"
+bytes = "1"
 bytesize = { version = "2.7.0", features = ["serde"] }
 clap = { version = "4.6.7", features = ["derive", "env"] }
 figment = { version = "0.10.19", features = ["toml", "env"] }
@@ -21,6 +23,7 @@ futures = "0.3.34"
 hmac = "0.13.0"
 http = "1.5.0"
 humantime-serde = "1.1.1"
+infer = { version = "0.22.0", default-features = false }
 jiff = { version = "0.2.38", features = ["serde"] }
 jiff-sqlx = { version = "0.2.0", features = ["postgres"] }
 mime = "0.3.17"
@@ -38,5 +41,8 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 uuid = { version = "1.28.0", features = ["v7", "serde"] }
 
 [dev-dependencies]
+futures = "0.3"
 http-body-util = "0.1.5"
+object_store = "0.14.2"
+sha2 = "0.11.1"
 tower = { version = "0.5.3", features = ["util"] }

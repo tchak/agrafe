@@ -1,11 +1,11 @@
 //! Public interface handlers. Every handler takes `Signed` first.
 
 use axum::Router;
-use axum::extract::State;
-use axum::http::StatusCode;
+use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::routing::get;
 use uuid::Uuid;
 
+use super::body;
 use super::extract::{Json, Path};
 use super::json::PublicBlobResponse;
 use super::signed::Signed;
@@ -13,10 +13,17 @@ use crate::app::AppState;
 use crate::blob::Blob;
 use crate::blob::repo;
 use crate::error::{ApiError, ApiResult};
+use crate::upload;
 
-pub fn routes() -> Router<AppState> {
+/// `body_limit` caps the request body of the upload route.
+pub fn routes(body_limit: usize) -> Router<AppState> {
     Router::new()
-        .route("/blobs/{token}/{id}", get(get_blob).put(upload_blob))
+        .route(
+            "/blobs/{token}/{id}",
+            get(get_blob)
+                .put(upload_blob)
+                .layer(DefaultBodyLimit::max(body_limit)),
+        )
         .route(
             "/blobs/{token}/{id}/original/{filename}",
             get(not_implemented),
@@ -44,7 +51,8 @@ async fn upload_blob(
     _signed: Signed,
     State(state): State<AppState>,
     Path((_token, id)): Path<(String, Uuid)>,
-) -> ApiResult<StatusCode> {
+    req: Request,
+) -> ApiResult<Json<PublicBlobResponse>> {
     let blob = find_visible(&state, id).await?;
     // Defense in depth: minting already refuses these, but a leaked key must
     // not turn into a policy bypass.
@@ -59,7 +67,10 @@ async fn upload_blob(
             blob.state
         )));
     }
-    Err(ApiError::NotImplemented)
+    // The public port never overrides what the backend declared.
+    let declared = upload::resolve(&blob, None)?;
+    let blob = body::upload(&state, blob, declared, req).await?;
+    Ok(Json(PublicBlobResponse::new(&blob)))
 }
 
 /// Look a blob up as the public port sees it: terminal states are `404`.

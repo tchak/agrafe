@@ -4,14 +4,15 @@ use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime};
 
 use axum::Router;
-use axum::extract::State;
-use axum::http::StatusCode;
+use axum::extract::{DefaultBodyLimit, Request, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use jiff::Timestamp;
 use serde::Deserialize;
 use uuid::Uuid;
 
+use super::body;
 use super::extract::{Json, Path, Query};
 use super::json::{BlobResponse, ListResponse};
 use super::urls::{self, MintOptions};
@@ -21,13 +22,18 @@ use crate::blob::repo::{self, ListParams, Transition};
 use crate::blob::{BlobState, ScanState};
 use crate::classify::Category;
 use crate::error::{ApiError, ApiResult};
+use crate::upload;
 
-pub fn routes() -> Router<AppState> {
+/// `body_limit` caps the request body of the upload route.
+pub fn routes(body_limit: usize) -> Router<AppState> {
     Router::new()
         .route("/blobs", post(create_blob).get(list_blobs))
         .route(
             "/blobs/{id}",
-            get(get_blob).put(upload_blob).delete(delete_blob),
+            get(get_blob)
+                .put(upload_blob)
+                .delete(delete_blob)
+                .layer(DefaultBodyLimit::max(body_limit)),
         )
         .route("/blobs/{id}/urls", post(mint_urls))
         .route("/blobs/{id}/original/{filename}", get(not_implemented))
@@ -104,7 +110,12 @@ async fn get_blob(
     Ok(Json(BlobResponse::new(&blob, urls)))
 }
 
-async fn upload_blob(State(state): State<AppState>, Path(id): Path<Uuid>) -> ApiResult<StatusCode> {
+async fn upload_blob(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    req: Request,
+) -> ApiResult<Json<BlobResponse>> {
     let blob = repo::find(state.pool(), id)
         .await?
         .ok_or(ApiError::NotFound)?;
@@ -114,7 +125,15 @@ async fn upload_blob(State(state): State<AppState>, Path(id): Path<Uuid>) -> Api
             blob.state
         )));
     }
-    Err(ApiError::NotImplemented)
+    if !blob.input_type.is_direct() {
+        // `rows` and `archive` are generated server side, a later build step.
+        return Err(ApiError::NotImplemented);
+    }
+    let declared = upload::declared_from_headers(&headers, &state.config().upload)?;
+    let declared = upload::resolve(&blob, declared)?;
+    let blob = body::upload(&state, blob, declared, req).await?;
+    let urls = urls::mint(&state, &blob, &MintOptions::default(), SystemTime::now());
+    Ok(Json(BlobResponse::new(&blob, urls)))
 }
 
 async fn delete_blob(State(state): State<AppState>, Path(id): Path<Uuid>) -> ApiResult<StatusCode> {

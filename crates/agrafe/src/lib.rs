@@ -6,10 +6,13 @@ pub mod blob;
 pub mod classify;
 pub mod config;
 pub mod db;
+pub mod encryption;
 pub mod error;
 pub mod jobs;
 pub mod signing;
+pub mod sniff;
 pub mod storage;
+pub mod upload;
 
 /// Error returned when a text column holds a value outside an enum.
 #[derive(Debug, thiserror::Error)]

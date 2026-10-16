@@ -157,7 +157,7 @@ pub fn normalize_content_type(raw: &str) -> Result<String, &'static str> {
     Ok(format!("{}/{}", mime.type_(), mime.subtype()).to_ascii_lowercase())
 }
 
-fn decode_checksum(encoded: &str) -> Result<Vec<u8>, ApiError> {
+pub(crate) fn decode_checksum(encoded: &str) -> Result<Vec<u8>, ApiError> {
     let bytes = STANDARD
         .decode(encoded.trim())
         .map_err(|_| unprocessable("checksum must be base64"))?;
@@ -169,7 +169,7 @@ fn decode_checksum(encoded: &str) -> Result<Vec<u8>, ApiError> {
     Ok(bytes)
 }
 
-fn validate_size(size: i64, upload: &UploadConfig) -> Result<i64, ApiError> {
+pub(crate) fn validate_size(size: i64, upload: &UploadConfig) -> Result<i64, ApiError> {
     if size < 0 {
         return Err(unprocessable("size must not be negative"));
     }

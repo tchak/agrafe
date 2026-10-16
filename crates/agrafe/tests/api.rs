@@ -14,6 +14,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, MutexGuard};
 use tower::ServiceExt;
 
@@ -32,6 +33,9 @@ async fn setup() -> TestApp {
         let user = std::env::var("USER").unwrap_or_else(|_| "postgres".to_string());
         format!("postgres://{user}@localhost/agrafe_test")
     });
+    // Tests share the storage directory; start each one empty.
+    let storage = std::env::temp_dir().join("agrafe-test-storage");
+    let _ = std::fs::remove_dir_all(&storage);
     let key = STANDARD.encode([42u8; 32]);
     let toml = format!(
         r#"
@@ -55,8 +59,14 @@ async fn setup() -> TestApp {
         upload = "1h"
         metadata = "2h"
         read = "24h"
+        [encryption]
+        current_kek = "kek1"
+        chunk_size = "1 KiB"
+        [encryption.keks]
+        kek1 = "{kek}"
         "#,
-        tmp = std::env::temp_dir().join("agrafe-test-storage").display(),
+        kek = STANDARD.encode([43u8; 32]),
+        tmp = storage.display(),
     );
     let dir = tempdir();
     let path = dir.join("agrafe.toml");
@@ -330,15 +340,362 @@ async fn terminal_blobs_are_404_on_the_public_port() {
     }
 }
 
+/// A PNG header followed by filler, long enough to span several 1 KiB
+/// encryption segments.
+fn png_bytes(len: usize) -> Vec<u8> {
+    let mut v = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+    v.extend((v.len()..len).map(|i| (i * 31 % 251) as u8));
+    v
+}
+
+/// A blob declaration matching `bytes`.
+fn blob_for(bytes: &[u8], content_type: &str, input_type: &str) -> Value {
+    json!({
+        "filename": "photo.png",
+        "content_type": content_type,
+        "input_type": input_type,
+        "checksum": STANDARD.encode(Sha256::digest(bytes)),
+        "size": bytes.len()
+    })
+}
+
+async fn create(app: &TestApp, blob: Value) -> Value {
+    let (status, body) = call(&app.private, json_req(Method::POST, "/blobs", blob)).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    body
+}
+
+fn put_raw(uri: &str, bytes: Vec<u8>) -> Request<Body> {
+    Request::builder()
+        .method(Method::PUT)
+        .uri(uri)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .body(Body::from(bytes))
+        .unwrap()
+}
+
+fn put_multipart(uri: &str, parts: &[(&str, &[u8])]) -> Request<Body> {
+    let boundary = "agrafe-test-boundary";
+    let mut body = Vec::new();
+    for (name, bytes) in parts {
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"; filename=\"x.bin\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(bytes);
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    Request::builder()
+        .method(Method::PUT)
+        .uri(uri)
+        .header(
+            header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(Body::from(body))
+        .unwrap()
+}
+
+/// Pending jobs for a blob, by kind.
+async fn jobs_for(app: &TestApp, id: &str) -> Vec<String> {
+    let id: uuid::Uuid = id.parse().unwrap();
+    sqlx::query_scalar("SELECT kind FROM jobs WHERE blob_id = $1 ORDER BY kind")
+        .bind(id)
+        .fetch_all(app.state.pool())
+        .await
+        .unwrap()
+}
+
+/// Read and decrypt the stored original straight from the object store.
+async fn stored_plaintext(app: &TestApp, id: &str) -> Vec<u8> {
+    use agrafe::blob::repo;
+    use agrafe_crypto::streaming::{self, Layout};
+    use object_store::ObjectStoreExt;
+
+    let blob = repo::find(app.state.pool(), id.parse().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    let key = blob.storage_key.as_deref().expect("storage_key");
+    let bytes = app
+        .state
+        .store()
+        .get(&object_store::path::Path::from(key))
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    let layout = Layout::new(blob.chunk_size.unwrap() as usize).unwrap();
+    assert_eq!(
+        bytes.len() as u64,
+        layout.ciphertext_len(blob.size.unwrap() as u64)
+    );
+    assert_eq!(
+        &bytes[..streaming::HEADER_LEN],
+        blob.encryption_header.as_deref().unwrap()
+    );
+    let data_key = app
+        .state
+        .keks()
+        .unwrap(
+            blob.id,
+            blob.kek_id.as_deref().unwrap(),
+            blob.wrapped_key.as_deref().unwrap(),
+        )
+        .unwrap();
+    streaming::decrypt(&data_key, key.as_bytes(), layout, &bytes).unwrap()
+}
+
 #[tokio::test]
-async fn public_upload_url_reaches_handler() {
+async fn raw_upload_private() {
     let app = setup().await;
-    let (_, created) = call(&app.private, json_req(Method::POST, "/blobs", raw_blob())).await;
-    let upload = public_path(created["urls"]["upload"].as_str().unwrap());
-    // Upload itself is the next build step; the signature and policy checks
-    // pass and the handler reports it is not implemented yet.
-    let (status, _) = call(&app.public, req(Method::PUT, &upload)).await;
+    let bytes = png_bytes(5000);
+    let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
+    let id = created["id"].as_str().unwrap();
+
+    let (status, body) = call(
+        &app.private,
+        put_raw(&format!("/blobs/{id}"), bytes.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // The scan is deferred, so the blob waits for it.
+    assert_eq!(body["state"], "uploaded");
+    assert_eq!(body["scan_state"], "pending");
+    assert!(body["uploaded_at"].is_string());
+    assert_eq!(jobs_for(&app, id).await, vec!["scan"]);
+    assert_eq!(stored_plaintext(&app, id).await, bytes);
+
+    // Write-once: a second upload is refused.
+    let (status, _) = call(
+        &app.private,
+        put_raw(&format!("/blobs/{id}"), bytes.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // Backend vouches for the source: ready at once, representations queued.
+    let mut vouched = blob_for(&bytes, "image/png", "raw");
+    vouched["skip_virus_scan"] = json!(true);
+    let created = create(&app, vouched).await;
+    let id = created["id"].as_str().unwrap();
+    let (status, body) = call(
+        &app.private,
+        put_raw(&format!("/blobs/{id}"), bytes.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], "ready");
+    assert_eq!(body["scan_state"], "skipped");
+    assert_eq!(jobs_for(&app, id).await, vec!["preview", "thumbnail"]);
+
+    // An empty file is a valid file.
+    let created = create(&app, blob_for(b"", "text/plain", "raw")).await;
+    let id = created["id"].as_str().unwrap();
+    let (status, body) = call(&app.private, put_raw(&format!("/blobs/{id}"), vec![])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(stored_plaintext(&app, id).await, b"");
+}
+
+#[tokio::test]
+async fn raw_upload_rejections() {
+    let app = setup().await;
+    let bytes = png_bytes(3000);
+
+    // Each failure answers 422, resets the blob to `created` and stores nothing.
+    let cases: Vec<(&str, Value, Vec<u8>)> = vec![
+        (
+            "checksum",
+            blob_for(&png_bytes(3001), "image/png", "raw"),
+            {
+                let mut b = bytes.clone();
+                b.pop();
+                b.push(0xff);
+                b
+            },
+        ),
+        (
+            "too short",
+            blob_for(&bytes, "image/png", "raw"),
+            bytes[..2999].to_vec(),
+        ),
+        ("too long", blob_for(&bytes, "image/png", "raw"), {
+            let mut b = bytes.clone();
+            b.push(0);
+            b
+        }),
+        ("type", blob_for(&bytes, "image/jpeg", "raw"), bytes.clone()),
+    ];
+    for (name, blob, body) in cases {
+        let created = create(&app, blob).await;
+        let id = created["id"].as_str().unwrap();
+        let (status, res) = call(&app.private, put_raw(&format!("/blobs/{id}"), body)).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{name}: {res}");
+        let (_, got) = call(&app.private, req(Method::GET, &format!("/blobs/{id}"))).await;
+        assert_eq!(got["state"], "created", "{name}");
+        assert!(got["uploaded_at"].is_null(), "{name}");
+        assert!(jobs_for(&app, id).await.is_empty(), "{name}");
+        // Can be retried.
+        let (status, res) = call(
+            &app.private,
+            put_raw(&format!("/blobs/{id}"), bytes.clone()),
+        )
+        .await;
+        if name == "type" || name == "checksum" {
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{name}: {res}");
+        } else {
+            assert_eq!(status, StatusCode::OK, "{name}: {res}");
+        }
+    }
+
+    // Leftover objects: only the successful uploads wrote one.
+    let objects: Vec<_> = {
+        use futures::TryStreamExt;
+        app.state
+            .store()
+            .list(None)
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap()
+    };
+    assert_eq!(objects.len(), 2, "{objects:?}");
+
+    // Generated input types are not uploadable yet.
+    let created = create(
+        &app,
+        json!({"filename": "export.csv", "content_type": "text/csv", "input_type": "rows"}),
+    )
+    .await;
+    let id = created["id"].as_str().unwrap();
+    let (status, _) = call(
+        &app.private,
+        put_raw(&format!("/blobs/{id}"), b"a,b\n".to_vec()),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+}
+
+#[tokio::test]
+async fn multipart_upload_public() {
+    let app = setup().await;
+    let bytes = png_bytes(2500);
+    let created = create(&app, blob_for(&bytes, "image/png", "multipart")).await;
+    let id = created["id"].as_str().unwrap();
+    let upload = public_path(created["urls"]["upload"].as_str().unwrap());
+
+    // Extra parts are ignored; the one named `file` is the file.
+    let (status, body) = call(
+        &app.public,
+        put_multipart(
+            &upload,
+            &[("comment", b"hello"), ("file", &bytes), ("after", b"x")],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], "uploaded");
+    assert!(body.get("filename").is_none(), "public response is reduced");
+    assert_eq!(stored_plaintext(&app, id).await, bytes);
+
+    // No `file` part: 422 and the blob is back to `created`.
+    let created = create(&app, blob_for(&bytes, "image/png", "multipart")).await;
+    let id = created["id"].as_str().unwrap();
+    let upload = public_path(created["urls"]["upload"].as_str().unwrap());
+    let (status, body) = call(&app.public, put_multipart(&upload, &[("other", &bytes)])).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let (_, got) = call(&app.private, req(Method::GET, &format!("/blobs/{id}"))).await;
+    assert_eq!(got["state"], "created");
+
+    // Not a multipart body at all.
+    let (status, body) = call(&app.public, put_raw(&upload, bytes.clone())).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    // A raw body on the public port works too.
+    let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
+    let upload = public_path(created["urls"]["upload"].as_str().unwrap());
+    let (status, body) = call(&app.public, put_raw(&upload, bytes.clone())).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
+async fn mutable_reupload() {
+    let app = setup().await;
+    let v1 = png_bytes(1500);
+    let v2 = png_bytes(4000);
+    let mut blob = blob_for(&v1, "image/png", "raw");
+    blob["write_once"] = json!(false);
+    blob["skip_virus_scan"] = json!(true);
+    let created = create(&app, blob).await;
+    let id = created["id"].as_str().unwrap();
+    let uri = format!("/blobs/{id}");
+
+    // Headers on a first upload must agree with the declaration.
+    let wrong = Request::builder()
+        .method(Method::PUT)
+        .uri(&uri)
+        .header("x-agrafe-checksum", STANDARD.encode(Sha256::digest(&v2)))
+        .header("x-agrafe-size", v2.len())
+        .body(Body::from(v1.clone()))
+        .unwrap();
+    let (status, body) = call(&app.private, wrong).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+
+    let (status, body) = call(&app.private, put_raw(&uri, v1.clone())).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], "ready");
+    let (_, first) = call(&app.private, req(Method::GET, &uri)).await;
+
+    // A re-upload must say what is coming.
+    let (status, body) = call(&app.private, put_raw(&uri, v2.clone())).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let (_, got) = call(&app.private, req(Method::GET, &uri)).await;
+    assert_eq!(got["state"], "ready", "previous version still served");
+
+    let only_one = Request::builder()
+        .method(Method::PUT)
+        .uri(&uri)
+        .header("x-agrafe-size", v2.len())
+        .body(Body::from(v2.clone()))
+        .unwrap();
+    let (status, _) = call(&app.private, only_one).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    let reupload = Request::builder()
+        .method(Method::PUT)
+        .uri(&uri)
+        .header("x-agrafe-checksum", STANDARD.encode(Sha256::digest(&v2)))
+        .header("x-agrafe-size", v2.len())
+        .body(Body::from(v2.clone()))
+        .unwrap();
+    let (status, body) = call(&app.private, reupload).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], "ready");
+    assert_eq!(body["size"], v2.len());
+    assert_eq!(body["checksum"], STANDARD.encode(Sha256::digest(&v2)));
+    assert_eq!(stored_plaintext(&app, id).await, v2);
+
+    // The previous object is queued for purge.
+    let (kind, payload): (String, Value) =
+        sqlx::query_as("SELECT kind, payload FROM jobs WHERE kind = 'purge'")
+            .fetch_one(app.state.pool())
+            .await
+            .unwrap();
+    assert_eq!(kind, "purge");
+    assert_eq!(payload["blob_id"], first["id"]);
+    assert!(
+        payload["storage_key"]
+            .as_str()
+            .unwrap()
+            .ends_with("/1/original"),
+        "{payload}"
+    );
+
+    // The public port never accepts a re-upload, even with headers.
+    assert!(created["urls"]["upload"].is_null());
 }
 
 #[tokio::test]

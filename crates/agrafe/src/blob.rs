@@ -122,12 +122,14 @@ pub struct Blob {
     #[sqlx(try_from = "crate::db::NullableTimestamp")]
     pub scanned_at: Option<Timestamp>,
 
+    /// Object key of the current original, `<id>/<version>/original`.
     pub storage_key: Option<String>,
     pub version: i32,
 
     pub kek_id: Option<String>,
     pub wrapped_key: Option<Vec<u8>>,
-    pub nonce_prefix: Option<Vec<u8>>,
+    /// Streaming AEAD header (salt and nonce prefix), cached from the object.
+    pub encryption_header: Option<Vec<u8>>,
     pub chunk_size: Option<i32>,
 
     #[sqlx(try_from = "String")]

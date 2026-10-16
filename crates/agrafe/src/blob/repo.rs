@@ -182,6 +182,93 @@ pub async fn abort_upload(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Tra
     }
 }
 
+/// Everything an upload writes onto the row when it completes.
+#[derive(Debug, Clone)]
+pub struct Completed {
+    pub storage_key: String,
+    pub version: i32,
+    pub kek_id: String,
+    pub wrapped_key: Vec<u8>,
+    pub encryption_header: Vec<u8>,
+    pub chunk_size: i32,
+    pub checksum_sha256: Vec<u8>,
+    pub size: i64,
+}
+
+/// `uploading` to `uploaded`, or straight to `ready` when the scan is
+/// skipped. Points the row at the new object, resets scan and representation
+/// state, and enqueues what comes next in the same transaction: a scan, or
+/// the representations, plus a purge of the object this one replaces.
+pub async fn complete_upload(
+    pool: &PgPool,
+    blob: &Blob,
+    done: &Completed,
+) -> sqlx::Result<Transition> {
+    let (state, scan_state) = if blob.skip_virus_scan {
+        (BlobState::Ready, ScanState::Skipped)
+    } else {
+        (BlobState::Uploaded, ScanState::Pending)
+    };
+    let mut tx = pool.begin().await?;
+    let updated = sqlx::query_as::<_, Blob>(
+        r#"
+        UPDATE blobs
+        SET state = $2, storage_key = $3, version = $4,
+            kek_id = $5, wrapped_key = $6, encryption_header = $7, chunk_size = $8,
+            checksum_sha256 = $9, size = $10,
+            scan_state = $11, scanned_at = NULL,
+            thumbnail_state = 'pending', preview_state = 'pending', preview_source = NULL,
+            thumbnail_variant_version = NULL, preview_variant_version = NULL,
+            uploaded_at = now()
+        WHERE id = $1 AND state = $12
+        RETURNING *
+        "#,
+    )
+    .bind(blob.id)
+    .bind(state.as_str())
+    .bind(&done.storage_key)
+    .bind(done.version)
+    .bind(&done.kek_id)
+    .bind(&done.wrapped_key)
+    .bind(&done.encryption_header)
+    .bind(done.chunk_size)
+    .bind(&done.checksum_sha256)
+    .bind(done.size)
+    .bind(scan_state.as_str())
+    .bind(BlobState::Uploading.as_str())
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(updated) = updated else {
+        tx.rollback().await?;
+        return match find(pool, blob.id).await? {
+            Some(blob) => Ok(Transition::Conflict(blob)),
+            None => Ok(Transition::Missing),
+        };
+    };
+
+    let now = Timestamp::now();
+    let kinds: &[JobKind] = if updated.state == BlobState::Ready {
+        &[JobKind::Thumbnail, JobKind::Preview]
+    } else {
+        &[JobKind::Scan]
+    };
+    for kind in kinds {
+        jobs::enqueue(&mut *tx, *kind, Some(blob.id), serde_json::json!({}), now).await?;
+    }
+    if let Some(old) = &blob.storage_key {
+        jobs::enqueue(
+            &mut *tx,
+            JobKind::Purge,
+            None,
+            serde_json::json!({ "blob_id": blob.id, "storage_key": old }),
+            now,
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(Transition::Done(updated))
+}
+
 /// Soft delete from any state, and enqueue a purge of the stored object.
 pub async fn soft_delete(pool: &PgPool, id: Uuid) -> sqlx::Result<Transition> {
     let mut tx = pool.begin().await?;

@@ -147,6 +147,12 @@ impl Base64Secret {
     }
 }
 
+impl From<String> for Base64Secret {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
 impl std::fmt::Debug for Base64Secret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Base64Secret(…)")
