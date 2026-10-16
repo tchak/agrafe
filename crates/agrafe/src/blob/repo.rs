@@ -7,7 +7,9 @@ use sqlx::{PgConnection, PgExecutor, PgPool, Postgres, QueryBuilder};
 use uuid::Uuid;
 
 use super::create::NewBlob;
-use super::{Blob, BlobState, ScanOutcome, ScanState};
+use super::{
+    Blob, BlobState, PreviewSource, Representation, RepresentationState, ScanOutcome, ScanState,
+};
 use crate::clamav::Verdict;
 use crate::classify::Category;
 use crate::jobs::{self, JobKind};
@@ -292,4 +294,71 @@ pub async fn soft_delete(pool: &PgPool, id: Uuid, purge_at: Timestamp) -> sqlx::
     }
     tx.commit().await?;
     Ok(result)
+}
+
+/// Record the outcome of rendering `kind` for `id`, along with the variant
+/// version it was built with. Blob state is untouched: the representation
+/// is written even if the blob was deleted meanwhile, and the purge takes
+/// it with the rest of the prefix.
+pub async fn finish_representation(
+    exec: impl PgExecutor<'_>,
+    id: Uuid,
+    kind: Representation,
+    state: RepresentationState,
+    source: Option<PreviewSource>,
+    version: i32,
+) -> sqlx::Result<()> {
+    let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("UPDATE blobs SET ");
+    qb.push(kind.state_column())
+        .push(" = ")
+        .push_bind(state.as_str())
+        .push(", ")
+        .push(kind.version_column())
+        .push(" = ")
+        .push_bind(version);
+    if kind == Representation::Preview {
+        qb.push(", preview_source = ")
+            .push_bind(source.map(PreviewSource::as_str));
+    }
+    qb.push(" WHERE id = ").push_bind(id);
+    qb.build().execute(exec).await?;
+    Ok(())
+}
+
+/// Ask for `kind` to be (re)generated: the representation goes back to
+/// `pending` and a job is enqueued, if the blob is still `ready`. The
+/// lazy path of the `GET` handler, for a missing object or a stale variant
+/// version.
+pub async fn request_representation(
+    pool: &PgPool,
+    id: Uuid,
+    kind: Representation,
+) -> sqlx::Result<bool> {
+    let mut tx = pool.begin().await?;
+    let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("UPDATE blobs SET ");
+    qb.push(kind.state_column())
+        .push(" = ")
+        .push_bind(RepresentationState::Pending.as_str())
+        .push(" WHERE id = ")
+        .push_bind(id)
+        .push(" AND state = ")
+        .push_bind(BlobState::Ready.as_str());
+    if qb.build().execute(&mut *tx).await?.rows_affected() == 0 {
+        tx.rollback().await?;
+        return Ok(false);
+    }
+    let job = match kind {
+        Representation::Thumbnail => JobKind::Thumbnail,
+        Representation::Preview => JobKind::Preview,
+    };
+    jobs::enqueue(
+        &mut *tx,
+        job,
+        Some(id),
+        serde_json::json!({}),
+        Timestamp::now(),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(true)
 }

@@ -82,7 +82,10 @@ pub async fn serve(
     );
     h.insert(
         header::CONTENT_DISPOSITION,
-        content_disposition(&query, &blob.filename)?,
+        content_disposition(
+            query.disposition.as_deref(),
+            query.filename.as_deref().unwrap_or(&blob.filename),
+        )?,
     );
     h.insert(
         header::X_CONTENT_TYPE_OPTIONS,
@@ -253,9 +256,8 @@ pub(crate) fn disposition_kind(value: Option<&str>) -> Result<&'static str, Stri
 }
 
 /// RFC 6266: an ASCII fallback plus the UTF-8 name.
-fn content_disposition(query: &OriginalQuery, filename: &str) -> ApiResult<HeaderValue> {
-    let kind = disposition_kind(query.disposition.as_deref()).map_err(ApiError::BadRequest)?;
-    let name = query.filename.as_deref().unwrap_or(filename);
+pub(crate) fn content_disposition(disposition: Option<&str>, name: &str) -> ApiResult<HeaderValue> {
+    let kind = disposition_kind(disposition).map_err(ApiError::BadRequest)?;
     let fallback: String = name
         .chars()
         .map(|c| {
@@ -304,25 +306,13 @@ mod tests {
 
     #[test]
     fn disposition_header() {
-        let q = OriginalQuery {
-            disposition: Some("attachment".into()),
-            filename: None,
-        };
         assert_eq!(
-            content_disposition(&q, "été \"x\".pdf").unwrap(),
+            content_disposition(Some("attachment"), "été \"x\".pdf").unwrap(),
             "attachment; filename=\"_t_ _x_.pdf\"; filename*=UTF-8''%C3%A9t%C3%A9%20%22x%22%2Epdf"
         );
-        let q = OriginalQuery {
-            disposition: Some("other".into()),
-            filename: None,
-        };
-        assert!(content_disposition(&q, "a").is_err());
-        let q = OriginalQuery {
-            disposition: None,
-            filename: Some("renamed.pdf".into()),
-        };
+        assert!(content_disposition(Some("other"), "a").is_err());
         assert_eq!(
-            content_disposition(&q, "a.pdf").unwrap(),
+            content_disposition(None, "renamed.pdf").unwrap(),
             "inline; filename=\"renamed.pdf\"; filename*=UTF-8''renamed%2Epdf"
         );
     }

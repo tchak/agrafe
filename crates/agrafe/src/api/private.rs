@@ -17,11 +17,12 @@ use super::body;
 use super::extract::{Json, Path, Query};
 use super::json::{BlobResponse, ListResponse};
 use super::original::{self, OriginalQuery};
+use super::representation::{self, Port, RepresentationQuery};
 use super::urls::{self, MintOptions};
 use crate::app::AppState;
 use crate::blob::create::{self, CreateBlobRequest};
 use crate::blob::repo::{self, ListParams, Transition};
-use crate::blob::{BlobState, ScanState};
+use crate::blob::{BlobState, Representation, ScanState};
 use crate::classify::Category;
 use crate::error::{ApiError, ApiResult};
 use crate::upload;
@@ -41,8 +42,8 @@ pub fn routes(body_limit: usize) -> Router<AppState> {
         )
         .route("/blobs/{id}/urls", post(mint_urls))
         .route("/blobs/{id}/original/{filename}", get(get_original))
-        .route("/blobs/{id}/preview/{filename}", get(not_implemented))
-        .route("/blobs/{id}/thumbnail/{filename}", get(not_implemented))
+        .route("/blobs/{id}/preview/{filename}", get(get_preview))
+        .route("/blobs/{id}/thumbnail/{filename}", get(get_thumbnail))
 }
 
 async fn create_blob(
@@ -201,6 +202,65 @@ async fn get_original(
     original::serve(&state, blob, &filename, query, &method, &headers).await
 }
 
-async fn not_implemented() -> ApiError {
-    ApiError::NotImplemented
+async fn get_preview(
+    State(state): State<AppState>,
+    Path((id, filename)): Path<(Uuid, String)>,
+    Query(query): Query<RepresentationQuery>,
+    method: Method,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    get_representation(
+        state,
+        id,
+        Representation::Preview,
+        filename,
+        query,
+        method,
+        headers,
+    )
+    .await
+}
+
+async fn get_thumbnail(
+    State(state): State<AppState>,
+    Path((id, filename)): Path<(Uuid, String)>,
+    Query(query): Query<RepresentationQuery>,
+    method: Method,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    get_representation(
+        state,
+        id,
+        Representation::Thumbnail,
+        filename,
+        query,
+        method,
+        headers,
+    )
+    .await
+}
+
+async fn get_representation(
+    state: AppState,
+    id: Uuid,
+    kind: Representation,
+    filename: String,
+    query: RepresentationQuery,
+    method: Method,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    let blob = repo::find(state.pool(), id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    representation::serve(
+        &state,
+        blob,
+        kind,
+        &filename,
+        query,
+        &method,
+        &headers,
+        Port::Private,
+    )
+    .await
 }

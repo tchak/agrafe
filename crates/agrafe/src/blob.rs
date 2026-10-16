@@ -3,6 +3,7 @@
 pub mod create;
 pub mod read;
 pub mod repo;
+pub mod representation;
 
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -136,6 +137,57 @@ crate::str_enum!(RepresentationState {
     Unavailable => "unavailable",
 });
 
+/// The two derived representations of a blob.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Representation {
+    Thumbnail,
+    Preview,
+}
+
+crate::str_enum!(Representation {
+    Thumbnail => "thumbnail",
+    Preview => "preview",
+});
+
+impl Representation {
+    /// Object key of the representation, under the blob's prefix.
+    pub fn object_key(self, blob_id: Uuid) -> String {
+        format!("{blob_id}/{self}")
+    }
+
+    /// The `blobs` column holding its state. Code-owned names, safe to
+    /// splice into SQL.
+    pub fn state_column(self) -> &'static str {
+        match self {
+            Representation::Thumbnail => "thumbnail_state",
+            Representation::Preview => "preview_state",
+        }
+    }
+
+    pub fn version_column(self) -> &'static str {
+        match self {
+            Representation::Thumbnail => "thumbnail_variant_version",
+            Representation::Preview => "preview_variant_version",
+        }
+    }
+}
+
+/// What a preview was rendered from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreviewSource {
+    Image,
+    EmbeddedImage,
+    FirstPage,
+}
+
+crate::str_enum!(PreviewSource {
+    Image => "image",
+    EmbeddedImage => "embedded_image",
+    FirstPage => "first_page",
+});
+
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Blob {
     pub id: Uuid,
@@ -216,6 +268,20 @@ impl Blob {
     /// Representations may be served only from `ready`.
     pub fn is_readable(&self, now: Timestamp) -> bool {
         self.state_at(now) == BlobState::Ready
+    }
+
+    pub fn representation_state(&self, kind: Representation) -> RepresentationState {
+        match kind {
+            Representation::Thumbnail => self.thumbnail_state,
+            Representation::Preview => self.preview_state,
+        }
+    }
+
+    pub fn representation_version(&self, kind: Representation) -> Option<i32> {
+        match kind {
+            Representation::Thumbnail => self.thumbnail_variant_version,
+            Representation::Preview => self.preview_variant_version,
+        }
     }
 
     /// Blobs are write-once: a `PUT` may start only before any bytes exist.

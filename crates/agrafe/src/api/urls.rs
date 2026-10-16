@@ -8,6 +8,7 @@ use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::Serialize;
 
 use super::original;
+use super::representation;
 use crate::app::AppState;
 use crate::blob::Blob;
 use crate::blob::create;
@@ -62,9 +63,12 @@ pub fn validate_query(query: &BTreeMap<String, String>) -> Result<(), ApiError> 
                 create::validate_filename(value)
                     .map_err(|e| ApiError::Unprocessable(format!("query filename: {e}")))?;
             }
+            "wait" => {
+                representation::validate_wait(value).map_err(ApiError::Unprocessable)?;
+            }
             other => {
                 return Err(ApiError::Unprocessable(format!(
-                    "unknown query parameter `{other}`; allowed: disposition, filename"
+                    "unknown query parameter `{other}`; allowed: disposition, filename, wait"
                 )));
             }
         }

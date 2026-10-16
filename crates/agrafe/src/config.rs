@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use bytesize::ByteSize;
@@ -324,10 +324,32 @@ pub struct MediaConfig {
     pub preview: PreviewConfig,
     #[serde(default)]
     pub embedded_image: EmbeddedImageConfig,
+    /// The libvips command line tool, run as a sandboxed subprocess.
+    #[serde(default = "default_vips_command")]
+    pub vips_command: String,
+    /// The agrafe binary the workers re-execute for embedded image
+    /// extraction. Defaults to the running executable.
+    #[serde(default)]
+    pub agrafe_command: Option<PathBuf>,
+    /// Originals above this size get no representations.
+    #[serde(default = "default_max_source_size")]
+    pub max_source_size: ByteSize,
+    /// Where the workers unpack originals while rendering; the system
+    /// temporary directory by default.
+    #[serde(default)]
+    pub tmp_dir: Option<PathBuf>,
+    #[serde(default)]
+    pub sandbox: SandboxConfig,
 }
 
 fn default_variant_version() -> i32 {
     1
+}
+fn default_vips_command() -> String {
+    "vips".to_string()
+}
+fn default_max_source_size() -> ByteSize {
+    ByteSize::mib(512)
 }
 
 impl Default for MediaConfig {
@@ -337,6 +359,45 @@ impl Default for MediaConfig {
             thumbnail: ThumbnailConfig::default(),
             preview: PreviewConfig::default(),
             embedded_image: EmbeddedImageConfig::default(),
+            vips_command: default_vips_command(),
+            agrafe_command: None,
+            max_source_size: default_max_source_size(),
+            tmp_dir: None,
+            sandbox: SandboxConfig::default(),
+        }
+    }
+}
+
+/// Limits on the subprocesses that decode and render user files.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SandboxConfig {
+    /// Wall-clock limit; the process is killed past it.
+    #[serde(with = "humantime_serde", default = "default_sandbox_timeout")]
+    pub timeout: Duration,
+    /// Address space limit (`RLIMIT_AS`).
+    #[serde(default = "default_sandbox_memory")]
+    pub memory: ByteSize,
+    /// Largest file the process may write (`RLIMIT_FSIZE`).
+    #[serde(default = "default_sandbox_max_output_size")]
+    pub max_output_size: ByteSize,
+}
+
+fn default_sandbox_timeout() -> Duration {
+    Duration::from_secs(60)
+}
+fn default_sandbox_memory() -> ByteSize {
+    ByteSize::gib(1)
+}
+fn default_sandbox_max_output_size() -> ByteSize {
+    ByteSize::mib(256)
+}
+
+impl Default for SandboxConfig {
+    fn default() -> Self {
+        Self {
+            timeout: default_sandbox_timeout(),
+            memory: default_sandbox_memory(),
+            max_output_size: default_sandbox_max_output_size(),
         }
     }
 }

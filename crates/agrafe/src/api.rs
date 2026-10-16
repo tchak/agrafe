@@ -7,6 +7,7 @@ pub mod json;
 pub mod original;
 pub mod private;
 pub mod public;
+pub mod representation;
 pub mod signed;
 pub mod urls;
 

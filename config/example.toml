@@ -100,6 +100,25 @@ max_inline_scans = 4
 [media]
 # Bump to regenerate every derived representation on next request.
 variant_version = 1
+# The libvips command line tool, run as a sandboxed subprocess for every
+# render. Debian: libvips-tools; macOS: brew install vips. A build with
+# pdfium renders PDFs more safely than one with poppler.
+vips_command = "vips"
+# The agrafe binary re-executed, sandboxed, to pull embedded images out of
+# PDF and office files. Defaults to the running executable.
+# agrafe_command = "/usr/local/bin/agrafe"
+# Originals above this size get an icon and no preview.
+max_source_size = "512 MiB"
+# Where originals are unpacked while rendering; the system temporary
+# directory by default.
+# tmp_dir = "/var/tmp/agrafe"
+
+[media.sandbox]
+# Limits on each rendering or extraction subprocess. The memory limit is an
+# address space limit, enforced on Linux only.
+timeout = "60s"
+memory = "1 GiB"
+max_output_size = "256 MiB"
 
 [media.thumbnail]
 width = 256

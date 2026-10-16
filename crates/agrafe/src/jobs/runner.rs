@@ -14,11 +14,11 @@ use tokio::task::JoinSet;
 use tracing::Instrument as _;
 use uuid::Uuid;
 
-use super::{Failure, Job, JobError, JobKind, scan};
+use super::{Failure, Job, JobError, JobKind, render, scan};
 use crate::app::AppState;
 
 /// Kinds this binary knows how to run. Others wait in the table.
-pub const HANDLED: &[JobKind] = &[JobKind::Scan];
+pub const HANDLED: &[JobKind] = &[JobKind::Scan, JobKind::Thumbnail, JobKind::Preview];
 
 /// Pause after a listener error before asking Postgres again.
 const LISTEN_RETRY: Duration = Duration::from_secs(1);
@@ -128,6 +128,7 @@ async fn run_claimed(state: &AppState, job: &Job, worker: &str) -> sqlx::Result<
 async fn handle(state: &AppState, job: &Job) -> Result<(), JobError> {
     match job.kind {
         JobKind::Scan => scan::run(state, job).await,
+        JobKind::Thumbnail | JobKind::Preview => render::run(state, job).await,
         other => Err(JobError::Unhandled(other)),
     }
 }

@@ -2,6 +2,7 @@
 //! `FOR UPDATE SKIP LOCKED` and woken by `NOTIFY`. The workers live in
 //! `runner`, the handlers in their own modules.
 
+pub mod render;
 pub mod runner;
 pub mod scan;
 
@@ -28,6 +29,14 @@ pub enum JobError {
     Read(#[from] crate::blob::read::ReadError),
     #[error(transparent)]
     Clamd(#[from] crate::clamav::Error),
+    #[error("temporary files: {0}")]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Render(#[from] crate::media::render::Error),
+    #[error(transparent)]
+    Sandbox(#[from] crate::media::sandbox::Error),
+    #[error(transparent)]
+    Representation(#[from] crate::blob::representation::Error),
 }
 
 /// Channel every enqueue notifies; the payload is the job kind.

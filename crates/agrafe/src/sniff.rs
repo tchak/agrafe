@@ -33,7 +33,7 @@ pub fn compatible(declared: &str, sniffed: &str) -> bool {
 }
 
 /// Collapse aliases onto one spelling.
-fn canonical(mime: &str) -> &str {
+pub(crate) fn canonical(mime: &str) -> &str {
     match mime {
         "image/jpg" | "image/pjpeg" => "image/jpeg",
         "image/heic" | "image/heic-sequence" | "image/heif-sequence" => "image/heif",

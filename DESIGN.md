@@ -411,15 +411,54 @@ be uploaded through the public port.
 ## Derived representations
 
 Generated **eagerly on upload** by workers, not lazily on first request. The
-read path stays a plain read, the transcoder runs only in a sandboxed worker,
-listing pages with many thumbnails do not stampede, and the common "upload then
-show it" flow gets its thumbnail within seconds.
+read path stays a plain read, the renderer runs only in a sandboxed
+subprocess, listing pages with many thumbnails do not stampede, and the
+common "upload then show it" flow gets its thumbnail within seconds.
 
-A lazy path exists only for repair: if the object is missing, the `GET` handler
-enqueues a generation job (if none is pending) and serves the placeholder. Each
-representation records the variant version it was built with
-(`thumbnail_variant_version`, `preview_variant_version`); bumping the
-version in config regenerates everything on demand through this path.
+A lazy path exists only for repair: if the object is missing, or the stored
+representation was built with another `media.variant_version`, the `GET`
+handler sets it back to `pending`, enqueues a generation job (deduplicated
+with any pending one) and serves the placeholder. Bumping the version in
+config therefore regenerates everything on demand, `failed` and
+`unavailable` ones included, since a new renderer may do better. Each
+representation records the version it was built with
+(`thumbnail_variant_version`, `preview_variant_version`).
+
+### Rendering
+
+Everything goes through one operation, `vips thumbnail`, run as a subprocess
+(see "Sandboxing"): shrink-on-load where the format allows it, EXIF
+orientation applied, colour converted to sRGB, every piece of metadata
+dropped, lossy WebP out. The image is scaled to fit the box, never cropped
+and never enlarged: a small image stays small. `--fail-on error` makes a
+truncated or malformed file a rejection rather than a partial render.
+
+Only files with a known source are attempted:
+
+- image types libvips loads natively: JPEG, PNG, GIF, WebP, TIFF, HEIF/AVIF,
+  SVG, BMP, JPEG 2000. Everything else under `image/*` would go through
+  ImageMagick, more attack surface than it is worth, and gets the icon;
+- PDF, DOCX and ODT, through the sources below;
+- originals at most `media.max_source_size` (default 512 MiB).
+
+A file the renderer rejects, or that runs past the sandbox timeout, leaves
+the representation `failed` and the job done: the same bytes would fail the
+same way tomorrow. Only failures of ours (object store, database, the
+renderer missing) fail the job, which retries with backoff and leaves the
+representation `pending` meanwhile.
+
+Representations live at `<blob id>/thumbnail` and `<blob id>/preview`,
+encrypted with the blob's own data key: the streaming AEAD derives a fresh
+subkey per stream from a random salt, so one key safely covers the three
+objects, and the object key is the associated data as for the original.
+They are small and served whole, with a strong `ETag` of the content and
+`Cache-Control: private, max-age=86400`: not `immutable`, since a version
+bump changes them under the same URL.
+
+Every representation response carries `X-Representation-State`, so a
+client can tell a placeholder from the final answer, and `wait=<ms>` in the
+signed query (at most 30 s) holds the request until the representation
+is no longer pending, for the "upload then show it" flow.
 
 ### Original
 
@@ -430,7 +469,7 @@ requests are honoured with `206`; multiple ranges, and a `Range` whose
 SHA-256 of the content. Originals are served `private, immutable` for a year:
 the bytes behind a URL never change, and the URL's own expiry bounds how long
 it works. Thumbnails and previews are the exception, since they change under
-the same URL once rendered (see below).
+the same URL once rendered (see above).
 
 Every original carries `X-Content-Type-Options: nosniff` and
 `Content-Security-Policy: sandbox`: user content is served from this origin,
@@ -440,11 +479,22 @@ parameters `disposition` (`inline`, the default, or `attachment`) and
 
 ### Thumbnail
 
-Always exists. WebP, autorotated from EXIF, fixed box in config. For files that
-cannot be rendered, a pre-rendered category icon with a type badge, built at
-compile time, served with the same URL shape. While pending, the icon is served
-with `Cache-Control: no-store` and `X-Representation-State: pending`. Never
-`404` or `202`, because the consumer is an `<img>` tag.
+Always exists. WebP, autorotated from EXIF, fitted into the
+`media.thumbnail` box. For files that cannot be rendered, a pre-rendered
+category icon with a type badge, served with the same URL shape. The icons
+are rendered from `crates/agrafe/assets/icons/icon.svg` by
+`scripts/icons.sh` and embedded in the binary, so serving one needs no
+renderer and no asset directory.
+
+| Blob | Thumbnail | Served | `Cache-Control` |
+|---|---|---|---|
+| `ready` | `ready` | the WebP | `private, max-age=86400` |
+| `ready` | `pending` | icon, `X-Representation-State: pending` | `no-store` |
+| `ready` | `failed`, `unavailable` | icon, state in the header | `private, max-age=86400` |
+| not yet `ready` | any | icon, `pending` | `no-store` |
+| terminal | any | icon, `unavailable` (private port; public is `404`) | `private, max-age=86400` |
+
+Never `404` or `202`, because the consumer is an `<img>` tag.
 
 ### Preview
 
@@ -456,26 +506,47 @@ reach a client.
 Preview exists for every file we can render, not only images. The UI must key
 on "has preview", never on category. Sources, in order:
 
-1. **Images**: decode and transcode.
-2. **Embedded image extraction**: a one-page PDF whose single image XObject
-   covers most of the page with little text, or a DOCX/ODT whose body is almost
-   empty with exactly one media file. The embedded image is pulled out at full
-   resolution and goes through the image pipeline. `preview_source` is set to
-   `embedded_image`. Thresholds live in config. This addresses users who answer
-   "send a screenshot" with a Word file containing a screenshot.
-3. **First-page render**: PDF through pdfium (`pdfium-render`), which is the
-   most hardened renderer available. Office formats would need LibreOffice
-   headless, which is deferred until real need; until then they fall back to
-   the icon.
+1. **Images**: decode and transcode. `preview_source = image`.
+2. **Embedded image extraction** (`preview_source = embedded_image`): a
+   one-page PDF whose single image XObject covers at least
+   `media.embedded_image.min_coverage` of the page, drawn upright, with at
+   most `max_text_chars` of text; or a DOCX/ODT with exactly one media file
+   (under `word/media/` or `Pictures/`) that is a raster image, and at
+   most `max_text_chars` of non-whitespace text in the body. The embedded
+   image is pulled out at full resolution and goes through the image
+   pipeline: JPEG and JPEG 2000 streams as they are, raw 8 or 16 bit grey
+   or RGB samples as PNM. Anything doubtful (form XObjects, rotation,
+   masks, exotic colour spaces, EMF) is left to the next source. This
+   addresses users who answer "send a screenshot" with a Word file
+   containing a screenshot. The parsing runs in the `agrafe extract`
+   helper, a hidden subcommand of the binary executed in the sandbox,
+   never in a server process.
+3. **First-page render** (`preview_source = first_page`): PDF through
+   libvips's PDF loader. libvips builds against either poppler or pdfium;
+   production images should use pdfium, the most hardened renderer
+   available. Linking `pdfium-render` directly was considered and dropped:
+   it would add a second native dependency and a second sandboxed
+   pipeline for what the one tool already does. Office formats would need
+   LibreOffice headless, which is deferred until real need; until then
+   they fall back to the icon.
 
-Files with no source return `404` from the preview endpoint and
-`preview_state = unavailable`.
+Files with no source answer `404` from the preview endpoint, with
+`preview_state = unavailable`; so do `pending` and `failed` ones, each with
+its state in `X-Representation-State` and a message saying why. A blob that
+is not `ready` answers `409` as the original does.
 
 ### Sandboxing
 
-Decoders and renderers are the most attackable code in the service. They run in
-a subprocess with memory and wall-clock limits, never in the API process. Image
-decoding uses libvips for format breadth.
+Decoders and renderers are the most attackable code in the service. They run
+in a subprocess, never in the API process: `vips` for rendering, the binary's
+own `extract` subcommand for container parsing. Each child gets a clean
+environment (`PATH` and `HOME` only, no secrets), `setrlimit` bounds on
+address space and data (`media.sandbox.memory`, default 1 GiB), CPU time and
+output file size (`max_output_size`), no core dumps, and is killed at the
+wall-clock limit (`media.sandbox.timeout`, default 60 s). The address space
+limit is enforced by Linux and ignored by macOS, so development machines get
+only the timeout. A crash, a decoder bomb or an infinite loop costs one job
+attempt, not the process.
 
 ## Jobs
 
@@ -509,7 +580,8 @@ travels with the commit. One listener per process wakes the pollers of that
 kind; `jobs.poll_interval` is the fallback for a missed wakeup. Concurrency is
 per kind in `jobs.concurrency` (defaults: `scan` 4, `thumbnail` 2, `preview`
 2, `purge` 4, `reap` 1): rendering is CPU bound, scanning waits on clamd.
-Only `scan` has a handler so far; rows of other kinds wait in the table.
+`scan`, `thumbnail` and `preview` have handlers; `purge` and `reap` rows
+wait in the table.
 
 The binary takes `--role api|worker|all` so workers can move to separate
 machines without code changes. If volume ever outgrows Postgres polling, the
@@ -535,8 +607,8 @@ is redacted so a dumped config cannot leak them. See `config/example.toml`.
 | Encryption | `aes-gcm` + `hkdf`, Tink streaming format, own crate (`agrafe-crypto`) |
 | Sniffing | `infer` |
 | Scanning | clamd `INSTREAM` client |
-| Images | libvips subprocess, `image` for pure-Rust cases |
-| PDF | `pdfium-render` |
+| Images, PDF pages | `vips thumbnail` (libvips) in a sandboxed subprocess |
+| Embedded images | `lopdf`, `zip`, `quick-xml` in the sandboxed `extract` helper |
 | Ids | UUID v7 |
 | Time | `jiff`. `Timestamp` throughout the model; `jiff-sqlx` wrappers only at the SQL boundary |
 
@@ -548,6 +620,6 @@ is redacted so a dumped config cannot leak them. See `config/example.toml`.
    encryption, bucket write. Streaming `GET /original` with ranges.
 3. Job runner. ClamAV scanning inline and deferred.
 4. Thumbnail and preview workers, icon fallback, autorotate, PDF render,
-   embedded image extraction. **← current**
-5. Expiration, reaper, purge.
+   embedded image extraction.
+5. Expiration, reaper, purge. **← current**
 6. `rows` to CSV/XLSX/ODS, then `archive` to ZIP.

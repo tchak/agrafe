@@ -21,6 +21,9 @@ pub enum ApiError {
     Infected(Option<String>),
     #[error("not found")]
     NotFound,
+    /// `404` with a reason: the thing exists but not in this form.
+    #[error("{0}")]
+    Missing(String),
     #[error("method not allowed")]
     MethodNotAllowed,
     #[error("{0}")]
@@ -61,7 +64,7 @@ impl ApiError {
             ApiError::UnsupportedMediaType(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             ApiError::Unprocessable(_) => StatusCode::UNPROCESSABLE_ENTITY,
             ApiError::Infected(_) => StatusCode::UNPROCESSABLE_ENTITY,
-            ApiError::NotFound => StatusCode::NOT_FOUND,
+            ApiError::NotFound | ApiError::Missing(_) => StatusCode::NOT_FOUND,
             ApiError::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
             ApiError::Conflict(_) => StatusCode::CONFLICT,
             ApiError::Forbidden(_) => StatusCode::FORBIDDEN,
@@ -78,7 +81,7 @@ impl ApiError {
             ApiError::UnsupportedMediaType(_) => "unsupported_media_type",
             ApiError::Unprocessable(_) => "unprocessable",
             ApiError::Infected(_) => "infected",
-            ApiError::NotFound => "not_found",
+            ApiError::NotFound | ApiError::Missing(_) => "not_found",
             ApiError::MethodNotAllowed => "method_not_allowed",
             ApiError::Conflict(_) => "conflict",
             ApiError::Forbidden(_) => "forbidden",

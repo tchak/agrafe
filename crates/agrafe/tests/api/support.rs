@@ -205,6 +205,10 @@ pub async fn setup_tuned(clamd: SocketAddr, tune: impl FnOnce(&mut Config)) -> T
     // From the string alone: `AGRAFE_` variables in the environment must not
     // change what the tests run against.
     let mut config: Config = Figment::from(Toml::string(&toml)).extract().unwrap();
+    // The extraction helper is this crate's binary, which cargo builds for
+    // integration tests; previews are kept small to keep the fixtures small.
+    config.media.agrafe_command = Some(env!("CARGO_BIN_EXE_agrafe").into());
+    config.media.preview.max_dimension = 400;
     tune(&mut config);
 
     let pool = db::connect(&config.database).await.unwrap();
@@ -517,7 +521,57 @@ pub async fn get_blob(app: &TestApp, id: &str) -> Value {
 }
 
 pub async fn run_scan_job(app: &TestApp) -> bool {
-    agrafe::jobs::runner::run_one(&app.state, agrafe::jobs::JobKind::Scan, "test")
+    run_job(app, agrafe::jobs::JobKind::Scan).await
+}
+
+/// Run one job of `kind`, returning whether there was one.
+pub async fn run_job(app: &TestApp, kind: agrafe::jobs::JobKind) -> bool {
+    agrafe::jobs::runner::run_one(&app.state, kind, "test")
         .await
         .unwrap()
+}
+
+/// A file from `tests/fixtures`, built by `make.py` there.
+pub fn fixture(name: &str) -> Vec<u8> {
+    let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
+    std::fs::read(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
+}
+
+/// Upload `bytes` as a ready blob named `filename` and return its metadata.
+pub async fn ready_file(app: &TestApp, filename: &str, content_type: &str, bytes: &[u8]) -> Value {
+    let mut blob = blob_for(bytes, content_type, "raw");
+    blob["filename"] = json!(filename);
+    blob["skip_virus_scan"] = json!(true);
+    let created = create(app, blob).await;
+    let id = id_of(&created);
+    let (status, body) = put_private(app, id, bytes.to_vec()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body
+}
+
+/// Width and height of a WebP, from its container header.
+pub fn webp_size(bytes: &[u8]) -> (u32, u32) {
+    assert_eq!(&bytes[..4], b"RIFF");
+    assert_eq!(&bytes[8..12], b"WEBP");
+    match &bytes[12..16] {
+        b"VP8 " => {
+            assert_eq!(&bytes[23..26], &[0x9d, 0x01, 0x2a], "VP8 key frame");
+            let w = u16::from_le_bytes([bytes[26], bytes[27]]) & 0x3fff;
+            let h = u16::from_le_bytes([bytes[28], bytes[29]]) & 0x3fff;
+            (u32::from(w), u32::from(h))
+        }
+        b"VP8L" => {
+            assert_eq!(bytes[20], 0x2f, "VP8L signature");
+            let b: Vec<u32> = bytes[21..25].iter().map(|b| u32::from(*b)).collect();
+            let w = (b[0] | ((b[1] & 0x3f) << 8)) + 1;
+            let h = ((b[1] >> 6) | (b[2] << 2) | ((b[3] & 0x0f) << 10)) + 1;
+            (w, h)
+        }
+        b"VP8X" => {
+            let w = u32::from_le_bytes([bytes[24], bytes[25], bytes[26], 0]) + 1;
+            let h = u32::from_le_bytes([bytes[27], bytes[28], bytes[29], 0]) + 1;
+            (w, h)
+        }
+        other => panic!("unknown WebP chunk {other:?}"),
+    }
 }

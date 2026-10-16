@@ -26,8 +26,11 @@ squash, bookmarks and pushing. `jj st`, `jj diff`, `jj log`, `jj describe -m`,
 - `cargo run -- --config config/agrafe.toml migrate`, then
   `cargo run -- --config config/agrafe.toml serve`.
 - Tests need a `agrafe_test` database reachable as the current OS user, or
-  `DATABASE_URL`. Run `cargo test`, `cargo clippy --all-targets`, `cargo fmt`
-  before committing.
+  `DATABASE_URL`, and `vips` on the `PATH` (`brew install vips`). Run
+  `cargo test`, `cargo clippy --all-targets`, `cargo fmt` before committing.
+- Test fixtures come from `crates/agrafe/tests/fixtures/make.py` (Pillow),
+  the thumbnail icons from `scripts/icons.sh`; regenerate rather than edit
+  the outputs.
 - `cargo coverage` (an alias in `.cargo/config.toml`, needs cargo-llvm-cov)
   reports line coverage; add `--show-missing-lines` to see what is uncovered.
 
@@ -40,6 +43,8 @@ squash, bookmarks and pushing. `jj st`, `jj diff`, `jj log`, `jj describe -m`,
 - Blob state transitions are conditional `UPDATE ... WHERE state = $from`.
   Never set `state` unconditionally.
 - Public routes verify the signature before touching the database.
+- Nothing decodes or renders user files in-process: `vips` and the
+  `agrafe extract` helper run through `media::sandbox`.
 - Errors are `thiserror` enums, one per module that fails in its own way
   (`ConfigError`, `ReadError`, `JobError`, …). No `anyhow`. Messages inline
   their cause (`"reading the object: {0}"`), so log them with `%err`.

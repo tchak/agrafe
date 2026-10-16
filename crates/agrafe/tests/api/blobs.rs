@@ -303,7 +303,9 @@ async fn mint_urls_with_options() {
         (json!({"disposition": "weird"}), "disposition"),
         (json!({"filename": "a/b.pdf"}), "filename"),
         (json!({"filename": ""}), "filename"),
-        (json!({"wait": "500"}), "unknown query parameter `wait`"),
+        (json!({"wait": "soon"}), "wait"),
+        (json!({"wait": "60000"}), "wait"),
+        (json!({"ttl": "500"}), "unknown query parameter `ttl`"),
     ] {
         let (status, body) = call(
             &app.private,
@@ -376,22 +378,6 @@ async fn permanent_urls_when_allowed() {
             .contains("mutually exclusive"),
         "{body}"
     );
-}
-
-#[tokio::test]
-async fn representations_are_not_implemented_yet() {
-    let app = setup().await;
-    let blob = ready_blob(&app, &png_bytes(1500)).await;
-    let id = id_of(&blob);
-    for kind in ["preview", "thumbnail"] {
-        let url = public_path(blob["urls"][kind].as_str().unwrap());
-        let (status, body) = call(&app.public, req(Method::GET, &url)).await;
-        assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{kind}: {body}");
-        assert_eq!(body["error"]["code"], "not_implemented");
-        let uri = format!("/blobs/{id}/{kind}/photo.png");
-        let (status, _) = call(&app.private, req(Method::GET, &uri)).await;
-        assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{kind}");
-    }
 }
 
 #[tokio::test]

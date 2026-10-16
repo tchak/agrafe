@@ -12,10 +12,11 @@ use super::body;
 use super::extract::{Json, Path, Query};
 use super::json::PublicBlobResponse;
 use super::original::{self, OriginalQuery};
+use super::representation::{self, Port, RepresentationQuery};
 use super::signed::Signed;
 use crate::app::AppState;
-use crate::blob::Blob;
 use crate::blob::repo;
+use crate::blob::{Blob, Representation};
 use crate::error::{ApiError, ApiResult};
 use crate::upload;
 
@@ -31,13 +32,10 @@ pub fn routes(body_limit: usize) -> Router<AppState> {
                 .layer(DefaultBodyLimit::max(body_limit)),
         )
         .route("/blobs/{token}/{id}/original/{filename}", get(get_original))
-        .route(
-            "/blobs/{token}/{id}/preview/{filename}",
-            get(not_implemented),
-        )
+        .route("/blobs/{token}/{id}/preview/{filename}", get(get_preview))
         .route(
             "/blobs/{token}/{id}/thumbnail/{filename}",
-            get(not_implemented),
+            get(get_thumbnail),
         )
 }
 
@@ -103,6 +101,46 @@ async fn find_visible(state: &AppState, id: Uuid) -> ApiResult<Blob> {
         .ok_or(ApiError::NotFound)
 }
 
-async fn not_implemented(_signed: Signed) -> ApiError {
-    ApiError::NotImplemented
+async fn get_preview(
+    _signed: Signed,
+    State(state): State<AppState>,
+    Path((_token, id, filename)): Path<(String, Uuid, String)>,
+    Query(query): Query<RepresentationQuery>,
+    method: Method,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    let blob = find_visible(&state, id).await?;
+    representation::serve(
+        &state,
+        blob,
+        Representation::Preview,
+        &filename,
+        query,
+        &method,
+        &headers,
+        Port::Public,
+    )
+    .await
+}
+
+async fn get_thumbnail(
+    _signed: Signed,
+    State(state): State<AppState>,
+    Path((_token, id, filename)): Path<(String, Uuid, String)>,
+    Query(query): Query<RepresentationQuery>,
+    method: Method,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    let blob = find_visible(&state, id).await?;
+    representation::serve(
+        &state,
+        blob,
+        Representation::Thumbnail,
+        &filename,
+        query,
+        &method,
+        &headers,
+        Port::Public,
+    )
+    .await
 }
