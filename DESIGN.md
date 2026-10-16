@@ -379,8 +379,22 @@ reply (the stream limit exceeded, for instance) is a job failure and the blob
 stays `uploaded`; once the job is out of attempts the blob is stuck there,
 unreadable, until it expires or is deleted. clamd closes the connection as
 soon as it has a verdict, so the client treats a failed write as "stop
-sending and read the reply", not as an error. A deferred scan is bounded by clamd's `StreamMaxLength`, which the
-workers' clamd must set above `upload.max_size`.
+sending and read the reply", not as an error.
+
+A verdict is only as good as the clamd behind it, and clamd's defaults are
+sized for mail, not for files of `upload.max_size`. Three limits matter:
+
+- `StreamMaxLength`: above it clamd hangs up with an `ERROR`, the scan fails
+  and the blob stays `uploaded`. Loud, so merely inconvenient.
+- `MaxScanSize` and `MaxFileSize`: above these clamd scans a prefix of the
+  file and still answers `OK`. Silent, so dangerous: a large file passes
+  without having been looked at.
+
+The clamd the workers talk to must set all three above `upload.max_size`,
+and `AlertExceedsMax yes` so that any limit hit anyway becomes a `FOUND`
+(`Heuristics.Limits.Exceeded.*`) rather than a pass. A file that cannot be
+scanned is treated as infected, never as clean. `MaxThreads` must stay above
+`jobs.concurrency.scan` plus `clamav.max_inline_scans`.
 
 Skipped only when the blob was created with `skip_virus_scan = true`, which is
 a statement by the backend about where the bytes come from. Such blobs cannot
