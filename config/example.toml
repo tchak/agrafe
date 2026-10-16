@@ -1,0 +1,104 @@
+# files — configuration reference.
+#
+# Every key can be overridden by an environment variable prefixed with FILES_
+# and nested with a double underscore: FILES_DATABASE__URL, FILES_SIGNING__CURRENT_KEY.
+# Secrets should come from the environment in production.
+
+[server]
+# Private interface: no signatures, trusted network only.
+private_addr = "127.0.0.1:8080"
+# Public interface: every URL is signed.
+public_addr = "127.0.0.1:8081"
+# Base used when minting public URLs. No trailing slash.
+public_base_url = "http://127.0.0.1:8081"
+# Which parts of the service this process runs: "api", "worker" or "all".
+# The --role flag on the command line takes precedence.
+role = "all"
+
+[database]
+url = "postgres://localhost/files_dev"
+max_connections = 10
+
+[storage]
+# "local" or "s3".
+backend = "local"
+
+[storage.local]
+path = "./data"
+
+# [storage.s3]
+# bucket = "files"
+# region = "fr-par"
+# endpoint = "https://s3.fr-par.scw.cloud"
+# access_key_id = ""        # prefer FILES_STORAGE__S3__ACCESS_KEY_ID
+# secret_access_key = ""    # prefer FILES_STORAGE__S3__SECRET_ACCESS_KEY
+
+[signing]
+# Key used to mint new tokens. All keys in [signing.keys] remain valid for
+# verification, which is what makes rotation possible.
+current_key = "k1"
+# Mint expiries are rounded up to the next window boundary before the TTL is
+# added, so URLs minted inside one window are identical and cacheable.
+window = "1h"
+# Allow tokens with expires = 0 (never expire).
+allow_permanent = false
+
+[signing.keys]
+# 32 random bytes, base64. Generate with: openssl rand -base64 32
+k1 = "REPLACE_ME_WITH_32_RANDOM_BYTES_IN_BASE64_____"
+
+[signing.ttl]
+upload = "1h"
+metadata = "24h"
+read = "24h"
+
+[upload]
+# Hard cap on any upload.
+max_size = "5 GiB"
+# Files up to this size are scanned inline during upload; larger files are
+# stored first and scanned by a job. Match clamd's StreamMaxLength.
+inline_scan_max_size = "25 MiB"
+# How long an upload may sit in `uploading` before the reaper resets it.
+stale_after = "1h"
+
+[encryption]
+current_kek = "kek1"
+# Streaming AEAD segment size. Stored per blob, so it can change later.
+chunk_size = "256 KiB"
+
+[encryption.keks]
+# 32 random bytes, base64. Generate with: openssl rand -base64 32
+kek1 = "REPLACE_ME_WITH_32_RANDOM_BYTES_IN_BASE64_____"
+
+[clamav]
+addr = "127.0.0.1:3310"
+timeout = "60s"
+
+[media]
+# Bump to regenerate every derived representation on next request.
+variant_version = 1
+
+[media.thumbnail]
+width = 256
+height = 256
+quality = 80
+
+[media.preview]
+max_dimension = 2048
+quality = 85
+
+[media.embedded_image]
+# A one-page document whose single image covers at least this fraction of the
+# page, with at most `max_text_chars` of text, is treated as a wrapped image.
+min_coverage = 0.7
+max_text_chars = 50
+
+[jobs]
+poll_interval = "2s"
+lease_timeout = "10m"
+
+[jobs.concurrency]
+scan = 4
+thumbnail = 2
+preview = 2
+purge = 4

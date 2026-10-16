@@ -1,0 +1,11 @@
+[workspace]
+resolver = "3"
+members = ["crates/files"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+rust-version = "1.94"
+
+[workspace.lints.clippy]
+all = "warn"

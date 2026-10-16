@@ -1,0 +1,5 @@
+/target
+/data
+/config/files.toml
+.env
+.env.local
