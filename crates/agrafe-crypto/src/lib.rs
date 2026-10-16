@@ -62,6 +62,4 @@ pub enum Error {
     Corrupt,
     #[error("plaintext is too long for the segment size")]
     TooManySegments,
-    #[error("the encryptor was already finished")]
-    Finished,
 }

@@ -205,7 +205,6 @@ pub struct Encryptor {
     layout: Layout,
     buffer: Vec<u8>,
     segment: u32,
-    finished: bool,
 }
 
 impl Encryptor {
@@ -235,7 +234,6 @@ impl Encryptor {
             layout,
             buffer: Vec::with_capacity(layout.plaintext_per_segment()),
             segment: 0,
-            finished: false,
         }
     }
 
@@ -270,9 +268,6 @@ impl Encryptor {
     /// `out`. A full buffer is only sealed once more plaintext arrives, so the
     /// final segment is always sealed by [`Encryptor::finish`].
     pub fn update(&mut self, mut plaintext: &[u8], out: &mut Vec<u8>) -> Result<(), Error> {
-        if self.finished {
-            return Err(Error::Finished);
-        }
         while !plaintext.is_empty() {
             let room = self.capacity() - self.buffer.len();
             if room == 0 {
@@ -288,10 +283,6 @@ impl Encryptor {
 
     /// Seal the last segment, appending it to `out`.
     pub fn finish(mut self, out: &mut Vec<u8>) -> Result<(), Error> {
-        if self.finished {
-            return Err(Error::Finished);
-        }
-        self.finished = true;
         self.seal(true, out)
     }
 }
@@ -599,7 +590,7 @@ mod tests {
     }
 
     #[test]
-    fn encryptor_cannot_be_reused() {
+    fn empty_stream_is_one_tag() {
         let mut out = Vec::new();
         let enc = Encryptor::new(&key(), b"", layout());
         enc.finish(&mut out).unwrap();

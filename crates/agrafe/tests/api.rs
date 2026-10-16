@@ -17,10 +17,12 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::sync::{Mutex, MutexGuard};
+use tokio::sync::{Mutex, MutexGuard, Notify};
+use tokio_stream::wrappers::ReceiverStream;
 use tower::ServiceExt;
 
 static LOCK: Mutex<()> = Mutex::const_new(());
@@ -43,7 +45,7 @@ async fn fake_clamd() -> SocketAddr {
 }
 
 /// How the fake clamd treats a stream.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum FakeClamd {
     /// Reads it whole, answers `OK` or `FOUND`.
     Scan,
@@ -53,11 +55,18 @@ enum FakeClamd {
     /// clamd dying: hangs up without a word as soon as the bytes exceed
     /// the limit.
     Crash(usize),
+    /// Reads it whole, signals `received`, then answers as `Scan` once
+    /// `release` is signalled: a scan caught in the middle.
+    Held {
+        received: Arc<Notify>,
+        release: Arc<Notify>,
+    },
 }
 
 fn fake_clamd_on(listener: TcpListener, mode: FakeClamd) {
     tokio::spawn(async move {
         while let Ok((mut sock, _)) = listener.accept().await {
+            let mode = mode.clone();
             tokio::spawn(async move {
                 let mut cmd = [0u8; 10];
                 if sock.read_exact(&mut cmd).await.is_err() {
@@ -89,6 +98,10 @@ fn fake_clamd_on(listener: TcpListener, mode: FakeClamd) {
                         FakeClamd::Crash(limit) if data.len() > limit => return,
                         _ => {}
                     }
+                }
+                if let FakeClamd::Held { received, release } = &mode {
+                    received.notify_one();
+                    release.notified().await;
                 }
                 let infected = data.windows(VIRUS.len()).any(|w| w == VIRUS);
                 let reply: &[u8] = if infected {
@@ -512,7 +525,26 @@ async fn jobs_for(app: &TestApp, id: &str) -> Vec<String> {
         .unwrap()
 }
 
-/// Read and decrypt the stored original straight from the object store.
+/// Every object in the store.
+async fn stored_objects(app: &TestApp) -> Vec<object_store::ObjectMeta> {
+    use futures::TryStreamExt;
+    app.state.store().list(None).try_collect().await.unwrap()
+}
+
+/// Poll the private port until the blob reaches `want`, or give up.
+async fn wait_for_state(app: &TestApp, id: &str, want: &str) {
+    let mut state = String::new();
+    for _ in 0..100 {
+        let (_, got) = call(&app.private, req(Method::GET, &format!("/blobs/{id}"))).await;
+        state = got["state"].as_str().unwrap().to_string();
+        if state == want {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("blob {id} is {state}, never {want}");
+}
+
 /// The object key a blob's original is stored under.
 async fn storage_key(app: &TestApp, id: &str) -> String {
     agrafe::blob::repo::find(app.state.pool(), id.parse().unwrap())
@@ -523,6 +555,7 @@ async fn storage_key(app: &TestApp, id: &str) -> String {
         .expect("storage_key")
 }
 
+/// Read and decrypt the stored original straight from the object store.
 async fn stored_plaintext(app: &TestApp, id: &str) -> Vec<u8> {
     use agrafe::blob::repo;
     use agrafe_crypto::streaming::{self, Layout};
@@ -566,7 +599,8 @@ async fn stored_plaintext(app: &TestApp, id: &str) -> Vec<u8> {
 #[tokio::test]
 async fn raw_upload_private() {
     let app = setup().await;
-    let bytes = png_bytes(5000);
+    // Longer than the sniff window, so the type is checked mid-stream.
+    let bytes = png_bytes(10 * 1024);
     let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
     let id = created["id"].as_str().unwrap();
 
@@ -688,15 +722,7 @@ async fn raw_upload_rejections() {
     assert_eq!(got["state"], "created");
 
     // Leftover objects: only the successful uploads wrote one.
-    let objects: Vec<_> = {
-        use futures::TryStreamExt;
-        app.state
-            .store()
-            .list(None)
-            .try_collect::<Vec<_>>()
-            .await
-            .unwrap()
-    };
+    let objects = stored_objects(&app).await;
     assert_eq!(objects.len(), 3, "{objects:?}");
 
     // Generated input types are not uploadable yet.
@@ -712,6 +738,42 @@ async fn raw_upload_rejections() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+}
+
+/// Past the sniff window the type is checked while the body still arrives.
+/// The body here never ends, so the upload can only stop at that check, and
+/// the message says so: checked at the end, it would be a size mismatch.
+#[tokio::test]
+async fn type_mismatch_past_the_sniff_window() {
+    let app = setup().await;
+    let bytes = png_bytes(10 * 1024);
+    let head = agrafe::sniff::SNIFF_LEN + 512;
+    assert!(head < bytes.len());
+    let created = create(&app, blob_for(&bytes, "image/jpeg", "raw")).await;
+    let id = created["id"].as_str().unwrap();
+
+    let pieces: Vec<Result<bytes::Bytes, std::io::Error>> = bytes[..head]
+        .chunks(512)
+        .map(|p| Ok(bytes::Bytes::copy_from_slice(p)))
+        .collect();
+    let endless = futures::stream::iter(pieces).chain(futures::stream::repeat_with(|| {
+        Ok(bytes::Bytes::from_static(&[0; 512]))
+    }));
+    let put = Request::builder()
+        .method(Method::PUT)
+        .uri(format!("/blobs/{id}"))
+        .body(Body::from_stream(endless))
+        .unwrap();
+    let (status, body) = tokio::time::timeout(Duration::from_secs(5), call(&app.private, put))
+        .await
+        .expect("the upload stops at the type check");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(message.contains("looks like `image/png`"), "{body}");
+
+    assert_eq!(get_blob(&app, id).await["state"], "created");
+    let objects = stored_objects(&app).await;
+    assert!(objects.is_empty(), "{objects:?}");
 }
 
 #[tokio::test]
@@ -829,30 +891,62 @@ async fn dropped_upload_is_aborted() {
     );
 
     // The pipeline task sees the body end early and hands the blob back.
-    let mut state = String::new();
-    for _ in 0..100 {
-        let (_, got) = call(&app.private, req(Method::GET, &uri)).await;
-        state = got["state"].as_str().unwrap().to_string();
-        if state == "created" {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert_eq!(state, "created");
-    let objects: Vec<_> = {
-        use futures::TryStreamExt;
-        app.state
-            .store()
-            .list(None)
-            .try_collect::<Vec<_>>()
-            .await
-            .unwrap()
-    };
+    wait_for_state(&app, id, "created").await;
+    let objects = stored_objects(&app).await;
     assert!(objects.is_empty(), "{objects:?}");
 
     // And the upload can be retried.
     let (status, body) = call(&app.private, put_raw(&uri, bytes.clone())).await;
     assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// Deleted while its bytes are still arriving: the upload loses, and the
+/// object it wrote is removed rather than left to nobody. Nothing was
+/// stored when the delete ran, so no purge job would ever find it.
+#[tokio::test]
+async fn delete_during_upload() {
+    let app = setup().await;
+    let bytes = png_bytes(5000);
+    let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
+    let id = created["id"].as_str().unwrap();
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(1);
+    let put = Request::builder()
+        .method(Method::PUT)
+        .uri(format!("/blobs/{id}"))
+        .body(Body::from_stream(ReceiverStream::new(rx)))
+        .unwrap();
+    let router = app.private.clone();
+    let upload = tokio::spawn(async move { call(&router, put).await });
+
+    tx.send(Ok(bytes::Bytes::copy_from_slice(&bytes[..2500])))
+        .await
+        .unwrap();
+    wait_for_state(&app, id, "uploading").await;
+    let (status, _) = call(&app.private, req(Method::DELETE, &format!("/blobs/{id}"))).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    tx.send(Ok(bytes::Bytes::copy_from_slice(&bytes[2500..])))
+        .await
+        .unwrap();
+    drop(tx);
+
+    let (status, body) = upload.await.unwrap();
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("deleted"),
+        "{body}"
+    );
+    assert_eq!(get_blob(&app, id).await["state"], "deleted");
+    let objects = stored_objects(&app).await;
+    assert!(objects.is_empty(), "{objects:?}");
+    let jobs: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs")
+        .fetch_one(app.state.pool())
+        .await
+        .unwrap();
+    assert_eq!(jobs, 0);
 }
 
 #[tokio::test]
@@ -1473,10 +1567,13 @@ async fn get_original_unreadable() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
-/// A file of `len` bytes carrying the test signature after the PNG header.
+/// A file of `len` bytes carrying the test signature across the end of the
+/// first 1 KiB segment (968 plaintext bytes), so a scan that skipped a
+/// segment or split the stream at segment edges would miss it.
 fn infected_png(len: usize) -> Vec<u8> {
+    const AT: usize = 950;
     let mut bytes = png_bytes(len);
-    bytes[64..64 + VIRUS.len()].copy_from_slice(VIRUS);
+    bytes[AT..AT + VIRUS.len()].copy_from_slice(VIRUS);
     bytes
 }
 
@@ -1639,6 +1736,52 @@ async fn deferred_scan_job() {
     assert_eq!(get_blob(&app, id).await["state"], "deleted");
     assert!(jobs_for(&app, id).await.is_empty());
     assert!(!run_scan_job(&app).await);
+}
+
+/// Deleted while the job waits for clamd: the verdict lands on nothing, and
+/// the blob stays deleted, unscanned and unrendered.
+#[tokio::test]
+async fn delete_during_scan() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let received = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    fake_clamd_on(
+        listener,
+        FakeClamd::Held {
+            received: received.clone(),
+            release: release.clone(),
+        },
+    );
+    let app = setup_with(addr).await;
+
+    let bytes = infected_png(5000);
+    let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
+    let id = created["id"].as_str().unwrap();
+    let (status, body) = call(&app.private, put_raw(&format!("/blobs/{id}"), bytes)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], "uploaded");
+
+    let state = app.state.clone();
+    let job = tokio::spawn(async move {
+        agrafe::jobs::runner::run_one(&state, agrafe::jobs::JobKind::Scan, "test")
+            .await
+            .unwrap()
+    });
+    received.notified().await;
+    let (status, _) = call(&app.private, req(Method::DELETE, &format!("/blobs/{id}"))).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    release.notify_one();
+    assert!(job.await.unwrap(), "the job ran");
+
+    let got = get_blob(&app, id).await;
+    assert_eq!(got["state"], "deleted", "{got}");
+    assert_eq!(got["scan_state"], "pending", "{got}");
+    assert!(got["scan_signature"].is_null(), "{got}");
+    assert!(
+        jobs_for(&app, id).await.is_empty(),
+        "the scan job is done and nothing renders it"
+    );
 }
 
 #[tokio::test]
