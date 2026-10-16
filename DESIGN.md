@@ -67,7 +67,9 @@ Blobs in a terminal state (`expired`, `infected`, `deleted`) do not exist as
 far as the public port is concerned: every public route answers `404`, upload
 included, even with a valid signature. A URL that leaks after the blob is gone
 therefore reveals nothing, not even that it once existed. The private port
-keeps reporting the real state.
+keeps reporting the real state. Public request spans record the path with the
+token segment redacted, so a debug log level never writes capabilities to log
+storage.
 
 The `:filename` segment of representation routes must match the blob's
 filename (percent-decoded), otherwise `404`. It exists so browsers get a

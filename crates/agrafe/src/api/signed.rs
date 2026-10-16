@@ -64,9 +64,28 @@ fn split_target<'a>(path: &'a str, query: Option<&str>) -> Option<(&'a str, Stri
     Some((token, tail))
 }
 
+/// The request path with the token segment replaced, for logs. A token is a
+/// bearer capability, so it must not land in log storage.
+pub fn redact_token(path: &str) -> String {
+    match split_target(path, None) {
+        Some((_, tail)) => format!("/blobs/<token>{tail}"),
+        None => path.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redacts() {
+        assert_eq!(
+            redact_token("/blobs/v1.k1.1.sig/abc/original/a.jpg"),
+            "/blobs/<token>/abc/original/a.jpg"
+        );
+        assert_eq!(redact_token("/healthz"), "/healthz");
+        assert_eq!(redact_token("/blobs/v1.k1.1.sig"), "/blobs/v1.k1.1.sig");
+    }
 
     #[test]
     fn splits() {

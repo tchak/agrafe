@@ -9,6 +9,8 @@ pub mod signed;
 pub mod urls;
 
 use axum::Router;
+use axum::body::Body;
+use axum::http::Request;
 use axum::routing::get;
 use tower_http::trace::TraceLayer;
 
@@ -26,12 +28,22 @@ pub fn private_router(state: AppState) -> Router {
 }
 
 pub fn public_router(state: AppState) -> Router {
+    // Public URLs carry bearer tokens; the span records a redacted path
+    // instead of the full URI so tokens never reach log storage.
+    let trace = TraceLayer::new_for_http().make_span_with(|req: &Request<Body>| {
+        tracing::debug_span!(
+            "request",
+            method = %req.method(),
+            path = %signed::redact_token(req.uri().path()),
+            version = ?req.version(),
+        )
+    });
     Router::new()
         .route("/healthz", get(healthz))
         .merge(public::routes())
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
-        .layer(TraceLayer::new_for_http())
+        .layer(trace)
         .with_state(state)
 }
 
