@@ -235,10 +235,16 @@ pub struct Blob {
     pub updated_at: Timestamp,
     #[sqlx(try_from = "crate::db::NullableTimestamp")]
     pub upload_started_at: Option<Timestamp>,
+    /// Last sign of life from the process running the upload.
+    #[sqlx(try_from = "crate::db::NullableTimestamp")]
+    pub upload_heartbeat_at: Option<Timestamp>,
     #[sqlx(try_from = "crate::db::NullableTimestamp")]
     pub uploaded_at: Option<Timestamp>,
     #[sqlx(try_from = "crate::db::NullableTimestamp")]
     pub deleted_at: Option<Timestamp>,
+    /// When the purge removed the objects from the bucket.
+    #[sqlx(try_from = "crate::db::NullableTimestamp")]
+    pub purged_at: Option<Timestamp>,
 }
 
 impl Blob {

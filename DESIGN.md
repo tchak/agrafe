@@ -204,12 +204,12 @@ any ──► deleted
 | State | Meaning |
 |---|---|
 | `created` | Row exists, no bytes. `PUT` allowed. |
-| `uploading` | A `PUT` is in flight. Concurrent `PUT` gets `409`. Stale rows are reset by the reaper (see below). |
+| `uploading` | A `PUT` is in flight. Concurrent `PUT` gets `409`. Rows left behind by a crashed process are reset by the reaper (see below). |
 | `uploaded` | Bytes are in the bucket, encrypted. Scan pending. Not readable. |
 | `ready` | Scan passed or skipped. Readable. |
-| `infected` | Scan failed. Never readable. Object kept for forensics until purge. |
-| `expired` | Past `expires_at`. Not readable. Object purged by reaper. |
-| `deleted` | Soft deleted. Object purged by reaper. |
+| `infected` | Scan failed. Never readable. Objects kept for forensics until the blob is deleted or passes its `expires_at`. |
+| `expired` | Past `expires_at`. Not readable. Objects purged. |
+| `deleted` | Soft deleted. Objects purged. |
 
 A blob is `expired` from the instant `expires_at` passes, not from whenever
 the reaper gets to it: every read, upload and public lookup compares
@@ -226,11 +226,20 @@ port.
 
 A failed or stale upload leaves `uploading` for `created`: nothing was stored,
 so there is nothing to keep. Both the abort path and the reaper apply this one
-rule.
+rule. Stale means abandoned, not slow: the pipeline touches
+`upload_heartbeat_at` every third of `upload.stale_after` (default ten
+minutes) while it runs, so an upload of any length keeps its row as long as
+the process running it is alive, and only one that stopped mid-way gets reset
+once `stale_after` has passed without a touch.
 
-A soft delete schedules a purge of the object `upload.purge_delay` (default one
+A soft delete schedules a purge of the objects `upload.purge_delay` (default one
 hour) later, long enough for a download that started before the delete to
-finish.
+finish. Expiry gets the same grace period from the moment the reaper records
+it. The purge deletes everything under the blob's `<id>/` prefix and stamps
+`purged_at` on the row, which private metadata reports; the row itself is
+never removed. An infected blob is terminal and never becomes `expired`, but
+its objects are not kept forever either: once it is past `expires_at` the
+reaper purges them and leaves the state alone.
 
 Separate from the blob state, each blob tracks `scan_state`
 (`pending`, `clean`, `infected`, `skipped`), `scan_signature` (what clamd
@@ -303,7 +312,9 @@ HTTP/2 stream reset, and a closed connection ends it on HTTP/1), and nothing
 in that future is allowed to matter: dropping it closes the channel, the task
 sees the body end before the declared size, aborts the multipart upload and
 hands the blob back exactly as any other failed check does. Only a process
-crash leaves work behind, which is what the stale-upload reaper is for. On S3
+crash leaves work behind, which is what the stale-upload reaper is for: the
+task touches the row while it runs, and a row untouched for
+`upload.stale_after` has no task behind it. On S3
 the bucket also needs an `AbortIncompleteMultipartUpload` lifecycle rule, since
 a crashed process cannot abort the multipart uploads it had open.
 
@@ -618,9 +629,29 @@ blob row, and enqueueing in the same transaction as the state change removes
 the dual-write failure where a crash between commit and publish loses the job.
 
 Job kinds: `scan`, `render` (thumbnail and preview, whichever is pending),
-`purge` (delete bucket objects), `reap` (periodic: expire blobs, reset stale
-`uploading`, find orphans, prune dead jobs once they have been around long
-enough to have been looked at).
+`purge` (delete the objects under a blob's prefix) and `reap`, the periodic
+housekeeping. One reap, in one transaction: record `expired` on every
+non-terminal blob past its `expires_at`; prune dead jobs that failed more
+than `jobs.keep_failed` (default seven days) ago, long enough to have been
+looked at; enqueue a purge, `upload.purge_delay` out, for every terminal
+blob still holding objects that no purge job is going to take care of (the
+ones just expired, infected ones past their expiry, and any whose purge was
+lost, a pruned dead one included); hand `uploading` rows older than
+`upload.stale_after` back to `created`. Expiry itself never waits for the
+reaper, see "State machine".
+
+The reaper keeps its own clock: each run enqueues the next, `jobs.reap_interval`
+(default one minute) later, before doing its work, so a failing run is
+superseded by the one it scheduled rather than retried with backoff or left
+dead, and the error goes to the log. The runner enqueues the first one when it
+starts. The unique index on pending jobs treats a null `blob_id` as a value,
+so blob-less kinds dedupe like the rest and however many processes start, or
+restart while a reap is pending, one row is pending at a time.
+
+A purge refuses a blob that is not in a terminal state and fails instead,
+leaving the job in the table as evidence of the bug that enqueued it. An
+object missing between the listing and its delete is not an error, so a purge
+that runs twice is harmless.
 
 Each row: `kind`, `blob_id`, `payload`, `run_at`, `attempts`, `max_attempts`,
 `locked_at`, `locked_by`, `last_error`, `failed_at`. A worker claims the
@@ -640,8 +671,8 @@ newer one.
 travels with the commit. One listener per process wakes the pollers of that
 kind; `jobs.poll_interval` is the fallback for a missed wakeup. Concurrency is
 per kind in `jobs.concurrency` (defaults: `scan` 4, `render` 4, `purge` 4,
-`reap` 1): rendering is CPU bound, scanning waits on clamd. `scan` and
-`render` have handlers; `purge` and `reap` rows wait in the table.
+`reap` 1): rendering is CPU bound, scanning waits on clamd, and one reaper
+per process is plenty since a row is pending at a time anyway.
 
 The binary takes `--role api|worker|all` so workers can move to separate
 machines without code changes. If volume ever outgrows Postgres polling, the
@@ -682,5 +713,5 @@ is redacted so a dumped config cannot leak them. See `config/example.toml`.
 3. Job runner. ClamAV scanning inline and deferred.
 4. Thumbnail and preview workers, icon fallback, autorotate, PDF render,
    embedded image extraction.
-5. Expiration, reaper, purge. **← current**
-6. `rows` to CSV/XLSX/ODS, then `archive` to ZIP.
+5. Expiration, reaper, purge.
+6. `rows` to CSV/XLSX/ODS, then `archive` to ZIP. **← current**

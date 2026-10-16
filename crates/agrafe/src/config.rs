@@ -243,7 +243,7 @@ fn default_inline_scan_max_size() -> ByteSize {
     ByteSize::mib(25)
 }
 fn default_stale_after() -> Duration {
-    Duration::from_secs(3600)
+    Duration::from_secs(600)
 }
 fn default_purge_delay() -> Duration {
     Duration::from_secs(3600)
@@ -457,6 +457,12 @@ pub struct JobsConfig {
     pub poll_interval: Duration,
     #[serde(with = "humantime_serde", default = "default_lease_timeout")]
     pub lease_timeout: Duration,
+    /// How often the reaper runs.
+    #[serde(with = "humantime_serde", default = "default_reap_interval")]
+    pub reap_interval: Duration,
+    /// How long a dead job stays in the table before the reaper prunes it.
+    #[serde(with = "humantime_serde", default = "default_keep_failed")]
+    pub keep_failed: Duration,
     #[serde(default)]
     /// Keyed by kind, so an unknown name is a configuration error rather
     /// than a silently ignored line.
@@ -483,12 +489,20 @@ fn default_poll_interval() -> Duration {
 fn default_lease_timeout() -> Duration {
     Duration::from_secs(600)
 }
+fn default_reap_interval() -> Duration {
+    Duration::from_secs(60)
+}
+fn default_keep_failed() -> Duration {
+    Duration::from_secs(7 * 24 * 3600)
+}
 
 impl Default for JobsConfig {
     fn default() -> Self {
         Self {
             poll_interval: default_poll_interval(),
             lease_timeout: default_lease_timeout(),
+            reap_interval: default_reap_interval(),
+            keep_failed: default_keep_failed(),
             concurrency: HashMap::new(),
         }
     }

@@ -9,6 +9,7 @@ mod support;
 mod blobs;
 mod jobs;
 mod original;
+mod reaper;
 mod representations;
 mod scan;
 mod upload;

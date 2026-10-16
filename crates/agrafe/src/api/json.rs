@@ -34,6 +34,7 @@ pub struct BlobResponse {
     pub updated_at: Timestamp,
     pub uploaded_at: Option<Timestamp>,
     pub deleted_at: Option<Timestamp>,
+    pub purged_at: Option<Timestamp>,
     pub urls: BlobUrls,
 }
 
@@ -61,6 +62,7 @@ impl BlobResponse {
             updated_at: blob.updated_at,
             uploaded_at: blob.uploaded_at,
             deleted_at: blob.deleted_at,
+            purged_at: blob.purged_at,
             urls,
         }
     }

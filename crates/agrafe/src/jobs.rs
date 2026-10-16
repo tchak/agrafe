@@ -2,6 +2,8 @@
 //! `FOR UPDATE SKIP LOCKED` and woken by `NOTIFY`. The workers live in
 //! `runner`, the handlers in their own modules.
 
+pub mod purge;
+pub mod reap;
 pub mod render;
 pub mod runner;
 pub mod scan;
@@ -37,6 +39,8 @@ pub enum JobError {
     Sandbox(#[from] crate::media::sandbox::Error),
     #[error(transparent)]
     Representation(#[from] crate::blob::representation::Error),
+    #[error("purge: {0}")]
+    Purge(#[from] purge::PurgeError),
 }
 
 /// Channel every enqueue notifies; the payload is the job kind.
@@ -82,9 +86,10 @@ pub struct Job {
     pub failed_at: Option<Timestamp>,
 }
 
-/// Insert a job. With a `blob_id`, at most one pending job of each kind exists
-/// per blob and duplicates are dropped. Returns whether a row was inserted.
-/// Workers are notified when the surrounding transaction commits.
+/// Insert a job. At most one pending job of each kind exists per blob, the
+/// blob-less ones counting as one blob, and duplicates are dropped. Returns
+/// whether a row was inserted. Workers are notified when the surrounding
+/// transaction commits.
 pub async fn enqueue(
     exec: impl PgExecutor<'_>,
     kind: JobKind,
@@ -151,6 +156,16 @@ pub async fn touch(exec: impl PgExecutor<'_>, id: i64, worker: &str) -> sqlx::Re
     .execute(exec)
     .await?;
     Ok(result.rows_affected() == 1)
+}
+
+/// Remove the dead jobs that failed before `before`: they have been around
+/// long enough to have been looked at.
+pub async fn prune_failed(exec: impl PgExecutor<'_>, before: Timestamp) -> sqlx::Result<u64> {
+    let result = sqlx::query("DELETE FROM jobs WHERE failed_at IS NOT NULL AND failed_at <= $1")
+        .bind(before.to_sqlx())
+        .execute(exec)
+        .await?;
+    Ok(result.rows_affected())
 }
 
 /// A finished job leaves the table.

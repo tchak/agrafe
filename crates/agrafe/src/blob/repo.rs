@@ -120,16 +120,16 @@ pub async fn transition(
     to: BlobState,
 ) -> sqlx::Result<Transition> {
     let from: Vec<&str> = from.iter().map(|s| s.as_str()).collect();
-    let timestamp_column = match to {
-        BlobState::Uploading => Some("upload_started_at"),
-        BlobState::Uploaded => Some("uploaded_at"),
-        BlobState::Deleted => Some("deleted_at"),
-        _ => None,
+    let timestamp_columns: &[&str] = match to {
+        BlobState::Uploading => &["upload_started_at", "upload_heartbeat_at"],
+        BlobState::Uploaded => &["uploaded_at"],
+        BlobState::Deleted => &["deleted_at"],
+        _ => &[],
     };
     let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("UPDATE blobs SET state = ");
     qb.push_bind(to.as_str());
-    if let Some(column) = timestamp_column {
-        // The column name comes from the match above, never from input.
+    for column in timestamp_columns {
+        // The column names come from the match above, never from input.
         qb.push(", ").push(column).push(" = now()");
     }
     qb.push(" WHERE id = ")
@@ -157,6 +157,18 @@ pub async fn begin_upload(conn: &mut PgConnection, blob: &Blob) -> sqlx::Result<
 /// stale-upload reaper applies the same rule.
 pub async fn abort_upload(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Transition> {
     transition(conn, id, &[BlobState::Uploading], BlobState::Created).await
+}
+
+/// Sign of life from an upload in flight. Returns whether the blob is still
+/// `uploading`: the reaper may have reset it, or a delete taken it.
+pub async fn touch_upload(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Result<bool> {
+    let result =
+        sqlx::query("UPDATE blobs SET upload_heartbeat_at = now() WHERE id = $1 AND state = $2")
+            .bind(id)
+            .bind(BlobState::Uploading.as_str())
+            .execute(exec)
+            .await?;
+    Ok(result.rows_affected() == 1)
 }
 
 /// Everything an upload writes onto the row when it completes.
@@ -270,7 +282,7 @@ async fn enqueue_next(conn: &mut PgConnection, blob: &Blob) -> sqlx::Result<()> 
     Ok(())
 }
 
-/// Soft delete from any state, and enqueue a purge of the stored object at
+/// Soft delete from any state, and enqueue a purge of the stored objects at
 /// `purge_at`.
 pub async fn soft_delete(pool: &PgPool, id: Uuid, purge_at: Timestamp) -> sqlx::Result<Transition> {
     let mut tx = pool.begin().await?;
@@ -281,19 +293,92 @@ pub async fn soft_delete(pool: &PgPool, id: Uuid, purge_at: Timestamp) -> sqlx::
         .collect();
     let result = transition(&mut tx, id, &from, BlobState::Deleted).await?;
     if let Transition::Done(blob) = &result
-        && let Some(key) = &blob.storage_key
+        && blob.storage_key.is_some()
+        && blob.purged_at.is_none()
     {
         jobs::enqueue(
             &mut *tx,
             JobKind::Purge,
-            None,
-            serde_json::json!({ "blob_id": blob.id, "storage_key": key }),
+            Some(blob.id),
+            serde_json::json!({}),
             purge_at,
         )
         .await?;
     }
     tx.commit().await?;
     Ok(result)
+}
+
+/// Record as `expired` every non-terminal blob past its `expires_at` at
+/// `now`. The reads already treat them so; this only writes it down.
+pub async fn expire(conn: &mut PgConnection, now: Timestamp) -> sqlx::Result<Vec<Uuid>> {
+    let terminal: Vec<&str> = BlobState::ALL
+        .iter()
+        .filter(|s| s.is_terminal())
+        .map(|s| s.as_str())
+        .collect();
+    sqlx::query_scalar(
+        "UPDATE blobs SET state = $1 \
+         WHERE expires_at <= $2 AND state <> ALL($3) \
+         RETURNING id",
+    )
+    .bind(BlobState::Expired.as_str())
+    .bind(now.to_sqlx())
+    .bind(terminal)
+    .fetch_all(&mut *conn)
+    .await
+}
+
+/// Terminal blobs whose objects are still in the bucket and that no purge
+/// job, pending, running or dead, is going to take care of: `expired` and
+/// `deleted` ones, and `infected` ones once past their `expires_at`, since
+/// an infected file is kept for forensics but not forever.
+pub async fn awaiting_purge(conn: &mut PgConnection, now: Timestamp) -> sqlx::Result<Vec<Uuid>> {
+    sqlx::query_scalar(
+        "SELECT id FROM blobs \
+         WHERE storage_key IS NOT NULL AND purged_at IS NULL \
+           AND (state = ANY($1) OR (state = $2 AND expires_at <= $3)) \
+           AND NOT EXISTS (\
+               SELECT 1 FROM jobs WHERE jobs.kind = $4 AND jobs.blob_id = blobs.id\
+           ) \
+         ORDER BY id",
+    )
+    .bind([BlobState::Expired.as_str(), BlobState::Deleted.as_str()])
+    .bind(BlobState::Infected.as_str())
+    .bind(now.to_sqlx())
+    .bind(JobKind::Purge.as_str())
+    .fetch_all(&mut *conn)
+    .await
+}
+
+/// The purge is done: nothing of the blob is left in the bucket.
+pub async fn mark_purged(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Result<()> {
+    sqlx::query("UPDATE blobs SET purged_at = COALESCE(purged_at, now()) WHERE id = $1")
+        .bind(id)
+        .execute(exec)
+        .await?;
+    Ok(())
+}
+
+/// Hand every upload without a sign of life since `before` back to
+/// `created`, as `abort_upload` would have: nothing was stored. The one
+/// rule for a failed upload, applied by the reaper to the ones a crashed
+/// process left behind. A live upload touches its row as it runs, however
+/// long it takes.
+pub async fn reset_stale_uploads(
+    conn: &mut PgConnection,
+    before: Timestamp,
+) -> sqlx::Result<Vec<Uuid>> {
+    sqlx::query_scalar(
+        "UPDATE blobs SET state = $1 \
+         WHERE state = $2 AND upload_heartbeat_at <= $3 \
+         RETURNING id",
+    )
+    .bind(BlobState::Created.as_str())
+    .bind(BlobState::Uploading.as_str())
+    .bind(before.to_sqlx())
+    .fetch_all(&mut *conn)
+    .await
 }
 
 /// Record the outcome of rendering `kind` for `id`, along with the variant

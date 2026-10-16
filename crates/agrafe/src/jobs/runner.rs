@@ -14,11 +14,11 @@ use tokio::task::JoinSet;
 use tracing::Instrument as _;
 use uuid::Uuid;
 
-use super::{Failure, Job, JobError, JobKind, render, scan};
+use super::{Failure, Job, JobError, JobKind, purge, reap, render, scan};
 use crate::app::AppState;
 
-/// Kinds this binary knows how to run. Others wait in the table.
-pub const HANDLED: &[JobKind] = &[JobKind::Scan, JobKind::Render];
+/// Kinds this binary runs: every one of them.
+pub const HANDLED: &[JobKind] = JobKind::ALL;
 
 /// Pause after a listener error before asking Postgres again.
 const LISTEN_RETRY: Duration = Duration::from_secs(1);
@@ -34,6 +34,8 @@ pub enum Error {
     Panicked(#[from] tokio::task::JoinError),
     #[error("the renderer failed its startup probe: {0}")]
     Probe(#[from] render::ProbeError),
+    #[error("scheduling the first reap: {0}")]
+    Schedule(sqlx::Error),
 }
 
 /// Run the workers until `shutdown` resolves. A job in flight finishes;
@@ -44,6 +46,10 @@ where
 {
     render::probe(&state.config().media).await?;
     tracing::info!("renderer probe passed");
+    // The reaper reschedules itself from then on.
+    reap::schedule(state.pool(), Timestamp::now())
+        .await
+        .map_err(Error::Schedule)?;
 
     let wakeups: HashMap<JobKind, Arc<Notify>> = HANDLED
         .iter()
@@ -134,7 +140,8 @@ async fn handle(state: &AppState, job: &Job) -> Result<(), JobError> {
     match job.kind {
         JobKind::Scan => scan::run(state, job).await,
         JobKind::Render => render::run(state, job).await,
-        other => Err(JobError::Unhandled(other)),
+        JobKind::Purge => purge::run(state, job).await,
+        JobKind::Reap => reap::run(state, job).await,
     }
 }
 

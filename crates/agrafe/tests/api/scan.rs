@@ -164,7 +164,7 @@ async fn scan_job_skips_a_deleted_blob() {
     delete(&app, id).await;
     assert!(run_scan_job(&app).await);
     assert_eq!(get_blob(&app, id).await["state"], "deleted");
-    assert!(jobs_for(&app, id).await.is_empty());
+    assert_eq!(jobs_for(&app, id).await, vec!["purge"]);
     assert!(!run_scan_job(&app).await);
 }
 
@@ -203,8 +203,9 @@ async fn delete_during_scan() {
     assert_eq!(got["state"], "deleted", "{got}");
     assert_eq!(got["scan_state"], "pending", "{got}");
     assert!(got["scan_signature"].is_null(), "{got}");
-    assert!(
-        jobs_for(&app, id).await.is_empty(),
+    assert_eq!(
+        jobs_for(&app, id).await,
+        vec!["purge"],
         "the scan job is done and nothing renders it"
     );
 }

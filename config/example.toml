@@ -60,8 +60,10 @@ max_size = "5 GiB"
 # stored first and scanned by a job, which streams them to clamd too. See
 # the [clamav] section for the clamd limits that must follow max_size.
 inline_scan_max_size = "25 MiB"
-# How long an upload may sit in `uploading` before the reaper resets it.
-stale_after = "1h"
+# An upload in flight touches its blob every third of this; one not touched
+# for this long was left behind by a crashed process and the reaper resets
+# it. Slow uploads are never reset, however long they take.
+stale_after = "10m"
 # Grace period before the object a delete released is purged from the bucket.
 # Downloads that started before the delete keep their bytes.
 purge_delay = "1h"
@@ -143,6 +145,13 @@ poll_interval = "2s"
 # A job locked for longer than this is assumed orphaned and claimed again.
 # Running workers renew their lease, so only a dead one lets it lapse.
 lease_timeout = "10m"
+# How often the reaper runs: it records expiries, schedules the purge of
+# expired and deleted blobs, resets uploads stale for upload.stale_after
+# and prunes dead jobs. Expiry itself does not wait for it.
+reap_interval = "1m"
+# A job that used up its attempts stays in the table, with its last error,
+# for this long before the reaper removes it.
+keep_failed = "7d"
 
 # Workers per job kind; these are the defaults.
 [jobs.concurrency]

@@ -5,7 +5,7 @@ use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::support::*;
 
@@ -538,14 +538,14 @@ async fn delete_enqueues_purge_when_stored() {
         .unwrap();
 
     assert_eq!(delete(&app, id).await, StatusCode::NO_CONTENT);
-    let (kind, payload, in_secs): (String, Value, f64) = sqlx::query_as(
-        "SELECT kind, payload, EXTRACT(EPOCH FROM run_at - now())::float8 FROM jobs",
+    let (kind, blob_id, in_secs): (String, uuid::Uuid, f64) = sqlx::query_as(
+        "SELECT kind, blob_id, EXTRACT(EPOCH FROM run_at - now())::float8 FROM jobs",
     )
     .fetch_one(app.state.pool())
     .await
     .unwrap();
     assert_eq!(kind, "purge");
-    assert_eq!(payload["storage_key"], "k/1");
+    assert_eq!(blob_id, id);
     assert!((1700.0..=1800.0).contains(&in_secs), "{in_secs}");
 }
 

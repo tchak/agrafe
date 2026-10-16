@@ -1,0 +1,98 @@
+//! The periodic housekeeping job: record expiries, schedule the purges that
+//! are due, reset stale uploads and prune dead jobs.
+//!
+//! One `reap` row lives in the table at a time. Each run schedules the
+//! next one `jobs.reap_interval` later before doing its work, so a failing
+//! run never stops the clock: it is superseded by the one it scheduled,
+//! and the error goes to the log. The runner enqueues the first one when
+//! it starts; the unique index drops the duplicate when several processes
+//! start, or when one restarts while a row is pending.
+
+use jiff::Timestamp;
+use sqlx::PgExecutor;
+
+use super::{Job, JobError, JobKind};
+use crate::app::AppState;
+use crate::blob::repo;
+
+pub async fn run(state: &AppState, job: &Job) -> Result<(), JobError> {
+    if job.kind != JobKind::Reap {
+        return Err(JobError::Unhandled(job.kind));
+    }
+    let now = Timestamp::now();
+    schedule(state.pool(), now + state.config().jobs.reap_interval).await?;
+    let report = reap(state, now).await?;
+    tracing::info!(
+        expired = report.expired,
+        purges = report.purges,
+        reset = report.reset,
+        pruned = report.pruned,
+        "reaped"
+    );
+    Ok(())
+}
+
+/// Enqueue a reap at `run_at`, unless one is already pending.
+pub async fn schedule(exec: impl PgExecutor<'_>, run_at: Timestamp) -> sqlx::Result<bool> {
+    super::enqueue(exec, JobKind::Reap, None, serde_json::json!({}), run_at).await
+}
+
+/// What one reap did.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Report {
+    /// Blobs recorded as `expired`.
+    pub expired: usize,
+    /// Purges enqueued.
+    pub purges: usize,
+    /// Stale uploads handed back to `created`.
+    pub reset: usize,
+    /// Dead jobs removed.
+    pub pruned: u64,
+}
+
+/// One pass, in one transaction, as of `now`.
+pub async fn reap(state: &AppState, now: Timestamp) -> Result<Report, JobError> {
+    let config = state.config();
+    let mut tx = state.pool().begin().await?;
+
+    let expired = repo::expire(&mut tx, now).await?;
+
+    // Dead jobs go first, so a purge that died is scheduled again below,
+    // in the same pass, once it has been around long enough.
+    let dead_before = now
+        .checked_sub(config.jobs.keep_failed)
+        .unwrap_or(Timestamp::MIN);
+    let pruned = super::prune_failed(&mut *tx, dead_before).await?;
+
+    // Everything terminal still holding bytes and not already on its way
+    // out: the blobs just expired, infected ones past their expiry, and
+    // any whose purge was lost.
+    let purge_at = config.upload.purge_at(now);
+    let mut purges = 0;
+    for id in repo::awaiting_purge(&mut tx, now).await? {
+        if super::enqueue(
+            &mut *tx,
+            JobKind::Purge,
+            Some(id),
+            serde_json::json!({}),
+            purge_at,
+        )
+        .await?
+        {
+            purges += 1;
+        }
+    }
+
+    let stale_before = now
+        .checked_sub(config.upload.stale_after)
+        .unwrap_or(Timestamp::MIN);
+    let reset = repo::reset_stale_uploads(&mut tx, stale_before).await?;
+
+    tx.commit().await?;
+    Ok(Report {
+        expired: expired.len(),
+        purges,
+        reset: reset.len(),
+        pruned,
+    })
+}

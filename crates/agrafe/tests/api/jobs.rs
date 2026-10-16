@@ -129,7 +129,7 @@ async fn job_queue_mechanics() {
     let created = create(&app, raw_blob()).await;
     let blob = parse_id(id_of(&created));
 
-    // One pending job per kind and blob; blob-less jobs are never deduped.
+    // One pending job per kind and blob; blob-less jobs count as one blob.
     assert!(
         jobs::enqueue(pool, JobKind::Scan, Some(blob), json!({}), now)
             .await
@@ -146,7 +146,7 @@ async fn job_queue_mechanics() {
             .unwrap()
     );
     assert!(
-        jobs::enqueue(pool, JobKind::Purge, None, json!({}), now)
+        !jobs::enqueue(pool, JobKind::Purge, None, json!({}), now)
             .await
             .unwrap()
     );
@@ -268,5 +268,5 @@ async fn job_queue_mechanics() {
         .fetch_one(pool)
         .await
         .unwrap();
-    assert_eq!(purges, 1);
+    assert_eq!(purges, 0);
 }

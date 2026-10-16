@@ -8,6 +8,8 @@
 //! check: it is stored and the blob becomes `infected`, exactly as a deferred
 //! scan would leave it.
 
+use std::time::Duration;
+
 use agrafe_crypto::Key;
 use agrafe_crypto::streaming::{Encryptor, Layout};
 use bytes::Bytes;
@@ -161,18 +163,22 @@ where
     let layout = state.keks().layout();
     let scanner = inline_scanner(&state, &blob, &declared).await;
 
-    let (header, scan) = match stream_to_store(
-        &state,
-        &blob,
-        &declared,
-        &storage_key,
-        &envelope.key,
-        layout,
-        scanner,
-        body,
-    )
-    .await
-    {
+    // The row is touched while the bytes flow, so the reaper only resets
+    // an upload whose process died, never a slow one.
+    let stored = tokio::select! {
+        stored = stream_to_store(
+            &state,
+            &blob,
+            &declared,
+            &storage_key,
+            &envelope.key,
+            layout,
+            scanner,
+            body,
+        ) => stored,
+        _ = heartbeat(&state, blob.id) => unreachable!("the heartbeat never ends"),
+    };
+    let (header, scan) = match stored {
         Ok(stored) => stored,
         Err(err) => {
             match state.pool().acquire().await {
@@ -250,6 +256,24 @@ async fn inline_scanner(state: &AppState, blob: &Blob, declared: &Declared) -> S
         Err(err) => {
             tracing::warn!(blob = %blob.id, error = %err, "no inline scan, deferring it to a job");
             Scanner::Deferred
+        }
+    }
+}
+
+/// Touch the row every third of `upload.stale_after`, for as long as this
+/// future is polled.
+async fn heartbeat(state: &AppState, id: Uuid) {
+    let period = (state.config().upload.stale_after / 3).max(Duration::from_secs(1));
+    let mut ticks = tokio::time::interval(period);
+    ticks.tick().await; // the first tick is immediate; the transition just set it
+    loop {
+        ticks.tick().await;
+        match repo::touch_upload(state.pool(), id).await {
+            Ok(true) => {}
+            Ok(false) => tracing::warn!(blob = %id, "upload no longer owns its blob"),
+            Err(err) => {
+                tracing::warn!(blob = %id, error = ?err, "could not touch the uploading blob")
+            }
         }
     }
 }

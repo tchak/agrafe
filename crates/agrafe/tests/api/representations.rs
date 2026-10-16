@@ -522,7 +522,8 @@ async fn blob_state_governs_the_representations() {
     }
 
     // Deleted after rendering: the private port answers as for infected,
-    // and no regeneration is queued for a blob on its way out.
+    // and no regeneration is queued for a blob on its way out, only the
+    // purge the delete scheduled.
     let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
     let id = id_of(&blob);
     render_all(&app).await;
@@ -533,7 +534,7 @@ async fn blob_state_governs_the_representations() {
         "unavailable",
     )
     .await;
-    assert_eq!(jobs_for(&app, id).await, Vec::<String>::new());
+    assert_eq!(jobs_for(&app, id).await, vec!["purge"]);
 }
 
 #[tokio::test]
