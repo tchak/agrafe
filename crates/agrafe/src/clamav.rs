@@ -2,8 +2,10 @@
 //!
 //! One session per file: connect, announce the command, send the bytes as
 //! length-prefixed chunks, send an empty chunk, read one line back. clamd
-//! may answer `FOUND` before the last chunk and close its end, so a failed
-//! write is not final: `finish` still reads whatever reply is pending.
+//! scans only once the stream is complete, but it hangs up before that
+//! when its stream limit is hit (after an `ERROR` reply) or when it dies,
+//! so a failed write is not final: `finish` still reads whatever reply is
+//! pending and reports the write failure only if there is none.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -132,8 +134,8 @@ impl Clamd {
 pub struct Session {
     clamd: Clamd,
     stream: TcpStream,
-    /// The first write that failed. clamd closes early when it has already
-    /// decided, so the verdict may still be readable.
+    /// The first write that failed. clamd hangs up early at its stream
+    /// limit, with an `ERROR` that may still be readable.
     broken: Option<Error>,
     /// Held for the life of an inline session, released with it.
     _permit: Option<OwnedSemaphorePermit>,

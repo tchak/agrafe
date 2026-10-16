@@ -377,9 +377,10 @@ the upload completes and the scan is deferred to a job, which is retried with
 backoff until clamd answers. In the job, a connection failure or an `ERROR`
 reply (the stream limit exceeded, for instance) is a job failure and the blob
 stays `uploaded`; once the job is out of attempts the blob is stuck there,
-unreadable, until it expires or is deleted. clamd closes the connection as
-soon as it has a verdict, so the client treats a failed write as "stop
-sending and read the reply", not as an error.
+unreadable, until it expires or is deleted. clamd scans only once the stream
+is complete, but hangs up before that at its stream limit or when it dies,
+so the client treats a failed write as "stop sending and read the reply",
+not as an error.
 
 A verdict is only as good as the clamd behind it, and clamd's defaults are
 sized for mail, not for files of `upload.max_size`. Three limits matter:

@@ -27,8 +27,8 @@ pub async fn run(state: &AppState, job: &Job) -> anyhow::Result<()> {
     let mut session = state.clamd().begin().await?;
     let mut reader = Reader::open(state, &blob, &stored, 0..stored.size).await?;
     while let Some(plain) = reader.next_segment().await? {
-        // clamd closes its end once it has decided, at its stream limit for
-        // instance; fetching and decrypting the rest would be for nothing.
+        // clamd hangs up at its stream limit, or when it dies; fetching and
+        // decrypting the rest would be for nothing.
         if !session.write(&plain).await {
             break;
         }
