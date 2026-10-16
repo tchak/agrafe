@@ -22,7 +22,7 @@ use uuid::Uuid;
 
 use crate::app::AppState;
 use crate::blob::repo::{self, Completed, Transition};
-use crate::blob::{Blob, BlobState, ScanOutcome};
+use crate::blob::{Blob, ScanOutcome};
 use crate::clamav::{self, Verdict};
 use crate::config::UploadConfig;
 use crate::error::ApiError;
@@ -202,14 +202,13 @@ where
         scan,
     };
     match repo::complete_upload(state.pool(), &blob, &completed).await? {
-        Transition::Done(blob) if blob.state == BlobState::Infected => {
-            let ScanOutcome::Infected(name) = completed.scan else {
-                unreachable!("only an infected outcome lands in `infected`");
-            };
-            tracing::warn!(blob = %blob.id, signature = name, "inline scan found a virus");
-            Err(ApiError::Infected(Some(name)))
-        }
-        Transition::Done(blob) => Ok(blob),
+        Transition::Done(blob) => match completed.scan {
+            ScanOutcome::Infected(name) => {
+                tracing::warn!(blob = %blob.id, signature = name, "inline scan found a virus");
+                Err(ApiError::Infected(Some(name)))
+            }
+            _ => Ok(blob),
+        },
         Transition::Conflict(current) => {
             // The row changed under us (reaper or delete); the object we just
             // wrote belongs to nobody.
@@ -316,7 +315,7 @@ async fn pump<S>(
     mut encryptor: Encryptor,
     declared: &Declared,
     content_type: &str,
-    scanner: Scanner,
+    mut scanner: Scanner,
     mut body: S,
 ) -> Result<ScanOutcome, UploadError>
 where
@@ -328,11 +327,6 @@ where
     let mut head: Vec<u8> = Vec::with_capacity(sniff::SNIFF_LEN);
     let mut sniffed = false;
     let mut out = Vec::new();
-    let skipped = matches!(scanner, Scanner::Skipped);
-    let mut session = match scanner {
-        Scanner::Inline(session) => Some(session),
-        Scanner::Skipped | Scanner::Deferred => None,
-    };
 
     while let Some(chunk) = body.next().await {
         let chunk = chunk.map_err(UploadError::Body)?;
@@ -341,7 +335,7 @@ where
             return Err(UploadError::SizeMismatch);
         }
         hasher.update(&chunk);
-        if let Some(session) = &mut session {
+        if let Scanner::Inline(session) = &mut scanner {
             // A write failure is remembered by the session and surfaces
             // from `finish`, where it defers the scan; the upload itself
             // carries on regardless.
@@ -374,10 +368,10 @@ where
     encryptor.finish(&mut out)?;
     writer.put(Bytes::from(out));
 
-    Ok(match session {
-        None if skipped => ScanOutcome::Skipped,
-        None => ScanOutcome::Deferred,
-        Some(session) => match session.finish().await {
+    Ok(match scanner {
+        Scanner::Skipped => ScanOutcome::Skipped,
+        Scanner::Deferred => ScanOutcome::Deferred,
+        Scanner::Inline(session) => match session.finish().await {
             Ok(Verdict::Clean) => ScanOutcome::Clean,
             Ok(Verdict::Infected(name)) => ScanOutcome::Infected(name),
             Err(err) => {
