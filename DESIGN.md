@@ -444,6 +444,17 @@ Only files with a known source are attempted:
 - text files (the `text` category plus CSV and TSV), thumbnails only;
 - originals at most `media.max_source_size` (default 512 MiB).
 
+The allowlist above is by declared type, and the upload sniffer lets
+through anything `infer` does not recognise. vips, though, picks its loader
+by magic and tries ImageMagick last, so a file declared `image/png` holding
+an XPM would reach it. Every file handed to vips is therefore sniffed again
+right before the call (`media::loader_for`) against the same list, plus PNM
+for the pages the helpers write; anything else is `failed` without vips
+ever seeing it. The embedded image extractor applies the same check to the
+bytes it pulls out of a PDF, since a `DCTDecode` stream holds whatever its
+author put there. `VIPS_BLOCK_UNTRUSTED` was considered and rejected: it
+also blocks the PDF, SVG, JPEG 2000 and PNM loaders.
+
 A file the renderer rejects, or that runs past the sandbox timeout, leaves
 the representation `failed` and the job done: the same bytes would fail the
 same way tomorrow. Only failures of ours (object store, database, the

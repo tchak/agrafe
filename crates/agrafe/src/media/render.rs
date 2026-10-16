@@ -8,8 +8,11 @@
 
 use std::path::Path;
 
+use tokio::io::AsyncReadExt;
+
 use super::sandbox::{self, Outcome};
 use crate::config::MediaConfig;
+use crate::media;
 
 /// Target box and encoder quality. The image is scaled to fit inside the
 /// box, never cropped.
@@ -50,6 +53,9 @@ pub enum Input {
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// The bytes are not a format the renderer may load: the file's fault.
+    #[error("the file is not in a format the renderer may load")]
+    Unsupported,
     /// The renderer could not make sense of the file: the file's fault.
     #[error("the renderer rejected the file ({status}): {stderr}")]
     Rejected { status: String, stderr: String },
@@ -58,6 +64,8 @@ pub enum Error {
     TimedOut,
     #[error(transparent)]
     Sandbox(#[from] sandbox::Error),
+    #[error("reading the file to render: {0}")]
+    Input(std::io::Error),
     #[error("reading the rendered file: {0}")]
     Output(std::io::Error),
 }
@@ -65,7 +73,10 @@ pub enum Error {
 impl Error {
     /// Whether the input is to blame, so that trying again is pointless.
     pub fn is_input_fault(&self) -> bool {
-        matches!(self, Error::Rejected { .. } | Error::TimedOut)
+        matches!(
+            self,
+            Error::Unsupported | Error::Rejected { .. } | Error::TimedOut
+        )
     }
 }
 
@@ -78,6 +89,9 @@ pub async fn to_webp(
     output: &Path,
     fit: Fit,
 ) -> Result<Vec<u8>, Error> {
+    let loader =
+        media::loader_for(&head(input).await.map_err(Error::Input)?).ok_or(Error::Unsupported)?;
+    tracing::debug!(loader, "rendering");
     let size = match kind {
         Input::Raster => "down",
         Input::Page => "both",
@@ -98,4 +112,15 @@ pub async fn to_webp(
         Outcome::Failed { status, stderr } => Err(Error::Rejected { status, stderr }),
         Outcome::TimedOut => Err(Error::TimedOut),
     }
+}
+
+/// The first `SNIFF_LEN` bytes of `path`, fewer for a shorter file.
+async fn head(path: &Path) -> std::io::Result<Vec<u8>> {
+    let mut head = Vec::with_capacity(media::SNIFF_LEN);
+    tokio::fs::File::open(path)
+        .await?
+        .take(media::SNIFF_LEN as u64)
+        .read_to_end(&mut head)
+        .await?;
+    Ok(head)
 }

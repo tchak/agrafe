@@ -45,17 +45,9 @@ pub fn extract(
     }
 }
 
-/// The format name for raster bytes libvips can load, by magic.
+/// The format of raster bytes libvips may load, by magic: the renderer's
+/// allowlist minus the vector formats, which are not "a picture inside a
+/// document".
 pub(crate) fn raster_format(bytes: &[u8]) -> Option<&'static str> {
-    Some(match infer::get(bytes)?.mime_type() {
-        "image/jpeg" => "jpeg",
-        "image/png" => "png",
-        "image/gif" => "gif",
-        "image/webp" => "webp",
-        "image/tiff" => "tiff",
-        "image/bmp" => "bmp",
-        "image/heif" | "image/heic" | "image/avif" => "heif",
-        "image/jp2" | "image/jpx" => "jp2",
-        _ => return None,
-    })
+    super::loader_for(bytes).filter(|format| !matches!(*format, "pdf" | "svg"))
 }

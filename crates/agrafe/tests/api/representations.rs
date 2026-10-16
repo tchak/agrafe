@@ -333,6 +333,17 @@ async fn files_the_renderer_rejects_are_failed() {
         "preview could not be generated",
     )
     .await;
+
+    // Declared PNG, actually XPM: the upload sniffer knows no XPM and lets
+    // it through, and vips would hand it to ImageMagick. It never gets it.
+    let xpm =
+        b"/* XPM */\nstatic char *x[] = {\n\"2 2 1 1\",\n\"a c #ff0000\",\n\"aa\",\n\"aa\"\n};\n";
+    let blob = ready_file(&app, "pic.png", "image/png", xpm).await;
+    let id = id_of(&blob);
+    render_all(&app).await;
+    let blob = get_blob(&app, id).await;
+    assert_eq!(blob["thumbnail_state"], "failed");
+    assert_eq!(blob["preview_state"], "failed");
 }
 
 #[tokio::test]

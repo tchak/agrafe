@@ -192,21 +192,21 @@ fn image_bytes(doc: &Document, image: &Stream, max_output: usize) -> Option<Extr
     {
         return None;
     }
+    // The filter says what the stream claims to be; the bytes are what vips
+    // will load, so they have to agree.
     let filters = image.filters().unwrap_or_default();
-    match filters.as_slice() {
-        [b"DCTDecode"] => {
-            return Some(Extracted {
+    let encoded = match filters.as_slice() {
+        [b"DCTDecode"] => Some("jpeg"),
+        [b"JPXDecode"] => Some("jp2k"),
+        _ => None,
+    };
+    if let Some(format) = encoded {
+        return super::raster_format(&image.content)
+            .filter(|sniffed| *sniffed == format)
+            .map(|format| Extracted {
                 bytes: image.content.clone(),
-                format: "jpeg",
+                format,
             });
-        }
-        [b"JPXDecode"] => {
-            return Some(Extracted {
-                bytes: image.content.clone(),
-                format: "jp2",
-            });
-        }
-        _ => {}
     }
     // Raw samples, possibly behind a lossless filter. Any image filter left
     // in the chain makes this fail, which is the answer we want.
@@ -299,6 +299,27 @@ mod tests {
         assert_eq!(&out.bytes[..3], &[0xff, 0xd8, 0xff]);
         let jpeg = include_bytes!("../../../tests/fixtures/photo.jpg");
         assert_eq!(out.bytes, jpeg);
+    }
+
+    #[test]
+    fn a_jpeg_stream_must_hold_a_jpeg() {
+        let mut doc =
+            Document::load_mem(include_bytes!("../../../tests/fixtures/image.pdf")).unwrap();
+        let id = doc
+            .objects
+            .iter()
+            .find_map(|(id, object)| {
+                let stream = object.as_stream().ok()?;
+                let subtype = stream.dict.get(b"Subtype").and_then(Object::as_name).ok()?;
+                (subtype == b"Image").then_some(*id)
+            })
+            .unwrap();
+        if let Some(Object::Stream(stream)) = doc.objects.get_mut(&id) {
+            stream.set_content(b"/* XPM */\nstatic char *x[] = {".to_vec());
+        }
+        let mut bytes = Vec::new();
+        doc.save_to(&mut bytes).unwrap();
+        assert_eq!(extract(&bytes, &thresholds(), LIMIT), None);
     }
 
     #[test]
