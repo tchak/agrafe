@@ -6,7 +6,6 @@ use std::time::{Duration, SystemTime};
 use http::Method;
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::Serialize;
-use uuid::Uuid;
 
 use crate::app::AppState;
 use crate::blob::Blob;
@@ -94,14 +93,6 @@ pub fn mint(state: &AppState, blob: &Blob, opts: &MintOptions, now: SystemTime) 
         thumbnail: representation("thumbnail"),
         expires_at: read_expires,
     }
-}
-
-/// Signed upload URL alone, for blobs allowed on the public port.
-pub fn upload_url(state: &AppState, id: Uuid, now: SystemTime) -> String {
-    let expires = state
-        .signer()
-        .expiry_for(state.config().signing.ttl.upload, now);
-    url(state, &Method::PUT, expires, &format!("/{id}"))
 }
 
 fn url(state: &AppState, method: &Method, expires: u64, tail: &str) -> String {

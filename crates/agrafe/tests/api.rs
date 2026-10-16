@@ -226,9 +226,16 @@ async fn private_only_blobs_get_no_public_upload() {
         }
 
         // A forged upload URL for such a blob is refused by the handler too.
-        let id: uuid::Uuid = body["id"].as_str().unwrap().parse().unwrap();
-        let url = api::urls::upload_url(&app.state, id, std::time::SystemTime::now());
-        let (status, body) = call(&app.public, req(Method::PUT, &public_path(&url))).await;
+        let id = body["id"].as_str().unwrap();
+        let token = app
+            .state
+            .signer()
+            .sign(&Method::PUT, 4_000_000_000, &format!("/{id}"));
+        let (status, body) = call(
+            &app.public,
+            req(Method::PUT, &format!("/blobs/{token}/{id}")),
+        )
+        .await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     }
 }
