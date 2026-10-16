@@ -75,7 +75,7 @@ impl Signer {
         let now = unix(now);
         let window = self.window.as_secs().max(1);
         let boundary = now.div_ceil(window) * window;
-        boundary + ttl.as_secs()
+        boundary.saturating_add(ttl.as_secs())
     }
 
     /// Produce a token for `method` on `tail` valid until `expires`.
@@ -283,5 +283,6 @@ mod tests {
         assert_eq!(a, 7_200 + 600);
         assert_eq!(s.expiry_for(ttl, at(7_200)), 7_200 + 600);
         assert_eq!(s.expiry_for(ttl, at(7_201)), 10_800 + 600);
+        assert_eq!(s.expiry_for(Duration::MAX, at(7_201)), u64::MAX);
     }
 }

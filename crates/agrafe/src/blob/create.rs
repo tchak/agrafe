@@ -94,7 +94,10 @@ pub fn validate(
         (None, Some(d)) => {
             let d = chrono::Duration::from_std(d)
                 .map_err(|_| unprocessable("expires_in is out of range"))?;
-            Some(now + d)
+            Some(
+                now.checked_add_signed(d)
+                    .ok_or_else(|| unprocessable("expires_in is out of range"))?,
+            )
         }
         (None, None) => None,
     };
@@ -282,6 +285,13 @@ mod tests {
         r.expires_at = Some(now + chrono::Duration::seconds(10));
         r.expires_in = Some(Duration::from_secs(10));
         assert!(validate(r, &cfg(), now).is_err());
+    }
+
+    #[test]
+    fn huge_expires_in_is_rejected_not_panicking() {
+        let mut r = req(InputType::Raw, "image/jpeg");
+        r.expires_in = Some(Duration::from_secs(100_000_000 * 365 * 86_400));
+        assert!(validate(r, &cfg(), Utc::now()).is_err());
     }
 
     #[test]
