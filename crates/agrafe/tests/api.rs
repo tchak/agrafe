@@ -3,15 +3,15 @@
 //! `DATABASE_URL` selects the database (default `postgres://localhost/agrafe_test`).
 //! Tests share it and serialise through a mutex.
 
+use agrafe::api;
+use agrafe::app::AppState;
+use agrafe::config::Config;
+use agrafe::db;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use agrafe::api;
-use agrafe::app::AppState;
-use agrafe::config::Config;
-use agrafe::db;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, MutexGuard};
