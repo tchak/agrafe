@@ -211,9 +211,8 @@ pub struct UploadConfig {
     pub inline_scan_max_size: ByteSize,
     #[serde(with = "humantime_serde", default = "default_stale_after")]
     pub stale_after: Duration,
-    /// Grace period before an object a re-upload replaced, or a delete
-    /// released, is purged from the bucket: a download that started before
-    /// the swap keeps its bytes.
+    /// Grace period before the object a delete released is purged from the
+    /// bucket: a download that started before the delete keeps its bytes.
     #[serde(with = "humantime_serde", default = "default_purge_delay")]
     pub purge_delay: Duration,
 }

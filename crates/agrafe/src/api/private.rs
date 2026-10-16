@@ -117,7 +117,6 @@ async fn get_blob(
 async fn upload_blob(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-    headers: HeaderMap,
     req: Request,
 ) -> ApiResult<Json<BlobResponse>> {
     let blob = repo::find(state.pool(), id)
@@ -133,8 +132,7 @@ async fn upload_blob(
         // `rows` and `archive` are generated server side, a later build step.
         return Err(ApiError::NotImplemented);
     }
-    let declared = upload::declared_from_headers(&headers, &state.config().upload)?;
-    let declared = upload::resolve(&blob, declared)?;
+    let declared = upload::declared(&blob)?;
     let blob = body::upload(&state, blob, declared, req).await?;
     let urls = urls::mint(&state, &blob, &MintOptions::default(), SystemTime::now());
     Ok(Json(BlobResponse::new(&blob, urls)))

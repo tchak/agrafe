@@ -25,8 +25,8 @@ It is the reference when code and intuition disagree.
 
 - Multi-tenancy or per-client authentication on the private port. The private
   port is reachable only from trusted networks.
-- Versioned history of mutable blobs. A mutable blob keeps only its current
-  version.
+- Replacing a file in place. Blobs are write-once (see below); a backend that
+  wants new bytes creates a new blob and swaps its own reference.
 - Range requests on previews and thumbnails. They are small and served whole.
 
 ## Interfaces
@@ -40,7 +40,7 @@ No signature. Reachable only from trusted networks.
 | `POST` | `/blobs` | Create a blob (metadata only, no bytes yet) |
 | `GET` | `/blobs` | List blobs, cursor paginated, filterable |
 | `GET` | `/blobs/:id` | Full metadata plus ready-made signed public URLs |
-| `PUT` | `/blobs/:id` | Upload bytes (all input types). Re-uploads carry `X-Agrafe-Checksum` and `X-Agrafe-Size` |
+| `PUT` | `/blobs/:id` | Upload bytes (all input types), once |
 | `DELETE` | `/blobs/:id` | Soft delete, bucket objects purged asynchronously |
 | `POST` | `/blobs/:id/urls` | Mint signed public URLs with a chosen TTL and query parameters |
 | `GET` | `/blobs/:id/original/:filename` | Original bytes, supports `Range` |
@@ -140,7 +140,6 @@ message = METHOD "\n" expires_unix "\n" path_and_query_after_token
 | `input_type` | yes | `raw`, `multipart`, `rows`, `archive` |
 | `checksum` | for `raw`, `multipart` | SHA-256 of the bytes, base64 |
 | `size` | for `raw`, `multipart` | Declared size in bytes, enforced on upload |
-| `write_once` | no, default `true` | Mutable blobs are private-only |
 | `skip_virus_scan` | no, default `false` | Private-only, backend vouches for the source |
 | `expires_at` or `expires_in` | no | Absolute timestamp or duration such as `7d` |
 
@@ -162,21 +161,32 @@ The name describes the shape of the `PUT` body.
 blobs, so letting a browser drive it would be a confused-deputy path into files
 the uploader does not own.
 
+### Write-once
+
+A blob receives bytes exactly once. `PUT` is accepted from `created` only; a
+failed upload goes back to `created`, a successful one never does. There is no
+re-upload, no per-blob switch, and no object version: the original lives at
+`<blob id>/original`. A backend that needs different bytes creates a new blob,
+points its own record at it and deletes the old one, the way Active Storage
+treats blobs as immutable and attachments as the thing that changes.
+
+Why: a public `PUT` URL is reusable until it expires, and will leak into
+browser histories and proxy logs. Write-once means a leaked URL can only earn
+a `409` after the first successful upload. It also means a signed URL for the
+original is truthful for its whole lifetime, so originals can be served
+`immutable`, and the server never has to reason about readers of a previous
+version, re-scanning, or regenerating representations after a swap. The
+`purge_delay` grace period exists only for deletes.
+
 ### Public upload rule
 
 ```
-public_upload_allowed = write_once && !skip_virus_scan && input_type in (raw, multipart)
+public_upload_allowed = !skip_virus_scan && input_type in (raw, multipart)
 ```
 
 Enforced twice: when minting (the private API refuses to mint a public upload
 URL for such a blob) and in the public `PUT` handler. Returned in metadata as a
 computed field.
-
-Why: a public `PUT` URL is reusable until it expires, and will leak into
-browser histories and proxy logs. On a write-once blob a leaked URL can only
-earn a `409` after the first successful upload. Write-once also means
-everything the public port serves is immutable and cacheable for its URL
-lifetime.
 
 ### State machine
 
@@ -185,11 +195,6 @@ created ──► uploading ──► uploaded ──► ready
    ▲            │             │
    └────────────┘             └──► infected
    (failed upload, nothing stored)
-
-ready ──► uploading ──► uploaded ──► ready        (mutable blobs only)
-             │
-             └──► ready
-   (failed re-upload, previous object kept)
 
 any non-terminal ──► expired
 any ──► deleted
@@ -207,20 +212,17 @@ any ──► deleted
 
 Transitions are conditional updates (`UPDATE ... WHERE state = $from`) so two
 concurrent requests cannot both win. Write-once is enforced by refusing `PUT`
-from any state other than `created`. For mutable blobs, `PUT` is also allowed
-from `ready`, must carry the new checksum and size in the `X-Agrafe-Checksum`
-(base64 SHA-256) and `X-Agrafe-Size` headers, writes to a new object key and
-swaps the pointer on the row. The headers are honoured on the private port
-only; on a first upload they must agree with what the blob was created with.
-Readers mid-stream keep the old object: its purge job runs `upload.purge_delay`
-(default one hour) after the swap, long enough for a download that started
-before it to finish. A soft delete schedules its purge the same way.
+from any state other than `created`. The upload's checksum and size are the
+ones the blob was created with; `PUT` carries no override headers on either
+port.
 
-A failed or stale upload leaves `uploading` for the state it came from, decided
-by whether an object exists: `created` when `storage_key` is null, `ready`
-otherwise. A mutable blob whose re-upload fails therefore keeps serving its
-previous version instead of becoming unreadable. Both the abort path and the
-reaper apply this one rule.
+A failed or stale upload leaves `uploading` for `created`: nothing was stored,
+so there is nothing to keep. Both the abort path and the reaper apply this one
+rule.
+
+A soft delete schedules a purge of the object `upload.purge_delay` (default one
+hour) later, long enough for a download that started before the delete to
+finish.
 
 Separate from the blob state, each blob tracks `scan_state`
 (`pending`, `clean`, `infected`, `skipped`) and a state per derived
@@ -271,10 +273,8 @@ it came from and returns `422` (checksum, size, type) or `409` (state). On
 success the blob moves to `uploaded`, or straight to `ready` when the scan was
 inline or skipped, and the next jobs are enqueued in the same transaction: a
 `scan` for a blob waiting in `uploaded`, `thumbnail` and `preview` for one
-that is `ready`, plus a `purge` of the object a re-upload replaced, due
-`upload.purge_delay` later. The scan
-job enqueues the representations once the file is clean, so nothing renders
-a file that has not been scanned.
+that is `ready`. The scan job enqueues the representations once the file is
+clean, so nothing renders a file that has not been scanned.
 
 The pipeline runs in its own task, fed by the request handler through a
 channel. A handler future can be dropped at any moment (hyper cancels it on an
@@ -286,9 +286,10 @@ crash leaves work behind, which is what the stale-upload reaper is for. On S3
 the bucket also needs an `AbortIncompleteMultipartUpload` lifecycle rule, since
 a crashed process cannot abort the multipart uploads it had open.
 
-Objects are keyed `<blob id>/<version>/original`; `version` increments on
-every upload, so a re-upload never overwrites. Representations of a version
-will live under the same prefix, which is what a purge deletes.
+Objects are keyed `<blob id>/original`. Blobs are write-once, so the key is
+written exactly once; a failed upload aborts its multipart upload and leaves
+no object behind. Representations will live under the same `<blob id>/`
+prefix, which is what a purge deletes.
 
 ## Encryption at rest
 
@@ -370,9 +371,10 @@ Served only from `ready`; any other state answers `409` on both ports (the
 public port already answers `404` for terminal states). Single-range `Range`
 requests are honoured with `206`; multiple ranges, and a `Range` whose
 `If-Range` names another `ETag`, get the whole file. The `ETag` is the
-SHA-256 of the content, so `If-None-Match` works across re-uploads of a
-mutable blob. Write-once blobs are served `immutable` for a year, mutable ones
-`no-cache`.
+SHA-256 of the content. Originals are served `private, immutable` for a year:
+the bytes behind a URL never change, and the URL's own expiry bounds how long
+it works. Thumbnails and previews are the exception, since they change under
+the same URL once rendered (see below).
 
 Every original carries `X-Content-Type-Options: nosniff` and
 `Content-Security-Policy: sandbox`: user content is served from this origin,

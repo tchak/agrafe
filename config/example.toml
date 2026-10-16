@@ -61,8 +61,8 @@ max_size = "5 GiB"
 inline_scan_max_size = "25 MiB"
 # How long an upload may sit in `uploading` before the reaper resets it.
 stale_after = "1h"
-# Grace period before the object a re-upload replaced, or a delete released,
-# is purged from the bucket. Downloads that started before keep their bytes.
+# Grace period before the object a delete released is purged from the bucket.
+# Downloads that started before the delete keep their bytes.
 purge_delay = "1h"
 
 [encryption]

@@ -7,10 +7,8 @@
 
 use agrafe_crypto::Key;
 use agrafe_crypto::streaming::{Encryptor, Layout};
-use axum::http::HeaderMap;
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
-use jiff::Timestamp;
 use object_store::ObjectStoreExt;
 use object_store::WriteMultipart;
 use object_store::path::Path as ObjectPath;
@@ -20,16 +18,11 @@ use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
 use crate::app::AppState;
-use crate::blob::create;
+use crate::blob::Blob;
 use crate::blob::repo::{self, Completed, Transition};
-use crate::blob::{Blob, BlobState};
 use crate::config::UploadConfig;
 use crate::error::ApiError;
 use crate::sniff;
-
-/// Private-port headers carrying the checksum and size of a re-upload.
-pub const CHECKSUM_HEADER: &str = "x-agrafe-checksum";
-pub const SIZE_HEADER: &str = "x-agrafe-size";
 
 /// Parts of the object in flight at once while streaming.
 const PART_CONCURRENCY: usize = 4;
@@ -53,66 +46,23 @@ pub struct Declared {
     pub size: u64,
 }
 
-/// Read the override headers, if both or neither are present.
-pub fn declared_from_headers(
-    headers: &HeaderMap,
-    config: &UploadConfig,
-) -> Result<Option<Declared>, ApiError> {
-    let checksum = headers.get(CHECKSUM_HEADER);
-    let size = headers.get(SIZE_HEADER);
-    let (checksum, size) = match (checksum, size) {
-        (None, None) => return Ok(None),
-        (Some(c), Some(s)) => (c, s),
-        _ => {
-            return Err(ApiError::Unprocessable(format!(
-                "{CHECKSUM_HEADER} and {SIZE_HEADER} must be given together"
-            )));
-        }
-    };
-    let checksum = checksum
-        .to_str()
-        .map_err(|_| ApiError::Unprocessable(format!("{CHECKSUM_HEADER} is not valid")))?;
-    let size: i64 = size
-        .to_str()
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-        .ok_or_else(|| ApiError::Unprocessable(format!("{SIZE_HEADER} must be an integer")))?;
-    Ok(Some(Declared {
-        checksum: create::decode_checksum(checksum)?,
-        size: create::validate_size(size, config)? as u64,
-    }))
-}
-
-/// Decide what this upload must contain. A first upload uses what the blob
-/// was created with; a re-upload of a mutable blob must say what is coming.
-pub fn resolve(blob: &Blob, headers: Option<Declared>) -> Result<Declared, ApiError> {
-    let own = match (&blob.checksum_sha256, blob.size) {
-        (Some(c), Some(s)) => Some(Declared {
+/// What the blob was created with. `raw` and `multipart` blobs always have
+/// both; a generated blob does not, and does not go through this pipeline.
+pub fn declared(blob: &Blob) -> Result<Declared, ApiError> {
+    match (&blob.checksum_sha256, blob.size) {
+        (Some(c), Some(s)) => Ok(Declared {
             checksum: c.clone(),
             size: s as u64,
         }),
-        _ => None,
-    };
-    match (blob.state, headers) {
-        (BlobState::Ready, Some(h)) => Ok(h),
-        (BlobState::Ready, None) => Err(ApiError::Unprocessable(format!(
-            "re-uploading requires {CHECKSUM_HEADER} and {SIZE_HEADER}"
-        ))),
-        (_, Some(h)) => match own {
-            Some(own) if own == h => Ok(h),
-            _ => Err(ApiError::Unprocessable(
-                "checksum and size headers do not match the blob".into(),
-            )),
-        },
-        (_, None) => own.ok_or_else(|| {
-            ApiError::Unprocessable("blob has no declared checksum and size".into())
-        }),
+        _ => Err(ApiError::Unprocessable(
+            "blob has no declared checksum and size".into(),
+        )),
     }
 }
 
-/// Object key of version `version` of a blob's original.
-pub fn object_key(blob_id: Uuid, version: i32) -> String {
-    format!("{blob_id}/{version}/original")
+/// Object key of a blob's original. Blobs are write-once, so there is one.
+pub fn object_key(blob_id: Uuid) -> String {
+    format!("{blob_id}/original")
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -193,7 +143,7 @@ where
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("upload task failed: {e}")))?
 }
 
-/// Encrypt and store `body` as the next version of `blob`, which is in
+/// Encrypt and store `body` as the original of `blob`, which is in
 /// `uploading`, then complete or abort the transition.
 async fn store_and_complete<S>(
     state: AppState,
@@ -204,8 +154,7 @@ async fn store_and_complete<S>(
 where
     S: Stream<Item = Result<Bytes, ApiError>> + Unpin,
 {
-    let version = blob.version + 1;
-    let storage_key = object_key(blob.id, version);
+    let storage_key = object_key(blob.id);
     let envelope = state.keks().new_envelope(blob.id);
     let layout = state.keks().layout();
 
@@ -238,7 +187,6 @@ where
 
     let completed = Completed {
         storage_key: storage_key.clone(),
-        version,
         kek_id: envelope.kek_id,
         wrapped_key: envelope.wrapped,
         encryption_header: header,
@@ -246,8 +194,7 @@ where
         checksum_sha256: declared.checksum,
         size: declared.size as i64,
     };
-    let purge_at = state.config().upload.purge_at(Timestamp::now());
-    match repo::complete_upload(state.pool(), &blob, &completed, purge_at).await? {
+    match repo::complete_upload(state.pool(), &blob, &completed).await? {
         Transition::Done(blob) => Ok(blob),
         Transition::Conflict(current) => {
             // The row changed under us (reaper or delete); the object we just

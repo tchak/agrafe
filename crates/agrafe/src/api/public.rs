@@ -69,8 +69,7 @@ async fn upload_blob(
             blob.state
         )));
     }
-    // The public port never overrides what the backend declared.
-    let declared = upload::resolve(&blob, None)?;
+    let declared = upload::declared(&blob)?;
     let blob = body::upload(&state, blob, declared, req).await?;
     Ok(Json(PublicBlobResponse::new(&blob)))
 }

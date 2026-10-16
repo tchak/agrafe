@@ -154,7 +154,6 @@ async fn create_and_get_blob() {
     assert_eq!(body["category"], "image");
     assert_eq!(body["scan_state"], "pending");
     assert_eq!(body["public_upload_allowed"], true);
-    assert_eq!(body["write_once"], true);
     assert!(body["urls"]["upload"].is_string());
     assert!(
         body["urls"]["original"]
@@ -226,33 +225,26 @@ async fn validation_errors() {
 #[tokio::test]
 async fn private_only_blobs_get_no_public_upload() {
     let app = setup().await;
-    for (field, value) in [
-        ("write_once", json!(false)),
-        ("skip_virus_scan", json!(true)),
-    ] {
-        let mut b = raw_blob();
-        b[field] = value;
-        let (status, body) = call(&app.private, json_req(Method::POST, "/blobs", b)).await;
-        assert_eq!(status, StatusCode::CREATED, "{body}");
-        assert_eq!(body["public_upload_allowed"], false, "{field}");
-        assert!(body["urls"]["upload"].is_null(), "{field}");
-        if field == "skip_virus_scan" {
-            assert_eq!(body["scan_state"], "skipped");
-        }
+    let mut b = raw_blob();
+    b["skip_virus_scan"] = json!(true);
+    let (status, body) = call(&app.private, json_req(Method::POST, "/blobs", b)).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["public_upload_allowed"], false);
+    assert!(body["urls"]["upload"].is_null());
+    assert_eq!(body["scan_state"], "skipped");
 
-        // A forged upload URL for such a blob is refused by the handler too.
-        let id = body["id"].as_str().unwrap();
-        let token = app
-            .state
-            .signer()
-            .sign(&Method::PUT, 4_000_000_000, &format!("/{id}"));
-        let (status, body) = call(
-            &app.public,
-            req(Method::PUT, &format!("/blobs/{token}/{id}")),
-        )
-        .await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-    }
+    // A forged upload URL for such a blob is refused by the handler too.
+    let id = body["id"].as_str().unwrap();
+    let token = app
+        .state
+        .signer()
+        .sign(&Method::PUT, 4_000_000_000, &format!("/{id}"));
+    let (status, body) = call(
+        &app.public,
+        req(Method::PUT, &format!("/blobs/{token}/{id}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
 }
 
 #[tokio::test]
@@ -415,6 +407,16 @@ async fn jobs_for(app: &TestApp, id: &str) -> Vec<String> {
 }
 
 /// Read and decrypt the stored original straight from the object store.
+/// The object key a blob's original is stored under.
+async fn storage_key(app: &TestApp, id: &str) -> String {
+    agrafe::blob::repo::find(app.state.pool(), id.parse().unwrap())
+        .await
+        .unwrap()
+        .unwrap()
+        .storage_key
+        .expect("storage_key")
+}
+
 async fn stored_plaintext(app: &TestApp, id: &str) -> Vec<u8> {
     use agrafe::blob::repo;
     use agrafe_crypto::streaming::{self, Layout};
@@ -663,83 +665,30 @@ async fn multipart_upload_public() {
 }
 
 #[tokio::test]
-async fn mutable_reupload() {
+async fn upload_url_is_dead_after_one_success() {
     let app = setup().await;
-    let v1 = png_bytes(1500);
-    let v2 = png_bytes(4000);
-    let mut blob = blob_for(&v1, "image/png", "raw");
-    blob["write_once"] = json!(false);
-    blob["skip_virus_scan"] = json!(true);
-    let created = create(&app, blob).await;
+    let bytes = png_bytes(1500);
+    let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
     let id = created["id"].as_str().unwrap();
-    let uri = format!("/blobs/{id}");
+    let upload = public_path(created["urls"]["upload"].as_str().unwrap());
 
-    // Headers on a first upload must agree with the declaration.
-    let wrong = Request::builder()
-        .method(Method::PUT)
-        .uri(&uri)
-        .header("x-agrafe-checksum", STANDARD.encode(Sha256::digest(&v2)))
-        .header("x-agrafe-size", v2.len())
-        .body(Body::from(v1.clone()))
-        .unwrap();
-    let (status, body) = call(&app.private, wrong).await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
-
-    let (status, body) = call(&app.private, put_raw(&uri, v1.clone())).await;
+    let (status, body) = call(&app.public, put_raw(&upload, bytes.clone())).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["state"], "ready");
-    let (_, first) = call(&app.private, req(Method::GET, &uri)).await;
+    assert_eq!(body["state"], "uploaded");
 
-    // A re-upload must say what is coming.
-    let (status, body) = call(&app.private, put_raw(&uri, v2.clone())).await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
-    let (_, got) = call(&app.private, req(Method::GET, &uri)).await;
-    assert_eq!(got["state"], "ready", "previous version still served");
-
-    let only_one = Request::builder()
-        .method(Method::PUT)
-        .uri(&uri)
-        .header("x-agrafe-size", v2.len())
-        .body(Body::from(v2.clone()))
-        .unwrap();
-    let (status, _) = call(&app.private, only_one).await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-
-    let reupload = Request::builder()
-        .method(Method::PUT)
-        .uri(&uri)
-        .header("x-agrafe-checksum", STANDARD.encode(Sha256::digest(&v2)))
-        .header("x-agrafe-size", v2.len())
-        .body(Body::from(v2.clone()))
-        .unwrap();
-    let (status, body) = call(&app.private, reupload).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["state"], "ready");
-    assert_eq!(body["size"], v2.len());
-    assert_eq!(body["checksum"], STANDARD.encode(Sha256::digest(&v2)));
-    assert_eq!(stored_plaintext(&app, id).await, v2);
-
-    // The previous object is queued for purge, after the grace period.
-    let (kind, payload, in_secs): (String, Value, f64) = sqlx::query_as(
-        "SELECT kind, payload, EXTRACT(EPOCH FROM run_at - now())::float8 \
-         FROM jobs WHERE kind = 'purge'",
-    )
-    .fetch_one(app.state.pool())
-    .await
-    .unwrap();
-    assert_eq!(kind, "purge");
-    assert_eq!(payload["blob_id"], first["id"]);
-    assert!((1700.0..=1800.0).contains(&in_secs), "{in_secs}");
-    assert!(
-        payload["storage_key"]
-            .as_str()
-            .unwrap()
-            .ends_with("/1/original"),
-        "{payload}"
+    // Blobs are write-once: the same URL, leaked or replayed, earns a 409 on
+    // either port and the stored bytes are untouched.
+    let other = png_bytes(4000);
+    let (status, body) = call(&app.public, put_raw(&upload, other.clone())).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let (status, body) = call(&app.private, put_raw(&format!("/blobs/{id}"), other)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(stored_plaintext(&app, id).await, bytes);
+    assert_eq!(
+        storage_key(&app, id).await,
+        format!("{id}/original"),
+        "one object per blob, no version in the key"
     );
-
-    // The public port never accepts a re-upload, even with headers.
-    assert!(created["urls"]["upload"].is_null());
 }
 
 #[tokio::test]
@@ -1070,17 +1019,17 @@ async fn state_machine_transitions() {
         Transition::Conflict(_)
     ));
 
-    // Failure hands the write back.
-    assert!(matches!(
-        repo::abort_upload(&mut conn, id).await.unwrap(),
-        Transition::Done(_)
-    ));
+    // Failure hands the write back to `created`.
+    let Transition::Done(after_abort) = repo::abort_upload(&mut conn, id).await.unwrap() else {
+        panic!("abort should apply");
+    };
+    assert_eq!(after_abort.state, BlobState::Created);
     assert!(matches!(
         repo::begin_upload(&mut conn, &blob).await.unwrap(),
         Transition::Done(_)
     ));
 
-    // Once ready, write-once refuses a new upload...
+    // Once ready, no upload may start: blobs are write-once.
     repo::transition(&mut conn, id, &[BlobState::Uploading], BlobState::Uploaded)
         .await
         .unwrap();
@@ -1092,24 +1041,10 @@ async fn state_machine_transitions() {
         repo::begin_upload(&mut conn, &ready).await.unwrap(),
         Transition::Conflict(_)
     ));
-
-    // ...while a mutable blob accepts one.
-    sqlx::query("UPDATE blobs SET write_once = false, storage_key = 'k/1' WHERE id = $1")
-        .bind(id)
-        .execute(pool)
-        .await
-        .unwrap();
-    let mutable = repo::find(pool, id).await.unwrap().unwrap();
     assert!(matches!(
-        repo::begin_upload(&mut conn, &mutable).await.unwrap(),
-        Transition::Done(_)
+        repo::abort_upload(&mut conn, id).await.unwrap(),
+        Transition::Conflict(_)
     ));
-
-    // A failed re-upload keeps the previous object readable.
-    let Transition::Done(after_abort) = repo::abort_upload(&mut conn, id).await.unwrap() else {
-        panic!("abort should apply");
-    };
-    assert_eq!(after_abort.state, BlobState::Ready);
 
     assert!(matches!(
         repo::transition(
@@ -1145,10 +1080,9 @@ fn get_with(uri: &str, headers: &[(&str, &str)]) -> Request<Body> {
 }
 
 /// Upload `bytes` as a ready blob and return its metadata.
-async fn ready_blob(app: &TestApp, bytes: &[u8], write_once: bool) -> Value {
+async fn ready_blob(app: &TestApp, bytes: &[u8]) -> Value {
     let mut blob = blob_for(bytes, "image/png", "raw");
     blob["skip_virus_scan"] = json!(true);
-    blob["write_once"] = json!(write_once);
     let created = create(app, blob).await;
     let id = created["id"].as_str().unwrap();
     let (status, body) = call(
@@ -1165,7 +1099,7 @@ async fn get_original_full() {
     let app = setup().await;
     // Several 1 KiB segments plus a partial one.
     let bytes = png_bytes(3500);
-    let blob = ready_blob(&app, &bytes, true).await;
+    let blob = ready_blob(&app, &bytes).await;
     let id = blob["id"].as_str().unwrap();
     let private_uri = format!("/blobs/{id}/original/photo.png");
 
@@ -1245,7 +1179,7 @@ async fn get_original_full() {
     );
 
     // An empty file.
-    let empty = ready_blob(&app, b"", true).await;
+    let empty = ready_blob(&app, b"").await;
     let uri = public_path(empty["urls"]["original"].as_str().unwrap());
     let (status, headers, body) = fetch(&app.public, get_with(&uri, &[])).await;
     assert_eq!(status, StatusCode::OK);
@@ -1253,23 +1187,13 @@ async fn get_original_full() {
     assert!(body.is_empty());
     let (status, _, _) = fetch(&app.public, get_with(&uri, &[("range", "bytes=0-")])).await;
     assert_eq!(status, StatusCode::RANGE_NOT_SATISFIABLE);
-
-    // Mutable blobs must be revalidated.
-    let mutable = ready_blob(&app, &bytes, false).await;
-    let id = mutable["id"].as_str().unwrap();
-    let (_, headers, _) = fetch(
-        &app.private,
-        get_with(&format!("/blobs/{id}/original/photo.png"), &[]),
-    )
-    .await;
-    assert_eq!(headers["cache-control"], "private, no-cache");
 }
 
 #[tokio::test]
 async fn get_original_ranges() {
     let app = setup().await;
     let bytes = png_bytes(3500);
-    let blob = ready_blob(&app, &bytes, true).await;
+    let blob = ready_blob(&app, &bytes).await;
     let uri = public_path(blob["urls"]["original"].as_str().unwrap());
     let etag = {
         let (_, headers, _) = fetch(&app.public, get_with(&uri, &[])).await;
@@ -1338,7 +1262,7 @@ async fn get_original_corrupt_object() {
 
     let app = setup().await;
     let bytes = png_bytes(3500);
-    let blob = ready_blob(&app, &bytes, true).await;
+    let blob = ready_blob(&app, &bytes).await;
     let id = blob["id"].as_str().unwrap();
     let uri = format!("/blobs/{id}/original/photo.png");
     let key = {
@@ -1415,7 +1339,7 @@ async fn get_original_unreadable() {
     assert_eq!(body["error"]["code"], "conflict");
 
     // Deleted: gone from the public port, conflict on the private one.
-    let blob = ready_blob(&app, &bytes, true).await;
+    let blob = ready_blob(&app, &bytes).await;
     let id = blob["id"].as_str().unwrap();
     let uri = public_path(blob["urls"]["original"].as_str().unwrap());
     let (status, _) = call(&app.private, req(Method::DELETE, &format!("/blobs/{id}"))).await;
@@ -1430,7 +1354,7 @@ async fn get_original_unreadable() {
     assert_eq!(status, StatusCode::CONFLICT);
 
     // Invalid disposition value.
-    let blob = ready_blob(&app, &bytes, true).await;
+    let blob = ready_blob(&app, &bytes).await;
     let id = blob["id"].as_str().unwrap();
     let (status, _) = call(
         &app.private,

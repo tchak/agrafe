@@ -23,17 +23,11 @@ pub struct CreateBlobRequest {
     pub checksum: Option<String>,
     /// Declared size in bytes. Required for `raw` and `multipart`.
     pub size: Option<i64>,
-    #[serde(default = "default_true")]
-    pub write_once: bool,
     #[serde(default)]
     pub skip_virus_scan: bool,
     pub expires_at: Option<Timestamp>,
     #[serde(default, with = "humantime_serde")]
     pub expires_in: Option<Duration>,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 /// A validated blob, ready to insert.
@@ -46,7 +40,6 @@ pub struct NewBlob {
     pub input_type: InputType,
     pub checksum_sha256: Option<Vec<u8>>,
     pub size: Option<i64>,
-    pub write_once: bool,
     pub skip_virus_scan: bool,
     pub expires_at: Option<Timestamp>,
 }
@@ -115,7 +108,6 @@ pub fn validate(
         input_type: req.input_type,
         checksum_sha256,
         size,
-        write_once: req.write_once,
         skip_virus_scan: req.skip_virus_scan,
         expires_at,
     })
@@ -215,7 +207,6 @@ mod tests {
             input_type,
             checksum: input_type.is_direct().then(|| STANDARD.encode([7u8; 32])),
             size: input_type.is_direct().then_some(1234),
-            write_once: true,
             skip_virus_scan: false,
             expires_at: None,
             expires_in: None,

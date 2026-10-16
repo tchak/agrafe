@@ -62,7 +62,12 @@ pub async fn serve(
     let h = response.headers_mut();
     h.insert(header::ETAG, HeaderValue::from_str(&etag).expect("ascii"));
     h.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
-    h.insert(header::CACHE_CONTROL, cache_control(&blob));
+    // The URL is a capability with its own expiry; blobs are write-once, so
+    // the bytes behind it never change.
+    h.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=31536000, immutable"),
+    );
     if let Some(at) = blob.uploaded_at {
         h.insert(header::LAST_MODIFIED, http_date(at));
     }
@@ -100,8 +105,8 @@ pub async fn serve(
         HeaderValue::from_static("sandbox"),
     );
 
-    // A stale `If-Range` means the client's partial copy is from another
-    // version, so the range is ignored and the whole file is sent.
+    // An `If-Range` naming another entity means the client's partial copy is
+    // not of this file, so the range is ignored and the whole file is sent.
     let range_applies = headers
         .get(header::IF_RANGE)
         .and_then(|v| v.to_str().ok())
@@ -370,16 +375,6 @@ fn parse_range(value: &str, size: u64) -> RangeOutcome {
 fn etag(checksum: &[u8]) -> String {
     let hex: String = checksum.iter().map(|b| format!("{b:02x}")).collect();
     format!("\"{hex}\"")
-}
-
-fn cache_control(blob: &Blob) -> HeaderValue {
-    if blob.write_once {
-        // The URL is a capability with its own expiry; the bytes behind it
-        // never change.
-        HeaderValue::from_static("private, max-age=31536000, immutable")
-    } else {
-        HeaderValue::from_static("private, no-cache")
-    }
 }
 
 fn http_date(at: Timestamp) -> HeaderValue {

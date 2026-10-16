@@ -112,7 +112,6 @@ pub struct Blob {
     pub input_type: InputType,
     pub checksum_sha256: Option<Vec<u8>>,
     pub size: Option<i64>,
-    pub write_once: bool,
     pub skip_virus_scan: bool,
     #[sqlx(try_from = "crate::db::NullableTimestamp")]
     pub expires_at: Option<Timestamp>,
@@ -122,9 +121,8 @@ pub struct Blob {
     #[sqlx(try_from = "crate::db::NullableTimestamp")]
     pub scanned_at: Option<Timestamp>,
 
-    /// Object key of the current original, `<id>/<version>/original`.
+    /// Object key of the original, `<id>/original`.
     pub storage_key: Option<String>,
-    pub version: i32,
 
     pub kek_id: Option<String>,
     pub wrapped_key: Option<Vec<u8>>,
@@ -156,7 +154,7 @@ impl Blob {
     /// The single rule deciding whether the public port may upload this blob.
     /// Enforced when minting and again in the public `PUT` handler.
     pub fn public_upload_allowed(&self) -> bool {
-        public_upload_allowed(self.write_once, self.skip_virus_scan, self.input_type)
+        public_upload_allowed(self.skip_virus_scan, self.input_type)
     }
 
     /// The public port answers `404` for blobs in a terminal state, so a leaked
@@ -171,22 +169,14 @@ impl Blob {
         self.state == BlobState::Ready
     }
 
-    /// States from which a `PUT` may start.
+    /// Blobs are write-once: a `PUT` may start only before any bytes exist.
     pub fn accepts_upload(&self) -> bool {
-        match self.state {
-            BlobState::Created => true,
-            BlobState::Ready => !self.write_once,
-            _ => false,
-        }
+        self.state == BlobState::Created
     }
 }
 
-pub fn public_upload_allowed(
-    write_once: bool,
-    skip_virus_scan: bool,
-    input_type: InputType,
-) -> bool {
-    write_once && !skip_virus_scan && input_type.is_direct()
+pub fn public_upload_allowed(skip_virus_scan: bool, input_type: InputType) -> bool {
+    !skip_virus_scan && input_type.is_direct()
 }
 
 #[cfg(test)]
@@ -195,12 +185,11 @@ mod tests {
 
     #[test]
     fn public_upload_rule() {
-        assert!(public_upload_allowed(true, false, InputType::Raw));
-        assert!(public_upload_allowed(true, false, InputType::Multipart));
-        assert!(!public_upload_allowed(false, false, InputType::Raw));
-        assert!(!public_upload_allowed(true, true, InputType::Raw));
-        assert!(!public_upload_allowed(true, false, InputType::Rows));
-        assert!(!public_upload_allowed(true, false, InputType::Archive));
+        assert!(public_upload_allowed(false, InputType::Raw));
+        assert!(public_upload_allowed(false, InputType::Multipart));
+        assert!(!public_upload_allowed(true, InputType::Raw));
+        assert!(!public_upload_allowed(false, InputType::Rows));
+        assert!(!public_upload_allowed(false, InputType::Archive));
     }
 
     #[test]

@@ -21,9 +21,9 @@ pub async fn insert(exec: impl PgExecutor<'_>, new: &NewBlob) -> sqlx::Result<Bl
         r#"
         INSERT INTO blobs (
             id, state, filename, content_type, category, input_type,
-            checksum_sha256, size, write_once, skip_virus_scan, expires_at, scan_state
+            checksum_sha256, size, skip_virus_scan, expires_at, scan_state
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         RETURNING *
         "#,
     )
@@ -35,7 +35,6 @@ pub async fn insert(exec: impl PgExecutor<'_>, new: &NewBlob) -> sqlx::Result<Bl
     .bind(new.input_type.as_str())
     .bind(&new.checksum_sha256)
     .bind(new.size)
-    .bind(new.write_once)
     .bind(new.skip_virus_scan)
     .bind(new.expires_at.map(ToSqlx::to_sqlx))
     .bind(scan_state.as_str())
@@ -145,48 +144,22 @@ pub async fn transition(
     }
 }
 
-/// `created` (or `ready` for mutable blobs) to `uploading`.
+/// `created` to `uploading`. Blobs are write-once, so no other state accepts
+/// an upload.
 pub async fn begin_upload(conn: &mut PgConnection, blob: &Blob) -> sqlx::Result<Transition> {
-    let from: &[BlobState] = if blob.write_once {
-        &[BlobState::Created]
-    } else {
-        &[BlobState::Created, BlobState::Ready]
-    };
-    transition(conn, blob.id, from, BlobState::Uploading).await
+    transition(conn, blob.id, &[BlobState::Created], BlobState::Uploading).await
 }
 
-/// A failed upload hands the blob back to where it came from: `created` when
-/// nothing was ever stored, `ready` when a mutable blob still has its previous
-/// object. The stale-upload reaper applies the same rule.
+/// A failed upload hands the blob back to `created`: nothing was stored. The
+/// stale-upload reaper applies the same rule.
 pub async fn abort_upload(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Transition> {
-    let updated = sqlx::query_as::<_, Blob>(
-        r#"
-        UPDATE blobs
-        SET state = CASE WHEN storage_key IS NULL THEN $2 ELSE $3 END
-        WHERE id = $1 AND state = $4
-        RETURNING *
-        "#,
-    )
-    .bind(id)
-    .bind(BlobState::Created.as_str())
-    .bind(BlobState::Ready.as_str())
-    .bind(BlobState::Uploading.as_str())
-    .fetch_optional(&mut *conn)
-    .await?;
-    match updated {
-        Some(blob) => Ok(Transition::Done(blob)),
-        None => match find(&mut *conn, id).await? {
-            Some(blob) => Ok(Transition::Conflict(blob)),
-            None => Ok(Transition::Missing),
-        },
-    }
+    transition(conn, id, &[BlobState::Uploading], BlobState::Created).await
 }
 
 /// Everything an upload writes onto the row when it completes.
 #[derive(Debug, Clone)]
 pub struct Completed {
     pub storage_key: String,
-    pub version: i32,
     pub kek_id: String,
     pub wrapped_key: Vec<u8>,
     pub encryption_header: Vec<u8>,
@@ -196,15 +169,12 @@ pub struct Completed {
 }
 
 /// `uploading` to `uploaded`, or straight to `ready` when the scan is
-/// skipped. Points the row at the new object, resets scan and representation
-/// state, and enqueues what comes next in the same transaction: a scan, or
-/// the representations, plus a purge at `purge_at` of the object this one
-/// replaces.
+/// skipped. Points the row at the object and enqueues what comes next in the
+/// same transaction: a scan, or the representations.
 pub async fn complete_upload(
     pool: &PgPool,
     blob: &Blob,
     done: &Completed,
-    purge_at: Timestamp,
 ) -> sqlx::Result<Transition> {
     let (state, scan_state) = if blob.skip_virus_scan {
         (BlobState::Ready, ScanState::Skipped)
@@ -215,21 +185,18 @@ pub async fn complete_upload(
     let updated = sqlx::query_as::<_, Blob>(
         r#"
         UPDATE blobs
-        SET state = $2, storage_key = $3, version = $4,
-            kek_id = $5, wrapped_key = $6, encryption_header = $7, chunk_size = $8,
-            checksum_sha256 = $9, size = $10,
-            scan_state = $11, scanned_at = NULL,
-            thumbnail_state = 'pending', preview_state = 'pending', preview_source = NULL,
-            thumbnail_variant_version = NULL, preview_variant_version = NULL,
+        SET state = $2, storage_key = $3,
+            kek_id = $4, wrapped_key = $5, encryption_header = $6, chunk_size = $7,
+            checksum_sha256 = $8, size = $9,
+            scan_state = $10,
             uploaded_at = now()
-        WHERE id = $1 AND state = $12
+        WHERE id = $1 AND state = $11
         RETURNING *
         "#,
     )
     .bind(blob.id)
     .bind(state.as_str())
     .bind(&done.storage_key)
-    .bind(done.version)
     .bind(&done.kek_id)
     .bind(&done.wrapped_key)
     .bind(&done.encryption_header)
@@ -256,16 +223,6 @@ pub async fn complete_upload(
     };
     for kind in kinds {
         jobs::enqueue(&mut *tx, *kind, Some(blob.id), serde_json::json!({}), now).await?;
-    }
-    if let Some(old) = &blob.storage_key {
-        jobs::enqueue(
-            &mut *tx,
-            JobKind::Purge,
-            None,
-            serde_json::json!({ "blob_id": blob.id, "storage_key": old }),
-            purge_at,
-        )
-        .await?;
     }
     tx.commit().await?;
     Ok(Transition::Done(updated))
