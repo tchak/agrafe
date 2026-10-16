@@ -479,7 +479,8 @@ blob row, and enqueueing in the same transaction as the state change removes
 the dual-write failure where a crash between commit and publish loses the job.
 
 Job kinds: `scan`, `thumbnail`, `preview`, `purge` (delete bucket objects),
-`reap` (periodic: expire blobs, reset stale `uploading`, find orphans).
+`reap` (periodic: expire blobs, reset stale `uploading`, find orphans, prune
+dead jobs once they have been around long enough to have been looked at).
 
 Each row: `kind`, `blob_id`, `payload`, `run_at`, `attempts`, `max_attempts`,
 `locked_at`, `locked_by`, `last_error`, `failed_at`. A worker claims the
