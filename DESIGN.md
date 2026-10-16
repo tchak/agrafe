@@ -110,7 +110,9 @@ message = METHOD "\n" expires_unix "\n" path_and_query_after_token
   `signing.allow_permanent = true`.
 - Several keys live in config. One is current for minting, all are valid for
   verification. The key id in the token selects the key. This makes rotation
-  possible without invalidating URLs in flight.
+  possible without invalidating URLs in flight. Ids are restricted to
+  `[A-Za-z0-9_-]` so they are safe path segments and cannot contain the token
+  separator.
 - Minted expiries are rounded: `expires = ceil(now / window) * window + ttl`.
   All URLs minted for the same blob inside one window are identical, so
   browsers and CDNs can cache them. Window and TTL are per operation in config.

@@ -51,9 +51,14 @@ impl Config {
             self.signing.current_key
         );
         for (id, key) in &self.signing.keys {
+            // The id travels inside the URL token, so it must be a safe path
+            // segment and must not contain the token separator `.`.
             anyhow::ensure!(
-                !id.is_empty() && !id.contains('.'),
-                "signing key id `{id}` must be non-empty and contain no `.`"
+                !id.is_empty()
+                    && id
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
+                "signing key id `{id}` must be non-empty and use only [A-Za-z0-9_-]"
             );
             anyhow::ensure!(
                 key.decoded()?.len() >= 32,

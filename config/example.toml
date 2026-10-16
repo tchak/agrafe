@@ -44,7 +44,8 @@ window = "1h"
 allow_permanent = false
 
 [signing.keys]
-# 32 random bytes, base64. Generate with: openssl rand -base64 32
+# Key ids appear in URL tokens: letters, digits, `-` and `_` only.
+# Values are 32 random bytes, base64. Generate with: openssl rand -base64 32
 k1 = "REPLACE_ME_WITH_32_RANDOM_BYTES_IN_BASE64_____"
 
 [signing.ttl]
