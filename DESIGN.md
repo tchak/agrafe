@@ -255,7 +255,8 @@ Bytes flow once through a chain of consumers:
 1. Size counter, rejects on exceeding the declared size, itself capped at
    `upload.max_size` when declared. The HTTP body limit on the upload routes
    is `max_size` plus slack for multipart framing, a backstop that the
-   counter normally reaches first.
+   counter normally reaches first. A `raw` body whose `Content-Length`
+   disagrees with the declared size is refused before it is read.
 2. SHA-256 hasher, compared against the declared checksum at the end.
 3. Magic-byte sniffer on the first chunk, compared against the declared
    content type.

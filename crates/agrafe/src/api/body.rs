@@ -23,6 +23,16 @@ pub async fn upload(
 ) -> ApiResult<Blob> {
     match blob.input_type {
         InputType::Raw => {
+            // A body whose length is already known not to match is refused
+            // before a byte is read or the blob is touched.
+            if let Some(len) = content_length(&req)
+                && len != declared.size
+            {
+                return Err(ApiError::Unprocessable(format!(
+                    "Content-Length {len} does not match the declared size {}",
+                    declared.size
+                )));
+            }
             // `into_limited_body` applies the route's `DefaultBodyLimit`,
             // which a bare `Request` does not; `Multipart` does it itself.
             let body = req
@@ -51,6 +61,16 @@ pub async fn upload(
         }
         InputType::Rows | InputType::Archive => Err(ApiError::NotImplemented),
     }
+}
+
+fn content_length(req: &Request) -> Option<u64> {
+    req.headers()
+        .get(axum::http::header::CONTENT_LENGTH)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
 }
 
 fn body_error(e: axum::Error) -> ApiError {

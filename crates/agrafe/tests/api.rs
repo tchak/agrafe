@@ -557,6 +557,28 @@ async fn raw_upload_rejections() {
         }
     }
 
+    // A Content-Length that disagrees with the declaration is refused before
+    // the body is read.
+    let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
+    let id = created["id"].as_str().unwrap();
+    let mismatched = Request::builder()
+        .method(Method::PUT)
+        .uri(format!("/blobs/{id}"))
+        .header(header::CONTENT_LENGTH, bytes.len() - 1)
+        .body(Body::from(bytes.clone()))
+        .unwrap();
+    let (status, res) = call(&app.private, mismatched).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{res}");
+    assert!(
+        res["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Content-Length"),
+        "{res}"
+    );
+    let (_, got) = call(&app.private, req(Method::GET, &format!("/blobs/{id}"))).await;
+    assert_eq!(got["state"], "created");
+
     // Leftover objects: only the successful uploads wrote one.
     let objects: Vec<_> = {
         use futures::TryStreamExt;
