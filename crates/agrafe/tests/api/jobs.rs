@@ -198,7 +198,7 @@ async fn job_queue_mechanics() {
     assert!(
         jobs::enqueue(
             pool,
-            JobKind::Thumbnail,
+            JobKind::Render,
             Some(blob),
             json!({}),
             now + Duration::from_secs(3600)
@@ -207,13 +207,13 @@ async fn job_queue_mechanics() {
         .unwrap()
     );
     assert!(
-        jobs::claim(pool, &[JobKind::Thumbnail], "w1", lease)
+        jobs::claim(pool, &[JobKind::Render], "w1", lease)
             .await
             .unwrap()
             .is_none()
     );
     assert!(
-        jobs::claim(pool, &[JobKind::Preview], "w1", lease)
+        jobs::claim(pool, &[JobKind::Reap], "w1", lease)
             .await
             .unwrap()
             .is_none()

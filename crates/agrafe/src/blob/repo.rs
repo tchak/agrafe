@@ -260,7 +260,7 @@ pub async fn finish_scan(pool: &PgPool, id: Uuid, verdict: &Verdict) -> sqlx::Re
 async fn enqueue_next(conn: &mut PgConnection, blob: &Blob) -> sqlx::Result<()> {
     let kinds: &[JobKind] = match blob.state {
         BlobState::Uploaded => &[JobKind::Scan],
-        BlobState::Ready => &[JobKind::Thumbnail, JobKind::Preview],
+        BlobState::Ready => &[JobKind::Render],
         _ => &[],
     };
     let now = Timestamp::now();
@@ -347,13 +347,9 @@ pub async fn request_representation(
         tx.rollback().await?;
         return Ok(false);
     }
-    let job = match kind {
-        Representation::Thumbnail => JobKind::Thumbnail,
-        Representation::Preview => JobKind::Preview,
-    };
     jobs::enqueue(
         &mut *tx,
-        job,
+        JobKind::Render,
         Some(id),
         serde_json::json!({}),
         Timestamp::now(),

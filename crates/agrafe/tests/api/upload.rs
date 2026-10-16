@@ -40,10 +40,7 @@ async fn vouched_upload_is_ready_at_once() {
     let body = ready_blob(&app, &png_bytes(5000)).await;
     assert_eq!(body["state"], "ready");
     assert_eq!(body["scan_state"], "skipped");
-    assert_eq!(
-        jobs_for(&app, id_of(&body)).await,
-        vec!["preview", "thumbnail"]
-    );
+    assert_eq!(jobs_for(&app, id_of(&body)).await, vec!["render"]);
 }
 
 /// An empty file is a valid file.

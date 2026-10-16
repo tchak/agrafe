@@ -1,5 +1,13 @@
-//! Rendering a blob's thumbnail or preview: fetch and decrypt the original,
-//! pick a source, rasterise it in a sandbox, store the WebP encrypted.
+//! Rendering a blob's representations: fetch and decrypt the original once,
+//! pick a source, rasterise the preview in a sandbox, derive the thumbnail
+//! from it, store both encrypted.
+//!
+//! One job serves both representations and does whatever is `pending` on
+//! the row. The thumbnail is the preview fitted into the thumbnail box: the
+//! original is decoded once, the two pictures agree, and a thumbnail
+//! regenerated on its own is made from the stored preview without touching
+//! the original. Files with no preview get a thumbnail of their own when
+//! they are text.
 //!
 //! A file the renderer rejects, or that crashes a helper, leaves the
 //! representation `failed` and the job done: trying the same bytes again
@@ -22,12 +30,13 @@ use crate::media::render::{self, Fit, Input};
 use crate::media::sandbox::{self, Outcome};
 use crate::media::{self, Source, text};
 
+/// The preview's file in the work directory.
+const PREVIEW: &str = "preview.webp";
+
 pub async fn run(state: &AppState, job: &Job) -> Result<(), JobError> {
-    let kind = match job.kind {
-        JobKind::Thumbnail => Representation::Thumbnail,
-        JobKind::Preview => Representation::Preview,
-        other => return Err(JobError::Unhandled(other)),
-    };
+    if job.kind != JobKind::Render {
+        return Err(JobError::Unhandled(job.kind));
+    }
     let id = job.blob_id.ok_or(JobError::NoBlob(job.kind))?;
     let Some(blob) = repo::find(state.pool(), id).await? else {
         tracing::info!("blob is gone, nothing to render");
@@ -37,144 +46,275 @@ pub async fn run(state: &AppState, job: &Job) -> Result<(), JobError> {
         tracing::info!(state = %blob.state, "blob is not ready, nothing to render");
         return Ok(());
     }
-    let media = &state.config().media;
-    let version = media.variant_version;
-
-    let too_large = blob
-        .size
-        .is_some_and(|size| size as u64 > media.max_source_size.as_u64());
-    let sources: Vec<Source> = media::sources(&blob.content_type)
-        .iter()
-        .copied()
-        .filter(|source| source.serves(kind) && !(too_large && source.reads_whole_file()))
-        .collect();
-    if sources.is_empty() {
-        tracing::info!(content_type = %blob.content_type, too_large, "nothing to render a {kind} from");
-        repo::finish_representation(
-            state.pool(),
-            id,
-            kind,
-            RepresentationState::Unavailable,
-            None,
-            version,
-        )
-        .await?;
+    let pending = |kind| blob.representation_state(kind) == RepresentationState::Pending;
+    if !pending(Representation::Preview) && !pending(Representation::Thumbnail) {
+        tracing::info!("nothing is pending, nothing to render");
         return Ok(());
     }
+    let mut render = Render::new(state, &blob)?;
 
-    let workdir = workdir(media)?;
-    let stored = Stored::from_blob(&blob)?;
-    // The whole original is fetched once, and only by a source that needs
-    // it: a text sample reads a few KiB.
-    let mut original: Option<PathBuf> = None;
-
-    let fit = match kind {
-        Representation::Thumbnail => Fit::thumbnail(media),
-        Representation::Preview => Fit::preview(media),
+    // The preview comes first: rendered when it is pending, or when the
+    // thumbnail needs one and the stored one is from another version or
+    // gone. A verdict from this version stands.
+    let current = blob.preview_variant_version == Some(render.media().variant_version);
+    let preview = match (
+        pending(Representation::Preview),
+        blob.preview_state,
+        current,
+    ) {
+        (false, RepresentationState::Ready, true) => match render.stored_preview().await? {
+            Some(path) => Preview::Ready(path),
+            None => render.preview().await?,
+        },
+        (false, RepresentationState::Failed, true) => Preview::Failed,
+        (false, RepresentationState::Unavailable, true) => Preview::Unavailable,
+        _ => render.preview().await?,
     };
-    let output = workdir.path().join("rendered.webp");
-    let mut rendered = None;
-    let mut rejected = false;
-    for source in sources {
-        let (input, kind, from) = match source {
-            Source::Image => (
-                whole_original(state, &blob, &stored, &workdir, &mut original).await?,
-                Input::for_image(&blob.content_type),
-                Some(PreviewSource::Image),
-            ),
-            Source::FirstPage => (
-                whole_original(state, &blob, &stored, &workdir, &mut original).await?,
-                Input::Page,
-                Some(PreviewSource::FirstPage),
-            ),
-            Source::EmbeddedImage => {
-                let whole = whole_original(state, &blob, &stored, &workdir, &mut original).await?;
-                let embedded = workdir.path().join("embedded");
-                let outcome = extract(media, &blob.content_type, &whole, &embedded).await?;
-                if !produced(outcome, &mut rejected) {
-                    continue;
-                }
-                (embedded, Input::Raster, Some(PreviewSource::EmbeddedImage))
-            }
-            Source::TextSample => {
-                let sample = workdir.path().join("sample");
-                download(
-                    state,
-                    &blob,
-                    &stored,
-                    &sample,
-                    0..stored.size.min(text::SAMPLE_LEN),
-                )
-                .await?;
-                let page = workdir.path().join("page.pgm");
-                if !produced(
-                    render_text(media, &sample, &page, fit).await?,
-                    &mut rejected,
-                ) {
-                    continue;
-                }
-                (page, Input::Raster, None)
-            }
+
+    if pending(Representation::Thumbnail) {
+        let verdict = match &preview {
+            Preview::Ready(path) => render.thumbnail_webp(path).await?,
+            Preview::Failed => Verdict::Rejected,
+            Preview::Unavailable => render.text_sample().await?,
         };
-        match render::to_webp(media, &input, kind, &output, fit).await {
-            Ok(bytes) => {
-                rendered = Some((bytes, from));
-                break;
+        render
+            .finish(
+                Representation::Thumbnail,
+                verdict.map(|bytes| (bytes, None)),
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+/// What the thumbnail is derived from.
+enum Preview {
+    /// A WebP in the work directory, rendered now or decrypted from the
+    /// store.
+    Ready(PathBuf),
+    Failed,
+    Unavailable,
+}
+
+/// How an attempt at a representation ended.
+enum Verdict<T> {
+    Rendered(T),
+    /// The file's fault: the renderer or a helper rejected it, or crashed.
+    Rejected,
+    /// Nothing to render from.
+    Declined,
+}
+
+impl<T> Verdict<T> {
+    fn map<U>(self, f: impl FnOnce(T) -> U) -> Verdict<U> {
+        match self {
+            Verdict::Rendered(value) => Verdict::Rendered(f(value)),
+            Verdict::Rejected => Verdict::Rejected,
+            Verdict::Declined => Verdict::Declined,
+        }
+    }
+}
+
+/// One job's rendering: the blob, its keys, and a work directory removed
+/// when the job is done.
+struct Render<'a> {
+    state: &'a AppState,
+    blob: &'a Blob,
+    stored: Stored,
+    workdir: tempfile::TempDir,
+    /// The whole original, decrypted on first use.
+    original: Option<PathBuf>,
+}
+
+impl<'a> Render<'a> {
+    fn new(state: &'a AppState, blob: &'a Blob) -> Result<Self, JobError> {
+        Ok(Self {
+            state,
+            blob,
+            stored: Stored::from_blob(blob)?,
+            workdir: workdir(&state.config().media)?,
+            original: None,
+        })
+    }
+
+    fn media(&self) -> &'a MediaConfig {
+        let state: &'a AppState = self.state;
+        &state.config().media
+    }
+
+    fn path(&self, name: &str) -> PathBuf {
+        self.workdir.path().join(name)
+    }
+
+    /// Render the preview from the first source that can, record the
+    /// outcome, and leave the WebP in the work directory.
+    async fn preview(&mut self) -> Result<Preview, JobError> {
+        let verdict = self.render_preview().await?;
+        let preview = match &verdict {
+            Verdict::Rendered(_) => Preview::Ready(self.path(PREVIEW)),
+            Verdict::Rejected => Preview::Failed,
+            Verdict::Declined => Preview::Unavailable,
+        };
+        self.finish(
+            Representation::Preview,
+            verdict.map(|(bytes, source)| (bytes, Some(source))),
+        )
+        .await?;
+        Ok(preview)
+    }
+
+    async fn render_preview(&mut self) -> Result<Verdict<(Vec<u8>, PreviewSource)>, JobError> {
+        let media = self.media();
+        let content_type = &self.blob.content_type;
+        let too_large = self
+            .blob
+            .size
+            .is_some_and(|size| size as u64 > media.max_source_size.as_u64());
+        let sources = media::sources(content_type);
+        if too_large || sources.is_empty() {
+            tracing::info!(%content_type, too_large, "nothing to render a preview from");
+            return Ok(Verdict::Declined);
+        }
+        let fit = Fit::preview(media);
+        let output = self.path(PREVIEW);
+        let mut rejected = false;
+        for source in sources {
+            let (input, kind, from) = match source {
+                Source::Image => (
+                    self.whole_original().await?,
+                    Input::for_image(content_type),
+                    PreviewSource::Image,
+                ),
+                Source::FirstPage => (
+                    self.whole_original().await?,
+                    Input::Page,
+                    PreviewSource::FirstPage,
+                ),
+                Source::EmbeddedImage => {
+                    let whole = self.whole_original().await?;
+                    let embedded = self.path("embedded");
+                    match extract(media, content_type, &whole, &embedded).await? {
+                        Helper::Produced => {}
+                        Helper::Declined => continue,
+                        Helper::Failed => {
+                            rejected = true;
+                            continue;
+                        }
+                    }
+                    (embedded, Input::Raster, PreviewSource::EmbeddedImage)
+                }
+            };
+            match render::to_webp(media, &input, kind, &output, fit).await {
+                Ok(bytes) => return Ok(Verdict::Rendered((bytes, from))),
+                Err(err) if err.is_input_fault() => {
+                    tracing::warn!(source = ?source, error = %err, "rendering failed");
+                    rejected = true;
+                }
+                Err(err) => return Err(err.into()),
             }
+        }
+        Ok(if rejected {
+            Verdict::Rejected
+        } else {
+            // Every source declined, as for a DOCX that is a real document.
+            Verdict::Declined
+        })
+    }
+
+    /// The stored preview, decrypted into the work directory; `None` when
+    /// the object is gone.
+    async fn stored_preview(&self) -> Result<Option<PathBuf>, JobError> {
+        let loaded = representation::load(self.state, self.blob, Representation::Preview).await?;
+        let Some(bytes) = loaded else {
+            tracing::warn!("the stored preview is missing, rendering it again");
+            return Ok(None);
+        };
+        let path = self.path(PREVIEW);
+        tokio::fs::write(&path, bytes).await?;
+        Ok(Some(path))
+    }
+
+    /// `input` fitted into the thumbnail box, never enlarged.
+    async fn thumbnail_webp(&self, input: &Path) -> Result<Verdict<Vec<u8>>, JobError> {
+        let media = self.media();
+        let output = self.path("thumbnail.webp");
+        match render::to_webp(media, input, Input::Raster, &output, Fit::thumbnail(media)).await {
+            Ok(bytes) => Ok(Verdict::Rendered(bytes)),
             Err(err) if err.is_input_fault() => {
-                tracing::warn!(source = ?source, error = %err, "rendering failed");
-                rejected = true;
+                tracing::warn!(error = %err, "thumbnail rendering failed");
+                Ok(Verdict::Rejected)
             }
-            Err(err) => return Err(err.into()),
+            Err(err) => Err(err.into()),
         }
     }
 
-    let (rep_state, source) = match rendered {
-        Some((bytes, from)) => {
-            representation::store(state, &blob, kind, &bytes).await?;
-            tracing::info!(source = ?from, bytes = bytes.len(), "{kind} rendered");
-            (RepresentationState::Ready, from)
+    /// A thumbnail for a file with no preview: the first lines of a text
+    /// file set on a page. Anything else declines, and gets the icon.
+    async fn text_sample(&self) -> Result<Verdict<Vec<u8>>, JobError> {
+        if !media::text_sample(&self.blob.content_type) {
+            return Ok(Verdict::Declined);
         }
-        None if rejected => (RepresentationState::Failed, None),
-        // Every source declined, as for a DOCX that is a real document.
-        None => (RepresentationState::Unavailable, None),
-    };
-    repo::finish_representation(state.pool(), id, kind, rep_state, source, version).await?;
-    Ok(())
-}
-
-/// The whole original, decrypted into the work directory on first use.
-async fn whole_original(
-    state: &AppState,
-    blob: &Blob,
-    stored: &Stored,
-    workdir: &tempfile::TempDir,
-    cache: &mut Option<PathBuf>,
-) -> Result<PathBuf, JobError> {
-    if let Some(path) = cache {
-        return Ok(path.clone());
+        let media = self.media();
+        let sample = self.path("sample");
+        self.download(&sample, 0..self.stored.size.min(text::SAMPLE_LEN))
+            .await?;
+        let page = self.path("page.pgm");
+        match render_text(media, &sample, &page, Fit::thumbnail(media)).await? {
+            Helper::Produced => self.thumbnail_webp(&page).await,
+            Helper::Declined => Ok(Verdict::Declined),
+            Helper::Failed => Ok(Verdict::Rejected),
+        }
     }
-    let path = workdir.path().join("original");
-    download(state, blob, stored, &path, 0..stored.size).await?;
-    *cache = Some(path.clone());
-    Ok(path)
-}
 
-/// Decrypt the plaintext `span` of the original into `path`.
-async fn download(
-    state: &AppState,
-    blob: &Blob,
-    stored: &Stored,
-    path: &Path,
-    span: Range<u64>,
-) -> Result<(), JobError> {
-    let mut reader = Reader::open(state, blob, stored, span).await?;
-    let mut file = tokio::fs::File::create(path).await?;
-    while let Some(plain) = reader.next_segment().await? {
-        file.write_all(&plain).await?;
+    /// Store a rendered representation and record the verdict on the row,
+    /// with the variant version it was built with.
+    async fn finish(
+        &self,
+        kind: Representation,
+        verdict: Verdict<(Vec<u8>, Option<PreviewSource>)>,
+    ) -> Result<(), JobError> {
+        let (rep_state, source) = match verdict {
+            Verdict::Rendered((bytes, source)) => {
+                representation::store(self.state, self.blob, kind, &bytes).await?;
+                tracing::info!(source = ?source, bytes = bytes.len(), "{kind} rendered");
+                (RepresentationState::Ready, source)
+            }
+            Verdict::Rejected => (RepresentationState::Failed, None),
+            Verdict::Declined => (RepresentationState::Unavailable, None),
+        };
+        repo::finish_representation(
+            self.state.pool(),
+            self.blob.id,
+            kind,
+            rep_state,
+            source,
+            self.media().variant_version,
+        )
+        .await?;
+        Ok(())
     }
-    file.flush().await?;
-    Ok(())
+
+    /// The whole original, decrypted into the work directory on first use.
+    async fn whole_original(&mut self) -> Result<PathBuf, JobError> {
+        if let Some(path) = &self.original {
+            return Ok(path.clone());
+        }
+        let path = self.path("original");
+        self.download(&path, 0..self.stored.size).await?;
+        self.original = Some(path.clone());
+        Ok(path)
+    }
+
+    /// Decrypt the plaintext `span` of the original into `path`.
+    async fn download(&self, path: &Path, span: Range<u64>) -> Result<(), JobError> {
+        let mut reader = Reader::open(self.state, self.blob, &self.stored, span).await?;
+        let mut file = tokio::fs::File::create(path).await?;
+        while let Some(plain) = reader.next_segment().await? {
+            file.write_all(&plain).await?;
+        }
+        file.flush().await?;
+        Ok(())
+    }
 }
 
 /// A fresh directory for one render's files, under `media.tmp_dir`.
@@ -193,18 +333,6 @@ enum Helper {
     Declined,
     /// It crashed or ran out of time, which the file takes the blame for.
     Failed,
-}
-
-/// Whether the helper wrote its output, noting a crash against the file.
-fn produced(outcome: Helper, rejected: &mut bool) -> bool {
-    match outcome {
-        Helper::Produced => true,
-        Helper::Declined => false,
-        Helper::Failed => {
-            *rejected = true;
-            false
-        }
-    }
 }
 
 /// Run the `agrafe extract` helper on `original`, writing the embedded

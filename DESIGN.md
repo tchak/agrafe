@@ -459,6 +459,20 @@ bytes it pulls out of a PDF, since a `DCTDecode` stream holds whatever its
 author put there. `VIPS_BLOCK_UNTRUSTED` was considered and rejected: it
 also blocks the PDF, SVG, JPEG 2000 and PNM loaders.
 
+One `render` job produces both representations, whatever is `pending` on
+the row. The preview is rendered first; the thumbnail is the preview fitted
+into the thumbnail box. The original is therefore fetched, decrypted and
+decoded once, the two pictures agree, and a thumbnail regenerated on its
+own (its object gone) is made from the stored preview without touching the
+original. A preview verdict from the current variant version stands: a
+`failed` preview gives a `failed` thumbnail, an `unavailable` one leaves
+the thumbnail to the text sample or the icon; a preview from another
+version, or whose object is gone, is rendered again first. The thumbnail
+thus appears after the preview rather than alongside it, a few seconds
+for a large PDF, which the icon placeholder and `wait` cover. Two jobs
+decrypting and decoding the original twice was the first design, and
+rendering cost in practice is what changed it.
+
 A file the renderer rejects, or that runs past the sandbox timeout, leaves
 the representation `failed` and the job done: the same bytes would fail the
 same way tomorrow. A helper that crashes or runs out of time counts the
@@ -603,9 +617,10 @@ Why: a handful of job kinds at modest volume, every job already touches the
 blob row, and enqueueing in the same transaction as the state change removes
 the dual-write failure where a crash between commit and publish loses the job.
 
-Job kinds: `scan`, `thumbnail`, `preview`, `purge` (delete bucket objects),
-`reap` (periodic: expire blobs, reset stale `uploading`, find orphans, prune
-dead jobs once they have been around long enough to have been looked at).
+Job kinds: `scan`, `render` (thumbnail and preview, whichever is pending),
+`purge` (delete bucket objects), `reap` (periodic: expire blobs, reset stale
+`uploading`, find orphans, prune dead jobs once they have been around long
+enough to have been looked at).
 
 Each row: `kind`, `blob_id`, `payload`, `run_at`, `attempts`, `max_attempts`,
 `locked_at`, `locked_by`, `last_error`, `failed_at`. A worker claims the
@@ -624,10 +639,9 @@ newer one.
 `enqueue` calls `pg_notify` in the same statement, so the notification
 travels with the commit. One listener per process wakes the pollers of that
 kind; `jobs.poll_interval` is the fallback for a missed wakeup. Concurrency is
-per kind in `jobs.concurrency` (defaults: `scan` 4, `thumbnail` 2, `preview`
-2, `purge` 4, `reap` 1): rendering is CPU bound, scanning waits on clamd.
-`scan`, `thumbnail` and `preview` have handlers; `purge` and `reap` rows
-wait in the table.
+per kind in `jobs.concurrency` (defaults: `scan` 4, `render` 4, `purge` 4,
+`reap` 1): rendering is CPU bound, scanning waits on clamd. `scan` and
+`render` have handlers; `purge` and `reap` rows wait in the table.
 
 The binary takes `--role api|worker|all` so workers can move to separate
 machines without code changes. If volume ever outgrows Postgres polling, the

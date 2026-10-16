@@ -50,16 +50,15 @@ const BACKOFF_MAX: Duration = Duration::from_secs(3600);
 #[serde(rename_all = "snake_case")]
 pub enum JobKind {
     Scan,
-    Thumbnail,
-    Preview,
+    /// Thumbnail and preview, whichever is pending.
+    Render,
     Purge,
     Reap,
 }
 
 crate::str_enum!(JobKind {
     Scan => "scan",
-    Thumbnail => "thumbnail",
-    Preview => "preview",
+    Render => "render",
     Purge => "purge",
     Reap => "reap",
 });

@@ -147,7 +147,6 @@ lease_timeout = "10m"
 # Workers per job kind; these are the defaults.
 [jobs.concurrency]
 scan = 4
-thumbnail = 2
-preview = 2
+render = 4
 purge = 4
 reap = 1

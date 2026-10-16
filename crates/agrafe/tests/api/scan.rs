@@ -26,7 +26,7 @@ async fn inline_scan_clean() {
     let got = get_blob(&app, id).await;
     assert!(got["scanned_at"].is_string());
     assert!(got["scan_signature"].is_null());
-    assert_eq!(jobs_for(&app, id).await, vec!["preview", "thumbnail"]);
+    assert_eq!(jobs_for(&app, id).await, vec!["render"]);
 }
 
 /// Infected: the upload is refused with its own code, yet the bytes are kept
@@ -129,7 +129,7 @@ async fn deferred_scan_clean() {
     assert_eq!(got["state"], "ready");
     assert_eq!(got["scan_state"], "clean");
     assert!(got["scanned_at"].is_string());
-    assert_eq!(jobs_for(&app, id).await, vec!["preview", "thumbnail"]);
+    assert_eq!(jobs_for(&app, id).await, vec!["render"]);
     assert!(!run_scan_job(&app).await, "the scan job is gone");
     let (status, _) = call(&app.public, req(Method::GET, &public_url(&got, "original"))).await;
     assert_eq!(status, StatusCode::OK, "readable once clean");
@@ -229,7 +229,7 @@ async fn empty_file_deferred_scan() {
     let got = get_blob(&app, id).await;
     assert_eq!(got["state"], "ready", "{got}");
     assert_eq!(got["scan_state"], "clean");
-    assert!(jobs_for(&app, id).await.contains(&"thumbnail".to_string()));
+    assert!(jobs_for(&app, id).await.contains(&"render".to_string()));
 }
 
 #[tokio::test]

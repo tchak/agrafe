@@ -471,8 +471,7 @@ impl JobsConfig {
             return *n;
         }
         match kind {
-            JobKind::Scan | JobKind::Purge => 4,
-            JobKind::Thumbnail | JobKind::Preview => 2,
+            JobKind::Scan | JobKind::Render | JobKind::Purge => 4,
             JobKind::Reap => 1,
         }
     }
@@ -572,7 +571,7 @@ mod tests {
     fn concurrency_is_keyed_by_kind() {
         let cfg = jobs("[concurrency]\nscan = 7").unwrap();
         assert_eq!(cfg.concurrency_for(JobKind::Scan), 7);
-        assert_eq!(cfg.concurrency_for(JobKind::Preview), 2, "default");
+        assert_eq!(cfg.concurrency_for(JobKind::Render), 4, "default");
         assert!(
             jobs("[concurrency]\nscann = 7").is_none(),
             "a typo is an error"

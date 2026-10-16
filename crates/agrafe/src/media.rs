@@ -8,7 +8,6 @@ pub mod render;
 pub mod sandbox;
 pub mod text;
 
-use crate::blob::Representation;
 use crate::classify::{self, Category};
 use crate::sniff;
 
@@ -26,31 +25,12 @@ pub enum Source {
     EmbeddedImage,
     /// Render the first page.
     FirstPage,
-    /// Set the first lines of the file in a monospace font. A hint of what
-    /// the file is, not a way to read it: thumbnails only.
-    TextSample,
 }
 
-impl Source {
-    /// Whether this source can produce `kind`.
-    pub fn serves(self, kind: Representation) -> bool {
-        match self {
-            Source::TextSample => kind == Representation::Thumbnail,
-            _ => true,
-        }
-    }
-
-    /// Whether the source needs the whole original, which is what
-    /// `media.max_source_size` bounds. A text sample reads a few KiB
-    /// whatever the file's size.
-    pub fn reads_whole_file(self) -> bool {
-        self != Source::TextSample
-    }
-}
-
-/// The sources for a content type, in order. Empty when the file cannot be
-/// rendered, in which case the thumbnail is an icon and there is no
-/// preview. Image types are an allowlist of what libvips loads natively:
+/// The preview sources for a content type, in order; the thumbnail is
+/// derived from the preview. Empty when the file cannot be rendered, in
+/// which case there is no preview and the thumbnail is a text sample or an
+/// icon. Image types are an allowlist of what libvips loads natively:
 /// everything else would go through ImageMagick, which is more attack
 /// surface than it is worth.
 pub fn sources(content_type: &str) -> &'static [Source] {
@@ -59,10 +39,18 @@ pub fn sources(content_type: &str) -> &'static [Source] {
         | "image/avif" | "image/svg+xml" | "image/bmp" | "image/jp2" => &[Source::Image],
         classify::PDF => &[Source::EmbeddedImage, Source::FirstPage],
         DOCX | ODT => &[Source::EmbeddedImage],
-        classify::CSV | "text/tab-separated-values" => &[Source::TextSample],
-        other if classify::classify(other) == Category::Text => &[Source::TextSample],
         _ => &[],
     }
+}
+
+/// Whether a file with no preview gets a thumbnail of its first lines set
+/// in a monospace font: the `text` category, plus CSV and TSV, which
+/// classify as spreadsheets. A hint of what the file is, not a way to read
+/// it, which is why there is no text preview.
+pub fn text_sample(content_type: &str) -> bool {
+    let canonical = sniff::canonical(content_type);
+    matches!(canonical, classify::CSV | "text/tab-separated-values")
+        || classify::classify(canonical) == Category::Text
 }
 
 /// Bytes of a file looked at to pick its loader.
@@ -141,14 +129,23 @@ mod tests {
         );
         assert_eq!(sources(DOCX), &[Source::EmbeddedImage]);
         assert!(sources("image/vnd.adobe.photoshop").is_empty());
-        assert_eq!(sources("text/plain"), &[Source::TextSample]);
-        assert_eq!(sources("application/json"), &[Source::TextSample]);
-        assert_eq!(sources(classify::CSV), &[Source::TextSample]);
+        assert!(sources("text/plain").is_empty());
         assert!(sources(classify::XLSX).is_empty());
-        assert!(Source::TextSample.serves(Representation::Thumbnail));
-        assert!(!Source::TextSample.serves(Representation::Preview));
-        assert!(Source::FirstPage.serves(Representation::Preview));
-        assert!(!Source::TextSample.reads_whole_file());
-        assert!(Source::Image.reads_whole_file());
+        for text in [
+            "text/plain",
+            "application/json",
+            classify::CSV,
+            "text/tab-separated-values",
+        ] {
+            assert!(text_sample(text), "{text}");
+        }
+        for other in [
+            classify::XLSX,
+            classify::PDF,
+            "image/png",
+            "application/octet-stream",
+        ] {
+            assert!(!text_sample(other), "{other}");
+        }
     }
 }

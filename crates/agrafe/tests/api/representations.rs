@@ -1,5 +1,5 @@
-//! Thumbnails and previews: rendering from images, PDFs and office files,
-//! the placeholders served meanwhile, waiting, and regeneration.
+//! Thumbnails and previews: rendering from images, PDFs, office and text
+//! files, the placeholders served meanwhile, waiting, and regeneration.
 
 use agrafe::jobs::JobKind;
 use axum::body::Body;
@@ -10,10 +10,9 @@ use std::time::{Duration, Instant};
 
 use crate::support::*;
 
-/// Run the thumbnail and preview jobs for every blob that has them queued.
+/// Run the render job for every blob that has one queued.
 async fn render_all(app: &TestApp) {
-    while run_job(app, JobKind::Thumbnail).await {}
-    while run_job(app, JobKind::Preview).await {}
+    while run_job(app, JobKind::Render).await {}
 }
 
 fn state_of(headers: &HeaderMap) -> &str {
@@ -71,7 +70,7 @@ async fn image_gets_a_thumbnail_and_a_preview() {
     let id = id_of(&blob);
     assert_eq!(blob["thumbnail_state"], "pending");
     assert_eq!(blob["preview_state"], "pending");
-    assert_eq!(jobs_for(&app, id).await, ["preview", "thumbnail"]);
+    assert_eq!(jobs_for(&app, id).await, ["render"]);
     let thumbnail = format!("/blobs/{id}/thumbnail/photo.jpg");
     let preview = format!("/blobs/{id}/preview/photo.jpg");
 
@@ -79,9 +78,9 @@ async fn image_gets_a_thumbnail_and_a_preview() {
     let placeholder = icon(&app, &thumbnail, "pending").await;
     no_preview(&app, &preview, "pending", "preview is pending").await;
 
-    assert!(run_job(&app, JobKind::Thumbnail).await);
-    assert!(run_job(&app, JobKind::Preview).await);
-    assert!(!run_job(&app, JobKind::Thumbnail).await);
+    // One job renders both.
+    assert!(run_job(&app, JobKind::Render).await);
+    assert!(!run_job(&app, JobKind::Render).await);
     let blob = get_blob(&app, id).await;
     assert_eq!(blob["thumbnail_state"], "ready");
     assert_eq!(blob["preview_state"], "ready");
@@ -420,11 +419,12 @@ async fn a_missing_renderer_fails_the_job_not_the_file() {
     let app = setup_tuned(clamd, |c| c.media.vips_command = "/nonexistent/vips".into()).await;
     let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
     let id = id_of(&blob);
-    assert!(run_job(&app, JobKind::Thumbnail).await);
+    assert!(run_job(&app, JobKind::Render).await);
     let blob = get_blob(&app, id).await;
     assert_eq!(blob["thumbnail_state"], "pending");
+    assert_eq!(blob["preview_state"], "pending");
     let error: String =
-        sqlx::query_scalar("SELECT last_error FROM jobs WHERE blob_id = $1 AND kind = 'thumbnail'")
+        sqlx::query_scalar("SELECT last_error FROM jobs WHERE blob_id = $1 AND kind = 'render'")
             .bind(parse_id(id))
             .fetch_one(app.state.pool())
             .await
@@ -553,10 +553,10 @@ async fn representations_regenerate_when_missing_or_stale() {
         .unwrap();
     icon(&app, &thumbnail, "pending").await;
     assert_eq!(get_blob(&app, id).await["thumbnail_state"], "pending");
-    assert_eq!(jobs_for(&app, id).await, ["thumbnail"]);
+    assert_eq!(jobs_for(&app, id).await, ["render"]);
     icon(&app, &thumbnail, "pending").await;
-    assert_eq!(jobs_for(&app, id).await, ["thumbnail"], "queued once");
-    assert!(run_job(&app, JobKind::Thumbnail).await);
+    assert_eq!(jobs_for(&app, id).await, ["render"], "queued once");
+    assert!(run_job(&app, JobKind::Render).await);
     let (_, size) = rendered(&app, &thumbnail).await;
     assert_eq!(size, (256, 128));
 
@@ -567,8 +567,8 @@ async fn representations_regenerate_when_missing_or_stale() {
         .await
         .unwrap();
     no_preview(&app, &preview, "pending", "preview is pending").await;
-    assert_eq!(jobs_for(&app, id).await, ["preview"]);
-    assert!(run_job(&app, JobKind::Preview).await);
+    assert_eq!(jobs_for(&app, id).await, ["render"]);
+    assert!(run_job(&app, JobKind::Render).await);
     rendered(&app, &preview).await;
     let version: i32 =
         sqlx::query_scalar("SELECT preview_variant_version FROM blobs WHERE id = $1")
@@ -587,7 +587,30 @@ async fn representations_regenerate_when_missing_or_stale() {
     .await
     .unwrap();
     icon(&app, &thumbnail, "pending").await;
-    assert_eq!(jobs_for(&app, id).await, ["thumbnail"]);
+    assert_eq!(jobs_for(&app, id).await, ["render"]);
+}
+
+/// A thumbnail regenerated on its own is made from the stored preview: the
+/// original is never read, which deleting it proves.
+#[tokio::test]
+async fn thumbnails_regenerate_from_the_stored_preview() {
+    let app = setup().await;
+    let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
+    let id = id_of(&blob);
+    render_all(&app).await;
+    let thumbnail = format!("/blobs/{id}/thumbnail/photo.jpg");
+    for object in ["thumbnail", "original"] {
+        app.state
+            .store()
+            .delete(&object_store::path::Path::from(format!("{id}/{object}")))
+            .await
+            .unwrap();
+    }
+    icon(&app, &thumbnail, "pending").await;
+    assert!(run_job(&app, JobKind::Render).await);
+    let (_, size) = rendered(&app, &thumbnail).await;
+    assert_eq!(size, (256, 128));
+    assert_eq!(get_blob(&app, id).await["preview_state"], "ready");
 }
 
 #[tokio::test]
@@ -612,7 +635,7 @@ async fn waiting_for_a_pending_representation() {
     let state = app.state.clone();
     let job = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(400)).await;
-        agrafe::jobs::runner::run_one(&state, JobKind::Thumbnail, "late")
+        agrafe::jobs::runner::run_one(&state, JobKind::Render, "late")
             .await
             .unwrap()
     });
@@ -625,10 +648,12 @@ async fn waiting_for_a_pending_representation() {
     assert!(job.await.unwrap());
 
     // Without `wait`, the placeholder comes back at once.
+    let blob = ready_file(&app, "other.jpg", "image/jpeg", &fixture("photo.jpg")).await;
+    let id = id_of(&blob);
     let started = Instant::now();
     no_preview(
         &app,
-        &format!("/blobs/{id}/preview/photo.jpg"),
+        &format!("/blobs/{id}/preview/other.jpg"),
         "pending",
         "preview is pending",
     )
@@ -639,7 +664,7 @@ async fn waiting_for_a_pending_representation() {
     let started = Instant::now();
     let (status, headers, _) = fetch(
         &app.private,
-        get_with(&format!("/blobs/{id}/preview/photo.jpg?wait=300"), &[]),
+        get_with(&format!("/blobs/{id}/preview/other.jpg?wait=300"), &[]),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
