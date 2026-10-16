@@ -121,7 +121,7 @@ pub fn validate(
     })
 }
 
-fn validate_filename(filename: &str) -> Result<String, ApiError> {
+pub(crate) fn validate_filename(filename: &str) -> Result<String, ApiError> {
     let filename = filename.trim();
     if filename.is_empty() {
         return Err(unprocessable("filename must not be empty"));

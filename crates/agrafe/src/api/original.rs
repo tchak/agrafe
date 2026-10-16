@@ -385,17 +385,21 @@ fn http_date(at: Timestamp) -> HeaderValue {
     HeaderValue::from_str(&at.strftime("%a, %d %b %Y %H:%M:%S GMT").to_string()).expect("ascii")
 }
 
+/// The `disposition` parameter: `inline` (default) or `attachment`. The
+/// message is reused when minting, where it answers `422`.
+pub(crate) fn disposition_kind(value: Option<&str>) -> Result<&'static str, String> {
+    match value {
+        None | Some("inline") => Ok("inline"),
+        Some("attachment") => Ok("attachment"),
+        Some(other) => Err(format!(
+            "disposition must be inline or attachment, not `{other}`"
+        )),
+    }
+}
+
 /// RFC 6266: an ASCII fallback plus the UTF-8 name.
 fn content_disposition(query: &OriginalQuery, filename: &str) -> ApiResult<HeaderValue> {
-    let kind = match query.disposition.as_deref() {
-        None | Some("inline") => "inline",
-        Some("attachment") => "attachment",
-        Some(other) => {
-            return Err(ApiError::BadRequest(format!(
-                "disposition must be inline or attachment, not `{other}`"
-            )));
-        }
-    };
+    let kind = disposition_kind(query.disposition.as_deref()).map_err(ApiError::BadRequest)?;
     let name = query.filename.as_deref().unwrap_or(filename);
     let fallback: String = name
         .chars()

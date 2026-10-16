@@ -812,6 +812,28 @@ async fn mint_urls_with_options() {
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
 
+    // Query parameters are checked when minted, so a signed URL never
+    // answers a client error for its own query.
+    for (query, needle) in [
+        (json!({"disposition": "weird"}), "disposition"),
+        (json!({"filename": "a/b.pdf"}), "filename"),
+        (json!({"filename": ""}), "filename"),
+        (json!({"wait": "500"}), "unknown query parameter `wait`"),
+    ] {
+        let (status, body) = call(
+            &app.private,
+            json_req(
+                Method::POST,
+                &format!("/blobs/{id}/urls"),
+                json!({"query": query}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{query}: {body}");
+        let message = body["error"]["message"].as_str().unwrap();
+        assert!(message.contains(needle), "{query}: {body}");
+    }
+
     // Minting is stable inside a window.
     let (_, a) = call(
         &app.private,

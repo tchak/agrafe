@@ -7,8 +7,11 @@ use http::Method;
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::Serialize;
 
+use super::original;
 use crate::app::AppState;
 use crate::blob::Blob;
+use crate::blob::create;
+use crate::error::ApiError;
 use crate::signing::PERMANENT;
 
 /// Everything but RFC 3986 unreserved characters is encoded, so the path we
@@ -43,6 +46,30 @@ pub struct MintOptions {
     pub permanent: bool,
     /// Signed query parameters appended to the representation URLs.
     pub query: BTreeMap<String, String>,
+}
+
+/// Check the query parameters a backend asks to sign into representation
+/// URLs. The server is the only minter, so a bad value here is the backend's
+/// mistake and answers `422` now, rather than a client error on a correctly
+/// signed URL later.
+pub fn validate_query(query: &BTreeMap<String, String>) -> Result<(), ApiError> {
+    for (name, value) in query {
+        match name.as_str() {
+            "disposition" => {
+                original::disposition_kind(Some(value)).map_err(ApiError::Unprocessable)?;
+            }
+            "filename" => {
+                create::validate_filename(value)
+                    .map_err(|e| ApiError::Unprocessable(format!("query filename: {e}")))?;
+            }
+            other => {
+                return Err(ApiError::Unprocessable(format!(
+                    "unknown query parameter `{other}`; allowed: disposition, filename"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn mint(state: &AppState, blob: &Blob, opts: &MintOptions, now: SystemTime) -> BlobUrls {

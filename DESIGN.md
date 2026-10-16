@@ -122,7 +122,10 @@ message = METHOD "\n" expires_unix "\n" path_and_query_after_token
   valid signature on a missing blob is `404`.
 - Because everything after the token is signed, query parameters are a safe
   way for the minter to control behaviour: `disposition=attachment`, a
-  filename override, `wait=<ms>` for pending representations.
+  filename override, `wait=<ms>` for pending representations. They are
+  validated when minted, unknown names included, so a backend mistake is a
+  `422` on the private port and never a client error on a correctly signed
+  URL.
 
 ## Blobs
 

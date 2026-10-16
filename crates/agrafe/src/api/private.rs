@@ -177,6 +177,7 @@ async fn mint_urls(
             "ttl and permanent are mutually exclusive".into(),
         ));
     }
+    urls::validate_query(&req.query)?;
     let blob = repo::find(state.pool(), id)
         .await?
         .ok_or(ApiError::NotFound)?;
