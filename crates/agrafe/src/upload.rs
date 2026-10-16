@@ -95,9 +95,7 @@ impl From<UploadError> for ApiError {
             UploadError::SizeMismatch
             | UploadError::ChecksumMismatch
             | UploadError::TypeMismatch { .. } => ApiError::Unprocessable(err.to_string()),
-            UploadError::Store(_) | UploadError::Crypto(_) => {
-                ApiError::Internal(anyhow::Error::new(err))
-            }
+            UploadError::Store(_) | UploadError::Crypto(_) => ApiError::internal(err),
         }
     }
 }
@@ -144,7 +142,7 @@ where
     }
     drop(tx);
     task.await
-        .map_err(|e| ApiError::Internal(anyhow::anyhow!("upload task failed: {e}")))?
+        .map_err(|e| ApiError::internal(format!("upload task failed: {e}")))?
 }
 
 /// Encrypt and store `body` as the original of `blob`, which is in

@@ -1,6 +1,5 @@
 //! Database pool and migrations.
 
-use anyhow::{Context, Result};
 use sqlx::decode::Decode;
 use sqlx::error::BoxDynError;
 use sqlx::postgres::{PgPoolOptions, PgTypeInfo, PgValueRef};
@@ -10,16 +9,15 @@ use crate::config::DatabaseConfig;
 
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations");
 
-pub async fn connect(config: &DatabaseConfig) -> Result<PgPool> {
+pub async fn connect(config: &DatabaseConfig) -> sqlx::Result<PgPool> {
     PgPoolOptions::new()
         .max_connections(config.max_connections)
         .connect(config.url.expose())
         .await
-        .context("connecting to the database")
 }
 
-pub async fn migrate(pool: &PgPool) -> Result<()> {
-    MIGRATOR.run(pool).await.context("running migrations")
+pub async fn migrate(pool: &PgPool) -> Result<(), sqlx::migrate::MigrateError> {
+    MIGRATOR.run(pool).await
 }
 
 /// A nullable `timestamptz` column read straight into `Option<jiff::Timestamp>`.

@@ -44,7 +44,6 @@ name = "agrafe"
 version = "0.1.0"
 dependencies = [
  "agrafe-crypto",
- "anyhow",
  "axum",
  "base64 0.23.1",
  "bytes",
@@ -163,12 +162,6 @@ dependencies = [
  "once_cell_polyfill",
  "windows-sys 0.61.2",
 ]
-
-[[package]]
-name = "anyhow"
-version = "1.0.104"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "async-trait"

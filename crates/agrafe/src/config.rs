@@ -5,7 +5,6 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
 use bytesize::ByteSize;
 use figment::Figment;
 use figment::providers::{Env, Format, Toml};
@@ -13,6 +12,15 @@ use jiff::{SignedDuration, Timestamp};
 use serde::Deserialize;
 
 use crate::jobs::JobKind;
+
+/// A configuration that cannot be loaded, or that loads but cannot be used.
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    #[error("invalid configuration: {0}")]
+    Load(Box<figment::Error>),
+    #[error("{0}")]
+    Invalid(String),
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
@@ -34,7 +42,7 @@ pub struct Config {
 
 impl Config {
     /// Load from `path` (if it exists) and the environment.
-    pub fn load(path: Option<&Path>) -> Result<Self> {
+    pub fn load(path: Option<&Path>) -> Result<Self, ConfigError> {
         let mut figment = Figment::new();
         if let Some(path) = path {
             figment = figment.merge(Toml::file_exact(path));
@@ -42,18 +50,19 @@ impl Config {
         let config: Config = figment
             .merge(Env::prefixed("AGRAFE_").split("__"))
             .extract()
-            .context("invalid configuration")?;
+            .map_err(|e| ConfigError::Load(Box::new(e)))?;
         config.validate()?;
         Ok(config)
     }
 
     /// Cross-field checks that no single section owns. Signing keys are
     /// checked by `Signer::from_config`, which is the only consumer.
-    fn validate(&self) -> Result<()> {
-        anyhow::ensure!(
-            !self.server.public_base_url.ends_with('/'),
-            "server.public_base_url must not end with a slash"
-        );
+    fn validate(&self) -> Result<(), ConfigError> {
+        if self.server.public_base_url.ends_with('/') {
+            return Err(ConfigError::Invalid(
+                "server.public_base_url must not end with a slash".into(),
+            ));
+        }
         Ok(())
     }
 }
@@ -142,11 +151,9 @@ impl std::fmt::Debug for Secret {
 pub struct Base64Secret(String);
 
 impl Base64Secret {
-    pub fn decoded(&self) -> Result<Vec<u8>> {
+    pub fn decoded(&self) -> Result<Vec<u8>, base64::DecodeError> {
         use base64::Engine;
-        base64::engine::general_purpose::STANDARD
-            .decode(self.0.trim())
-            .context("secret is not valid base64")
+        base64::engine::general_purpose::STANDARD.decode(self.0.trim())
     }
 }
 

@@ -2,14 +2,22 @@
 
 use std::sync::Arc;
 
-use anyhow::Result;
 use sqlx::PgPool;
 
 use crate::clamav::Clamd;
-use crate::config::Config;
+use crate::config::{Config, ConfigError};
 use crate::encryption::Keks;
 use crate::signing::Signer;
 use crate::storage::{self, Store};
+
+/// Why the state could not be built from a configuration that loaded.
+#[derive(Debug, thiserror::Error)]
+pub enum InitError {
+    #[error(transparent)]
+    Storage(#[from] storage::Error),
+    #[error(transparent)]
+    Config(#[from] ConfigError),
+}
 
 #[derive(Clone)]
 pub struct AppState(Arc<Inner>);
@@ -24,7 +32,7 @@ struct Inner {
 }
 
 impl AppState {
-    pub fn new(config: Config, pool: PgPool) -> Result<Self> {
+    pub fn new(config: Config, pool: PgPool) -> Result<Self, InitError> {
         let store = storage::build(&config.storage)?;
         let signer = Signer::from_config(&config.signing)?;
         let keks = Keks::from_config(&config.encryption)?;

@@ -13,6 +13,23 @@ use serde::{Deserialize, Serialize};
 use sqlx::{PgConnection, PgExecutor};
 use uuid::Uuid;
 
+/// Why one attempt at a job failed. The message is what `last_error` keeps.
+#[derive(Debug, thiserror::Error)]
+pub enum JobError {
+    #[error("{0} job has no blob")]
+    NoBlob(JobKind),
+    #[error("no handler for `{0}` jobs")]
+    Unhandled(JobKind),
+    #[error("handler panicked: {0}")]
+    Panicked(String),
+    #[error("database: {0}")]
+    Db(#[from] sqlx::Error),
+    #[error(transparent)]
+    Read(#[from] crate::blob::read::ReadError),
+    #[error(transparent)]
+    Clamd(#[from] crate::clamav::Error),
+}
+
 /// Channel every enqueue notifies; the payload is the job kind.
 pub const CHANNEL: &str = "agrafe_jobs";
 

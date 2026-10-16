@@ -9,15 +9,39 @@
 use std::ops::Range;
 
 use agrafe_crypto::streaming::{Decryptor, Header, Layout};
-use anyhow::Context as _;
 use bytes::{Bytes, BytesMut};
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use object_store::path::Path as ObjectPath;
 use object_store::{GetOptions, GetRange};
+use uuid::Uuid;
 
 use super::Blob;
 use crate::app::AppState;
+use crate::encryption::UnwrapError;
+
+/// Why a stored original could not be read back.
+#[derive(Debug, thiserror::Error)]
+pub enum ReadError {
+    #[error("blob {blob_id} is stored but has no {what}")]
+    Incomplete { blob_id: Uuid, what: &'static str },
+    #[error("blob {blob_id}: {source}")]
+    Header {
+        blob_id: Uuid,
+        source: agrafe_crypto::Error,
+    },
+    #[error(transparent)]
+    Key(#[from] UnwrapError),
+    #[error("reading the object: {0}")]
+    Store(#[from] object_store::Error),
+    #[error("object ended before segment {0}")]
+    Truncated(u64),
+    #[error("opening segment {segment}: {source}")]
+    Segment {
+        segment: u64,
+        source: agrafe_crypto::Error,
+    },
+}
 
 /// Everything the row must carry once an object is stored.
 pub struct Stored {
@@ -31,14 +55,20 @@ pub struct Stored {
 }
 
 impl Stored {
-    pub fn from_blob(blob: &Blob) -> anyhow::Result<Self> {
-        let missing = |what: &str| anyhow::anyhow!("blob {} is stored but has no {what}", blob.id);
+    pub fn from_blob(blob: &Blob) -> Result<Self, ReadError> {
+        let missing = |what| ReadError::Incomplete {
+            blob_id: blob.id,
+            what,
+        };
         let header = Header::parse(
             blob.encryption_header
                 .as_deref()
                 .ok_or_else(|| missing("encryption header"))?,
         )
-        .map_err(|e| anyhow::anyhow!("blob {}: {e}", blob.id))?;
+        .map_err(|source| ReadError::Header {
+            blob_id: blob.id,
+            source,
+        })?;
         let chunk_size = blob.chunk_size.ok_or_else(|| missing("chunk size"))?;
         let layout = usize::try_from(chunk_size)
             .ok()
@@ -90,7 +120,7 @@ impl Reader {
         blob: &Blob,
         stored: &Stored,
         span: Range<u64>,
-    ) -> anyhow::Result<Self> {
+    ) -> Result<Self, ReadError> {
         let key = state
             .keks()
             .unwrap(blob.id, &stored.kek_id, &stored.wrapped_key)?;
@@ -124,8 +154,7 @@ impl Reader {
                     ..Default::default()
                 },
             )
-            .await
-            .context("reading the object")?
+            .await?
             .into_stream()
             .boxed();
         Ok(Self {
@@ -141,7 +170,7 @@ impl Reader {
     }
 
     /// The next piece of plaintext, or `None` once the range is served.
-    pub async fn next_segment(&mut self) -> anyhow::Result<Option<Bytes>> {
+    pub async fn next_segment(&mut self) -> Result<Option<Bytes>, ReadError> {
         if self.remaining == 0 {
             return Ok(None);
         }
@@ -151,10 +180,8 @@ impl Reader {
         };
         while self.buffer.len() < need {
             match self.source.next().await {
-                Some(chunk) => self
-                    .buffer
-                    .extend_from_slice(&chunk.context("reading the object")?),
-                None => anyhow::bail!("object ended before segment {}", self.segment),
+                Some(chunk) => self.buffer.extend_from_slice(&chunk?),
+                None => return Err(ReadError::Truncated(self.segment)),
             }
         }
         let sealed = self.buffer.split_to(need);
@@ -162,7 +189,10 @@ impl Reader {
         let plain = self
             .decryptor
             .open(self.segment, &sealed, last)
-            .with_context(|| format!("opening segment {}", self.segment))?;
+            .map_err(|source| ReadError::Segment {
+                segment: self.segment,
+                source,
+            })?;
         let skip = std::mem::take(&mut self.skip).min(plain.len());
         let take = ((plain.len() - skip) as u64).min(self.remaining) as usize;
         self.remaining -= take as u64;

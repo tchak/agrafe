@@ -1,17 +1,15 @@
 //! The deferred virus scan: stream the decrypted original to clamd and move
 //! the blob out of `uploaded`.
 
-use anyhow::Context as _;
-
-use super::Job;
+use super::{Job, JobError};
 use crate::app::AppState;
 use crate::blob::BlobState;
 use crate::blob::read::{Reader, Stored};
 use crate::blob::repo::{self, Transition};
 use crate::clamav::Verdict;
 
-pub async fn run(state: &AppState, job: &Job) -> anyhow::Result<()> {
-    let id = job.blob_id.context("scan job has no blob")?;
+pub async fn run(state: &AppState, job: &Job) -> Result<(), JobError> {
+    let id = job.blob_id.ok_or(JobError::NoBlob(job.kind))?;
     let Some(blob) = repo::find(state.pool(), id).await? else {
         tracing::info!("blob is gone, nothing to scan");
         return Ok(());

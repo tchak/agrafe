@@ -5,14 +5,22 @@ use std::collections::HashMap;
 use agrafe_crypto::streaming::Layout;
 use agrafe_crypto::wrap::Kek;
 use agrafe_crypto::{Error as CryptoError, Key};
-use anyhow::{Context, Result};
 use uuid::Uuid;
 
-use crate::config::EncryptionConfig;
+use crate::config::{ConfigError, EncryptionConfig};
 
 /// Upper bound on `encryption.chunk_size`. A segment is held in memory whole
 /// on both the write and the read path, once per in-flight request.
 pub const MAX_CHUNK_SIZE: u64 = 16 * 1024 * 1024;
+
+/// A stored data key that cannot be unwrapped.
+#[derive(Debug, thiserror::Error)]
+pub enum UnwrapError {
+    #[error("blob {blob_id} is wrapped with unknown KEK `{kek_id}`")]
+    UnknownKek { blob_id: Uuid, kek_id: String },
+    #[error("unwrapping the data key of blob {blob_id}: {source}")]
+    Crypto { blob_id: Uuid, source: CryptoError },
+}
 
 /// Every KEK in config, one of them current for wrapping new data keys.
 pub struct Keks {
@@ -29,33 +37,38 @@ pub struct Envelope {
 }
 
 impl Keks {
-    pub fn from_config(config: &EncryptionConfig) -> Result<Self> {
+    pub fn from_config(config: &EncryptionConfig) -> Result<Self, ConfigError> {
+        let invalid = ConfigError::Invalid;
         let mut keks = HashMap::new();
         for (id, secret) in &config.keks {
-            anyhow::ensure!(!id.is_empty(), "encryption KEK ids must not be empty");
+            if id.is_empty() {
+                return Err(invalid("encryption KEK ids must not be empty".into()));
+            }
             let bytes = secret
                 .decoded()
-                .with_context(|| format!("encryption KEK `{id}`"))?;
+                .map_err(|e| invalid(format!("encryption KEK `{id}` is not valid base64: {e}")))?;
             let key = Key::from_slice(&bytes)
-                .with_context(|| format!("encryption KEK `{id}` must be 32 bytes"))?;
+                .map_err(|_| invalid(format!("encryption KEK `{id}` must be 32 bytes")))?;
             keks.insert(id.clone(), Kek::new(&key));
         }
         let current = config
             .current_kek
             .clone()
-            .context("encryption.current_kek is required")?;
-        anyhow::ensure!(
-            keks.contains_key(&current),
-            "encryption.current_kek `{current}` is not present in encryption.keks"
-        );
-        anyhow::ensure!(
-            config.chunk_size.as_u64() <= MAX_CHUNK_SIZE,
-            "encryption.chunk_size must be at most {MAX_CHUNK_SIZE} bytes (16 MiB)"
-        );
+            .ok_or_else(|| invalid("encryption.current_kek is required".into()))?;
+        if !keks.contains_key(&current) {
+            return Err(invalid(format!(
+                "encryption.current_kek `{current}` is not present in encryption.keks"
+            )));
+        }
+        if config.chunk_size.as_u64() > MAX_CHUNK_SIZE {
+            return Err(invalid(format!(
+                "encryption.chunk_size must be at most {MAX_CHUNK_SIZE} bytes (16 MiB)"
+            )));
+        }
         let chunk_size = usize::try_from(config.chunk_size.as_u64())
             .ok()
             .and_then(|s| Layout::new(s).ok())
-            .context("encryption.chunk_size is too small")?;
+            .ok_or_else(|| invalid("encryption.chunk_size is too small".into()))?;
         Ok(Self {
             keks,
             current,
@@ -80,15 +93,16 @@ impl Keks {
     }
 
     /// Unwrap a stored data key.
-    pub fn unwrap(&self, blob_id: Uuid, kek_id: &str, wrapped: &[u8]) -> Result<Key> {
+    pub fn unwrap(&self, blob_id: Uuid, kek_id: &str, wrapped: &[u8]) -> Result<Key, UnwrapError> {
         let kek = self
             .keks
             .get(kek_id)
-            .with_context(|| format!("blob {blob_id} is wrapped with unknown KEK `{kek_id}`"))?;
+            .ok_or_else(|| UnwrapError::UnknownKek {
+                blob_id,
+                kek_id: kek_id.to_string(),
+            })?;
         kek.unwrap(wrapped, wrap_aad(blob_id).as_bytes())
-            .map_err(|e: CryptoError| {
-                anyhow::anyhow!("unwrapping the data key of blob {blob_id}: {e}")
-            })
+            .map_err(|source| UnwrapError::Crypto { blob_id, source })
     }
 }
 

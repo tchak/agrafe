@@ -1,9 +1,9 @@
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use agrafe::app::AppState;
-use agrafe::config::{Config, Role};
+use agrafe::app::{AppState, InitError};
+use agrafe::config::{Config, ConfigError, Role};
 use agrafe::{api, db, jobs};
-use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use futures::FutureExt;
 use tokio::net::TcpListener;
@@ -34,15 +34,54 @@ enum Command {
     Migrate,
 }
 
+/// Why the process stopped.
+#[derive(thiserror::Error)]
+enum Error {
+    #[error("config file {} not found", .0.display())]
+    ConfigNotFound(PathBuf),
+    #[error(transparent)]
+    Config(#[from] ConfigError),
+    #[error("connecting to the database: {0}")]
+    Connect(#[from] sqlx::Error),
+    #[error("running migrations: {0}")]
+    Migrate(#[from] sqlx::migrate::MigrateError),
+    #[error(transparent)]
+    Init(#[from] InitError),
+    #[error("binding the {interface} interface on {addr}: {source}")]
+    Bind {
+        interface: &'static str,
+        addr: SocketAddr,
+        source: std::io::Error,
+    },
+    #[error("{interface} interface: {source}")]
+    Serve {
+        interface: &'static str,
+        source: std::io::Error,
+    },
+    #[error(transparent)]
+    Workers(#[from] jobs::runner::Error),
+    #[error("task panicked: {0}")]
+    Panicked(#[from] tokio::task::JoinError),
+}
+
+/// `main` reports an error through `Debug`; print the message instead.
+impl std::fmt::Debug for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
+
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> Result<(), Error> {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
 
     let cli = Cli::parse();
-    if let Some(path) = &cli.config {
-        anyhow::ensure!(path.exists(), "config file {} not found", path.display());
+    if let Some(path) = &cli.config
+        && !path.exists()
+    {
+        return Err(Error::ConfigNotFound(path.clone()));
     }
     let mut config = Config::load(cli.config.as_deref())?;
 
@@ -62,7 +101,7 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn serve(config: Config) -> Result<()> {
+async fn serve(config: Config) -> Result<(), Error> {
     let role = config.server.role;
     let pool = db::connect(&config.database).await?;
     let state = AppState::new(config, pool)?;
@@ -72,12 +111,8 @@ async fn serve(config: Config) -> Result<()> {
 
     if role.runs_api() {
         let cfg = &state.config().server;
-        let private = TcpListener::bind(cfg.private_addr)
-            .await
-            .with_context(|| format!("binding private interface on {}", cfg.private_addr))?;
-        let public = TcpListener::bind(cfg.public_addr)
-            .await
-            .with_context(|| format!("binding public interface on {}", cfg.public_addr))?;
+        let private = bind("private", cfg.private_addr).await?;
+        let public = bind("public", cfg.public_addr).await?;
         tracing::info!(addr = %cfg.private_addr, "private interface listening");
         tracing::info!(addr = %cfg.public_addr, "public interface listening");
 
@@ -88,26 +123,41 @@ async fn serve(config: Config) -> Result<()> {
             axum::serve(private, private_app)
                 .with_graceful_shutdown(s)
                 .await
-                .context("private interface")
+                .map_err(|source| Error::Serve {
+                    interface: "private",
+                    source,
+                })
         });
         let s = shutdown.clone();
         tasks.spawn(async move {
             axum::serve(public, public_app)
                 .with_graceful_shutdown(s)
                 .await
-                .context("public interface")
+                .map_err(|source| Error::Serve {
+                    interface: "public",
+                    source,
+                })
         });
     }
 
     if role.runs_worker() {
-        tasks.spawn(jobs::runner::run(state.clone(), shutdown.clone()));
+        let (state, s) = (state.clone(), shutdown.clone());
+        tasks.spawn(async move { Ok(jobs::runner::run(state, s).await?) });
     }
 
     while let Some(result) = tasks.join_next().await {
-        result.context("task panicked")??;
+        result??;
     }
     tracing::info!("shutdown complete");
     Ok(())
+}
+
+async fn bind(interface: &'static str, addr: SocketAddr) -> Result<TcpListener, Error> {
+    TcpListener::bind(addr).await.map_err(|source| Error::Bind {
+        interface,
+        addr,
+        source,
+    })
 }
 
 async fn shutdown_signal() {

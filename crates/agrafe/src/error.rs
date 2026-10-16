@@ -31,11 +31,16 @@ pub enum ApiError {
     Gone(String),
     #[error("not implemented yet")]
     NotImplemented,
-    #[error(transparent)]
-    Internal(#[from] anyhow::Error),
+    /// The server's fault: logged in full, answered as `internal error`.
+    #[error("{0}")]
+    Internal(Box<dyn std::error::Error + Send + Sync>),
 }
 
 impl ApiError {
+    pub fn internal(err: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Self {
+        ApiError::Internal(err.into())
+    }
+
     /// Convert an extractor rejection into the matching variant, keeping its
     /// status and message.
     pub fn from_rejection(status: StatusCode, message: String) -> Self {
@@ -86,7 +91,7 @@ impl ApiError {
 
 impl From<sqlx::Error> for ApiError {
     fn from(err: sqlx::Error) -> Self {
-        ApiError::Internal(err.into())
+        ApiError::internal(err)
     }
 }
 
@@ -106,7 +111,7 @@ impl IntoResponse for ApiError {
         let status = self.status();
         let message = match &self {
             ApiError::Internal(err) => {
-                tracing::error!(error = ?err, "internal error");
+                tracing::error!(error = %err, "internal error");
                 "internal error".to_string()
             }
             other => other.to_string(),

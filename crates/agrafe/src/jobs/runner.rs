@@ -6,7 +6,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Context as _;
 use futures::FutureExt as _;
 use jiff::Timestamp;
 use sqlx::postgres::PgListener;
@@ -15,7 +14,7 @@ use tokio::task::JoinSet;
 use tracing::Instrument as _;
 use uuid::Uuid;
 
-use super::{Failure, Job, JobKind, scan};
+use super::{Failure, Job, JobError, JobKind, scan};
 use crate::app::AppState;
 
 /// Kinds this binary knows how to run. Others wait in the table.
@@ -24,9 +23,20 @@ pub const HANDLED: &[JobKind] = &[JobKind::Scan];
 /// Pause after a listener error before asking Postgres again.
 const LISTEN_RETRY: Duration = Duration::from_secs(1);
 
+/// Why the workers stopped. A failed job is not one of these.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("connecting the job listener: {0}")]
+    Connect(sqlx::Error),
+    #[error("listening for jobs: {0}")]
+    Listen(sqlx::Error),
+    #[error("worker panicked: {0}")]
+    Panicked(#[from] tokio::task::JoinError),
+}
+
 /// Run the workers until `shutdown` resolves. A job in flight finishes;
 /// nothing new is claimed afterwards.
-pub async fn run<F>(state: AppState, shutdown: F) -> anyhow::Result<()>
+pub async fn run<F>(state: AppState, shutdown: F) -> Result<(), Error>
 where
     F: Future<Output = ()> + Clone + Send + 'static,
 {
@@ -38,7 +48,7 @@ where
 
     let listener = PgListener::connect_with(state.pool())
         .await
-        .context("connecting the job listener")?;
+        .map_err(Error::Connect)?;
     tasks.spawn(listen(listener, wakeups.clone(), shutdown.clone()));
 
     let worker = format!("{}-{}", hostname(), Uuid::now_v7());
@@ -57,14 +67,14 @@ where
     }
 
     while let Some(result) = tasks.join_next().await {
-        result.context("worker panicked")??;
+        result??;
     }
     Ok(())
 }
 
 /// Claim and run one job of `kind`. Returns whether there was one. This is
 /// one turn of a worker, and what tests call.
-pub async fn run_one(state: &AppState, kind: JobKind, worker: &str) -> anyhow::Result<bool> {
+pub async fn run_one(state: &AppState, kind: JobKind, worker: &str) -> sqlx::Result<bool> {
     let lease = state.config().jobs.lease_timeout;
     let Some(job) = super::claim(state.pool(), &[kind], worker, lease).await? else {
         return Ok(false);
@@ -83,7 +93,7 @@ pub async fn run_one(state: &AppState, kind: JobKind, worker: &str) -> anyhow::R
     Ok(true)
 }
 
-async fn run_claimed(state: &AppState, job: &Job, worker: &str) -> anyhow::Result<()> {
+async fn run_claimed(state: &AppState, job: &Job, worker: &str) -> sqlx::Result<()> {
     let lease = state.config().jobs.lease_timeout;
     // A handler that panics has failed this attempt; it must not take the
     // worker, or the process in the `all` role, down with it. The lease is
@@ -92,10 +102,7 @@ async fn run_claimed(state: &AppState, job: &Job, worker: &str) -> anyhow::Resul
     let outcome = tokio::select! {
         outcome = std::panic::AssertUnwindSafe(handle(state, job)).catch_unwind() => {
             outcome.unwrap_or_else(|panic| {
-                Err(anyhow::anyhow!(
-                    "handler panicked: {}",
-                    panic_message(&*panic)
-                ))
+                Err(JobError::Panicked(panic_message(&*panic).to_string()))
             })
         }
         _ = heartbeat(state, job.id, worker, lease) => unreachable!("the heartbeat never ends"),
@@ -107,7 +114,7 @@ async fn run_claimed(state: &AppState, job: &Job, worker: &str) -> anyhow::Resul
         }
         Err(err) => {
             let mut conn = state.pool().acquire().await?;
-            let error = format!("{err:#}");
+            let error = err.to_string();
             match super::fail(&mut conn, job, &error, Timestamp::now()).await? {
                 Failure::Retry(at) => tracing::warn!(error, retry_at = %at, "job failed"),
                 Failure::Dead => tracing::error!(error, "job failed for the last time"),
@@ -118,10 +125,10 @@ async fn run_claimed(state: &AppState, job: &Job, worker: &str) -> anyhow::Resul
     Ok(())
 }
 
-async fn handle(state: &AppState, job: &Job) -> anyhow::Result<()> {
+async fn handle(state: &AppState, job: &Job) -> Result<(), JobError> {
     match job.kind {
         JobKind::Scan => scan::run(state, job).await,
-        other => anyhow::bail!("no handler for `{other}` jobs"),
+        other => Err(JobError::Unhandled(other)),
     }
 }
 
@@ -131,7 +138,7 @@ async fn poll<F>(
     worker: String,
     wakeup: Arc<Notify>,
     shutdown: F,
-) -> anyhow::Result<()>
+) -> Result<(), Error>
 where
     F: Future<Output = ()>,
 {
@@ -144,7 +151,7 @@ where
             Ok(true) => continue,
             Ok(false) => interval,
             Err(err) => {
-                tracing::error!(kind = %kind, error = ?err, "worker turn failed");
+                tracing::error!(kind = %kind, error = %err, "worker turn failed");
                 interval
             }
         };
@@ -160,14 +167,14 @@ async fn listen<F>(
     mut listener: PgListener,
     wakeups: HashMap<JobKind, Arc<Notify>>,
     shutdown: F,
-) -> anyhow::Result<()>
+) -> Result<(), Error>
 where
     F: Future<Output = ()>,
 {
     listener
         .listen(super::CHANNEL)
         .await
-        .context("listening for jobs")?;
+        .map_err(Error::Listen)?;
     tokio::pin!(shutdown);
     loop {
         // `recv` reconnects by itself after a dropped connection; the

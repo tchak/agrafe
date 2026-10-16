@@ -10,14 +10,13 @@
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hmac::{Hmac, KeyInit, Mac};
 use http::Method;
 use sha2::Sha256;
 
-use crate::config::SigningConfig;
+use crate::config::{ConfigError, SigningConfig};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -44,36 +43,40 @@ pub struct Signer {
 
 impl Signer {
     /// Build from config, validating everything the signer depends on.
-    pub fn from_config(config: &SigningConfig) -> Result<Self> {
-        anyhow::ensure!(
-            config.window > Duration::ZERO,
-            "signing.window must be positive"
-        );
+    pub fn from_config(config: &SigningConfig) -> Result<Self, ConfigError> {
+        let invalid = ConfigError::Invalid;
+        if config.window.is_zero() {
+            return Err(invalid("signing.window must be positive".into()));
+        }
         let mut keys = HashMap::new();
         for (id, secret) in &config.keys {
             // The id travels inside the URL token, so it must be a safe path
             // segment and must not contain the token separator `.`.
-            anyhow::ensure!(
-                !id.is_empty()
-                    && id
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
-                "signing key id `{id}` must be non-empty and use only [A-Za-z0-9_-]"
-            );
+            if id.is_empty()
+                || !id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            {
+                return Err(invalid(format!(
+                    "signing key id `{id}` must be non-empty and use only [A-Za-z0-9_-]"
+                )));
+            }
             let key = secret
                 .decoded()
-                .with_context(|| format!("signing key `{id}`"))?;
-            anyhow::ensure!(
-                key.len() >= 32,
-                "signing key `{id}` must be at least 32 bytes"
-            );
+                .map_err(|e| invalid(format!("signing key `{id}` is not valid base64: {e}")))?;
+            if key.len() < 32 {
+                return Err(invalid(format!(
+                    "signing key `{id}` must be at least 32 bytes"
+                )));
+            }
             keys.insert(id.clone(), key);
         }
-        anyhow::ensure!(
-            keys.contains_key(&config.current_key),
-            "signing.current_key `{}` is not present in signing.keys",
-            config.current_key
-        );
+        if !keys.contains_key(&config.current_key) {
+            return Err(invalid(format!(
+                "signing.current_key `{}` is not present in signing.keys",
+                config.current_key
+            )));
+        }
         Ok(Self {
             keys,
             current: config.current_key.clone(),

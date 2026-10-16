@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
 use object_store::ObjectStore;
 use object_store::aws::AmazonS3Builder;
 use object_store::local::LocalFileSystem;
@@ -11,13 +10,25 @@ use crate::config::StorageConfig;
 
 pub type Store = Arc<dyn ObjectStore>;
 
-pub fn build(config: &StorageConfig) -> Result<Store> {
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("creating storage directory {path}: {source}")]
+    CreateDir {
+        path: String,
+        source: std::io::Error,
+    },
+    #[error("opening the object store: {0}")]
+    Open(#[from] object_store::Error),
+}
+
+pub fn build(config: &StorageConfig) -> Result<Store, Error> {
     match config {
         StorageConfig::Local { local } => {
-            std::fs::create_dir_all(&local.path)
-                .with_context(|| format!("creating storage directory {}", local.path))?;
-            let store = LocalFileSystem::new_with_prefix(&local.path)
-                .with_context(|| format!("opening local storage at {}", local.path))?;
+            std::fs::create_dir_all(&local.path).map_err(|source| Error::CreateDir {
+                path: local.path.clone(),
+                source,
+            })?;
+            let store = LocalFileSystem::new_with_prefix(&local.path)?;
             Ok(Arc::new(store))
         }
         StorageConfig::S3 { s3 } => {
@@ -34,7 +45,7 @@ pub fn build(config: &StorageConfig) -> Result<Store> {
             if let Some(secret) = &s3.secret_access_key {
                 builder = builder.with_secret_access_key(secret.expose());
             }
-            let store = builder.build().context("building S3 client")?;
+            let store = builder.build()?;
             Ok(Arc::new(store))
         }
     }

@@ -3,7 +3,6 @@
 
 use std::ops::Range;
 
-use anyhow::Context as _;
 use axum::body::Body;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::response::Response;
@@ -16,7 +15,7 @@ use uuid::Uuid;
 
 use crate::app::AppState;
 use crate::blob::Blob;
-use crate::blob::read::{Reader, Stored};
+use crate::blob::read::{ReadError, Reader, Stored};
 use crate::error::{ApiError, ApiResult};
 
 /// Signed query parameters the minter may attach to an original URL.
@@ -47,7 +46,7 @@ pub async fn serve(
             blob.state
         )));
     }
-    let stored = Stored::from_blob(&blob).map_err(ApiError::Internal)?;
+    let stored = Stored::from_blob(&blob).map_err(ApiError::internal)?;
     let etag = etag(&stored.checksum);
 
     let mut response = Response::new(Body::empty());
@@ -77,10 +76,7 @@ pub async fn serve(
     h.insert(
         header::CONTENT_TYPE,
         HeaderValue::from_str(&blob.content_type).map_err(|_| {
-            ApiError::Internal(anyhow::anyhow!(
-                "blob {} has an invalid content type",
-                blob.id
-            ))
+            ApiError::internal(format!("blob {} has an invalid content type", blob.id))
         })?,
     );
     h.insert(
@@ -146,15 +142,17 @@ pub async fn serve(
 
     let mut reader = Reader::open(state, &blob, &stored, span)
         .await
-        .with_context(|| format!("blob {}: opening the original", blob.id))?;
+        .map_err(|e| ApiError::internal(format!("blob {}: opening the original: {e}", blob.id)))?;
     // Open the first segment before the response starts: a wrong key, a
     // tampered object or a missing one is then a logged `500`, not a `200`
     // cut short.
     let first = reader
         .next_segment()
         .await
-        .with_context(|| format!("blob {}: opening the first segment", blob.id))?
-        .ok_or_else(|| anyhow::anyhow!("blob {}: range is empty", blob.id))?;
+        .map_err(|e| {
+            ApiError::internal(format!("blob {}: opening the first segment: {e}", blob.id))
+        })?
+        .ok_or_else(|| ApiError::internal(format!("blob {}: range is empty", blob.id)))?;
     *response.body_mut() = Body::from_stream(plaintext_stream(blob.id, first, reader));
     Ok(response)
 }
@@ -166,7 +164,7 @@ fn plaintext_stream(
     blob_id: Uuid,
     first: Bytes,
     reader: Reader,
-) -> impl futures::Stream<Item = anyhow::Result<Bytes>> {
+) -> impl futures::Stream<Item = Result<Bytes, ReadError>> {
     let rest = futures::stream::try_unfold(reader, move |mut r| async move {
         match r.next_segment().await {
             Ok(Some(bytes)) => Ok(Some((bytes, r))),
