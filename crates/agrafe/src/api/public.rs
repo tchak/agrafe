@@ -2,12 +2,15 @@
 
 use axum::Router;
 use axum::extract::{DefaultBodyLimit, Request, State};
+use axum::http::{HeaderMap, Method};
+use axum::response::Response;
 use axum::routing::get;
 use uuid::Uuid;
 
 use super::body;
-use super::extract::{Json, Path};
+use super::extract::{Json, Path, Query};
 use super::json::PublicBlobResponse;
+use super::original::{self, OriginalQuery};
 use super::signed::Signed;
 use crate::app::AppState;
 use crate::blob::Blob;
@@ -24,10 +27,7 @@ pub fn routes(body_limit: usize) -> Router<AppState> {
                 .put(upload_blob)
                 .layer(DefaultBodyLimit::max(body_limit)),
         )
-        .route(
-            "/blobs/{token}/{id}/original/{filename}",
-            get(not_implemented),
-        )
+        .route("/blobs/{token}/{id}/original/{filename}", get(get_original))
         .route(
             "/blobs/{token}/{id}/preview/{filename}",
             get(not_implemented),
@@ -71,6 +71,18 @@ async fn upload_blob(
     let declared = upload::resolve(&blob, None)?;
     let blob = body::upload(&state, blob, declared, req).await?;
     Ok(Json(PublicBlobResponse::new(&blob)))
+}
+
+async fn get_original(
+    _signed: Signed,
+    State(state): State<AppState>,
+    Path((_token, id, filename)): Path<(String, Uuid, String)>,
+    Query(query): Query<OriginalQuery>,
+    method: Method,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    let blob = find_visible(&state, id).await?;
+    original::serve(&state, blob, &filename, query, &method, &headers).await
 }
 
 /// Look a blob up as the public port sees it: terminal states are `404`.

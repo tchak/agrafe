@@ -716,9 +716,10 @@ async fn mint_urls_with_options() {
     assert_eq!(status, StatusCode::OK, "{body}");
     let original = body["original"].as_str().unwrap();
     assert!(original.ends_with("?disposition=attachment"), "{original}");
-    // Representation routes exist and accept the signed query string.
+    // Representation routes accept the signed query string; the blob has no
+    // bytes yet, so the answer is a conflict rather than a signature error.
     let (status, _) = call(&app.public, req(Method::GET, &public_path(original))).await;
-    assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(status, StatusCode::CONFLICT);
 
     let (status, body) = call(
         &app.private,
@@ -994,4 +995,259 @@ async fn state_machine_transitions() {
         .unwrap(),
         Transition::Missing
     ));
+}
+
+/// A raw response: status, headers and body bytes.
+async fn fetch(
+    router: &Router,
+    req: Request<Body>,
+) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+    let res = router.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let headers = res.headers().clone();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes().to_vec();
+    (status, headers, bytes)
+}
+
+fn get_with(uri: &str, headers: &[(&str, &str)]) -> Request<Body> {
+    let mut b = Request::builder().method(Method::GET).uri(uri);
+    for (k, v) in headers {
+        b = b.header(*k, *v);
+    }
+    b.body(Body::empty()).unwrap()
+}
+
+/// Upload `bytes` as a ready blob and return its metadata.
+async fn ready_blob(app: &TestApp, bytes: &[u8], write_once: bool) -> Value {
+    let mut blob = blob_for(bytes, "image/png", "raw");
+    blob["skip_virus_scan"] = json!(true);
+    blob["write_once"] = json!(write_once);
+    let created = create(app, blob).await;
+    let id = created["id"].as_str().unwrap();
+    let (status, body) = call(
+        &app.private,
+        put_raw(&format!("/blobs/{id}"), bytes.to_vec()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body
+}
+
+#[tokio::test]
+async fn get_original_full() {
+    let app = setup().await;
+    // Several 1 KiB segments plus a partial one.
+    let bytes = png_bytes(3500);
+    let blob = ready_blob(&app, &bytes, true).await;
+    let id = blob["id"].as_str().unwrap();
+    let private_uri = format!("/blobs/{id}/original/photo.png");
+
+    let (status, headers, body) = fetch(&app.private, get_with(&private_uri, &[])).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, bytes);
+    assert_eq!(headers["content-type"], "image/png");
+    assert_eq!(headers["content-length"], "3500");
+    assert_eq!(headers["accept-ranges"], "bytes");
+    assert_eq!(headers["x-content-type-options"], "nosniff");
+    assert_eq!(headers["content-security-policy"], "sandbox");
+    assert_eq!(
+        headers["content-disposition"],
+        "inline; filename=\"photo.png\"; filename*=UTF-8''photo%2Epng"
+    );
+    assert!(
+        headers["cache-control"]
+            .to_str()
+            .unwrap()
+            .contains("immutable")
+    );
+    assert!(headers.contains_key("last-modified"));
+    let etag = headers["etag"].to_str().unwrap().to_string();
+    assert!(etag.starts_with('"') && etag.len() == 66, "{etag}");
+
+    // The signed public URL serves the same bytes.
+    let public_uri = public_path(blob["urls"]["original"].as_str().unwrap());
+    let (status, _, body) = fetch(&app.public, get_with(&public_uri, &[])).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, bytes);
+
+    // HEAD carries the headers and no body.
+    let head = Request::builder()
+        .method(Method::HEAD)
+        .uri(&public_uri)
+        .body(Body::empty())
+        .unwrap();
+    let (status, headers, body) = fetch(&app.public, head).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["content-length"], "3500");
+    assert!(body.is_empty());
+
+    // Conditional request.
+    let (status, headers, body) = fetch(
+        &app.private,
+        get_with(&private_uri, &[("if-none-match", &etag)]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_MODIFIED);
+    assert_eq!(headers["etag"], etag.as_str());
+    assert!(body.is_empty());
+
+    // The filename segment must match.
+    let (status, _) = call(
+        &app.private,
+        req(Method::GET, &format!("/blobs/{id}/original/other.png")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Signed query parameters steer the download.
+    let (_, minted) = call(
+        &app.private,
+        json_req(
+            Method::POST,
+            &format!("/blobs/{id}/urls"),
+            json!({"query": {"disposition": "attachment", "filename": "été.png"}}),
+        ),
+    )
+    .await;
+    let uri = public_path(minted["original"].as_str().unwrap());
+    let (status, headers, _) = fetch(&app.public, get_with(&uri, &[])).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers["content-disposition"],
+        "attachment; filename=\"_t_.png\"; filename*=UTF-8''%C3%A9t%C3%A9%2Epng"
+    );
+
+    // An empty file.
+    let empty = ready_blob(&app, b"", true).await;
+    let uri = public_path(empty["urls"]["original"].as_str().unwrap());
+    let (status, headers, body) = fetch(&app.public, get_with(&uri, &[])).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["content-length"], "0");
+    assert!(body.is_empty());
+    let (status, _, _) = fetch(&app.public, get_with(&uri, &[("range", "bytes=0-")])).await;
+    assert_eq!(status, StatusCode::RANGE_NOT_SATISFIABLE);
+
+    // Mutable blobs must be revalidated.
+    let mutable = ready_blob(&app, &bytes, false).await;
+    let id = mutable["id"].as_str().unwrap();
+    let (_, headers, _) = fetch(
+        &app.private,
+        get_with(&format!("/blobs/{id}/original/photo.png"), &[]),
+    )
+    .await;
+    assert_eq!(headers["cache-control"], "private, no-cache");
+}
+
+#[tokio::test]
+async fn get_original_ranges() {
+    let app = setup().await;
+    let bytes = png_bytes(3500);
+    let blob = ready_blob(&app, &bytes, true).await;
+    let uri = public_path(blob["urls"]["original"].as_str().unwrap());
+    let etag = {
+        let (_, headers, _) = fetch(&app.public, get_with(&uri, &[])).await;
+        headers["etag"].to_str().unwrap().to_string()
+    };
+
+    // Each range crosses or sits inside different 1 KiB segments (the first
+    // segment holds 968 plaintext bytes, the others 1008).
+    for (spec, start, end) in [
+        ("bytes=0-0", 0, 1),
+        ("bytes=0-967", 0, 968),
+        ("bytes=967-968", 967, 969),
+        ("bytes=968-1975", 968, 1976),
+        ("bytes=100-3000", 100, 3001),
+        ("bytes=3000-", 3000, 3500),
+        ("bytes=-100", 3400, 3500),
+        ("bytes=3499-3499", 3499, 3500),
+        ("bytes=0-99999", 0, 3500),
+    ] {
+        let (status, headers, body) = fetch(&app.public, get_with(&uri, &[("range", spec)])).await;
+        assert_eq!(status, StatusCode::PARTIAL_CONTENT, "{spec}");
+        assert_eq!(body, &bytes[start..end], "{spec}");
+        assert_eq!(
+            headers["content-length"],
+            (end - start).to_string(),
+            "{spec}"
+        );
+        assert_eq!(
+            headers["content-range"],
+            format!("bytes {start}-{}/3500", end - 1),
+            "{spec}"
+        );
+    }
+
+    // Unsatisfiable.
+    let (status, headers, _) =
+        fetch(&app.public, get_with(&uri, &[("range", "bytes=3500-")])).await;
+    assert_eq!(status, StatusCode::RANGE_NOT_SATISFIABLE);
+    assert_eq!(headers["content-range"], "bytes */3500");
+
+    // Multiple ranges are not supported: the whole file comes back.
+    let (status, _, body) = fetch(&app.public, get_with(&uri, &[("range", "bytes=0-1,5-6")])).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, bytes);
+
+    // If-Range with the current ETag honours the range; a stale one does not.
+    let (status, _, _) = fetch(
+        &app.public,
+        get_with(&uri, &[("range", "bytes=0-1"), ("if-range", &etag)]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    let (status, _, body) = fetch(
+        &app.public,
+        get_with(&uri, &[("range", "bytes=0-1"), ("if-range", "\"stale\"")]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body.len(), 3500);
+}
+
+#[tokio::test]
+async fn get_original_unreadable() {
+    let app = setup().await;
+    let bytes = png_bytes(100);
+
+    // Scan pending: the bytes exist but are not served yet.
+    let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
+    let id = created["id"].as_str().unwrap();
+    let (status, _) = call(
+        &app.private,
+        put_raw(&format!("/blobs/{id}"), bytes.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let uri = public_path(created["urls"]["original"].as_str().unwrap());
+    let (status, body) = call(&app.public, req(Method::GET, &uri)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "conflict");
+
+    // Deleted: gone from the public port, conflict on the private one.
+    let blob = ready_blob(&app, &bytes, true).await;
+    let id = blob["id"].as_str().unwrap();
+    let uri = public_path(blob["urls"]["original"].as_str().unwrap());
+    let (status, _) = call(&app.private, req(Method::DELETE, &format!("/blobs/{id}"))).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = call(&app.public, req(Method::GET, &uri)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = call(
+        &app.private,
+        req(Method::GET, &format!("/blobs/{id}/original/photo.png")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // Invalid disposition value.
+    let blob = ready_blob(&app, &bytes, true).await;
+    let id = blob["id"].as_str().unwrap();
+    let (status, _) = call(
+        &app.private,
+        req(
+            Method::GET,
+            &format!("/blobs/{id}/original/photo.png?disposition=weird"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }

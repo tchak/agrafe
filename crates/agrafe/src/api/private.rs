@@ -5,8 +5,9 @@ use std::time::{Duration, SystemTime};
 
 use axum::Router;
 use axum::extract::{DefaultBodyLimit, Request, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::IntoResponse;
+use axum::response::Response;
 use axum::routing::{get, post};
 use jiff::Timestamp;
 use serde::Deserialize;
@@ -15,6 +16,7 @@ use uuid::Uuid;
 use super::body;
 use super::extract::{Json, Path, Query};
 use super::json::{BlobResponse, ListResponse};
+use super::original::{self, OriginalQuery};
 use super::urls::{self, MintOptions};
 use crate::app::AppState;
 use crate::blob::create::{self, CreateBlobRequest};
@@ -36,7 +38,7 @@ pub fn routes(body_limit: usize) -> Router<AppState> {
                 .layer(DefaultBodyLimit::max(body_limit)),
         )
         .route("/blobs/{id}/urls", post(mint_urls))
-        .route("/blobs/{id}/original/{filename}", get(not_implemented))
+        .route("/blobs/{id}/original/{filename}", get(get_original))
         .route("/blobs/{id}/preview/{filename}", get(not_implemented))
         .route("/blobs/{id}/thumbnail/{filename}", get(not_implemented))
 }
@@ -181,6 +183,19 @@ async fn mint_urls(
         query: req.query,
     };
     Ok(Json(urls::mint(&state, &blob, &opts, SystemTime::now())))
+}
+
+async fn get_original(
+    State(state): State<AppState>,
+    Path((id, filename)): Path<(Uuid, String)>,
+    Query(query): Query<OriginalQuery>,
+    method: Method,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    let blob = repo::find(state.pool(), id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    original::serve(&state, blob, &filename, query, &method, &headers).await
 }
 
 async fn not_implemented() -> ApiError {
