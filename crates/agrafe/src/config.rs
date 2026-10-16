@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use bytesize::ByteSize;
 use figment::Figment;
 use figment::providers::{Env, Format, Toml};
+use jiff::{SignedDuration, Timestamp};
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -210,6 +211,21 @@ pub struct UploadConfig {
     pub inline_scan_max_size: ByteSize,
     #[serde(with = "humantime_serde", default = "default_stale_after")]
     pub stale_after: Duration,
+    /// Grace period before an object a re-upload replaced, or a delete
+    /// released, is purged from the bucket: a download that started before
+    /// the swap keeps its bytes.
+    #[serde(with = "humantime_serde", default = "default_purge_delay")]
+    pub purge_delay: Duration,
+}
+
+impl UploadConfig {
+    /// When an object released at `now` may be purged.
+    pub fn purge_at(&self, now: Timestamp) -> Timestamp {
+        SignedDuration::try_from(self.purge_delay)
+            .ok()
+            .and_then(|d| now.checked_add(d).ok())
+            .unwrap_or(Timestamp::MAX)
+    }
 }
 
 fn default_max_size() -> ByteSize {
@@ -221,6 +237,9 @@ fn default_inline_scan_max_size() -> ByteSize {
 fn default_stale_after() -> Duration {
     Duration::from_secs(3600)
 }
+fn default_purge_delay() -> Duration {
+    Duration::from_secs(3600)
+}
 
 impl Default for UploadConfig {
     fn default() -> Self {
@@ -228,6 +247,7 @@ impl Default for UploadConfig {
             max_size: default_max_size(),
             inline_scan_max_size: default_inline_scan_max_size(),
             stale_after: default_stale_after(),
+            purge_delay: default_purge_delay(),
         }
     }
 }

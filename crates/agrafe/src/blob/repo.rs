@@ -198,11 +198,13 @@ pub struct Completed {
 /// `uploading` to `uploaded`, or straight to `ready` when the scan is
 /// skipped. Points the row at the new object, resets scan and representation
 /// state, and enqueues what comes next in the same transaction: a scan, or
-/// the representations, plus a purge of the object this one replaces.
+/// the representations, plus a purge at `purge_at` of the object this one
+/// replaces.
 pub async fn complete_upload(
     pool: &PgPool,
     blob: &Blob,
     done: &Completed,
+    purge_at: Timestamp,
 ) -> sqlx::Result<Transition> {
     let (state, scan_state) = if blob.skip_virus_scan {
         (BlobState::Ready, ScanState::Skipped)
@@ -261,7 +263,7 @@ pub async fn complete_upload(
             JobKind::Purge,
             None,
             serde_json::json!({ "blob_id": blob.id, "storage_key": old }),
-            now,
+            purge_at,
         )
         .await?;
     }
@@ -269,8 +271,9 @@ pub async fn complete_upload(
     Ok(Transition::Done(updated))
 }
 
-/// Soft delete from any state, and enqueue a purge of the stored object.
-pub async fn soft_delete(pool: &PgPool, id: Uuid) -> sqlx::Result<Transition> {
+/// Soft delete from any state, and enqueue a purge of the stored object at
+/// `purge_at`.
+pub async fn soft_delete(pool: &PgPool, id: Uuid, purge_at: Timestamp) -> sqlx::Result<Transition> {
     let mut tx = pool.begin().await?;
     let from: Vec<BlobState> = BlobState::ALL
         .iter()
@@ -286,7 +289,7 @@ pub async fn soft_delete(pool: &PgPool, id: Uuid) -> sqlx::Result<Transition> {
             JobKind::Purge,
             None,
             serde_json::json!({ "blob_id": blob.id, "storage_key": key }),
-            Timestamp::now(),
+            purge_at,
         )
         .await?;
     }

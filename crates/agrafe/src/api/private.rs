@@ -141,7 +141,8 @@ async fn upload_blob(
 }
 
 async fn delete_blob(State(state): State<AppState>, Path(id): Path<Uuid>) -> ApiResult<StatusCode> {
-    match repo::soft_delete(state.pool(), id).await? {
+    let purge_at = state.config().upload.purge_at(Timestamp::now());
+    match repo::soft_delete(state.pool(), id, purge_at).await? {
         Transition::Done(_) => Ok(StatusCode::NO_CONTENT),
         // Already deleted: idempotent.
         Transition::Conflict(_) => Ok(StatusCode::NO_CONTENT),

@@ -209,7 +209,9 @@ from `ready`, must carry the new checksum and size in the `X-Agrafe-Checksum`
 (base64 SHA-256) and `X-Agrafe-Size` headers, writes to a new object key and
 swaps the pointer on the row. The headers are honoured on the private port
 only; on a first upload they must agree with what the blob was created with.
-Readers mid-stream keep the old object; a purge job deletes it.
+Readers mid-stream keep the old object: its purge job runs `upload.purge_delay`
+(default one hour) after the swap, long enough for a download that started
+before it to finish. A soft delete schedules its purge the same way.
 
 A failed or stale upload leaves `uploading` for the state it came from, decided
 by whether an object exists: `created` when `storage_key` is null, `ready`
@@ -265,7 +267,8 @@ it came from and returns `422` (checksum, size, type) or `409` (state). On
 success the blob moves to `uploaded`, or straight to `ready` when the scan was
 inline or skipped, and the next jobs are enqueued in the same transaction: a
 `scan` for a blob waiting in `uploaded`, `thumbnail` and `preview` for one
-that is `ready`, plus a `purge` of the object a re-upload replaced. The scan
+that is `ready`, plus a `purge` of the object a re-upload replaced, due
+`upload.purge_delay` later. The scan
 job enqueues the representations once the file is clean, so nothing renders
 a file that has not been scanned.
 

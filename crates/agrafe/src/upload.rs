@@ -10,6 +10,7 @@ use agrafe_crypto::streaming::{Encryptor, Layout};
 use axum::http::HeaderMap;
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
+use jiff::Timestamp;
 use object_store::ObjectStoreExt;
 use object_store::WriteMultipart;
 use object_store::path::Path as ObjectPath;
@@ -245,7 +246,8 @@ where
         checksum_sha256: declared.checksum,
         size: declared.size as i64,
     };
-    match repo::complete_upload(state.pool(), &blob, &completed).await? {
+    let purge_at = state.config().upload.purge_at(Timestamp::now());
+    match repo::complete_upload(state.pool(), &blob, &completed, purge_at).await? {
         Transition::Done(blob) => Ok(blob),
         Transition::Conflict(current) => {
             // The row changed under us (reaper or delete); the object we just

@@ -54,6 +54,7 @@ async fn setup() -> TestApp {
         path = "{tmp}"
         [upload]
         max_size = "16 KiB"
+        purge_delay = "30m"
         [signing]
         current_key = "k1"
         window = "1h"
@@ -696,14 +697,17 @@ async fn mutable_reupload() {
     assert_eq!(body["checksum"], STANDARD.encode(Sha256::digest(&v2)));
     assert_eq!(stored_plaintext(&app, id).await, v2);
 
-    // The previous object is queued for purge.
-    let (kind, payload): (String, Value) =
-        sqlx::query_as("SELECT kind, payload FROM jobs WHERE kind = 'purge'")
-            .fetch_one(app.state.pool())
-            .await
-            .unwrap();
+    // The previous object is queued for purge, after the grace period.
+    let (kind, payload, in_secs): (String, Value, f64) = sqlx::query_as(
+        "SELECT kind, payload, EXTRACT(EPOCH FROM run_at - now())::float8 \
+         FROM jobs WHERE kind = 'purge'",
+    )
+    .fetch_one(app.state.pool())
+    .await
+    .unwrap();
     assert_eq!(kind, "purge");
     assert_eq!(payload["blob_id"], first["id"]);
+    assert!((1700.0..=1800.0).contains(&in_secs), "{in_secs}");
     assert!(
         payload["storage_key"]
             .as_str()
@@ -983,12 +987,15 @@ async fn delete_enqueues_purge_when_stored() {
 
     let (status, _) = call(&app.private, req(Method::DELETE, &format!("/blobs/{id}"))).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    let (kind, payload): (String, Value) = sqlx::query_as("SELECT kind, payload FROM jobs")
-        .fetch_one(app.state.pool())
-        .await
-        .unwrap();
+    let (kind, payload, in_secs): (String, Value, f64) = sqlx::query_as(
+        "SELECT kind, payload, EXTRACT(EPOCH FROM run_at - now())::float8 FROM jobs",
+    )
+    .fetch_one(app.state.pool())
+    .await
+    .unwrap();
     assert_eq!(kind, "purge");
     assert_eq!(payload["storage_key"], "k/1");
+    assert!((1700.0..=1800.0).contains(&in_secs), "{in_secs}");
 }
 
 #[tokio::test]
