@@ -510,16 +510,12 @@ async fn raw_upload_rejections() {
 
     // Each failure answers 422, resets the blob to `created` and stores nothing.
     let cases: Vec<(&str, Value, Vec<u8>)> = vec![
-        (
-            "checksum",
-            blob_for(&png_bytes(3001), "image/png", "raw"),
-            {
-                let mut b = bytes.clone();
-                b.pop();
-                b.push(0xff);
-                b
-            },
-        ),
+        // Same length as declared, one byte off: only the hash can tell.
+        ("checksum", blob_for(&bytes, "image/png", "raw"), {
+            let mut b = bytes.clone();
+            b[1500] ^= 0xff;
+            b
+        }),
         (
             "too short",
             blob_for(&bytes, "image/png", "raw"),
@@ -537,6 +533,10 @@ async fn raw_upload_rejections() {
         let id = created["id"].as_str().unwrap();
         let (status, res) = call(&app.private, put_raw(&format!("/blobs/{id}"), body)).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{name}: {res}");
+        if name == "checksum" {
+            let message = res["error"]["message"].as_str().unwrap();
+            assert!(message.contains("checksum"), "{name}: {res}");
+        }
         let (_, got) = call(&app.private, req(Method::GET, &format!("/blobs/{id}"))).await;
         assert_eq!(got["state"], "created", "{name}");
         assert!(got["uploaded_at"].is_null(), "{name}");
@@ -547,7 +547,7 @@ async fn raw_upload_rejections() {
             put_raw(&format!("/blobs/{id}"), bytes.clone()),
         )
         .await;
-        if name == "type" || name == "checksum" {
+        if name == "type" {
             assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{name}: {res}");
         } else {
             assert_eq!(status, StatusCode::OK, "{name}: {res}");
@@ -564,7 +564,7 @@ async fn raw_upload_rejections() {
             .await
             .unwrap()
     };
-    assert_eq!(objects.len(), 2, "{objects:?}");
+    assert_eq!(objects.len(), 3, "{objects:?}");
 
     // Generated input types are not uploadable yet.
     let created = create(
