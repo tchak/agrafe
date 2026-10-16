@@ -3,7 +3,8 @@
 //! A range of plaintext maps to a range of whole segments, fetched from the
 //! object store in one read, opened one by one and trimmed at both ends. The
 //! header cached on the row provides the salt and nonce prefix, so no second
-//! read is needed.
+//! read is needed. Each byte is copied once on the way in (store chunks are
+//! gathered into a segment) and once on the way out (the decryption).
 
 use std::ops::Range;
 
@@ -12,7 +13,7 @@ use anyhow::Context as _;
 use axum::body::Body;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::response::Response;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use jiff::Timestamp;
@@ -172,7 +173,7 @@ pub async fn serve(
 
     let mut reader = Reader {
         source,
-        buffer: Vec::new(),
+        buffer: BytesMut::new(),
         decryptor,
         layout: stored.layout,
         size: stored.size,
@@ -247,7 +248,7 @@ impl Stored {
 /// plaintext range.
 struct Reader {
     source: BoxStream<'static, object_store::Result<Bytes>>,
-    buffer: Vec<u8>,
+    buffer: BytesMut,
     decryptor: Decryptor,
     layout: Layout,
     size: u64,
@@ -277,19 +278,19 @@ impl Reader {
                 None => anyhow::bail!("object ended before segment {}", self.segment),
             }
         }
-        let sealed: Vec<u8> = self.buffer.drain(..need).collect();
+        let sealed = self.buffer.split_to(need);
         let last = self.layout.is_last(self.segment, self.size);
-        let mut plain = self
+        let plain = self
             .decryptor
             .open(self.segment, &sealed, last)
             .with_context(|| format!("opening segment {}", self.segment))?;
         let skip = std::mem::take(&mut self.skip).min(plain.len());
         let take = ((plain.len() - skip) as u64).min(self.remaining) as usize;
-        plain.truncate(skip + take);
-        plain.drain(..skip);
         self.remaining -= take as u64;
         self.segment += 1;
-        Ok(Some(Bytes::from(plain)))
+        // Both conversions are free: the Vec becomes the backing buffer and
+        // the slice is a view into it.
+        Ok(Some(Bytes::from(plain).slice(skip..skip + take)))
     }
 }
 
