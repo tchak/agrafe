@@ -306,9 +306,11 @@ Instead: **envelope encryption with a chunked streaming AEAD.**
 - Payload follows **Tink's AES-GCM-HKDF-STREAMING** wire format. It is a
   published spec with reference implementations in Go and Java, so our
   implementation can be validated against cross-language test vectors.
-- Chunk (segment) size is `encryption.chunk_size`, default 256 KiB. Larger
-  chunks mean fewer tags; smaller chunks mean finer range granularity. Stored
-  on the row so it can change without migrating objects.
+- Chunk (segment) size is `encryption.chunk_size`, default 256 KiB, at most
+  16 MiB because a segment is held in memory whole on both paths, once per
+  in-flight request. Larger chunks mean fewer tags; smaller chunks mean
+  finer range granularity. Stored on the row so it can change without
+  migrating objects.
 - Per-chunk nonce is `nonce_prefix || counter || last_flag`, which prevents
   reordering, truncation and chunk swapping between blobs.
 - Random access is arithmetic. The 40-byte header (salt and nonce prefix)

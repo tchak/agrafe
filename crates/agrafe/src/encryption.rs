@@ -10,6 +10,10 @@ use uuid::Uuid;
 
 use crate::config::EncryptionConfig;
 
+/// Upper bound on `encryption.chunk_size`. A segment is held in memory whole
+/// on both the write and the read path, once per in-flight request.
+pub const MAX_CHUNK_SIZE: u64 = 16 * 1024 * 1024;
+
 /// Every KEK in config, one of them current for wrapping new data keys.
 pub struct Keks {
     keks: HashMap<String, Kek>,
@@ -44,10 +48,14 @@ impl Keks {
             keks.contains_key(&current),
             "encryption.current_kek `{current}` is not present in encryption.keks"
         );
+        anyhow::ensure!(
+            config.chunk_size.as_u64() <= MAX_CHUNK_SIZE,
+            "encryption.chunk_size must be at most {MAX_CHUNK_SIZE} bytes (16 MiB)"
+        );
         let chunk_size = usize::try_from(config.chunk_size.as_u64())
             .ok()
             .and_then(|s| Layout::new(s).ok())
-            .context("encryption.chunk_size is out of range")?;
+            .context("encryption.chunk_size is too small")?;
         Ok(Self {
             keks,
             current,
@@ -138,5 +146,11 @@ mod tests {
         let mut tiny = config(Some("a"));
         tiny.chunk_size = ByteSize::b(16);
         assert!(Keks::from_config(&tiny).is_err());
+        let mut huge = config(Some("a"));
+        huge.chunk_size = ByteSize::mib(16) + ByteSize::b(1);
+        assert!(Keks::from_config(&huge).is_err());
+        let mut max = config(Some("a"));
+        max.chunk_size = ByteSize::mib(16);
+        assert!(Keks::from_config(&max).is_ok());
     }
 }

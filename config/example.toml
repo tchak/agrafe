@@ -67,7 +67,8 @@ purge_delay = "1h"
 
 [encryption]
 current_kek = "kek1"
-# Streaming AEAD segment size. Stored per blob, so it can change later.
+# Streaming AEAD segment size, at most 16 MiB: a segment is held in memory
+# whole per in-flight request. Stored per blob, so it can change later.
 chunk_size = "256 KiB"
 
 [encryption.keks]
