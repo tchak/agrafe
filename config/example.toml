@@ -57,7 +57,8 @@ read = "24h"
 # Hard cap on any upload.
 max_size = "5 GiB"
 # Files up to this size are scanned inline during upload; larger files are
-# stored first and scanned by a job. Match clamd's StreamMaxLength.
+# stored first and scanned by a job, which streams them to clamd too, so the
+# workers' clamd needs a StreamMaxLength above max_size.
 inline_scan_max_size = "25 MiB"
 # How long an upload may sit in `uploading` before the reaper resets it.
 stale_after = "1h"
@@ -76,7 +77,10 @@ chunk_size = "256 KiB"
 kek1 = "REPLACE_ME_WITH_32_RANDOM_BYTES_IN_BASE64_____"
 
 [clamav]
+# clamd's TCP socket. When it cannot be reached, uploads still succeed and
+# their scan is deferred to a job, retried until clamd answers.
 addr = "127.0.0.1:3310"
+# Bounds each connect, write and the wait for the verdict, not a whole scan.
 timeout = "60s"
 
 [media]
@@ -99,11 +103,15 @@ min_coverage = 0.7
 max_text_chars = 50
 
 [jobs]
+# Workers are woken by NOTIFY on every enqueue; this is the fallback.
 poll_interval = "2s"
+# A job locked for longer than this is assumed orphaned and claimed again.
 lease_timeout = "10m"
 
+# Workers per job kind; these are the defaults.
 [jobs.concurrency]
 scan = 4
 thumbnail = 2
 preview = 2
 purge = 4
+reap = 1

@@ -1,9 +1,12 @@
 //! The upload pipeline for `raw` and `multipart` input.
 //!
 //! Bytes flow once through a size counter, a SHA-256 hasher, the magic-byte
-//! sniffer, the streaming encryptor and a multipart upload to the object
-//! store. Any failure aborts the multipart upload and hands the blob back to
-//! the state it came from; nothing partial is ever visible.
+//! sniffer, clamd when the file is small enough to scan inline, the streaming
+//! encryptor and a multipart upload to the object store. Any failed check
+//! aborts the multipart upload and hands the blob back to the state it came
+//! from; nothing partial is ever visible. An infected file is not a failed
+//! check: it is stored and the blob becomes `infected`, exactly as a deferred
+//! scan would leave it.
 
 use agrafe_crypto::Key;
 use agrafe_crypto::streaming::{Encryptor, Layout};
@@ -18,8 +21,9 @@ use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
 use crate::app::AppState;
-use crate::blob::Blob;
 use crate::blob::repo::{self, Completed, Transition};
+use crate::blob::{Blob, BlobState, ScanOutcome};
+use crate::clamav::{self, Verdict};
 use crate::config::UploadConfig;
 use crate::error::ApiError;
 use crate::sniff;
@@ -157,19 +161,21 @@ where
     let storage_key = object_key(blob.id);
     let envelope = state.keks().new_envelope(blob.id);
     let layout = state.keks().layout();
+    let scanner = inline_scanner(&state, &blob, &declared).await;
 
-    let header = match stream_to_store(
+    let (header, scan) = match stream_to_store(
         &state,
         &blob,
         &declared,
         &storage_key,
         &envelope.key,
         layout,
+        scanner,
         body,
     )
     .await
     {
-        Ok(header) => header,
+        Ok(stored) => stored,
         Err(err) => {
             match state.pool().acquire().await {
                 Ok(mut conn) => {
@@ -193,8 +199,16 @@ where
         chunk_size: layout.segment_size() as i32,
         checksum_sha256: declared.checksum,
         size: declared.size as i64,
+        scan,
     };
     match repo::complete_upload(state.pool(), &blob, &completed).await? {
+        Transition::Done(blob) if blob.state == BlobState::Infected => {
+            let ScanOutcome::Infected(name) = completed.scan else {
+                unreachable!("only an infected outcome lands in `infected`");
+            };
+            tracing::warn!(blob = %blob.id, signature = name, "inline scan found a virus");
+            Err(ApiError::Infected(name))
+        }
         Transition::Done(blob) => Ok(blob),
         Transition::Conflict(current) => {
             // The row changed under us (reaper or delete); the object we just
@@ -213,14 +227,45 @@ fn conflict(blob: &Blob) -> ApiError {
     ApiError::Conflict(format!("blob is {} and cannot be uploaded", blob.state))
 }
 
+/// Where the bytes go for scanning while they stream.
+enum Scanner {
+    /// `skip_virus_scan`: nobody looks at them.
+    Skipped,
+    /// Too large for `INSTREAM`, or clamd could not be reached: a job will
+    /// scan the stored object.
+    Deferred,
+    Inline(clamav::Session),
+}
+
+/// Open a clamd session when the file is small enough to scan inline. clamd
+/// being down must not refuse uploads, so that case defers the scan to a job,
+/// which is retried until clamd is back.
+async fn inline_scanner(state: &AppState, blob: &Blob, declared: &Declared) -> Scanner {
+    if blob.skip_virus_scan {
+        return Scanner::Skipped;
+    }
+    if declared.size > state.config().upload.inline_scan_max_size.as_u64() {
+        return Scanner::Deferred;
+    }
+    match state.clamd().begin().await {
+        Ok(session) => Scanner::Inline(session),
+        Err(err) => {
+            tracing::warn!(blob = %blob.id, error = %err, "clamd unreachable, deferring the scan");
+            Scanner::Deferred
+        }
+    }
+}
+
 async fn delete_quietly(state: &AppState, key: &str) {
     if let Err(err) = state.store().delete(&ObjectPath::from(key)).await {
         tracing::warn!(key, error = ?err, "could not delete orphaned object");
     }
 }
 
-/// Encrypt `body` into a new object. Returns the stream header on success;
-/// on failure the multipart upload is aborted and nothing is left behind.
+/// Encrypt `body` into a new object. Returns the stream header and the scan
+/// outcome on success; on failure the multipart upload is aborted and
+/// nothing is left behind.
+#[allow(clippy::too_many_arguments)]
 async fn stream_to_store<S>(
     state: &AppState,
     blob: &Blob,
@@ -228,8 +273,9 @@ async fn stream_to_store<S>(
     storage_key: &str,
     key: &Key,
     layout: Layout,
+    scanner: Scanner,
     body: S,
-) -> Result<Vec<u8>, UploadError>
+) -> Result<(Vec<u8>, ScanOutcome), UploadError>
 where
     S: Stream<Item = Result<Bytes, ApiError>> + Unpin,
 {
@@ -238,10 +284,19 @@ where
     let mut writer = WriteMultipart::new(upload);
     let encryptor = Encryptor::new(key, storage_key.as_bytes(), layout);
     let header = encryptor.header().as_bytes().to_vec();
-    match pump(&mut writer, encryptor, declared, &blob.content_type, body).await {
-        Ok(()) => {
+    match pump(
+        &mut writer,
+        encryptor,
+        declared,
+        &blob.content_type,
+        scanner,
+        body,
+    )
+    .await
+    {
+        Ok(scan) => {
             writer.finish().await?;
-            Ok(header)
+            Ok((header, scan))
         }
         Err(err) => {
             if let Err(abort) = writer.abort().await {
@@ -252,13 +307,17 @@ where
     }
 }
 
+/// Run the checks and the encryption over `body`. The scan verdict is read
+/// last, after the cheap checks have passed: a mismatched checksum is a
+/// `422` whatever clamd would have said.
 async fn pump<S>(
     writer: &mut WriteMultipart,
     mut encryptor: Encryptor,
     declared: &Declared,
     content_type: &str,
+    scanner: Scanner,
     mut body: S,
-) -> Result<(), UploadError>
+) -> Result<ScanOutcome, UploadError>
 where
     S: Stream<Item = Result<Bytes, ApiError>> + Unpin,
 {
@@ -268,6 +327,11 @@ where
     let mut head: Vec<u8> = Vec::with_capacity(sniff::SNIFF_LEN);
     let mut sniffed = false;
     let mut out = Vec::new();
+    let skipped = matches!(scanner, Scanner::Skipped);
+    let mut session = match scanner {
+        Scanner::Inline(session) => Some(session),
+        Scanner::Skipped | Scanner::Deferred => None,
+    };
 
     while let Some(chunk) = body.next().await {
         let chunk = chunk.map_err(UploadError::Body)?;
@@ -276,6 +340,11 @@ where
             return Err(UploadError::SizeMismatch);
         }
         hasher.update(&chunk);
+        if let Some(session) = &mut session {
+            // A write failure is remembered by the session and surfaces
+            // from `finish`, where it defers the scan.
+            let _ = session.write(&chunk).await;
+        }
         if !sniffed {
             let take = (sniff::SNIFF_LEN - head.len()).min(chunk.len());
             head.extend_from_slice(&chunk[..take]);
@@ -302,7 +371,19 @@ where
     }
     encryptor.finish(&mut out)?;
     writer.put(Bytes::from(out));
-    Ok(())
+
+    Ok(match session {
+        None if skipped => ScanOutcome::Skipped,
+        None => ScanOutcome::Deferred,
+        Some(session) => match session.finish().await {
+            Ok(Verdict::Clean) => ScanOutcome::Clean,
+            Ok(Verdict::Infected(name)) => ScanOutcome::Infected(name),
+            Err(err) => {
+                tracing::warn!(error = %err, "inline scan failed, deferring to a job");
+                ScanOutcome::Deferred
+            }
+        },
+    })
 }
 
 fn check_type(declared: &str, head: &[u8]) -> Result<(), UploadError> {

@@ -12,6 +12,8 @@ use figment::providers::{Env, Format, Toml};
 use jiff::{SignedDuration, Timestamp};
 use serde::Deserialize;
 
+use crate::jobs::JobKind;
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     pub server: ServerConfig,
@@ -371,6 +373,21 @@ pub struct JobsConfig {
     pub lease_timeout: Duration,
     #[serde(default)]
     pub concurrency: HashMap<String, usize>,
+}
+
+impl JobsConfig {
+    /// Workers for `kind`: the configured count, else a default suited to
+    /// what the kind waits on.
+    pub fn concurrency_for(&self, kind: JobKind) -> usize {
+        if let Some(n) = self.concurrency.get(kind.as_str()) {
+            return *n;
+        }
+        match kind {
+            JobKind::Scan | JobKind::Purge => 4,
+            JobKind::Thumbnail | JobKind::Preview => 2,
+            JobKind::Reap => 1,
+        }
+    }
 }
 
 fn default_poll_interval() -> Duration {

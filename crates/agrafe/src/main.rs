@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use agrafe::app::AppState;
 use agrafe::config::{Config, Role};
-use agrafe::{api, db};
+use agrafe::{api, db, jobs};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use futures::FutureExt;
@@ -100,12 +100,7 @@ async fn serve(config: Config) -> Result<()> {
     }
 
     if role.runs_worker() {
-        tracing::warn!("worker role requested but no job runner exists yet");
-        let s = shutdown.clone();
-        tasks.spawn(async move {
-            s.await;
-            Ok(())
-        });
+        tasks.spawn(jobs::runner::run(state.clone(), shutdown.clone()));
     }
 
     while let Some(result) = tasks.join_next().await {

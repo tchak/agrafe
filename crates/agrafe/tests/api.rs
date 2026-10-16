@@ -16,7 +16,10 @@ use futures::StreamExt as _;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::net::SocketAddr;
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 use tokio::sync::{Mutex, MutexGuard};
 use tower::ServiceExt;
 
@@ -29,7 +32,61 @@ struct TestApp {
     _guard: MutexGuard<'static, ()>,
 }
 
+/// A fake clamd speaking `INSTREAM`: anything containing `VIRUS` is found.
+const VIRUS: &[u8] = b"$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!";
+
+async fn fake_clamd() -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut sock, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut cmd = [0u8; 10];
+                if sock.read_exact(&mut cmd).await.is_err() {
+                    return;
+                }
+                assert_eq!(&cmd, b"zINSTREAM\0");
+                let mut data = Vec::new();
+                loop {
+                    let mut len = [0u8; 4];
+                    if sock.read_exact(&mut len).await.is_err() {
+                        return;
+                    }
+                    let len = u32::from_be_bytes(len) as usize;
+                    if len == 0 {
+                        break;
+                    }
+                    let mut chunk = vec![0; len];
+                    if sock.read_exact(&mut chunk).await.is_err() {
+                        return;
+                    }
+                    data.extend(chunk);
+                }
+                let infected = data.windows(VIRUS.len()).any(|w| w == VIRUS);
+                let reply: &[u8] = if infected {
+                    b"stream: Eicar-Test-Signature FOUND\0"
+                } else {
+                    b"stream: OK\0"
+                };
+                let _ = sock.write_all(reply).await;
+            });
+        }
+    });
+    addr
+}
+
+/// An address nothing listens on.
+async fn closed_port() -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    listener.local_addr().unwrap()
+}
+
 async fn setup() -> TestApp {
+    let clamd = fake_clamd().await;
+    setup_with(clamd).await
+}
+
+async fn setup_with(clamd: SocketAddr) -> TestApp {
     let guard = LOCK.lock().await;
     let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
         let user = std::env::var("USER").unwrap_or_else(|_| "postgres".to_string());
@@ -54,7 +111,13 @@ async fn setup() -> TestApp {
         path = "{tmp}"
         [upload]
         max_size = "16 KiB"
+        inline_scan_max_size = "2 KiB"
         purge_delay = "30m"
+        [clamav]
+        addr = "{clamd}"
+        timeout = "5s"
+        [jobs]
+        lease_timeout = "10m"
         [signing]
         current_key = "k1"
         window = "1h"
@@ -674,7 +737,7 @@ async fn upload_url_is_dead_after_one_success() {
 
     let (status, body) = call(&app.public, put_raw(&upload, bytes.clone())).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["state"], "uploaded");
+    assert_eq!(body["state"], "ready", "small enough to scan inline");
 
     // Blobs are write-once: the same URL, leaked or replayed, earns a 409 on
     // either port and the stored bytes are untouched.
@@ -1322,7 +1385,7 @@ async fn get_original_corrupt_object() {
 #[tokio::test]
 async fn get_original_unreadable() {
     let app = setup().await;
-    let bytes = png_bytes(100);
+    let bytes = png_bytes(3000);
 
     // Scan pending: the bytes exist but are not served yet.
     let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
@@ -1365,4 +1428,353 @@ async fn get_original_unreadable() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+/// A file of `len` bytes carrying the test signature after the PNG header.
+fn infected_png(len: usize) -> Vec<u8> {
+    let mut bytes = png_bytes(len);
+    bytes[64..64 + VIRUS.len()].copy_from_slice(VIRUS);
+    bytes
+}
+
+async fn get_blob(app: &TestApp, id: &str) -> Value {
+    let (status, body) = call(&app.private, req(Method::GET, &format!("/blobs/{id}"))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body
+}
+
+async fn run_scan_job(app: &TestApp) -> bool {
+    agrafe::jobs::runner::run_one(&app.state, agrafe::jobs::JobKind::Scan, "test")
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn inline_scan() {
+    let app = setup().await;
+
+    // Clean: straight to `ready`, scanned, representations queued.
+    let bytes = png_bytes(1500);
+    let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
+    let id = created["id"].as_str().unwrap();
+    let upload = public_path(created["urls"]["upload"].as_str().unwrap());
+    let (status, body) = call(&app.public, put_raw(&upload, bytes.clone())).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], "ready");
+    assert_eq!(body["scan_state"], "clean");
+    let got = get_blob(&app, id).await;
+    assert!(got["scanned_at"].is_string());
+    assert_eq!(jobs_for(&app, id).await, vec!["preview", "thumbnail"]);
+
+    // Infected: the upload is refused with its own code, yet the bytes are
+    // kept and the blob is terminal, so the backend sees what happened.
+    let bytes = infected_png(1500);
+    let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
+    let id = created["id"].as_str().unwrap();
+    let upload = public_path(created["urls"]["upload"].as_str().unwrap());
+    let (status, body) = call(&app.public, put_raw(&upload, bytes.clone())).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "infected");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Eicar-Test-Signature")
+    );
+    let got = get_blob(&app, id).await;
+    assert_eq!(got["state"], "infected");
+    assert_eq!(got["scan_state"], "infected");
+    assert!(got["scanned_at"].is_string());
+    assert!(jobs_for(&app, id).await.is_empty(), "nothing renders it");
+    assert_eq!(
+        stored_plaintext(&app, id).await,
+        bytes,
+        "kept for forensics"
+    );
+    // Terminal: gone from the public port, never readable on the private one.
+    let meta = public_path(created["urls"]["metadata"].as_str().unwrap());
+    let (status, _) = call(&app.public, req(Method::GET, &meta)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = call(
+        &app.private,
+        req(Method::GET, &format!("/blobs/{id}/original/photo.png")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, _) = call(&app.public, put_raw(&upload, bytes)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "write-once holds");
+
+    // The cheap checks come first: a wrong checksum is a plain 422 even when
+    // the bytes are infected, and nothing is stored.
+    let bytes = infected_png(1500);
+    let mut blob = blob_for(&bytes, "image/png", "raw");
+    blob["checksum"] = json!(STANDARD.encode([9u8; 32]));
+    let created = create(&app, blob).await;
+    let id = created["id"].as_str().unwrap();
+    let (status, body) = call(&app.private, put_raw(&format!("/blobs/{id}"), bytes)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "unprocessable");
+    assert_eq!(get_blob(&app, id).await["state"], "created");
+
+    // Vouched-for bytes never reach clamd, even infected ones.
+    let bytes = infected_png(1500);
+    let mut blob = blob_for(&bytes, "image/png", "raw");
+    blob["skip_virus_scan"] = json!(true);
+    let created = create(&app, blob).await;
+    let id = created["id"].as_str().unwrap();
+    let (status, body) = call(&app.private, put_raw(&format!("/blobs/{id}"), bytes)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["scan_state"], "skipped");
+}
+
+#[tokio::test]
+async fn deferred_scan_job() {
+    let app = setup().await;
+    assert!(!run_scan_job(&app).await, "nothing queued yet");
+
+    // Too large for the inline scan: stored, then scanned by the job.
+    let bytes = png_bytes(5000);
+    let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
+    let id = created["id"].as_str().unwrap();
+    let (status, body) = call(&app.private, put_raw(&format!("/blobs/{id}"), bytes)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], "uploaded");
+    assert_eq!(jobs_for(&app, id).await, vec!["scan"]);
+
+    assert!(run_scan_job(&app).await);
+    let got = get_blob(&app, id).await;
+    assert_eq!(got["state"], "ready");
+    assert_eq!(got["scan_state"], "clean");
+    assert!(got["scanned_at"].is_string());
+    assert_eq!(jobs_for(&app, id).await, vec!["preview", "thumbnail"]);
+    assert!(!run_scan_job(&app).await, "the scan job is gone");
+    let uri = public_path(got["urls"]["original"].as_str().unwrap());
+    let (status, _) = call(&app.public, req(Method::GET, &uri)).await;
+    assert_eq!(status, StatusCode::OK, "readable once clean");
+
+    // Infected: terminal, object kept, nothing rendered.
+    let bytes = infected_png(5000);
+    let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
+    let id = created["id"].as_str().unwrap();
+    let (status, _) = call(
+        &app.private,
+        put_raw(&format!("/blobs/{id}"), bytes.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(run_scan_job(&app).await);
+    let got = get_blob(&app, id).await;
+    assert_eq!(got["state"], "infected");
+    assert_eq!(got["scan_state"], "infected");
+    assert!(jobs_for(&app, id).await.is_empty());
+    assert_eq!(stored_plaintext(&app, id).await, bytes);
+
+    // Deleted before the job ran: the job finds nothing to do and succeeds.
+    let bytes = png_bytes(5000);
+    let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
+    let id = created["id"].as_str().unwrap();
+    call(&app.private, put_raw(&format!("/blobs/{id}"), bytes)).await;
+    call(&app.private, req(Method::DELETE, &format!("/blobs/{id}"))).await;
+    assert!(run_scan_job(&app).await);
+    assert_eq!(get_blob(&app, id).await["state"], "deleted");
+    assert!(jobs_for(&app, id).await.is_empty());
+    assert!(!run_scan_job(&app).await);
+}
+
+#[tokio::test]
+async fn clamd_down() {
+    let app = setup_with(closed_port().await).await;
+    let pool = app.state.pool();
+
+    // A small file would be scanned inline; with clamd unreachable the
+    // upload still succeeds and the scan is deferred to a job.
+    let bytes = png_bytes(1500);
+    let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
+    let id = created["id"].as_str().unwrap();
+    let (status, body) = call(&app.private, put_raw(&format!("/blobs/{id}"), bytes)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], "uploaded");
+    assert_eq!(body["scan_state"], "pending");
+    assert_eq!(jobs_for(&app, id).await, vec!["scan"]);
+
+    // The job fails and is retried later with backoff.
+    assert!(run_scan_job(&app).await);
+    let (attempts, locked, run_at, error): (i32, Option<String>, jiff_sqlx::Timestamp, String) =
+        sqlx::query_as(
+            "SELECT attempts, locked_by, run_at, last_error FROM jobs WHERE blob_id = $1",
+        )
+        .bind(uuid::Uuid::parse_str(id).unwrap())
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(attempts, 1);
+    assert!(locked.is_none(), "unlocked for the retry");
+    assert!(run_at.to_jiff() > jiff::Timestamp::now(), "backed off");
+    assert!(error.contains("clamd"), "{error}");
+    assert_eq!(get_blob(&app, id).await["state"], "uploaded");
+    assert!(!run_scan_job(&app).await, "not due yet");
+
+    // Out of attempts: the job stays, dead, and no longer blocks a fresh one.
+    sqlx::query("UPDATE jobs SET run_at = now(), max_attempts = 2 WHERE blob_id = $1")
+        .bind(uuid::Uuid::parse_str(id).unwrap())
+        .execute(pool)
+        .await
+        .unwrap();
+    assert!(run_scan_job(&app).await);
+    let (failed, locked): (Option<jiff_sqlx::Timestamp>, Option<String>) =
+        sqlx::query_as("SELECT failed_at, locked_by FROM jobs WHERE blob_id = $1")
+            .bind(uuid::Uuid::parse_str(id).unwrap())
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert!(failed.is_some());
+    assert!(locked.is_some(), "a dead job keeps its lock");
+    assert!(!run_scan_job(&app).await, "never claimed again");
+    let inserted = agrafe::jobs::enqueue(
+        pool,
+        agrafe::jobs::JobKind::Scan,
+        Some(id.parse().unwrap()),
+        json!({}),
+        jiff::Timestamp::now(),
+    )
+    .await
+    .unwrap();
+    assert!(inserted, "the dead job does not hold the pending slot");
+}
+
+#[tokio::test]
+async fn job_queue_mechanics() {
+    use agrafe::jobs::{self, Failure, JobKind};
+
+    let app = setup().await;
+    let pool = app.state.pool();
+    let now = jiff::Timestamp::now();
+    let lease = Duration::from_secs(600);
+    let created = create(&app, raw_blob()).await;
+    let blob: uuid::Uuid = created["id"].as_str().unwrap().parse().unwrap();
+
+    // One pending job per kind and blob; blob-less jobs are never deduped.
+    assert!(
+        jobs::enqueue(pool, JobKind::Scan, Some(blob), json!({}), now)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !jobs::enqueue(pool, JobKind::Scan, Some(blob), json!({}), now)
+            .await
+            .unwrap()
+    );
+    assert!(
+        jobs::enqueue(pool, JobKind::Purge, None, json!({}), now)
+            .await
+            .unwrap()
+    );
+    assert!(
+        jobs::enqueue(pool, JobKind::Purge, None, json!({}), now)
+            .await
+            .unwrap()
+    );
+
+    // Claiming locks; a locked job is invisible until its lease expires.
+    let job = jobs::claim(pool, &[JobKind::Scan], "w1", lease)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(job.kind, JobKind::Scan);
+    assert_eq!(job.attempts, 1);
+    assert_eq!(job.locked_by.as_deref(), Some("w1"));
+    assert!(
+        jobs::claim(pool, &[JobKind::Scan], "w2", lease)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    sqlx::query("UPDATE jobs SET locked_at = now() - interval '11 minutes' WHERE id = $1")
+        .bind(job.id)
+        .execute(pool)
+        .await
+        .unwrap();
+    let again = jobs::claim(pool, &[JobKind::Scan], "w2", lease)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(again.id, job.id);
+    assert_eq!(again.attempts, 2);
+    assert_eq!(again.locked_by.as_deref(), Some("w2"));
+
+    // Not due: a future job is not claimed; kinds are filtered.
+    assert!(
+        jobs::enqueue(
+            pool,
+            JobKind::Thumbnail,
+            Some(blob),
+            json!({}),
+            now + Duration::from_secs(3600)
+        )
+        .await
+        .unwrap()
+    );
+    assert!(
+        jobs::claim(pool, &[JobKind::Thumbnail], "w1", lease)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        jobs::claim(pool, &[JobKind::Preview], "w1", lease)
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    // Failing unlocks with backoff; the next retry needs the lease to pass or
+    // the backoff to elapse.
+    let mut conn = pool.acquire().await.unwrap();
+    let Failure::Retry(at) = jobs::fail(&mut conn, &again, "boom", now).await.unwrap() else {
+        panic!("attempts remain");
+    };
+    assert!(at > now);
+    assert!(
+        jobs::claim(pool, &[JobKind::Scan], "w1", lease)
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    // A failing job whose twin was enqueued meanwhile steps aside.
+    sqlx::query("UPDATE jobs SET run_at = now() WHERE id = $1")
+        .bind(job.id)
+        .execute(pool)
+        .await
+        .unwrap();
+    let held = jobs::claim(pool, &[JobKind::Scan], "w1", lease)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        jobs::enqueue(pool, JobKind::Scan, Some(blob), json!({}), now)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        jobs::fail(&mut conn, &held, "boom", now).await.unwrap(),
+        Failure::Superseded
+    );
+    let scans: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE kind = 'scan'")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(scans, 1);
+
+    // Success removes the row.
+    let purge = jobs::claim(pool, &[JobKind::Purge], "w1", lease)
+        .await
+        .unwrap()
+        .unwrap();
+    jobs::succeed(pool, purge.id).await.unwrap();
+    let purges: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE kind = 'purge'")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(purges, 1);
 }

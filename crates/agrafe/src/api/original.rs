@@ -1,30 +1,22 @@
 //! Serving the original bytes of a blob, decrypted on the fly, with `Range`.
-//!
-//! A range of plaintext maps to a range of whole segments, fetched from the
-//! object store in one read, opened one by one and trimmed at both ends. The
-//! header cached on the row provides the salt and nonce prefix, so no second
-//! read is needed. Each byte is copied once on the way in (store chunks are
-//! gathered into a segment) and once on the way out (the decryption).
+//! The decryption itself lives in `blob::read`; this module maps HTTP onto it.
 
 use std::ops::Range;
 
-use agrafe_crypto::streaming::{Decryptor, Header, Layout};
 use anyhow::Context as _;
 use axum::body::Body;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::response::Response;
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use futures::StreamExt;
-use futures::stream::BoxStream;
 use jiff::Timestamp;
-use object_store::path::Path as ObjectPath;
-use object_store::{GetOptions, GetRange};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::app::AppState;
 use crate::blob::Blob;
+use crate::blob::read::{Reader, Stored};
 use crate::error::{ApiError, ApiResult};
 
 /// Signed query parameters the minter may attach to an original URL.
@@ -55,7 +47,7 @@ pub async fn serve(
             blob.state
         )));
     }
-    let stored = Stored::from_blob(&blob)?;
+    let stored = Stored::from_blob(&blob).map_err(ApiError::Internal)?;
     let etag = etag(&stored.checksum);
 
     let mut response = Response::new(Body::empty());
@@ -152,40 +144,9 @@ pub async fn serve(
         return Ok(response);
     }
 
-    let key = state
-        .keks()
-        .unwrap(blob.id, &stored.kek_id, &stored.wrapped_key)?;
-    let decryptor = Decryptor::new(
-        &key,
-        stored.storage_key.as_bytes(),
-        &stored.header,
-        stored.layout,
-    );
-    let (first, bytes) = stored.layout.ciphertext_span(span.clone(), stored.size);
-    let source = state
-        .store()
-        .get_opts(
-            &ObjectPath::from(stored.storage_key.as_str()),
-            GetOptions {
-                range: Some(GetRange::Bounded(bytes)),
-                ..Default::default()
-            },
-        )
+    let mut reader = Reader::open(state, &blob, &stored, span)
         .await
-        .map_err(|e| ApiError::Internal(anyhow::Error::new(e).context("reading the object")))?
-        .into_stream()
-        .boxed();
-
-    let mut reader = Reader {
-        source,
-        buffer: BytesMut::new(),
-        decryptor,
-        layout: stored.layout,
-        size: stored.size,
-        segment: first,
-        skip: (span.start - stored.layout.plaintext_start(first)) as usize,
-        remaining: span.end - span.start,
-    };
+        .with_context(|| format!("blob {}: opening the original", blob.id))?;
     // Open the first segment before the response starts: a wrong key, a
     // tampered object or a missing one is then a logged `500`, not a `200`
     // cut short.
@@ -196,107 +157,6 @@ pub async fn serve(
         .ok_or_else(|| anyhow::anyhow!("blob {}: range is empty", blob.id))?;
     *response.body_mut() = Body::from_stream(plaintext_stream(blob.id, first, reader));
     Ok(response)
-}
-
-/// Everything the row must carry once an object is stored.
-struct Stored {
-    storage_key: String,
-    kek_id: String,
-    wrapped_key: Vec<u8>,
-    header: Header,
-    layout: Layout,
-    checksum: Vec<u8>,
-    size: u64,
-}
-
-impl Stored {
-    fn from_blob(blob: &Blob) -> ApiResult<Self> {
-        let missing = |what: &str| {
-            ApiError::Internal(anyhow::anyhow!(
-                "blob {} is ready but has no {what}",
-                blob.id
-            ))
-        };
-        let header = Header::parse(
-            blob.encryption_header
-                .as_deref()
-                .ok_or_else(|| missing("encryption header"))?,
-        )
-        .map_err(|e| ApiError::Internal(anyhow::anyhow!("blob {}: {e}", blob.id)))?;
-        let chunk_size = blob.chunk_size.ok_or_else(|| missing("chunk size"))?;
-        let layout = usize::try_from(chunk_size)
-            .ok()
-            .and_then(|s| Layout::new(s).ok())
-            .ok_or_else(|| missing("valid chunk size"))?;
-        Ok(Self {
-            storage_key: blob
-                .storage_key
-                .clone()
-                .ok_or_else(|| missing("storage key"))?,
-            kek_id: blob.kek_id.clone().ok_or_else(|| missing("KEK id"))?,
-            wrapped_key: blob
-                .wrapped_key
-                .clone()
-                .ok_or_else(|| missing("wrapped key"))?,
-            header,
-            layout,
-            checksum: blob
-                .checksum_sha256
-                .clone()
-                .ok_or_else(|| missing("checksum"))?,
-            size: blob.size.ok_or_else(|| missing("size"))? as u64,
-        })
-    }
-}
-
-/// Opens segments as their ciphertext arrives, trimming to the requested
-/// plaintext range.
-struct Reader {
-    source: BoxStream<'static, object_store::Result<Bytes>>,
-    buffer: BytesMut,
-    decryptor: Decryptor,
-    layout: Layout,
-    size: u64,
-    /// Next segment to open.
-    segment: u64,
-    /// Plaintext bytes to drop from the front of the next opened segment.
-    skip: usize,
-    /// Plaintext bytes still to send.
-    remaining: u64,
-}
-
-impl Reader {
-    /// The next piece of plaintext, or `None` once the range is served.
-    async fn next_segment(&mut self) -> anyhow::Result<Option<Bytes>> {
-        if self.remaining == 0 {
-            return Ok(None);
-        }
-        let need = {
-            let range = self.layout.ciphertext_range(self.segment, self.size);
-            (range.end - range.start) as usize
-        };
-        while self.buffer.len() < need {
-            match self.source.next().await {
-                Some(chunk) => self
-                    .buffer
-                    .extend_from_slice(&chunk.context("reading the object")?),
-                None => anyhow::bail!("object ended before segment {}", self.segment),
-            }
-        }
-        let sealed = self.buffer.split_to(need);
-        let last = self.layout.is_last(self.segment, self.size);
-        let plain = self
-            .decryptor
-            .open(self.segment, &sealed, last)
-            .with_context(|| format!("opening segment {}", self.segment))?;
-        let skip = std::mem::take(&mut self.skip).min(plain.len());
-        let take = ((plain.len() - skip) as u64).min(self.remaining) as usize;
-        self.remaining -= take as u64;
-        self.segment += 1;
-        // Both conversions are free: the Vec becomes the backing buffer and
-        // the slice is a view into it.
-        Ok(Some(Bytes::from(plain).slice(skip..skip + take)))
-    }
 }
 
 /// `first`, then every further segment. A failure here happens after the

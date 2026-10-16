@@ -1,6 +1,7 @@
 //! Blob model and state machine.
 
 pub mod create;
+pub mod read;
 pub mod repo;
 
 use jiff::Timestamp;
@@ -82,6 +83,35 @@ crate::str_enum!(ScanState {
     Infected => "infected",
     Skipped => "skipped",
 });
+
+/// How an upload ended with respect to scanning, which decides the state the
+/// blob lands in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScanOutcome {
+    /// `skip_virus_scan`: the backend vouches for the bytes.
+    Skipped,
+    /// Scanned inline, nothing found.
+    Clean,
+    /// Scanned inline, the named signature matched.
+    Infected(String),
+    /// Too large to scan inline, or clamd was unreachable: a job will.
+    Deferred,
+}
+
+impl ScanOutcome {
+    pub fn states(&self) -> (BlobState, ScanState) {
+        match self {
+            ScanOutcome::Skipped => (BlobState::Ready, ScanState::Skipped),
+            ScanOutcome::Clean => (BlobState::Ready, ScanState::Clean),
+            ScanOutcome::Infected(_) => (BlobState::Infected, ScanState::Infected),
+            ScanOutcome::Deferred => (BlobState::Uploaded, ScanState::Pending),
+        }
+    }
+
+    pub fn is_scanned(&self) -> bool {
+        matches!(self, ScanOutcome::Clean | ScanOutcome::Infected(_))
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

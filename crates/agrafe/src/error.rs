@@ -15,6 +15,9 @@ pub enum ApiError {
     UnsupportedMediaType(String),
     #[error("{0}")]
     Unprocessable(String),
+    /// The upload was stored and the blob is `infected`; the signature name.
+    #[error("file is infected: {0}")]
+    Infected(String),
     #[error("not found")]
     NotFound,
     #[error("method not allowed")]
@@ -51,6 +54,7 @@ impl ApiError {
             ApiError::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
             ApiError::UnsupportedMediaType(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             ApiError::Unprocessable(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            ApiError::Infected(_) => StatusCode::UNPROCESSABLE_ENTITY,
             ApiError::NotFound => StatusCode::NOT_FOUND,
             ApiError::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
             ApiError::Conflict(_) => StatusCode::CONFLICT,
@@ -67,6 +71,7 @@ impl ApiError {
             ApiError::PayloadTooLarge(_) => "payload_too_large",
             ApiError::UnsupportedMediaType(_) => "unsupported_media_type",
             ApiError::Unprocessable(_) => "unprocessable",
+            ApiError::Infected(_) => "infected",
             ApiError::NotFound => "not_found",
             ApiError::MethodNotAllowed => "method_not_allowed",
             ApiError::Conflict(_) => "conflict",

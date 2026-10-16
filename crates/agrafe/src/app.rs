@@ -5,6 +5,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use sqlx::PgPool;
 
+use crate::clamav::Clamd;
 use crate::config::Config;
 use crate::encryption::Keks;
 use crate::signing::Signer;
@@ -19,6 +20,7 @@ struct Inner {
     store: Store,
     signer: Signer,
     keks: Keks,
+    clamd: Clamd,
 }
 
 impl AppState {
@@ -26,12 +28,14 @@ impl AppState {
         let store = storage::build(&config.storage)?;
         let signer = Signer::from_config(&config.signing)?;
         let keks = Keks::from_config(&config.encryption)?;
+        let clamd = Clamd::from_config(&config.clamav);
         Ok(Self(Arc::new(Inner {
             config,
             pool,
             store,
             signer,
             keks,
+            clamd,
         })))
     }
 
@@ -53,5 +57,9 @@ impl AppState {
 
     pub fn keks(&self) -> &Keks {
         &self.0.keks
+    }
+
+    pub fn clamd(&self) -> &Clamd {
+        &self.0.clamd
     }
 }

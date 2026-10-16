@@ -3,6 +3,7 @@
 pub mod api;
 pub mod app;
 pub mod blob;
+pub mod clamav;
 pub mod classify;
 pub mod config;
 pub mod db;

@@ -192,9 +192,10 @@ computed field.
 
 ```
 created ──► uploading ──► uploaded ──► ready
-   ▲            │             │
-   └────────────┘             └──► infected
-   (failed upload, nothing stored)
+   ▲            │   │         │
+   └────────────┘   │         └──► infected
+   (failed upload,  └──► ready | infected   (scanned inline, or skipped)
+    nothing stored)
 
 any non-terminal ──► expired
 any ──► deleted
@@ -262,9 +263,10 @@ Bytes flow once through a chain of consumers:
 2. SHA-256 hasher, compared against the declared checksum at the end.
 3. Magic-byte sniffer on the first chunk, compared against the declared
    content type.
-4. ClamAV `INSTREAM` when the declared size is at or below
-   `upload.inline_scan_max_size`. Above that, the scan runs as a job after
-   storage and the blob waits in `uploaded`.
+4. ClamAV `INSTREAM` when the blob is not `skip_virus_scan` and the declared
+   size is at or below `upload.inline_scan_max_size`. Above that, or when
+   clamd cannot be reached, the scan runs as a job after storage and the
+   blob waits in `uploaded`.
 5. Chunked AEAD encryption (see below).
 6. Multipart upload to the object store.
 
@@ -275,6 +277,14 @@ inline or skipped, and the next jobs are enqueued in the same transaction: a
 `scan` for a blob waiting in `uploaded`, `thumbnail` and `preview` for one
 that is `ready`. The scan job enqueues the representations once the file is
 clean, so nothing renders a file that has not been scanned.
+
+An infected verdict from the inline scan is not a failed check. The object is
+stored and the blob becomes `infected`, the same terminal state a deferred
+scan produces, so the backend learns of it from the metadata whatever the
+file size. The `PUT` itself answers `422` with code `infected` and the
+signature name, so the uploader learns at once rather than from a `200` that
+leads nowhere. The verdict is read after the other checks: a wrong checksum
+on an infected file is a plain `422` and nothing is stored.
 
 The pipeline runs in its own task, fed by the request handler through a
 channel. A handler future can be dropped at any moment (hyper cancels it on an
@@ -344,9 +354,21 @@ requirement is that the provider cannot read the data, which SSE does not give.
 
 ClamAV via `clamd` `INSTREAM` over TCP. Inline during upload for files up to
 `upload.inline_scan_max_size` (default 25 MiB, matching clamd's default stream
-limit). Larger files are stored first and scanned by a job that streams the
-decrypted object to clamd. Until the scan passes the blob is `uploaded` and
-unreadable. Infected blobs become `infected`, permanently unreadable.
+limit). Larger files are stored first and scanned by a job that decrypts the
+object segment by segment and streams it to clamd. Until the scan passes the
+blob is `uploaded` and unreadable. Infected blobs become `infected`,
+permanently unreadable.
+
+clamd being down must not stop uploads, and must not make anything readable
+either. When it cannot be reached at the start of an upload, or fails midway,
+the upload completes and the scan is deferred to a job, which is retried with
+backoff until clamd answers. In the job, a connection failure or an `ERROR`
+reply (the stream limit exceeded, for instance) is a job failure and the blob
+stays `uploaded`; once the job is out of attempts the blob is stuck there,
+unreadable, until it expires or is deleted. clamd closes the connection as
+soon as it has a verdict, so the client treats a failed write as "read the
+reply", not as an error. A deferred scan is bounded by clamd's `StreamMaxLength`, which the
+workers' clamd must set above `upload.max_size`.
 
 Skipped only when the blob was created with `skip_virus_scan = true`, which is
 a statement by the backend about where the bytes come from. Such blobs cannot
@@ -434,9 +456,23 @@ Job kinds: `scan`, `thumbnail`, `preview`, `purge` (delete bucket objects),
 `reap` (periodic: expire blobs, reset stale `uploading`, find orphans).
 
 Each row: `kind`, `blob_id`, `payload`, `run_at`, `attempts`, `max_attempts`,
-`locked_at`, `locked_by`, `last_error`. Exponential backoff on failure. A lease
-timeout makes jobs locked by a dead worker eligible again. Concurrency is per
-kind in config: rendering is CPU bound, scanning waits on clamd.
+`locked_at`, `locked_by`, `last_error`, `failed_at`. A worker claims the
+oldest due job of its kind with `UPDATE ... WHERE id = (SELECT ... FOR UPDATE
+SKIP LOCKED)`, which locks it and counts the attempt. A locked job is
+claimable again once `jobs.lease_timeout` has passed, which is how a crashed
+worker's job gets picked up. Success deletes the row. Failure unlocks it with
+exponential backoff (30 s, doubling, capped at an hour) until `max_attempts`
+(5), then sets `failed_at` and leaves it locked: never run again, not holding
+the one pending slot per kind and blob, and still there to read. A failing
+job whose twin was enqueued while it was locked is dropped in favour of the
+newer one.
+
+`enqueue` calls `pg_notify` in the same statement, so the notification
+travels with the commit. One listener per process wakes the pollers of that
+kind; `jobs.poll_interval` is the fallback for a missed wakeup. Concurrency is
+per kind in `jobs.concurrency` (defaults: `scan` 4, `thumbnail` 2, `preview`
+2, `purge` 4, `reap` 1): rendering is CPU bound, scanning waits on clamd.
+Only `scan` has a handler so far; rows of other kinds wait in the table.
 
 The binary takes `--role api|worker|all` so workers can move to separate
 machines without code changes. If volume ever outgrows Postgres polling, the
@@ -473,10 +509,8 @@ is redacted so a dumped config cannot leak them. See `config/example.toml`.
    listing, signed URL minting and verification.
 2. `raw` and `multipart` upload with hashing, size enforcement, sniffing,
    encryption, bucket write. Streaming `GET /original` with ranges.
-3. Job runner. ClamAV scanning inline and deferred. **← current**. Until it
-   exists every scanned blob waits in `uploaded`; only `skip_virus_scan`
-   blobs become readable.
+3. Job runner. ClamAV scanning inline and deferred.
 4. Thumbnail and preview workers, icon fallback, autorotate, PDF render,
-   embedded image extraction.
+   embedded image extraction. **← current**
 5. Expiration, reaper, purge.
 6. `rows` to CSV/XLSX/ODS, then `archive` to ZIP.

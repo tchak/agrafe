@@ -7,7 +7,8 @@ use sqlx::{PgConnection, PgExecutor, PgPool, Postgres, QueryBuilder};
 use uuid::Uuid;
 
 use super::create::NewBlob;
-use super::{Blob, BlobState, ScanState};
+use super::{Blob, BlobState, ScanOutcome, ScanState};
+use crate::clamav::Verdict;
 use crate::classify::Category;
 use crate::jobs::{self, JobKind};
 
@@ -166,21 +167,19 @@ pub struct Completed {
     pub chunk_size: i32,
     pub checksum_sha256: Vec<u8>,
     pub size: i64,
+    pub scan: ScanOutcome,
 }
 
-/// `uploading` to `uploaded`, or straight to `ready` when the scan is
-/// skipped. Points the row at the object and enqueues what comes next in the
-/// same transaction: a scan, or the representations.
+/// `uploading` to wherever the scan outcome leads: `uploaded` when a job
+/// still has to scan, `ready` when clean or skipped, `infected` otherwise.
+/// Points the row at the object and enqueues what comes next in the same
+/// transaction.
 pub async fn complete_upload(
     pool: &PgPool,
     blob: &Blob,
     done: &Completed,
 ) -> sqlx::Result<Transition> {
-    let (state, scan_state) = if blob.skip_virus_scan {
-        (BlobState::Ready, ScanState::Skipped)
-    } else {
-        (BlobState::Uploaded, ScanState::Pending)
-    };
+    let (state, scan_state) = done.scan.states();
     let mut tx = pool.begin().await?;
     let updated = sqlx::query_as::<_, Blob>(
         r#"
@@ -189,8 +188,9 @@ pub async fn complete_upload(
             kek_id = $4, wrapped_key = $5, encryption_header = $6, chunk_size = $7,
             checksum_sha256 = $8, size = $9,
             scan_state = $10,
+            scanned_at = CASE WHEN $11 THEN now() END,
             uploaded_at = now()
-        WHERE id = $1 AND state = $11
+        WHERE id = $1 AND state = $12
         RETURNING *
         "#,
     )
@@ -204,6 +204,7 @@ pub async fn complete_upload(
     .bind(&done.checksum_sha256)
     .bind(done.size)
     .bind(scan_state.as_str())
+    .bind(done.scan.is_scanned())
     .bind(BlobState::Uploading.as_str())
     .fetch_optional(&mut *tx)
     .await?;
@@ -214,18 +215,54 @@ pub async fn complete_upload(
             None => Ok(Transition::Missing),
         };
     };
-
-    let now = Timestamp::now();
-    let kinds: &[JobKind] = if updated.state == BlobState::Ready {
-        &[JobKind::Thumbnail, JobKind::Preview]
-    } else {
-        &[JobKind::Scan]
-    };
-    for kind in kinds {
-        jobs::enqueue(&mut *tx, *kind, Some(blob.id), serde_json::json!({}), now).await?;
-    }
+    enqueue_next(&mut tx, &updated).await?;
     tx.commit().await?;
     Ok(Transition::Done(updated))
+}
+
+/// The deferred scan's verdict: `uploaded` to `ready` or `infected`, with the
+/// representations enqueued once the file is known clean.
+pub async fn finish_scan(pool: &PgPool, id: Uuid, verdict: &Verdict) -> sqlx::Result<Transition> {
+    let (state, scan_state) = match verdict {
+        Verdict::Clean => (BlobState::Ready, ScanState::Clean),
+        Verdict::Infected(_) => (BlobState::Infected, ScanState::Infected),
+    };
+    let mut tx = pool.begin().await?;
+    let updated = sqlx::query_as::<_, Blob>(
+        "UPDATE blobs SET state = $2, scan_state = $3, scanned_at = now() \
+         WHERE id = $1 AND state = $4 RETURNING *",
+    )
+    .bind(id)
+    .bind(state.as_str())
+    .bind(scan_state.as_str())
+    .bind(BlobState::Uploaded.as_str())
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(updated) = updated else {
+        tx.rollback().await?;
+        return match find(pool, id).await? {
+            Some(blob) => Ok(Transition::Conflict(blob)),
+            None => Ok(Transition::Missing),
+        };
+    };
+    enqueue_next(&mut tx, &updated).await?;
+    tx.commit().await?;
+    Ok(Transition::Done(updated))
+}
+
+/// What a blob that just changed state needs done: a scan while it waits in
+/// `uploaded`, the representations once it is `ready`, nothing otherwise.
+async fn enqueue_next(conn: &mut PgConnection, blob: &Blob) -> sqlx::Result<()> {
+    let kinds: &[JobKind] = match blob.state {
+        BlobState::Uploaded => &[JobKind::Scan],
+        BlobState::Ready => &[JobKind::Thumbnail, JobKind::Preview],
+        _ => &[],
+    };
+    let now = Timestamp::now();
+    for kind in kinds {
+        jobs::enqueue(&mut *conn, *kind, Some(blob.id), serde_json::json!({}), now).await?;
+    }
+    Ok(())
 }
 
 /// Soft delete from any state, and enqueue a purge of the stored object at
