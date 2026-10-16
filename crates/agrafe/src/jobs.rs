@@ -113,6 +113,21 @@ pub async fn claim(
     .await
 }
 
+/// Extend `worker`'s lease on a job it is running. Returns whether the job
+/// was still held by `worker`: a lapsed lease may have let another worker
+/// claim it, or the job may be gone.
+pub async fn touch(exec: impl PgExecutor<'_>, id: i64, worker: &str) -> sqlx::Result<bool> {
+    let result = sqlx::query(
+        "UPDATE jobs SET locked_at = now() \
+         WHERE id = $1 AND locked_by = $2 AND failed_at IS NULL",
+    )
+    .bind(id)
+    .bind(worker)
+    .execute(exec)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
 /// A finished job leaves the table.
 pub async fn succeed(exec: impl PgExecutor<'_>, id: i64) -> sqlx::Result<()> {
     sqlx::query("DELETE FROM jobs WHERE id = $1")

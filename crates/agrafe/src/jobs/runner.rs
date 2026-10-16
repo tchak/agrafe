@@ -79,22 +79,27 @@ pub async fn run_one(state: &AppState, kind: JobKind, worker: &str) -> anyhow::R
     // The span is attached to the future rather than entered on the
     // thread: a guard held across an await would tag whatever else the
     // thread polls meanwhile.
-    run_claimed(state, &job).instrument(span).await?;
+    run_claimed(state, &job, worker).instrument(span).await?;
     Ok(true)
 }
 
-async fn run_claimed(state: &AppState, job: &Job) -> anyhow::Result<()> {
+async fn run_claimed(state: &AppState, job: &Job, worker: &str) -> anyhow::Result<()> {
+    let lease = state.config().jobs.lease_timeout;
     // A handler that panics has failed this attempt; it must not take the
-    // worker, or the process in the `all` role, down with it.
-    let outcome = std::panic::AssertUnwindSafe(handle(state, job))
-        .catch_unwind()
-        .await
-        .unwrap_or_else(|panic| {
-            Err(anyhow::anyhow!(
-                "handler panicked: {}",
-                panic_message(&*panic)
-            ))
-        });
+    // worker, or the process in the `all` role, down with it. The lease is
+    // renewed while it runs, so a job longer than the lease is not handed
+    // to a second worker.
+    let outcome = tokio::select! {
+        outcome = std::panic::AssertUnwindSafe(handle(state, job)).catch_unwind() => {
+            outcome.unwrap_or_else(|panic| {
+                Err(anyhow::anyhow!(
+                    "handler panicked: {}",
+                    panic_message(&*panic)
+                ))
+            })
+        }
+        _ = heartbeat(state, job.id, worker, lease) => unreachable!("the heartbeat never ends"),
+    };
     match outcome {
         Ok(()) => {
             super::succeed(state.pool(), job.id).await?;
@@ -190,6 +195,21 @@ where
                     _ = tokio::time::sleep(LISTEN_RETRY) => {}
                 }
             }
+        }
+    }
+}
+
+/// Renew the lease every third of it, for as long as this future is polled.
+async fn heartbeat(state: &AppState, id: i64, worker: &str, lease: Duration) {
+    let period = (lease / 3).max(Duration::from_secs(1));
+    let mut ticks = tokio::time::interval(period);
+    ticks.tick().await; // the first tick is immediate; the claim just set the lease
+    loop {
+        ticks.tick().await;
+        match super::touch(state.pool(), id, worker).await {
+            Ok(true) => {}
+            Ok(false) => tracing::warn!("lease lost: the job was reclaimed or removed"),
+            Err(err) => tracing::warn!(error = ?err, "could not renew the job lease"),
         }
     }
 }

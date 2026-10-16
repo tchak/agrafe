@@ -1809,6 +1809,22 @@ async fn job_queue_mechanics() {
     assert_eq!(again.attempts, 2);
     assert_eq!(again.locked_by.as_deref(), Some("w2"));
 
+    // The holder renews its lease; nobody else can, and a renewed lease
+    // keeps the job out of reach.
+    sqlx::query("UPDATE jobs SET locked_at = now() - interval '11 minutes' WHERE id = $1")
+        .bind(job.id)
+        .execute(pool)
+        .await
+        .unwrap();
+    assert!(!jobs::touch(pool, job.id, "w1").await.unwrap());
+    assert!(jobs::touch(pool, job.id, "w2").await.unwrap());
+    assert!(
+        jobs::claim(pool, &[JobKind::Scan], "w1", lease)
+            .await
+            .unwrap()
+            .is_none()
+    );
+
     // Not due: a future job is not claimed; kinds are filtered.
     assert!(
         jobs::enqueue(

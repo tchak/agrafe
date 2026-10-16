@@ -120,6 +120,7 @@ max_text_chars = 50
 # Workers are woken by NOTIFY on every enqueue; this is the fallback.
 poll_interval = "2s"
 # A job locked for longer than this is assumed orphaned and claimed again.
+# Running workers renew their lease, so only a dead one lets it lapse.
 lease_timeout = "10m"
 
 # Workers per job kind; these are the defaults.
