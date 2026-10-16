@@ -29,6 +29,7 @@ use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use hkdf::Hkdf;
 use sha2::Sha256;
+use zeroize::Zeroizing;
 
 use crate::{Error, KEY_LEN, Key};
 
@@ -115,11 +116,9 @@ impl Layout {
     }
 
     /// Number of segments a plaintext of `plaintext_len` bytes produces.
-    /// Always at least one.
+    /// At least one, since the header occupies the first.
     pub fn segment_count(&self, plaintext_len: u64) -> u64 {
-        (plaintext_len + HEADER_LEN as u64)
-            .div_ceil(self.pps())
-            .max(1)
+        (plaintext_len + HEADER_LEN as u64).div_ceil(self.pps())
     }
 
     /// Total ciphertext length, header included.
@@ -128,7 +127,7 @@ impl Layout {
         let full = shifted / self.pps();
         let rem = shifted % self.pps();
         let mut len = full * self.segment_size as u64;
-        if rem > 0 || full == 0 {
+        if rem > 0 {
             len += rem + TAG_LEN as u64;
         }
         len
@@ -179,10 +178,10 @@ impl Layout {
 
 fn derive(key: &Key, salt: &[u8], associated_data: &[u8]) -> Aes256Gcm {
     let hk = Hkdf::<Sha256>::new(Some(salt), key.as_bytes());
-    let mut derived = [0u8; KEY_LEN];
-    hk.expand(associated_data, &mut derived)
+    let mut derived = Zeroizing::new([0u8; KEY_LEN]);
+    hk.expand(associated_data, &mut *derived)
         .expect("32 bytes is a valid HKDF output length");
-    Aes256Gcm::new(&derived.into())
+    Aes256Gcm::new((&*derived).into())
 }
 
 fn nonce(

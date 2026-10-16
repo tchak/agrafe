@@ -10,6 +10,7 @@
 
 use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+use zeroize::Zeroizing;
 
 use crate::{Error, KEY_LEN, Key};
 
@@ -57,16 +58,17 @@ impl Kek {
         let (nonce, sealed) = wrapped.split_at(NONCE_LEN);
         let nonce =
             Nonce::<aes_gcm::aead::consts::U12>::try_from(nonce).map_err(|_| Error::Corrupt)?;
-        let bytes = self
-            .cipher
-            .decrypt(
-                &nonce,
-                Payload {
-                    msg: sealed,
-                    aad: associated_data,
-                },
-            )
-            .map_err(|_| Error::Corrupt)?;
+        let bytes = Zeroizing::new(
+            self.cipher
+                .decrypt(
+                    &nonce,
+                    Payload {
+                        msg: sealed,
+                        aad: associated_data,
+                    },
+                )
+                .map_err(|_| Error::Corrupt)?,
+        );
         Key::from_slice(&bytes)
     }
 }

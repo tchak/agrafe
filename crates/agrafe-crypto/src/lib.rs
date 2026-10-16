@@ -9,11 +9,14 @@
 pub mod streaming;
 pub mod wrap;
 
+use zeroize::{Zeroize, ZeroizeOnDrop};
+
 /// Length in bytes of a data key and of a key-encryption key.
 pub const KEY_LEN: usize = 32;
 
-/// A random 256-bit key. `Debug` never prints the bytes.
-#[derive(Clone, PartialEq, Eq)]
+/// A random 256-bit key. `Debug` never prints the bytes, and the bytes are
+/// wiped when the key is dropped.
+#[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
 pub struct Key([u8; KEY_LEN]);
 
 impl Key {
