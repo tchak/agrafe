@@ -171,6 +171,22 @@ async fn image_gets_a_thumbnail_and_a_preview() {
 }
 
 #[tokio::test]
+async fn vector_images_fill_the_box() {
+    let app = setup().await;
+    // 20x10 nominal: a raster that small would stay small.
+    let svg = br#"<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><rect width="20" height="10" fill="red"/></svg>"#;
+    let blob = ready_file(&app, "logo.svg", "image/svg+xml", svg).await;
+    let id = id_of(&blob);
+    render_all(&app).await;
+    let blob = get_blob(&app, id).await;
+    assert_eq!(blob["preview_source"], "image");
+    let (_, size) = rendered(&app, &format!("/blobs/{id}/thumbnail/logo.svg")).await;
+    assert_eq!(size, (256, 128));
+    let (_, size) = rendered(&app, &format!("/blobs/{id}/preview/logo.svg")).await;
+    assert_eq!(size, (400, 200));
+}
+
+#[tokio::test]
 async fn pdf_previews_come_from_the_embedded_image_or_the_page() {
     let app = setup().await;
     // One JPEG covering a page a tenth of its size: the image itself is the

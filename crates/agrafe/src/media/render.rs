@@ -51,6 +51,18 @@ pub enum Input {
     Page,
 }
 
+impl Input {
+    /// What an image file is. SVG is a page: it has a nominal size, and
+    /// filling the box loses nothing.
+    pub fn for_image(content_type: &str) -> Self {
+        if content_type == "image/svg+xml" {
+            Input::Page
+        } else {
+            Input::Raster
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// The bytes are not a format the renderer may load: the file's fault.

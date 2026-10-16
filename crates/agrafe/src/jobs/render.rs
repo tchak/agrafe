@@ -78,7 +78,7 @@ pub async fn run(state: &AppState, job: &Job) -> Result<(), JobError> {
         let (input, kind, from) = match source {
             Source::Image => (
                 whole_original(state, &blob, &stored, &workdir, &mut original).await?,
-                Input::Raster,
+                Input::for_image(&blob.content_type),
                 Some(PreviewSource::Image),
             ),
             Source::FirstPage => (
