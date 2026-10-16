@@ -328,6 +328,36 @@ async fn text_files_get_a_thumbnail_and_no_preview() {
 }
 
 #[tokio::test]
+async fn a_crashing_helper_fails_the_file_not_the_job() {
+    let clamd = fake_clamd().await;
+    let app = setup_tuned(clamd, |c| {
+        c.media.agrafe_command = Some("/usr/bin/false".into());
+    })
+    .await;
+    let notes = ready_file(&app, "notes.txt", "text/plain", b"plain text\n").await;
+    let letter = ready_file(
+        &app,
+        "picture.docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        &fixture("image.docx"),
+    )
+    .await;
+    render_all(&app).await;
+    for (blob, name) in [(&notes, "notes.txt"), (&letter, "picture.docx")] {
+        let id = id_of(blob);
+        let blob = get_blob(&app, id).await;
+        assert_eq!(blob["thumbnail_state"], "failed", "{name}");
+        assert_eq!(jobs_for(&app, id).await, Vec::<String>::new(), "{name}");
+    }
+    // A PDF still has the page render to fall back on.
+    let scan = ready_file(&app, "scan.pdf", "application/pdf", &fixture("image.pdf")).await;
+    render_all(&app).await;
+    let blob = get_blob(&app, id_of(&scan)).await;
+    assert_eq!(blob["preview_state"], "ready");
+    assert_eq!(blob["preview_source"], "first_page");
+}
+
+#[tokio::test]
 async fn files_the_renderer_rejects_are_failed() {
     let app = setup().await;
     let blob = ready_file(&app, "broken.jpg", "image/jpeg", &fixture("truncated.jpg")).await;

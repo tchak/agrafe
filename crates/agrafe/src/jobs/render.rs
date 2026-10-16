@@ -1,9 +1,10 @@
 //! Rendering a blob's thumbnail or preview: fetch and decrypt the original,
 //! pick a source, rasterise it in a sandbox, store the WebP encrypted.
 //!
-//! A file the renderer rejects leaves the representation `failed` and the
-//! job done: trying the same bytes again would end the same way. Only
-//! failures of ours (store, database, a missing renderer) fail the job.
+//! A file the renderer rejects, or that crashes a helper, leaves the
+//! representation `failed` and the job done: trying the same bytes again
+//! would end the same way. Only failures of ours (store, database, a
+//! missing renderer) fail the job.
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -89,7 +90,10 @@ pub async fn run(state: &AppState, job: &Job) -> Result<(), JobError> {
             Source::EmbeddedImage => {
                 let whole = whole_original(state, &blob, &stored, &workdir, &mut original).await?;
                 let embedded = workdir.path().join("embedded");
-                if !extract(state, &blob, &whole, &embedded).await? {
+                if !produced(
+                    extract(state, &blob, &whole, &embedded).await?,
+                    &mut rejected,
+                ) {
                     continue;
                 }
                 (embedded, Input::Raster, Some(PreviewSource::EmbeddedImage))
@@ -105,7 +109,10 @@ pub async fn run(state: &AppState, job: &Job) -> Result<(), JobError> {
                 )
                 .await?;
                 let page = workdir.path().join("page.pgm");
-                if !render_text(state, &sample, &page, fit).await? {
+                if !produced(
+                    render_text(state, &sample, &page, fit).await?,
+                    &mut rejected,
+                ) {
                     continue;
                 }
                 (page, Input::Raster, None)
@@ -179,7 +186,7 @@ async fn extract(
     blob: &Blob,
     original: &Path,
     output: &Path,
-) -> Result<bool, JobError> {
+) -> Result<Helper, JobError> {
     let media = &state.config().media;
     let mut command = helper(state)?;
     command
@@ -207,7 +214,7 @@ async fn render_text(
     sample: &Path,
     output: &Path,
     fit: Fit,
-) -> Result<bool, JobError> {
+) -> Result<Helper, JobError> {
     let mut command = helper(state)?;
     command
         .arg("render-text")
@@ -231,24 +238,49 @@ fn helper(state: &AppState) -> Result<tokio::process::Command, JobError> {
     Ok(sandbox::command(program))
 }
 
+/// How a helper run ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Helper {
+    /// It wrote its output.
+    Produced,
+    /// It found nothing to do: no embedded image, a sample that is not text.
+    Declined,
+    /// It crashed or ran out of time, which the file takes the blame for.
+    Failed,
+}
+
+/// Whether the helper wrote its output, noting a crash against the file.
+fn produced(outcome: Helper, rejected: &mut bool) -> bool {
+    match outcome {
+        Helper::Produced => true,
+        Helper::Declined => false,
+        Helper::Failed => {
+            *rejected = true;
+            false
+        }
+    }
+}
+
 /// A helper that succeeds without writing `output` found nothing to do.
-/// One that fails or times out is treated the same: the next source gets
-/// its turn.
 async fn run_helper(
     state: &AppState,
     command: tokio::process::Command,
     output: &Path,
     what: &str,
-) -> Result<bool, JobError> {
+) -> Result<Helper, JobError> {
     match sandbox::run(command, &state.config().media.sandbox).await? {
-        Outcome::Success => Ok(tokio::fs::try_exists(output).await?),
+        Outcome::Success => Ok(if tokio::fs::try_exists(output).await? {
+            Helper::Produced
+        } else {
+            Helper::Declined
+        }),
         Outcome::Failed { status, stderr } => {
             tracing::warn!(status, stderr, "the {what} helper failed");
-            Ok(false)
+            Ok(Helper::Failed)
         }
         Outcome::TimedOut => {
             tracing::warn!("the {what} helper timed out");
-            Ok(false)
+            Ok(Helper::Failed)
         }
     }
 }

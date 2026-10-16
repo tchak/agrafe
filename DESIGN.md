@@ -461,9 +461,12 @@ also blocks the PDF, SVG, JPEG 2000 and PNM loaders.
 
 A file the renderer rejects, or that runs past the sandbox timeout, leaves
 the representation `failed` and the job done: the same bytes would fail the
-same way tomorrow. Only failures of ours (object store, database, the
-renderer missing) fail the job, which retries with backoff and leaves the
-representation `pending` meanwhile.
+same way tomorrow. A helper that crashes or runs out of time counts the
+same way; one that declines (no embedded image to pull out, a sample that
+is not text) hands over to the next source, or leaves the representation
+`unavailable` when there is none. Only failures of ours (object store,
+database, the renderer missing) fail the job, which retries with backoff
+and leaves the representation `pending` meanwhile.
 
 Representations live at `<blob id>/thumbnail` and `<blob id>/preview`,
 encrypted with the blob's own data key: the streaming AEAD derives a fresh
