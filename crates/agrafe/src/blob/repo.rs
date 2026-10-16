@@ -1,7 +1,8 @@
 //! Blob persistence. Every state change is a conditional update.
 //! `updated_at` is maintained by a database trigger, never by hand.
 
-use chrono::Utc;
+use jiff::Timestamp;
+use jiff_sqlx::ToSqlx;
 use sqlx::{PgConnection, PgExecutor, PgPool, Postgres, QueryBuilder};
 use uuid::Uuid;
 
@@ -36,7 +37,7 @@ pub async fn insert(exec: impl PgExecutor<'_>, new: &NewBlob) -> sqlx::Result<Bl
     .bind(new.size)
     .bind(new.write_once)
     .bind(new.skip_virus_scan)
-    .bind(new.expires_at)
+    .bind(new.expires_at.map(ToSqlx::to_sqlx))
     .bind(scan_state.as_str())
     .fetch_one(exec)
     .await
@@ -198,7 +199,7 @@ pub async fn soft_delete(pool: &PgPool, id: Uuid) -> sqlx::Result<Transition> {
             JobKind::Purge,
             None,
             serde_json::json!({ "blob_id": blob.id, "storage_key": key }),
-            Utc::now(),
+            Timestamp::now(),
         )
         .await?;
     }

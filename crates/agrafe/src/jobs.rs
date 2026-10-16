@@ -1,7 +1,8 @@
 //! Postgres-backed job queue. Enqueue only, for now; the runner comes with
 //! the scanning and media work.
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
+use jiff_sqlx::ToSqlx;
 use serde::{Deserialize, Serialize};
 use sqlx::PgExecutor;
 use uuid::Uuid;
@@ -31,7 +32,7 @@ pub async fn enqueue(
     kind: JobKind,
     blob_id: Option<Uuid>,
     payload: serde_json::Value,
-    run_at: DateTime<Utc>,
+    run_at: Timestamp,
 ) -> sqlx::Result<bool> {
     let result = sqlx::query(
         "INSERT INTO jobs (kind, blob_id, payload, run_at) VALUES ($1, $2, $3, $4) \
@@ -40,7 +41,7 @@ pub async fn enqueue(
     .bind(kind.as_str())
     .bind(blob_id)
     .bind(payload)
-    .bind(run_at)
+    .bind(run_at.to_sqlx())
     .execute(exec)
     .await?;
     Ok(result.rows_affected() == 1)

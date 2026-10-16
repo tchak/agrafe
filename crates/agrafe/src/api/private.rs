@@ -8,7 +8,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
-use chrono::Utc;
+use jiff::Timestamp;
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -39,7 +39,7 @@ async fn create_blob(
     State(state): State<AppState>,
     Json(req): Json<CreateBlobRequest>,
 ) -> ApiResult<impl IntoResponse> {
-    let new = create::validate(req, &state.config().upload, Utc::now())?;
+    let new = create::validate(req, &state.config().upload, Timestamp::now())?;
     let blob = repo::insert(state.pool(), &new).await?;
     let urls = urls::mint(&state, &blob, &MintOptions::default(), SystemTime::now());
     Ok((StatusCode::CREATED, Json(BlobResponse::new(&blob, urls))))

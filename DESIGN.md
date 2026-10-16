@@ -395,6 +395,7 @@ is redacted so a dumped config cannot leak them. See `config/example.toml`.
 | Images | libvips subprocess, `image` for pure-Rust cases |
 | PDF | `pdfium-render` |
 | Ids | UUID v7 |
+| Time | `jiff`. `Timestamp` throughout the model; `jiff-sqlx` wrappers only at the SQL boundary |
 
 ## Build order
 

@@ -2,7 +2,7 @@
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -24,16 +24,16 @@ pub struct BlobResponse {
     pub write_once: bool,
     pub skip_virus_scan: bool,
     pub public_upload_allowed: bool,
-    pub expires_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<Timestamp>,
     pub scan_state: ScanState,
-    pub scanned_at: Option<DateTime<Utc>>,
+    pub scanned_at: Option<Timestamp>,
     pub thumbnail_state: RepresentationState,
     pub preview_state: RepresentationState,
     pub preview_source: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-    pub uploaded_at: Option<DateTime<Utc>>,
-    pub deleted_at: Option<DateTime<Utc>>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+    pub uploaded_at: Option<Timestamp>,
+    pub deleted_at: Option<Timestamp>,
     pub urls: BlobUrls,
 }
 

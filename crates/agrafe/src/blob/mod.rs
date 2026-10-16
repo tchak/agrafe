@@ -3,7 +3,7 @@
 pub mod create;
 pub mod repo;
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -114,11 +114,13 @@ pub struct Blob {
     pub size: Option<i64>,
     pub write_once: bool,
     pub skip_virus_scan: bool,
-    pub expires_at: Option<DateTime<Utc>>,
+    #[sqlx(try_from = "crate::db::NullableTimestamp")]
+    pub expires_at: Option<Timestamp>,
 
     #[sqlx(try_from = "String")]
     pub scan_state: ScanState,
-    pub scanned_at: Option<DateTime<Utc>>,
+    #[sqlx(try_from = "crate::db::NullableTimestamp")]
+    pub scanned_at: Option<Timestamp>,
 
     pub storage_key: Option<String>,
     pub version: i32,
@@ -135,11 +137,16 @@ pub struct Blob {
     pub preview_source: Option<String>,
     pub variant_version: Option<i32>,
 
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-    pub upload_started_at: Option<DateTime<Utc>>,
-    pub uploaded_at: Option<DateTime<Utc>>,
-    pub deleted_at: Option<DateTime<Utc>>,
+    #[sqlx(try_from = "jiff_sqlx::Timestamp")]
+    pub created_at: Timestamp,
+    #[sqlx(try_from = "jiff_sqlx::Timestamp")]
+    pub updated_at: Timestamp,
+    #[sqlx(try_from = "crate::db::NullableTimestamp")]
+    pub upload_started_at: Option<Timestamp>,
+    #[sqlx(try_from = "crate::db::NullableTimestamp")]
+    pub uploaded_at: Option<Timestamp>,
+    #[sqlx(try_from = "crate::db::NullableTimestamp")]
+    pub deleted_at: Option<Timestamp>,
 }
 
 impl Blob {

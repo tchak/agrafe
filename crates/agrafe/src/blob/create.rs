@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use chrono::{DateTime, Utc};
+use jiff::{SignedDuration, Timestamp};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -27,7 +27,7 @@ pub struct CreateBlobRequest {
     pub write_once: bool,
     #[serde(default)]
     pub skip_virus_scan: bool,
-    pub expires_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<Timestamp>,
     #[serde(default, with = "humantime_serde")]
     pub expires_in: Option<Duration>,
 }
@@ -48,7 +48,7 @@ pub struct NewBlob {
     pub size: Option<i64>,
     pub write_once: bool,
     pub skip_virus_scan: bool,
-    pub expires_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<Timestamp>,
 }
 
 pub const MAX_FILENAME_LEN: usize = 255;
@@ -56,7 +56,7 @@ pub const MAX_FILENAME_LEN: usize = 255;
 pub fn validate(
     req: CreateBlobRequest,
     upload: &UploadConfig,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<NewBlob, ApiError> {
     let filename = validate_filename(&req.filename)?;
     let content_type = normalize_content_type(&req.content_type).map_err(unprocessable)?;
@@ -92,11 +92,11 @@ pub fn validate(
         }
         (Some(at), None) => Some(at),
         (None, Some(d)) => {
-            let d = chrono::Duration::from_std(d)
+            let d = SignedDuration::try_from(d)
                 .map_err(|_| unprocessable("expires_in is out of range"))?;
             Some(
-                now.checked_add_signed(d)
-                    .ok_or_else(|| unprocessable("expires_in is out of range"))?,
+                now.checked_add(d)
+                    .map_err(|_| unprocessable("expires_in is out of range"))?,
             )
         }
         (None, None) => None,
@@ -231,7 +231,7 @@ mod tests {
         let b = validate(
             req(InputType::Raw, "image/jpeg; charset=binary"),
             &cfg(),
-            Utc::now(),
+            Timestamp::now(),
         )
         .unwrap();
         assert_eq!(b.content_type, "image/jpeg");
@@ -244,22 +244,50 @@ mod tests {
     fn direct_requires_checksum_and_size() {
         let mut r = req(InputType::Raw, "image/jpeg");
         r.checksum = None;
-        assert!(validate(r, &cfg(), Utc::now()).is_err());
+        assert!(validate(r, &cfg(), Timestamp::now()).is_err());
         let mut r = req(InputType::Multipart, "image/jpeg");
         r.size = None;
-        assert!(validate(r, &cfg(), Utc::now()).is_err());
+        assert!(validate(r, &cfg(), Timestamp::now()).is_err());
     }
 
     #[test]
     fn generated_rejects_checksum_and_checks_type() {
         let mut r = req(InputType::Rows, classify::CSV);
         r.checksum = Some(STANDARD.encode([0u8; 32]));
-        assert!(validate(r, &cfg(), Utc::now()).is_err());
-        assert!(validate(req(InputType::Rows, classify::CSV), &cfg(), Utc::now()).is_ok());
-        assert!(validate(req(InputType::Rows, classify::XLSX), &cfg(), Utc::now()).is_ok());
-        assert!(validate(req(InputType::Rows, "image/png"), &cfg(), Utc::now()).is_err());
-        assert!(validate(req(InputType::Archive, classify::ZIP), &cfg(), Utc::now()).is_ok());
-        assert!(validate(req(InputType::Archive, classify::CSV), &cfg(), Utc::now()).is_err());
+        assert!(validate(r, &cfg(), Timestamp::now()).is_err());
+        assert!(
+            validate(
+                req(InputType::Rows, classify::CSV),
+                &cfg(),
+                Timestamp::now()
+            )
+            .is_ok()
+        );
+        assert!(
+            validate(
+                req(InputType::Rows, classify::XLSX),
+                &cfg(),
+                Timestamp::now()
+            )
+            .is_ok()
+        );
+        assert!(validate(req(InputType::Rows, "image/png"), &cfg(), Timestamp::now()).is_err());
+        assert!(
+            validate(
+                req(InputType::Archive, classify::ZIP),
+                &cfg(),
+                Timestamp::now()
+            )
+            .is_ok()
+        );
+        assert!(
+            validate(
+                req(InputType::Archive, classify::CSV),
+                &cfg(),
+                Timestamp::now()
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -267,24 +295,24 @@ mod tests {
         for bad in ["", "   ", "a/b", "a\\b", "..", "x\u{0}y"] {
             let mut r = req(InputType::Raw, "image/jpeg");
             r.filename = bad.into();
-            assert!(validate(r, &cfg(), Utc::now()).is_err(), "{bad:?}");
+            assert!(validate(r, &cfg(), Timestamp::now()).is_err(), "{bad:?}");
         }
     }
 
     #[test]
     fn expiration() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut r = req(InputType::Raw, "image/jpeg");
         r.expires_in = Some(Duration::from_secs(3600));
         let b = validate(r, &cfg(), now).unwrap();
-        assert_eq!(b.expires_at, Some(now + chrono::Duration::seconds(3600)));
+        assert_eq!(b.expires_at, Some(now + SignedDuration::from_secs(3600)));
 
         let mut r = req(InputType::Raw, "image/jpeg");
-        r.expires_at = Some(now - chrono::Duration::seconds(1));
+        r.expires_at = Some(now - SignedDuration::from_secs(1));
         assert!(validate(r, &cfg(), now).is_err());
 
         let mut r = req(InputType::Raw, "image/jpeg");
-        r.expires_at = Some(now + chrono::Duration::seconds(10));
+        r.expires_at = Some(now + SignedDuration::from_secs(10));
         r.expires_in = Some(Duration::from_secs(10));
         assert!(validate(r, &cfg(), now).is_err());
     }
@@ -293,16 +321,16 @@ mod tests {
     fn huge_expires_in_is_rejected_not_panicking() {
         let mut r = req(InputType::Raw, "image/jpeg");
         r.expires_in = Some(Duration::from_secs(100_000_000 * 365 * 86_400));
-        assert!(validate(r, &cfg(), Utc::now()).is_err());
+        assert!(validate(r, &cfg(), Timestamp::now()).is_err());
     }
 
     #[test]
     fn size_limit() {
         let mut r = req(InputType::Raw, "image/jpeg");
         r.size = Some(i64::MAX);
-        assert!(validate(r, &cfg(), Utc::now()).is_err());
+        assert!(validate(r, &cfg(), Timestamp::now()).is_err());
         let mut r = req(InputType::Raw, "image/jpeg");
         r.size = Some(-1);
-        assert!(validate(r, &cfg(), Utc::now()).is_err());
+        assert!(validate(r, &cfg(), Timestamp::now()).is_err());
     }
 }
