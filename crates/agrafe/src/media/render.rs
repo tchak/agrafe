@@ -14,6 +14,11 @@ use super::sandbox::{self, Outcome};
 use crate::config::MediaConfig;
 use crate::media;
 
+/// Threads per vips process. Parallelism comes from running several
+/// renders at once (`jobs.concurrency`), so each one is kept narrow: the
+/// address space limit is then the same on a 4-core box and a 64-core one.
+const VIPS_CONCURRENCY: &str = "2";
+
 /// Target box and encoder quality. The image is scaled to fit inside the
 /// box, never cropped.
 #[derive(Debug, Clone, Copy)]
@@ -93,7 +98,8 @@ impl Error {
 }
 
 /// Render `input` into `output` as a WebP fitting `fit`, and return its
-/// bytes. `output` must not contain `[`, which vips reads as options.
+/// bytes. `output` must not contain `[`, which vips reads as options, and
+/// its directory is where vips spills intermediates.
 pub async fn to_webp(
     media: &MediaConfig,
     input: &Path,
@@ -109,8 +115,12 @@ pub async fn to_webp(
         Input::Page => "both",
     };
     let mut command = sandbox::command(&media.vips_command);
+    if let Some(dir) = output.parent() {
+        command.env("TMPDIR", dir);
+    }
     command
         .env("VIPS_WARNING", "0")
+        .env("VIPS_CONCURRENCY", VIPS_CONCURRENCY)
         .arg("thumbnail")
         .arg(input)
         .arg(format!("{}[Q={},keep=none]", output.display(), fit.quality))

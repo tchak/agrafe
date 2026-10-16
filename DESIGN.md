@@ -433,7 +433,10 @@ dropped, lossy WebP out. The image is scaled to fit the box, never cropped.
 Pixels are never enlarged, a small image stays small; a PDF page or an SVG
 is vector with a nominal size, so it is rendered at whatever scale fills
 the box. `--fail-on error` makes a truncated or malformed file a rejection
-rather than a partial render.
+rather than a partial render. Each vips process runs two threads
+(`VIPS_CONCURRENCY`): parallelism comes from the workers, and a narrow
+process keeps the memory limit meaningful on any core count. Its `TMPDIR`
+is the job's work directory, so anything it spills is cleaned up with it.
 
 Only files with a known source are attempted:
 
@@ -571,7 +574,7 @@ Decoders and renderers are the most attackable code in the service. They run
 in a subprocess, never in the API process: `vips` for rendering, the binary's
 own hidden `extract` and `render-text` subcommands for container parsing and
 text rasterising. Each child gets a clean environment (`PATH` and `HOME`
-only, no secrets), `setrlimit` bounds on
+only, no secrets; vips also gets `TMPDIR` and `VIPS_CONCURRENCY`), `setrlimit` bounds on
 address space and data (`media.sandbox.memory`, default 1 GiB), CPU time and
 output file size (`max_output_size`), no core dumps, and is killed at the
 wall-clock limit (`media.sandbox.timeout`, default 60 s). The address space

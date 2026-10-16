@@ -111,8 +111,8 @@ vips_command = "vips"
 # Originals above this size get an icon and no preview; text files still get
 # their thumbnail, which reads only the first few KiB.
 max_source_size = "512 MiB"
-# Where originals are unpacked while rendering; the system temporary
-# directory by default.
+# Where originals are unpacked while rendering, and where vips spills its
+# intermediates; the system temporary directory by default.
 # tmp_dir = "/var/tmp/agrafe"
 
 [media.sandbox]
