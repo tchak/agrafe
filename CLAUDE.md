@@ -29,6 +29,8 @@ squash, bookmarks and pushing. `jj st`, `jj diff`, `jj log`, `jj describe -m`,
 
 ## Conventions
 
+- Modules use named files, never `mod.rs`: `src/blob.rs` declares the module
+  and its children live in `src/blob/`.
 - Queries use `sqlx::query_as` with `FromRow` (no compile-time macros) so the
   build does not need a database.
 - Blob state transitions are conditional `UPDATE ... WHERE state = $from`.
