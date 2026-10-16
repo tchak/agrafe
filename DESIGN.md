@@ -374,7 +374,8 @@ enqueue function is swapped for a broker and the table becomes the outbox.
 One TOML file, path from `--config` or `AGRAFE_CONFIG`, every key overridable
 by environment variables prefixed `AGRAFE_` with `__` as the nesting separator.
 Secrets (database URL, KEKs, signing keys, bucket credentials) are expected
-from the environment in production. See `config/example.toml`.
+from the environment in production, and are held in types whose `Debug` output
+is redacted so a dumped config cannot leak them. See `config/example.toml`.
 
 ## Stack
 

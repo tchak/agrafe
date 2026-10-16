@@ -101,7 +101,8 @@ impl Role {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct DatabaseConfig {
-    pub url: String,
+    /// Carries the password, so it is a `Secret`.
+    pub url: Secret,
     #[serde(default = "default_max_connections")]
     pub max_connections: u32,
 }
@@ -128,7 +129,25 @@ pub struct S3StorageConfig {
     pub region: Option<String>,
     pub endpoint: Option<String>,
     pub access_key_id: Option<String>,
-    pub secret_access_key: Option<String>,
+    pub secret_access_key: Option<Secret>,
+}
+
+/// A string that must not appear in logs: redacted by `Debug`, read through
+/// `expose`.
+#[derive(Clone, Deserialize)]
+#[serde(transparent)]
+pub struct Secret(String);
+
+impl Secret {
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(…)")
+    }
 }
 
 /// A secret given as base64 in config.

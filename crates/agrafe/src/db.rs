@@ -11,7 +11,7 @@ pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations"
 pub async fn connect(config: &DatabaseConfig) -> Result<PgPool> {
     PgPoolOptions::new()
         .max_connections(config.max_connections)
-        .connect(&config.url)
+        .connect(config.url.expose())
         .await
         .context("connecting to the database")
 }

@@ -32,7 +32,7 @@ pub fn build(config: &StorageConfig) -> Result<Store> {
                 builder = builder.with_access_key_id(key);
             }
             if let Some(secret) = &s3.secret_access_key {
-                builder = builder.with_secret_access_key(secret);
+                builder = builder.with_secret_access_key(secret.expose());
             }
             let store = builder.build().context("building S3 client")?;
             Ok(Arc::new(store))
