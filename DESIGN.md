@@ -226,8 +226,10 @@ hour) later, long enough for a download that started before the delete to
 finish.
 
 Separate from the blob state, each blob tracks `scan_state`
-(`pending`, `clean`, `infected`, `skipped`) and a state per derived
-representation (`pending`, `ready`, `failed`, `unsupported`).
+(`pending`, `clean`, `infected`, `skipped`), `scan_signature` (what clamd
+found, for `infected`, whichever path scanned the file; private metadata
+only) and a state per derived representation (`pending`, `ready`, `failed`,
+`unsupported`).
 
 ### Listing
 

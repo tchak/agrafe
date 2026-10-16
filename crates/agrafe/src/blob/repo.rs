@@ -189,6 +189,7 @@ pub async fn complete_upload(
             checksum_sha256 = $8, size = $9,
             scan_state = $10,
             scanned_at = CASE WHEN $11 THEN now() END,
+            scan_signature = $13,
             uploaded_at = now()
         WHERE id = $1 AND state = $12
         RETURNING *
@@ -206,6 +207,7 @@ pub async fn complete_upload(
     .bind(scan_state.as_str())
     .bind(done.scan.is_scanned())
     .bind(BlobState::Uploading.as_str())
+    .bind(done.scan.signature())
     .fetch_optional(&mut *tx)
     .await?;
     let Some(updated) = updated else {
@@ -223,19 +225,20 @@ pub async fn complete_upload(
 /// The deferred scan's verdict: `uploaded` to `ready` or `infected`, with the
 /// representations enqueued once the file is known clean.
 pub async fn finish_scan(pool: &PgPool, id: Uuid, verdict: &Verdict) -> sqlx::Result<Transition> {
-    let (state, scan_state) = match verdict {
-        Verdict::Clean => (BlobState::Ready, ScanState::Clean),
-        Verdict::Infected(_) => (BlobState::Infected, ScanState::Infected),
+    let (state, scan_state, signature) = match verdict {
+        Verdict::Clean => (BlobState::Ready, ScanState::Clean, None),
+        Verdict::Infected(name) => (BlobState::Infected, ScanState::Infected, Some(name)),
     };
     let mut tx = pool.begin().await?;
     let updated = sqlx::query_as::<_, Blob>(
-        "UPDATE blobs SET state = $2, scan_state = $3, scanned_at = now() \
+        "UPDATE blobs SET state = $2, scan_state = $3, scanned_at = now(), scan_signature = $5 \
          WHERE id = $1 AND state = $4 RETURNING *",
     )
     .bind(id)
     .bind(state.as_str())
     .bind(scan_state.as_str())
     .bind(BlobState::Uploaded.as_str())
+    .bind(signature)
     .fetch_optional(&mut *tx)
     .await?;
     let Some(updated) = updated else {

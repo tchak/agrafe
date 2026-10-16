@@ -1476,6 +1476,7 @@ async fn inline_scan() {
     assert_eq!(body["scan_state"], "clean");
     let got = get_blob(&app, id).await;
     assert!(got["scanned_at"].is_string());
+    assert!(got["scan_signature"].is_null());
     assert_eq!(jobs_for(&app, id).await, vec!["preview", "thumbnail"]);
 
     // Infected: the upload is refused with its own code, yet the bytes are
@@ -1495,6 +1496,7 @@ async fn inline_scan() {
     assert_eq!(got["state"], "infected");
     assert_eq!(got["scan_state"], "infected");
     assert!(got["scanned_at"].is_string());
+    assert_eq!(got["scan_signature"], "Eicar-Test-Signature");
     assert!(jobs_for(&app, id).await.is_empty(), "nothing renders it");
     assert_eq!(
         stored_plaintext(&app, id).await,
@@ -1592,6 +1594,7 @@ async fn deferred_scan_job() {
     let got = get_blob(&app, id).await;
     assert_eq!(got["state"], "infected");
     assert_eq!(got["scan_state"], "infected");
+    assert_eq!(got["scan_signature"], "Eicar-Test-Signature");
     assert!(jobs_for(&app, id).await.is_empty());
     assert_eq!(stored_plaintext(&app, id).await, bytes);
 

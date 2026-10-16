@@ -111,6 +111,13 @@ impl ScanOutcome {
     pub fn is_scanned(&self) -> bool {
         matches!(self, ScanOutcome::Clean | ScanOutcome::Infected(_))
     }
+
+    pub fn signature(&self) -> Option<&str> {
+        match self {
+            ScanOutcome::Infected(name) => Some(name),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -150,6 +157,8 @@ pub struct Blob {
     pub scan_state: ScanState,
     #[sqlx(try_from = "crate::db::NullableTimestamp")]
     pub scanned_at: Option<Timestamp>,
+    /// What clamd found, when the blob is `infected`.
+    pub scan_signature: Option<String>,
 
     /// Object key of the original, `<id>/original`.
     pub storage_key: Option<String>,
