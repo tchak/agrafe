@@ -44,34 +44,12 @@ impl Config {
         Ok(config)
     }
 
+    /// Cross-field checks that no single section owns. Signing keys are
+    /// checked by `Signer::from_config`, which is the only consumer.
     fn validate(&self) -> Result<()> {
-        anyhow::ensure!(
-            self.signing.keys.contains_key(&self.signing.current_key),
-            "signing.current_key `{}` is not present in signing.keys",
-            self.signing.current_key
-        );
-        for (id, key) in &self.signing.keys {
-            // The id travels inside the URL token, so it must be a safe path
-            // segment and must not contain the token separator `.`.
-            anyhow::ensure!(
-                !id.is_empty()
-                    && id
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
-                "signing key id `{id}` must be non-empty and use only [A-Za-z0-9_-]"
-            );
-            anyhow::ensure!(
-                key.decoded()?.len() >= 32,
-                "signing key `{id}` must be at least 32 bytes"
-            );
-        }
         anyhow::ensure!(
             !self.server.public_base_url.ends_with('/'),
             "server.public_base_url must not end with a slash"
-        );
-        anyhow::ensure!(
-            self.signing.window > Duration::ZERO,
-            "signing.window must be positive"
         );
         Ok(())
     }

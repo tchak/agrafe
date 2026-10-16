@@ -43,19 +43,36 @@ pub struct Signer {
 }
 
 impl Signer {
+    /// Build from config, validating everything the signer depends on.
     pub fn from_config(config: &SigningConfig) -> Result<Self> {
+        anyhow::ensure!(
+            config.window > Duration::ZERO,
+            "signing.window must be positive"
+        );
         let mut keys = HashMap::new();
         for (id, secret) in &config.keys {
-            keys.insert(
-                id.clone(),
-                secret
-                    .decoded()
-                    .with_context(|| format!("signing key `{id}`"))?,
+            // The id travels inside the URL token, so it must be a safe path
+            // segment and must not contain the token separator `.`.
+            anyhow::ensure!(
+                !id.is_empty()
+                    && id
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
+                "signing key id `{id}` must be non-empty and use only [A-Za-z0-9_-]"
             );
+            let key = secret
+                .decoded()
+                .with_context(|| format!("signing key `{id}`"))?;
+            anyhow::ensure!(
+                key.len() >= 32,
+                "signing key `{id}` must be at least 32 bytes"
+            );
+            keys.insert(id.clone(), key);
         }
         anyhow::ensure!(
             keys.contains_key(&config.current_key),
-            "current signing key is missing"
+            "signing.current_key `{}` is not present in signing.keys",
+            config.current_key
         );
         Ok(Self {
             keys,
@@ -197,6 +214,26 @@ mod tests {
 
     fn at(secs: u64) -> SystemTime {
         UNIX_EPOCH + Duration::from_secs(secs)
+    }
+
+    #[test]
+    fn config_validation() {
+        let good = base64::engine::general_purpose::STANDARD.encode([1u8; 32]);
+        let build = |current: &str, keys: serde_json::Value, window: &str| {
+            let config: SigningConfig = serde_json::from_value(serde_json::json!({
+                "current_key": current, "keys": keys, "window": window
+            }))
+            .unwrap();
+            Signer::from_config(&config).map(drop)
+        };
+        assert!(build("k1", serde_json::json!({"k1": good}), "1h").is_ok());
+        assert!(build("k2", serde_json::json!({"k1": good}), "1h").is_err());
+        assert!(build("k1", serde_json::json!({"k1": good}), "0s").is_err());
+        assert!(build("a.b", serde_json::json!({"a.b": good}), "1h").is_err());
+        assert!(build("a/b", serde_json::json!({"a/b": good}), "1h").is_err());
+        let short = base64::engine::general_purpose::STANDARD.encode([1u8; 16]);
+        assert!(build("k1", serde_json::json!({"k1": short}), "1h").is_err());
+        assert!(build("k1", serde_json::json!({"k1": "not base64!"}), "1h").is_err());
     }
 
     #[test]
