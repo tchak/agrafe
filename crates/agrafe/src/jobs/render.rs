@@ -14,7 +14,7 @@ use crate::app::AppState;
 use crate::blob::read::{Reader, Stored};
 use crate::blob::{Blob, BlobState, PreviewSource, Representation, RepresentationState};
 use crate::blob::{repo, representation};
-use crate::media::render::{self, Fit};
+use crate::media::render::{self, Fit, Input};
 use crate::media::sandbox::{self, Outcome};
 use crate::media::{self, Source};
 
@@ -68,18 +68,18 @@ pub async fn run(state: &AppState, job: &Job) -> Result<(), JobError> {
     let mut rendered = None;
     let mut rejected = false;
     for source in sources {
-        let (input, from) = match source {
-            Source::Image => (original.clone(), PreviewSource::Image),
-            Source::FirstPage => (original.clone(), PreviewSource::FirstPage),
+        let (input, kind, from) = match source {
+            Source::Image => (original.clone(), Input::Raster, PreviewSource::Image),
+            Source::FirstPage => (original.clone(), Input::Page, PreviewSource::FirstPage),
             Source::EmbeddedImage => {
                 let embedded = workdir.path().join("embedded");
                 if !extract(state, &blob, &original, &embedded).await? {
                     continue;
                 }
-                (embedded, PreviewSource::EmbeddedImage)
+                (embedded, Input::Raster, PreviewSource::EmbeddedImage)
             }
         };
-        match render::to_webp(media, &input, &output, fit).await {
+        match render::to_webp(media, &input, kind, &output, fit).await {
             Ok(bytes) => {
                 rendered = Some((bytes, from));
                 break;

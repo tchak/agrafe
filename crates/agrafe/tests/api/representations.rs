@@ -176,16 +176,16 @@ async fn pdf_previews_come_from_the_embedded_image_or_the_page() {
     // One JPEG covering a page a tenth of its size: the image itself is the
     // preview, at its own 600x300 fitted into 400.
     let wrapped = ready_file(&app, "scan.pdf", "application/pdf", &fixture("image.pdf")).await;
-    // The same image with a paragraph beside it: the page is rendered, at
-    // its own size since pages are not enlarged either.
+    // The same image with a paragraph beside it: the page is rendered, and
+    // being vector it fills the box whatever its nominal size.
     let mixed = ready_file(&app, "mixed.pdf", "application/pdf", &fixture("mixed.pdf")).await;
     let text = ready_file(&app, "text.pdf", "application/pdf", &fixture("text.pdf")).await;
     render_all(&app).await;
 
     for (blob, source, preview_size, thumbnail_size) in [
         (&wrapped, "embedded_image", (400, 200), (256, 128)),
-        (&mixed, "first_page", (60, 30), (60, 30)),
-        (&text, "first_page", (200, 100), (200, 100)),
+        (&mixed, "first_page", (400, 200), (256, 128)),
+        (&text, "first_page", (400, 200), (256, 128)),
     ] {
         let id = id_of(blob);
         let name = blob["filename"].as_str().unwrap();

@@ -120,8 +120,8 @@ def main():
         "photo.png": small_png,
         "rotated.jpg": with_orientation(photo, 6),
         "truncated.jpg": photo[: len(photo) * 2 // 5],
-        # The JPEG covers a page a tenth of its size: extraction gives the
-        # full 600x300, a page render would give 60x30.
+        # The JPEG covers a page a tenth of its size, so the extracted image
+        # and a page render differ in resolution, not in shape.
         "image.pdf": image_pdf(photo, 600, 300, 60, 30, "60 0 0 30 0 0"),
         "mixed.pdf": image_pdf(photo, 600, 300, 60, 30, "60 0 0 30 0 0", text=LONG_TEXT),
         "small.pdf": image_pdf(photo, 600, 300, 60, 30, "6 0 0 3 0 0"),

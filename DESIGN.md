@@ -429,9 +429,11 @@ representation records the version it was built with
 Everything goes through one operation, `vips thumbnail`, run as a subprocess
 (see "Sandboxing"): shrink-on-load where the format allows it, EXIF
 orientation applied, colour converted to sRGB, every piece of metadata
-dropped, lossy WebP out. The image is scaled to fit the box, never cropped
-and never enlarged: a small image stays small. `--fail-on error` makes a
-truncated or malformed file a rejection rather than a partial render.
+dropped, lossy WebP out. The image is scaled to fit the box, never cropped.
+Pixels are never enlarged, a small image stays small; a PDF page is vector
+with a nominal 72 dpi size, so it is rendered at whatever scale fills the
+box. `--fail-on error` makes a truncated or malformed file a rejection
+rather than a partial render.
 
 Only files with a known source are attempted:
 

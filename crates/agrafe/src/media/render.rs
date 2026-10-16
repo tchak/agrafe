@@ -12,7 +12,7 @@ use super::sandbox::{self, Outcome};
 use crate::config::MediaConfig;
 
 /// Target box and encoder quality. The image is scaled to fit inside the
-/// box, never cropped and never enlarged.
+/// box, never cropped.
 #[derive(Debug, Clone, Copy)]
 pub struct Fit {
     pub width: u32,
@@ -36,6 +36,16 @@ impl Fit {
             quality: media.preview.quality,
         }
     }
+}
+
+/// What the input is, which decides whether it may be enlarged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Input {
+    /// Pixels: scaled down to the box at most, a small image stays small.
+    Raster,
+    /// A vector page, with a nominal size of 72 dpi: rendered at whatever
+    /// scale fills the box, since enlarging it loses nothing.
+    Page,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -64,9 +74,14 @@ impl Error {
 pub async fn to_webp(
     media: &MediaConfig,
     input: &Path,
+    kind: Input,
     output: &Path,
     fit: Fit,
 ) -> Result<Vec<u8>, Error> {
+    let size = match kind {
+        Input::Raster => "down",
+        Input::Page => "both",
+    };
     let mut command = sandbox::command(&media.vips_command);
     command
         .env("VIPS_WARNING", "0")
@@ -75,7 +90,7 @@ pub async fn to_webp(
         .arg(format!("{}[Q={},keep=none]", output.display(), fit.quality))
         .arg(fit.width.to_string())
         .args(["--height", &fit.height.to_string()])
-        .args(["--size", "down"])
+        .args(["--size", size])
         .args(["--output-profile", "srgb"])
         .args(["--fail-on", "error"]);
     match sandbox::run(command, &media.sandbox).await? {
