@@ -310,7 +310,8 @@ show it" flow gets its thumbnail within seconds.
 
 A lazy path exists only for repair: if the object is missing, the `GET` handler
 enqueues a generation job (if none is pending) and serves the placeholder. Each
-representation records the `variant_version` it was built with; bumping the
+representation records the variant version it was built with
+(`thumbnail_variant_version`, `preview_variant_version`); bumping the
 version in config regenerates everything on demand through this path.
 
 ### Thumbnail

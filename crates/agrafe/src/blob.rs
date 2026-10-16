@@ -135,7 +135,8 @@ pub struct Blob {
     #[sqlx(try_from = "String")]
     pub preview_state: RepresentationState,
     pub preview_source: Option<String>,
-    pub variant_version: Option<i32>,
+    pub thumbnail_variant_version: Option<i32>,
+    pub preview_variant_version: Option<i32>,
 
     #[sqlx(try_from = "jiff_sqlx::Timestamp")]
     pub created_at: Timestamp,
