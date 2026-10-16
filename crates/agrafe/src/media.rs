@@ -6,8 +6,10 @@ pub mod extract;
 pub mod icons;
 pub mod render;
 pub mod sandbox;
+pub mod text;
 
-use crate::classify;
+use crate::blob::Representation;
+use crate::classify::{self, Category};
 use crate::sniff;
 
 pub const DOCX: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
@@ -24,6 +26,19 @@ pub enum Source {
     EmbeddedImage,
     /// Render the first page.
     FirstPage,
+    /// Set the first lines of the file in a monospace font. A hint of what
+    /// the file is, not a way to read it: thumbnails only.
+    TextSample,
+}
+
+impl Source {
+    /// Whether this source can produce `kind`.
+    pub fn serves(self, kind: Representation) -> bool {
+        match self {
+            Source::TextSample => kind == Representation::Thumbnail,
+            _ => true,
+        }
+    }
 }
 
 /// The sources for a content type, in order. Empty when the file cannot be
@@ -37,6 +52,8 @@ pub fn sources(content_type: &str) -> &'static [Source] {
         | "image/avif" | "image/svg+xml" | "image/bmp" | "image/jp2" => &[Source::Image],
         classify::PDF => &[Source::EmbeddedImage, Source::FirstPage],
         DOCX | ODT => &[Source::EmbeddedImage],
+        classify::CSV | "text/tab-separated-values" => &[Source::TextSample],
+        other if classify::classify(other) == Category::Text => &[Source::TextSample],
         _ => &[],
     }
 }
@@ -55,7 +72,12 @@ mod tests {
         );
         assert_eq!(sources(DOCX), &[Source::EmbeddedImage]);
         assert!(sources("image/vnd.adobe.photoshop").is_empty());
-        assert!(sources("text/plain").is_empty());
+        assert_eq!(sources("text/plain"), &[Source::TextSample]);
+        assert_eq!(sources("application/json"), &[Source::TextSample]);
+        assert_eq!(sources(classify::CSV), &[Source::TextSample]);
         assert!(sources(classify::XLSX).is_empty());
+        assert!(Source::TextSample.serves(Representation::Thumbnail));
+        assert!(!Source::TextSample.serves(Representation::Preview));
+        assert!(Source::FirstPage.serves(Representation::Preview));
     }
 }

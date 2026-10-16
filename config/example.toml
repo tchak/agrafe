@@ -105,7 +105,8 @@ variant_version = 1
 # pdfium renders PDFs more safely than one with poppler.
 vips_command = "vips"
 # The agrafe binary re-executed, sandboxed, to pull embedded images out of
-# PDF and office files. Defaults to the running executable.
+# PDF and office files and to rasterise text samples. Defaults to the
+# running executable.
 # agrafe_command = "/usr/local/bin/agrafe"
 # Originals above this size get an icon and no preview.
 max_source_size = "512 MiB"

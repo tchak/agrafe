@@ -10,6 +10,7 @@ description = "File storage service: encrypted, scanned, with previews"
 workspace = true
 
 [dependencies]
+ab_glyph = "0.2.32"
 agrafe-crypto = { version = "0.1.0", path = "../agrafe-crypto" }
 axum = { version = "0.8.9", features = ["macros", "multipart"] }
 base64 = "0.23.1"

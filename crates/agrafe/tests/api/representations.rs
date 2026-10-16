@@ -241,16 +241,74 @@ async fn office_documents_wrapping_a_picture() {
     )
     .await;
     // The icon carries the type badge, so it differs from a generic one.
-    let plain = ready_file(&app, "notes.txt", "text/plain", b"just notes").await;
-    let id = id_of(&plain);
+    let blob = ready_file(&app, "blob.bin", "application/octet-stream", b"whatever").await;
+    let id = id_of(&blob);
     render_all(&app).await;
-    let text_icon = icon(
+    let generic_icon = icon(
         &app,
-        &format!("/blobs/{id}/thumbnail/notes.txt"),
+        &format!("/blobs/{id}/thumbnail/blob.bin"),
         "unavailable",
     )
     .await;
-    assert_ne!(docx_icon, text_icon);
+    assert_ne!(docx_icon, generic_icon);
+}
+
+#[tokio::test]
+async fn text_files_get_a_thumbnail_and_no_preview() {
+    let app = setup().await;
+    // Latin-1, as administrative CSVs tend to be.
+    let csv = b"nom;ville;montant\nDupont;Besan\xe7on;12,50\nMartin;Orl\xe9ans;7,00\n";
+    let table = ready_file(&app, "export.csv", "text/csv", csv).await;
+    let notes = ready_file(
+        &app,
+        "notes.txt",
+        "text/plain",
+        "Bonjour à tous\n".as_bytes(),
+    )
+    .await;
+    let config = ready_file(&app, "config.json", "application/json", b"{\"a\": 1}\n").await;
+    // Declared as text, but not text.
+    let binary: Vec<u8> = (0u8..=255).cycle().take(2000).collect();
+    let fake = ready_file(&app, "fake.txt", "text/plain", &binary).await;
+    render_all(&app).await;
+
+    for blob in [&table, &notes, &config] {
+        let id = id_of(blob);
+        let name = blob["filename"].as_str().unwrap();
+        let blob = get_blob(&app, id).await;
+        assert_eq!(blob["thumbnail_state"], "ready", "{name}");
+        assert_eq!(blob["preview_state"], "unavailable", "{name}");
+        assert_eq!(blob["preview_source"], Value::Null, "{name}");
+        let (_, size) = rendered(&app, &format!("/blobs/{id}/thumbnail/{name}")).await;
+        assert_eq!(size, (256, 256), "{name}");
+        no_preview(
+            &app,
+            &format!("/blobs/{id}/preview/{name}"),
+            "unavailable",
+            "no preview for this file",
+        )
+        .await;
+    }
+    // Two different files give two different pages.
+    let page_of = |blob: &Value| {
+        format!(
+            "/blobs/{}/thumbnail/{}",
+            id_of(blob),
+            blob["filename"].as_str().unwrap()
+        )
+    };
+    let (_, _, a) = fetch(&app.private, get_with(&page_of(&table), &[])).await;
+    let (_, _, b) = fetch(&app.private, get_with(&page_of(&notes), &[])).await;
+    assert_ne!(a, b);
+
+    let id = id_of(&fake);
+    assert_eq!(get_blob(&app, id).await["thumbnail_state"], "unavailable");
+    icon(
+        &app,
+        &format!("/blobs/{id}/thumbnail/fake.txt"),
+        "unavailable",
+    )
+    .await;
 }
 
 #[tokio::test]

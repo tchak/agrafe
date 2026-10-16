@@ -441,6 +441,7 @@ Only files with a known source are attempted:
   SVG, BMP, JPEG 2000. Everything else under `image/*` would go through
   ImageMagick, more attack surface than it is worth, and gets the icon;
 - PDF, DOCX and ODT, through the sources below;
+- text files (the `text` category plus CSV and TSV), thumbnails only;
 - originals at most `media.max_source_size` (default 512 MiB).
 
 A file the renderer rejects, or that runs past the sandbox timeout, leaves
@@ -498,6 +499,21 @@ renderer and no asset directory.
 
 Never `404` or `202`, because the consumer is an `<img>` tag.
 
+Text files get a real thumbnail: the first lines of the file set in a
+monospace font on a page, a hint of what the file is rather than a way to
+read it. The first 8 KiB are decoded as UTF-8, or as Windows-1252 when they
+are not, which is what Latin-1 exports from older systems are in practice;
+a sample with NUL bytes or more than a sprinkling of control characters is
+not text and gets the icon. The page is rasterised in Rust by the
+`agrafe render-text` helper, in the sandbox, with `ab_glyph` and a copy of
+DejaVu Sans Mono embedded in the binary (`crates/agrafe/assets/fonts`), so
+the result is the same on every host and needs no font, fontconfig or
+shaping library installed. The trade: no shaping, so Arabic or Indic text
+comes out as unconnected glyphs and anything outside Latin, Greek and
+Cyrillic as the notdef box. The helper writes a PGM at twice the box, and
+vips downsizes it into the WebP like any other raster. There is no text
+preview: a preview that cannot be read is not worth rendering.
+
 ### Preview
 
 WebP, not JPEG: smaller, lossless-capable, alpha, universally supported, and it
@@ -541,8 +557,9 @@ is not `ready` answers `409` as the original does.
 
 Decoders and renderers are the most attackable code in the service. They run
 in a subprocess, never in the API process: `vips` for rendering, the binary's
-own `extract` subcommand for container parsing. Each child gets a clean
-environment (`PATH` and `HOME` only, no secrets), `setrlimit` bounds on
+own hidden `extract` and `render-text` subcommands for container parsing and
+text rasterising. Each child gets a clean environment (`PATH` and `HOME`
+only, no secrets), `setrlimit` bounds on
 address space and data (`media.sandbox.memory`, default 1 GiB), CPU time and
 output file size (`max_output_size`), no core dumps, and is killed at the
 wall-clock limit (`media.sandbox.timeout`, default 60 s). The address space
@@ -611,6 +628,7 @@ is redacted so a dumped config cannot leak them. See `config/example.toml`.
 | Scanning | clamd `INSTREAM` client |
 | Images, PDF pages | `vips thumbnail` (libvips) in a sandboxed subprocess |
 | Embedded images | `lopdf`, `zip`, `quick-xml` in the sandboxed `extract` helper |
+| Text thumbnails | `ab_glyph` with an embedded DejaVu Sans Mono, in the sandboxed `render-text` helper |
 | Ids | UUID v7 |
 | Time | `jiff`. `Timestamp` throughout the model; `jiff-sqlx` wrappers only at the SQL boundary |
 

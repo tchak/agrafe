@@ -43,8 +43,9 @@ squash, bookmarks and pushing. `jj st`, `jj diff`, `jj log`, `jj describe -m`,
 - Blob state transitions are conditional `UPDATE ... WHERE state = $from`.
   Never set `state` unconditionally.
 - Public routes verify the signature before touching the database.
-- Nothing decodes or renders user files in-process: `vips` and the
-  `agrafe extract` helper run through `media::sandbox`.
+- Nothing decodes or renders user files in-process: `vips` and the hidden
+  `agrafe extract` and `agrafe render-text` subcommands run through
+  `media::sandbox`.
 - Errors are `thiserror` enums, one per module that fails in its own way
   (`ConfigError`, `ReadError`, `JobError`, …). No `anyhow`. Messages inline
   their cause (`"reading the object: {0}"`), so log them with `%err`.

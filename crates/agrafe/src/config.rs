@@ -327,8 +327,9 @@ pub struct MediaConfig {
     /// The libvips command line tool, run as a sandboxed subprocess.
     #[serde(default = "default_vips_command")]
     pub vips_command: String,
-    /// The agrafe binary the workers re-execute for embedded image
-    /// extraction. Defaults to the running executable.
+    /// The agrafe binary the workers re-execute, sandboxed, as the
+    /// `extract` and `render-text` helpers. Defaults to the running
+    /// executable.
     #[serde(default)]
     pub agrafe_command: Option<PathBuf>,
     /// Originals above this size get no representations.

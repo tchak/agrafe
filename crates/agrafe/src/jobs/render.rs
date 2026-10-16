@@ -5,7 +5,8 @@
 //! job done: trying the same bytes again would end the same way. Only
 //! failures of ours (store, database, a missing renderer) fail the job.
 
-use std::path::Path;
+use std::ops::Range;
+use std::path::{Path, PathBuf};
 
 use tokio::io::AsyncWriteExt;
 
@@ -16,7 +17,7 @@ use crate::blob::{Blob, BlobState, PreviewSource, Representation, Representation
 use crate::blob::{repo, representation};
 use crate::media::render::{self, Fit, Input};
 use crate::media::sandbox::{self, Outcome};
-use crate::media::{self, Source};
+use crate::media::{self, Source, text};
 
 pub async fn run(state: &AppState, job: &Job) -> Result<(), JobError> {
     let kind = match job.kind {
@@ -36,7 +37,11 @@ pub async fn run(state: &AppState, job: &Job) -> Result<(), JobError> {
     let media = &state.config().media;
     let version = media.variant_version;
 
-    let sources = media::sources(&blob.content_type);
+    let sources: Vec<Source> = media::sources(&blob.content_type)
+        .iter()
+        .copied()
+        .filter(|source| source.serves(kind))
+        .collect();
     let too_large = blob
         .size
         .is_some_and(|size| size as u64 > media.max_source_size.as_u64());
@@ -57,8 +62,10 @@ pub async fn run(state: &AppState, job: &Job) -> Result<(), JobError> {
     let workdir = tempfile::Builder::new()
         .prefix("agrafe-")
         .tempdir_in(media.tmp_dir.clone().unwrap_or_else(std::env::temp_dir))?;
-    let original = workdir.path().join("original");
-    download(state, &blob, &original).await?;
+    let stored = Stored::from_blob(&blob)?;
+    // The whole original is fetched once, and only by a source that needs
+    // it: a text sample reads a few KiB.
+    let mut original: Option<PathBuf> = None;
 
     let fit = match kind {
         Representation::Thumbnail => Fit::thumbnail(media),
@@ -69,14 +76,39 @@ pub async fn run(state: &AppState, job: &Job) -> Result<(), JobError> {
     let mut rejected = false;
     for source in sources {
         let (input, kind, from) = match source {
-            Source::Image => (original.clone(), Input::Raster, PreviewSource::Image),
-            Source::FirstPage => (original.clone(), Input::Page, PreviewSource::FirstPage),
+            Source::Image => (
+                whole_original(state, &blob, &stored, &workdir, &mut original).await?,
+                Input::Raster,
+                Some(PreviewSource::Image),
+            ),
+            Source::FirstPage => (
+                whole_original(state, &blob, &stored, &workdir, &mut original).await?,
+                Input::Page,
+                Some(PreviewSource::FirstPage),
+            ),
             Source::EmbeddedImage => {
+                let whole = whole_original(state, &blob, &stored, &workdir, &mut original).await?;
                 let embedded = workdir.path().join("embedded");
-                if !extract(state, &blob, &original, &embedded).await? {
+                if !extract(state, &blob, &whole, &embedded).await? {
                     continue;
                 }
-                (embedded, Input::Raster, PreviewSource::EmbeddedImage)
+                (embedded, Input::Raster, Some(PreviewSource::EmbeddedImage))
+            }
+            Source::TextSample => {
+                let sample = workdir.path().join("sample");
+                download(
+                    state,
+                    &blob,
+                    &stored,
+                    &sample,
+                    0..stored.size.min(text::SAMPLE_LEN),
+                )
+                .await?;
+                let page = workdir.path().join("page.pgm");
+                if !render_text(state, &sample, &page, fit).await? {
+                    continue;
+                }
+                (page, Input::Raster, None)
             }
         };
         match render::to_webp(media, &input, kind, &output, fit).await {
@@ -85,7 +117,7 @@ pub async fn run(state: &AppState, job: &Job) -> Result<(), JobError> {
                 break;
             }
             Err(err) if err.is_input_fault() => {
-                tracing::warn!(source = %from, error = %err, "rendering failed");
+                tracing::warn!(source = ?source, error = %err, "rendering failed");
                 rejected = true;
             }
             Err(err) => return Err(err.into()),
@@ -95,8 +127,8 @@ pub async fn run(state: &AppState, job: &Job) -> Result<(), JobError> {
     let (rep_state, source) = match rendered {
         Some((bytes, from)) => {
             representation::store(state, &blob, kind, &bytes).await?;
-            tracing::info!(source = %from, bytes = bytes.len(), "{kind} rendered");
-            (RepresentationState::Ready, Some(from))
+            tracing::info!(source = ?from, bytes = bytes.len(), "{kind} rendered");
+            (RepresentationState::Ready, from)
         }
         None if rejected => (RepresentationState::Failed, None),
         // Every source declined, as for a DOCX that is a real document.
@@ -106,10 +138,32 @@ pub async fn run(state: &AppState, job: &Job) -> Result<(), JobError> {
     Ok(())
 }
 
-/// Decrypt the original into `path`.
-async fn download(state: &AppState, blob: &Blob, path: &Path) -> Result<(), JobError> {
-    let stored = Stored::from_blob(blob)?;
-    let mut reader = Reader::open(state, blob, &stored, 0..stored.size).await?;
+/// The whole original, decrypted into the work directory on first use.
+async fn whole_original(
+    state: &AppState,
+    blob: &Blob,
+    stored: &Stored,
+    workdir: &tempfile::TempDir,
+    cache: &mut Option<PathBuf>,
+) -> Result<PathBuf, JobError> {
+    if let Some(path) = cache {
+        return Ok(path.clone());
+    }
+    let path = workdir.path().join("original");
+    download(state, blob, stored, &path, 0..stored.size).await?;
+    *cache = Some(path.clone());
+    Ok(path)
+}
+
+/// Decrypt the plaintext `span` of the original into `path`.
+async fn download(
+    state: &AppState,
+    blob: &Blob,
+    stored: &Stored,
+    path: &Path,
+    span: Range<u64>,
+) -> Result<(), JobError> {
+    let mut reader = Reader::open(state, blob, stored, span).await?;
     let mut file = tokio::fs::File::create(path).await?;
     while let Some(plain) = reader.next_segment().await? {
         file.write_all(&plain).await?;
@@ -119,8 +173,7 @@ async fn download(state: &AppState, blob: &Blob, path: &Path) -> Result<(), JobE
 }
 
 /// Run the `agrafe extract` helper on `original`. `true` when it found an
-/// embedded image and wrote it to `output`. A helper that fails or times
-/// out means "no embedded image": the next source gets its turn.
+/// embedded image and wrote it to `output`.
 async fn extract(
     state: &AppState,
     blob: &Blob,
@@ -128,11 +181,7 @@ async fn extract(
     output: &Path,
 ) -> Result<bool, JobError> {
     let media = &state.config().media;
-    let program = match &media.agrafe_command {
-        Some(path) => path.clone(),
-        None => std::env::current_exe()?,
-    };
-    let mut command = sandbox::command(program);
+    let mut command = helper(state)?;
     command
         .arg("extract")
         .arg("--input")
@@ -147,14 +196,58 @@ async fn extract(
         .arg(media.embedded_image.max_text_chars.to_string())
         .arg("--max-output")
         .arg(media.sandbox.max_output_size.as_u64().to_string());
-    match sandbox::run(command, &media.sandbox).await? {
+    run_helper(state, command, output, "extraction").await
+}
+
+/// Run the `agrafe render-text` helper on `sample`, drawing at twice the
+/// box so the downscale leaves crisp glyphs. `true` when the sample was
+/// text and a page was written to `output`.
+async fn render_text(
+    state: &AppState,
+    sample: &Path,
+    output: &Path,
+    fit: Fit,
+) -> Result<bool, JobError> {
+    let mut command = helper(state)?;
+    command
+        .arg("render-text")
+        .arg("--input")
+        .arg(sample)
+        .arg("--output")
+        .arg(output)
+        .arg("--width")
+        .arg((fit.width * 2).to_string())
+        .arg("--height")
+        .arg((fit.height * 2).to_string());
+    run_helper(state, command, output, "text").await
+}
+
+/// This binary, re-executed in the sandbox.
+fn helper(state: &AppState) -> Result<tokio::process::Command, JobError> {
+    let program = match &state.config().media.agrafe_command {
+        Some(path) => path.clone(),
+        None => std::env::current_exe()?,
+    };
+    Ok(sandbox::command(program))
+}
+
+/// A helper that succeeds without writing `output` found nothing to do.
+/// One that fails or times out is treated the same: the next source gets
+/// its turn.
+async fn run_helper(
+    state: &AppState,
+    command: tokio::process::Command,
+    output: &Path,
+    what: &str,
+) -> Result<bool, JobError> {
+    match sandbox::run(command, &state.config().media.sandbox).await? {
         Outcome::Success => Ok(tokio::fs::try_exists(output).await?),
         Outcome::Failed { status, stderr } => {
-            tracing::warn!(status, stderr, "the extraction helper failed");
+            tracing::warn!(status, stderr, "the {what} helper failed");
             Ok(false)
         }
         Outcome::TimedOut => {
-            tracing::warn!("the extraction helper timed out");
+            tracing::warn!("the {what} helper timed out");
             Ok(false)
         }
     }
