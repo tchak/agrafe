@@ -234,7 +234,7 @@ rejected with `422`. Categories:
 `image`, `document`, `spreadsheet`, `presentation`, `archive`, `audio`,
 `video`, `text`, `other`.
 
-The mapping table lives in code with a config override. PDF is a `document`.
+The mapping table lives in code (`classify.rs`). PDF is a `document`.
 
 ## Upload pipeline
 

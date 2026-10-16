@@ -36,5 +36,6 @@ squash, bookmarks and pushing. `jj st`, `jj diff`, `jj log`, `jj describe -m`,
 - Public routes verify the signature before touching the database.
 - `blobs.updated_at` is set by a trigger (migration 0002). Do not set it in
   queries.
-- Tests run against the `agrafe_test` database (`DATABASE_URL` in `.env.test` or
-  env). Integration tests share one database and serialise through a mutex.
+- Tests run against the `agrafe_test` database: `DATABASE_URL` from the
+  environment, else `postgres://$USER@localhost/agrafe_test`. Integration
+  tests share one database and serialise through a mutex.
