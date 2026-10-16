@@ -7,9 +7,10 @@ See [DESIGN.md](DESIGN.md) for the architecture and the decisions behind it.
 
 ## Running locally
 
-Thumbnails and previews are rendered by [libvips](https://www.libvips.org/),
-whose `vips` command must be on the `PATH` (`brew install vips`, or
-`libvips-tools` on Debian). Virus scanning needs a reachable `clamd`.
+Thumbnails and previews are rendered by [libvips](https://www.libvips.org/)
+8.15 or newer, whose `vips` command must be on the `PATH` (`brew install
+vips`, or `libvips-tools` on Debian trixie and later; bookworm's 8.14 is too
+old). Virus scanning needs a reachable `clamd`.
 
 ```sh
 createdb agrafe_dev
@@ -29,8 +30,10 @@ cargo test
 
 Tests connect as the current OS user to `agrafe_test`; set `DATABASE_URL` to
 override. They need `vips` on the `PATH` as well. The files under
-`crates/agrafe/tests/fixtures` are built by `make.py` there (needs Pillow),
-the placeholder icons by `scripts/icons.sh`; both outputs are committed.
+`crates/agrafe/tests/fixtures` and the renderer probe files under
+`crates/agrafe/assets/probe` are built by `make.py` in the fixtures
+directory (needs Pillow), the placeholder icons by `scripts/icons.sh`; all
+outputs are committed.
 
 Coverage needs [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov)
 (`cargo install cargo-llvm-cov`):

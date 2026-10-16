@@ -28,9 +28,9 @@ squash, bookmarks and pushing. `jj st`, `jj diff`, `jj log`, `jj describe -m`,
 - Tests need a `agrafe_test` database reachable as the current OS user, or
   `DATABASE_URL`, and `vips` on the `PATH` (`brew install vips`). Run
   `cargo test`, `cargo clippy --all-targets`, `cargo fmt` before committing.
-- Test fixtures come from `crates/agrafe/tests/fixtures/make.py` (Pillow),
-  the thumbnail icons from `scripts/icons.sh`; regenerate rather than edit
-  the outputs.
+- Test fixtures and the renderer probe files in `crates/agrafe/assets/probe`
+  come from `crates/agrafe/tests/fixtures/make.py` (Pillow), the thumbnail
+  icons from `scripts/icons.sh`; regenerate rather than edit the outputs.
 - `cargo coverage` (an alias in `.cargo/config.toml`, needs cargo-llvm-cov)
   reports line coverage; add `--show-missing-lines` to see what is uncovered.
 

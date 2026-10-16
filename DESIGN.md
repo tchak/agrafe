@@ -468,6 +468,15 @@ is not text) hands over to the next source, or leaves the representation
 database, the renderer missing) fail the job, which retries with backoff
 and leaves the representation `pending` meanwhile.
 
+vips exits non-zero for a bad file and for a missing loader or an unknown
+option alike, so a libvips built without PDF support, or too old for
+`keep=`, would mark every file `failed` and need a variant version bump
+once fixed. Before a worker starts it therefore renders a text sample, a
+one-pixel PNG and a one-page PDF through the exact command lines the jobs
+use (`jobs::render::probe`, files in `crates/agrafe/assets/probe`), and the
+process refuses to start if any of them fails. The probe also catches a
+`media.agrafe_command` pointing at a binary without the helper subcommands.
+
 Representations live at `<blob id>/thumbnail` and `<blob id>/preview`,
 encrypted with the blob's own data key: the streaming AEAD derives a fresh
 subkey per stream from a random salt, so one key safely covers the three

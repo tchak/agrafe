@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Builds the fixture files next to this script. Needs Pillow. The outputs
-are committed; run this only to change them."""
+"""Builds the fixture files next to this script, and the renderer probe
+files under crates/agrafe/assets/probe. Needs Pillow. The outputs are
+committed; run this only to change them."""
 
 import io
 import struct
@@ -11,6 +12,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 HERE = Path(__file__).parent
+PROBE = HERE / "../../assets/probe"
 
 
 def jpeg(width, height, quality=60):
@@ -89,6 +91,14 @@ def text_pdf(page_w, page_h, text):
     ])
 
 
+def empty_pdf(page_w, page_h):
+    return pdf([
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {page_w} {page_h}] >>".encode(),
+    ])
+
+
 def docx(text, media_name, media):
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
@@ -136,6 +146,11 @@ def main():
     for name, data in files.items():
         (HERE / name).write_bytes(data)
         print(f"{name}: {len(data)} bytes")
+    # What a worker renders at startup to check its vips and helper binary.
+    PROBE.mkdir(exist_ok=True)
+    for name, data in {"pixel.png": png(1, 1), "page.pdf": empty_pdf(20, 10)}.items():
+        (PROBE / name).write_bytes(data)
+        print(f"probe/{name}: {len(data)} bytes")
 
 
 if __name__ == "__main__":

@@ -433,6 +433,43 @@ async fn a_missing_renderer_fails_the_job_not_the_file() {
 }
 
 #[tokio::test]
+async fn the_startup_probe_checks_vips_and_the_helper() {
+    let app = setup().await;
+    let media = &app.state.config().media;
+    agrafe::jobs::render::probe(media).await.unwrap();
+
+    let no_vips = agrafe::config::MediaConfig {
+        vips_command: "/nonexistent/vips".into(),
+        ..media.clone()
+    };
+    let err = agrafe::jobs::render::probe(&no_vips).await.unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("rendering a PNG with `/nonexistent/vips`: starting"),
+        "{err}"
+    );
+
+    // A binary that exits non-zero on everything, as an older agrafe
+    // without the subcommand would.
+    let wrong_binary = agrafe::config::MediaConfig {
+        agrafe_command: Some("/usr/bin/false".into()),
+        ..media.clone()
+    };
+    let err = agrafe::jobs::render::probe(&wrong_binary)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("failed on a text sample"), "{err}");
+
+    // One that exits zero without doing anything.
+    let idle_binary = agrafe::config::MediaConfig {
+        agrafe_command: Some("/usr/bin/true".into()),
+        ..media.clone()
+    };
+    let err = agrafe::jobs::render::probe(&idle_binary).await.unwrap_err();
+    assert!(err.to_string().contains("declined a text sample"), "{err}");
+}
+
+#[tokio::test]
 async fn blob_state_governs_the_representations() {
     let app = setup().await;
 

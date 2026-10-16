@@ -32,6 +32,8 @@ pub enum Error {
     Listen(sqlx::Error),
     #[error("worker panicked: {0}")]
     Panicked(#[from] tokio::task::JoinError),
+    #[error("the renderer failed its startup probe: {0}")]
+    Probe(#[from] render::ProbeError),
 }
 
 /// Run the workers until `shutdown` resolves. A job in flight finishes;
@@ -40,6 +42,9 @@ pub async fn run<F>(state: AppState, shutdown: F) -> Result<(), Error>
 where
     F: Future<Output = ()> + Clone + Send + 'static,
 {
+    render::probe(&state.config().media).await?;
+    tracing::info!("renderer probe passed");
+
     let wakeups: HashMap<JobKind, Arc<Notify>> = HANDLED
         .iter()
         .map(|kind| (*kind, Arc::new(Notify::new())))
