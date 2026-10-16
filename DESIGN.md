@@ -151,7 +151,7 @@ The name describes the shape of the `PUT` body.
 | Input type | Body | Produces |
 |---|---|---|
 | `raw` | The file bytes | The file |
-| `multipart` | `multipart/form-data` with one part named `filename` holding a `File` whose name must match the blob filename | The file |
+| `multipart` | `multipart/form-data` with one part named `file` holding the bytes; the part's own filename, if any, is ignored | The file |
 | `rows` | JSONL, one object per line | CSV, XLSX or ODS per the blob content type |
 | `archive` | JSONL, one `{"path": "...", "blob_id": "..."}` per line | ZIP containing the referenced blobs |
 
