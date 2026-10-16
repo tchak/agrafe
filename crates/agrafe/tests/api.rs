@@ -398,8 +398,57 @@ async fn list_filters_and_pagination() {
     assert_eq!(jpgs["items"].as_array().unwrap().len(), 2);
     let (_, none) = call(&app.private, req(Method::GET, "/blobs?state=ready")).await;
     assert_eq!(none["items"].as_array().unwrap().len(), 0);
-    let (status, _) = call(&app.private, req(Method::GET, "/blobs?state=bogus")).await;
+    let (status, body) = call(&app.private, req(Method::GET, "/blobs?state=bogus")).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "bad_request", "{body}");
+}
+
+#[tokio::test]
+async fn every_error_uses_the_json_envelope() {
+    let app = setup().await;
+
+    // Malformed JSON body.
+    let (status, body) = call(
+        &app.private,
+        Request::builder()
+            .method(Method::POST)
+            .uri("/blobs")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from("{not json"))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "bad_request");
+
+    // Missing content type.
+    let (status, body) = call(&app.private, req(Method::POST, "/blobs")).await;
+    assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE, "{body}");
+    assert_eq!(body["error"]["code"], "unsupported_media_type");
+
+    // Unknown field: serde data error.
+    let (status, body) = call(
+        &app.private,
+        json_req(Method::POST, "/blobs", json!({"bogus": 1})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "unprocessable");
+
+    // Path parameter that is not a UUID.
+    let (status, body) = call(&app.private, req(Method::GET, "/blobs/not-a-uuid")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "bad_request");
+
+    // Unknown route and wrong method, on both ports.
+    for router in [&app.private, &app.public] {
+        let (status, body) = call(router, req(Method::GET, "/nope")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert_eq!(body["error"]["code"], "not_found");
+        let (status, body) = call(router, req(Method::DELETE, "/healthz")).await;
+        assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED, "{body}");
+        assert_eq!(body["error"]["code"], "method_not_allowed");
+    }
 }
 
 #[tokio::test]

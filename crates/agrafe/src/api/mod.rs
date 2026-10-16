@@ -1,6 +1,7 @@
 //! HTTP interfaces. `private` is unsigned and trusted; `public` verifies a
 //! signature on every route before touching the database.
 
+pub mod extract;
 pub mod json;
 pub mod private;
 pub mod public;
@@ -12,11 +13,14 @@ use axum::routing::get;
 use tower_http::trace::TraceLayer;
 
 use crate::app::AppState;
+use crate::error::ApiError;
 
 pub fn private_router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .merge(private::routes())
+        .fallback(not_found)
+        .method_not_allowed_fallback(method_not_allowed)
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
@@ -25,10 +29,20 @@ pub fn public_router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .merge(public::routes())
+        .fallback(not_found)
+        .method_not_allowed_fallback(method_not_allowed)
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
 
 async fn healthz() -> &'static str {
     "ok"
+}
+
+async fn not_found() -> ApiError {
+    ApiError::NotFound
+}
+
+async fn method_not_allowed() -> ApiError {
+    ApiError::MethodNotAllowed
 }

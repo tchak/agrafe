@@ -1,11 +1,12 @@
 //! Public interface handlers. Every handler takes `Signed` first.
 
-use axum::extract::{Path, State};
+use axum::Router;
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::get;
-use axum::{Json, Router};
 use uuid::Uuid;
 
+use super::extract::{Json, Path};
 use super::json::PublicBlobResponse;
 use super::signed::Signed;
 use crate::app::AppState;

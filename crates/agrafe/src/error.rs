@@ -10,9 +10,15 @@ pub enum ApiError {
     #[error("{0}")]
     BadRequest(String),
     #[error("{0}")]
+    PayloadTooLarge(String),
+    #[error("{0}")]
+    UnsupportedMediaType(String),
+    #[error("{0}")]
     Unprocessable(String),
     #[error("not found")]
     NotFound,
+    #[error("method not allowed")]
+    MethodNotAllowed,
     #[error("{0}")]
     Conflict(String),
     #[error("{0}")]
@@ -26,11 +32,27 @@ pub enum ApiError {
 }
 
 impl ApiError {
+    /// Convert an extractor rejection into the matching variant, keeping its
+    /// status and message.
+    pub fn from_rejection(status: StatusCode, message: String) -> Self {
+        match status {
+            StatusCode::UNPROCESSABLE_ENTITY => ApiError::Unprocessable(message),
+            StatusCode::PAYLOAD_TOO_LARGE => ApiError::PayloadTooLarge(message),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE => ApiError::UnsupportedMediaType(message),
+            StatusCode::NOT_FOUND => ApiError::NotFound,
+            StatusCode::METHOD_NOT_ALLOWED => ApiError::MethodNotAllowed,
+            _ => ApiError::BadRequest(message),
+        }
+    }
+
     pub fn status(&self) -> StatusCode {
         match self {
             ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            ApiError::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
+            ApiError::UnsupportedMediaType(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             ApiError::Unprocessable(_) => StatusCode::UNPROCESSABLE_ENTITY,
             ApiError::NotFound => StatusCode::NOT_FOUND,
+            ApiError::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
             ApiError::Conflict(_) => StatusCode::CONFLICT,
             ApiError::Forbidden(_) => StatusCode::FORBIDDEN,
             ApiError::Gone(_) => StatusCode::GONE,
@@ -42,8 +64,11 @@ impl ApiError {
     pub fn code(&self) -> &'static str {
         match self {
             ApiError::BadRequest(_) => "bad_request",
+            ApiError::PayloadTooLarge(_) => "payload_too_large",
+            ApiError::UnsupportedMediaType(_) => "unsupported_media_type",
             ApiError::Unprocessable(_) => "unprocessable",
             ApiError::NotFound => "not_found",
+            ApiError::MethodNotAllowed => "method_not_allowed",
             ApiError::Conflict(_) => "conflict",
             ApiError::Forbidden(_) => "forbidden",
             ApiError::Gone(_) => "gone",

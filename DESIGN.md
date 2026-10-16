@@ -68,6 +68,21 @@ filename (percent-decoded), otherwise `404`. It exists so browsers get a
 sensible download name and so a URL cannot be made to look like it serves a
 different file than it does.
 
+### Errors
+
+Every error response, on both ports, is JSON with one shape:
+
+```json
+{"error": {"code": "unprocessable", "message": "checksum is required for raw and multipart input"}}
+```
+
+`code` is stable and machine readable; `message` is for humans and may change.
+This includes failures axum would otherwise answer in plain text: malformed
+JSON, unknown query values, a non-UUID path segment, unknown routes (`404`)
+and wrong methods (`405`). Handlers use wrapper extractors in `api/extract.rs`
+that convert those rejections. Internal errors are logged in full and reported
+as `internal` with no detail.
+
 ## Signed URLs
 
 Token format, one path segment, no slashes:
