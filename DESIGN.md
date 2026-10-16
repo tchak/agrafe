@@ -363,6 +363,14 @@ object segment by segment and streams it to clamd. Until the scan passes the
 blob is `uploaded` and unreadable. Infected blobs become `infected`,
 permanently unreadable.
 
+An inline session lasts as long as the upload it rides on, and on the public
+port the uploader sets that pace, so an anonymous client trickling bytes
+could hold a clamd thread indefinitely, and a handful of them every thread
+clamd has. `clamav.max_inline_scans` (default 4) caps the inline sessions
+open at once; an upload that finds them all taken is stored and scanned by a
+job, without waiting. clamd's `MaxThreads` must stay above that cap plus the
+scan workers, which hold a connection each while they run.
+
 clamd being down must not stop uploads, and must not make anything readable
 either. When it cannot be reached at the start of an upload, or fails midway,
 the upload completes and the scan is deferred to a job, which is retried with

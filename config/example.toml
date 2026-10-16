@@ -82,6 +82,11 @@ kek1 = "REPLACE_ME_WITH_32_RANDOM_BYTES_IN_BASE64_____"
 addr = "127.0.0.1:3310"
 # Bounds each connect, write and the wait for the verdict, not a whole scan.
 timeout = "60s"
+# Inline scans open at most this many clamd connections at once; an upload
+# that finds them all taken is stored and scanned by a job instead. An inline
+# session lasts as long as the upload, at the uploader's pace, so keep this
+# plus jobs.concurrency.scan below clamd's MaxThreads.
+max_inline_scans = 4
 
 [media]
 # Bump to regenerate every derived representation on next request.

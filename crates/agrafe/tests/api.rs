@@ -128,6 +128,7 @@ async fn setup_with(clamd: SocketAddr) -> TestApp {
         [clamav]
         addr = "{clamd}"
         timeout = "5s"
+        max_inline_scans = 1
         [jobs]
         lease_timeout = "10m"
         [signing]
@@ -1631,6 +1632,30 @@ async fn empty_file_deferred_scan() {
     assert_eq!(got["state"], "ready", "{got}");
     assert_eq!(got["scan_state"], "clean");
     assert!(jobs_for(&app, id).await.contains(&"thumbnail".to_string()));
+}
+
+#[tokio::test]
+async fn inline_scans_are_bounded() {
+    let app = setup().await;
+    // The one inline slot is taken by an upload still in flight.
+    let held = app.state.clamd().begin_inline().await.unwrap();
+
+    let bytes = png_bytes(1500);
+    let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
+    let id = created["id"].as_str().unwrap();
+    let (status, body) = call(&app.private, put_raw(&format!("/blobs/{id}"), bytes)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], "uploaded", "deferred rather than queued");
+    assert_eq!(jobs_for(&app, id).await, vec!["scan"]);
+
+    // The slot comes back when that session ends.
+    drop(held);
+    let bytes = png_bytes(1500);
+    let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
+    let id = created["id"].as_str().unwrap();
+    let (status, body) = call(&app.private, put_raw(&format!("/blobs/{id}"), bytes)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], "ready");
 }
 
 #[tokio::test]

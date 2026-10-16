@@ -273,6 +273,10 @@ pub struct ClamavConfig {
     pub addr: String,
     #[serde(with = "humantime_serde", default = "default_clamav_timeout")]
     pub timeout: Duration,
+    /// Inline scans hold a clamd connection for as long as the uploader
+    /// takes; this caps how many at once. Beyond it the scan is deferred.
+    #[serde(default = "default_max_inline_scans")]
+    pub max_inline_scans: usize,
 }
 
 fn default_clamav_addr() -> String {
@@ -281,12 +285,16 @@ fn default_clamav_addr() -> String {
 fn default_clamav_timeout() -> Duration {
     Duration::from_secs(60)
 }
+fn default_max_inline_scans() -> usize {
+    4
+}
 
 impl Default for ClamavConfig {
     fn default() -> Self {
         Self {
             addr: default_clamav_addr(),
             timeout: default_clamav_timeout(),
+            max_inline_scans: default_max_inline_scans(),
         }
     }
 }

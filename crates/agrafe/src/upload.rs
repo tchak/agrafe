@@ -238,8 +238,9 @@ enum Scanner {
 }
 
 /// Open a clamd session when the file is small enough to scan inline. clamd
-/// being down must not refuse uploads, so that case defers the scan to a job,
-/// which is retried until clamd is back.
+/// being down must not refuse uploads, and uploaders must not be able to
+/// tie up every clamd thread by trickling bytes, so both cases defer the
+/// scan to a job instead.
 async fn inline_scanner(state: &AppState, blob: &Blob, declared: &Declared) -> Scanner {
     if blob.skip_virus_scan {
         return Scanner::Skipped;
@@ -247,10 +248,10 @@ async fn inline_scanner(state: &AppState, blob: &Blob, declared: &Declared) -> S
     if declared.size > state.config().upload.inline_scan_max_size.as_u64() {
         return Scanner::Deferred;
     }
-    match state.clamd().begin().await {
+    match state.clamd().begin_inline().await {
         Ok(session) => Scanner::Inline(session),
         Err(err) => {
-            tracing::warn!(blob = %blob.id, error = %err, "clamd unreachable, deferring the scan");
+            tracing::warn!(blob = %blob.id, error = %err, "no inline scan, deferring it to a job");
             Scanner::Deferred
         }
     }

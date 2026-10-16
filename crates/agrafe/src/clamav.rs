@@ -5,10 +5,12 @@
 //! may answer `FOUND` before the last chunk and close its end, so a failed
 //! write is not final: `finish` still reads whatever reply is pending.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::config::ClamavConfig;
 
@@ -22,6 +24,10 @@ const MAX_REPLY: usize = 4096;
 pub struct Clamd {
     addr: String,
     timeout: Duration,
+    /// Permits for inline sessions, which last as long as the upload they
+    /// ride on. Without a cap, slow uploaders would hold every clamd thread.
+    inline: Arc<Semaphore>,
+    max_inline: usize,
 }
 
 /// What clamd said about the bytes.
@@ -44,6 +50,8 @@ pub enum Error {
     Timeout { addr: String, timeout: Duration },
     #[error("clamd at {addr} replied `{reply}`")]
     Reply { addr: String, reply: String },
+    #[error("clamd at {addr}: all {limit} inline sessions are taken")]
+    Busy { addr: String, limit: usize },
 }
 
 impl Clamd {
@@ -51,11 +59,33 @@ impl Clamd {
         Self {
             addr: config.addr.clone(),
             timeout: config.timeout,
+            inline: Arc::new(Semaphore::new(config.max_inline_scans)),
+            max_inline: config.max_inline_scans,
         }
     }
 
-    /// Connect and open an `INSTREAM` session.
+    /// Connect and open an `INSTREAM` session for a scan whose pace this
+    /// process controls: a worker streaming a stored object.
     pub async fn begin(&self) -> Result<Session, Error> {
+        self.connect(None).await
+    }
+
+    /// Open a session that will be fed by an upload in flight, if one of the
+    /// `max_inline_scans` slots is free. `Busy` otherwise, at once: the
+    /// upload is not held up, its scan is deferred.
+    pub async fn begin_inline(&self) -> Result<Session, Error> {
+        let permit = self
+            .inline
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| Error::Busy {
+                addr: self.addr.clone(),
+                limit: self.max_inline,
+            })?;
+        self.connect(Some(permit)).await
+    }
+
+    async fn connect(&self, permit: Option<OwnedSemaphorePermit>) -> Result<Session, Error> {
         let mut stream = self
             .wait(TcpStream::connect(&self.addr))
             .await?
@@ -67,6 +97,7 @@ impl Clamd {
             clamd: self.clone(),
             stream,
             broken: None,
+            _permit: permit,
         })
     }
 
@@ -94,6 +125,8 @@ pub struct Session {
     /// The first write that failed. clamd closes early when it has already
     /// decided, so the verdict may still be readable.
     broken: Option<Error>,
+    /// Held for the life of an inline session, released with it.
+    _permit: Option<OwnedSemaphorePermit>,
 }
 
 impl Session {
