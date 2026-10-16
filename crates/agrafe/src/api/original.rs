@@ -20,6 +20,7 @@ use object_store::path::Path as ObjectPath;
 use object_store::{GetOptions, GetRange};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::Deserialize;
+use uuid::Uuid;
 
 use crate::app::AppState;
 use crate::blob::Blob;
@@ -169,7 +170,7 @@ pub async fn serve(
         .into_stream()
         .boxed();
 
-    let reader = Reader {
+    let mut reader = Reader {
         source,
         buffer: Vec::new(),
         decryptor,
@@ -179,7 +180,15 @@ pub async fn serve(
         skip: (span.start - stored.layout.plaintext_start(first)) as usize,
         remaining: span.end - span.start,
     };
-    *response.body_mut() = Body::from_stream(plaintext_stream(reader));
+    // Open the first segment before the response starts: a wrong key, a
+    // tampered object or a missing one is then a logged `500`, not a `200`
+    // cut short.
+    let first = reader
+        .next_segment()
+        .await
+        .with_context(|| format!("blob {}: opening the first segment", blob.id))?
+        .ok_or_else(|| anyhow::anyhow!("blob {}: range is empty", blob.id))?;
+    *response.body_mut() = Body::from_stream(plaintext_stream(blob.id, first, reader));
     Ok(response)
 }
 
@@ -234,6 +243,8 @@ impl Stored {
     }
 }
 
+/// Opens segments as their ciphertext arrives, trimming to the requested
+/// plaintext range.
 struct Reader {
     source: BoxStream<'static, object_store::Result<Bytes>>,
     buffer: Vec<u8>,
@@ -248,39 +259,59 @@ struct Reader {
     remaining: u64,
 }
 
-/// Open segments as their ciphertext arrives, trimming to the requested
-/// plaintext range.
-fn plaintext_stream(reader: Reader) -> impl futures::Stream<Item = anyhow::Result<Bytes>> {
-    futures::stream::try_unfold(reader, |mut r| async move {
-        if r.remaining == 0 {
+impl Reader {
+    /// The next piece of plaintext, or `None` once the range is served.
+    async fn next_segment(&mut self) -> anyhow::Result<Option<Bytes>> {
+        if self.remaining == 0 {
             return Ok(None);
         }
         let need = {
-            let range = r.layout.ciphertext_range(r.segment, r.size);
+            let range = self.layout.ciphertext_range(self.segment, self.size);
             (range.end - range.start) as usize
         };
-        while r.buffer.len() < need {
-            match r.source.next().await {
-                Some(chunk) => r
+        while self.buffer.len() < need {
+            match self.source.next().await {
+                Some(chunk) => self
                     .buffer
                     .extend_from_slice(&chunk.context("reading the object")?),
-                None => anyhow::bail!("object ended before segment {}", r.segment),
+                None => anyhow::bail!("object ended before segment {}", self.segment),
             }
         }
-        let sealed: Vec<u8> = r.buffer.drain(..need).collect();
-        let last = r.layout.is_last(r.segment, r.size);
-        let mut plain = r
+        let sealed: Vec<u8> = self.buffer.drain(..need).collect();
+        let last = self.layout.is_last(self.segment, self.size);
+        let mut plain = self
             .decryptor
-            .open(r.segment, &sealed, last)
-            .with_context(|| format!("opening segment {}", r.segment))?;
-        let skip = std::mem::take(&mut r.skip).min(plain.len());
-        let take = ((plain.len() - skip) as u64).min(r.remaining) as usize;
+            .open(self.segment, &sealed, last)
+            .with_context(|| format!("opening segment {}", self.segment))?;
+        let skip = std::mem::take(&mut self.skip).min(plain.len());
+        let take = ((plain.len() - skip) as u64).min(self.remaining) as usize;
         plain.truncate(skip + take);
         plain.drain(..skip);
-        r.remaining -= take as u64;
-        r.segment += 1;
-        Ok(Some((Bytes::from(plain), r)))
-    })
+        self.remaining -= take as u64;
+        self.segment += 1;
+        Ok(Some(Bytes::from(plain)))
+    }
+}
+
+/// `first`, then every further segment. A failure here happens after the
+/// status line went out, so the connection is cut; it is logged, since the
+/// client cannot tell a corrupt object from a dropped connection.
+fn plaintext_stream(
+    blob_id: Uuid,
+    first: Bytes,
+    reader: Reader,
+) -> impl futures::Stream<Item = anyhow::Result<Bytes>> {
+    let rest = futures::stream::try_unfold(reader, move |mut r| async move {
+        match r.next_segment().await {
+            Ok(Some(bytes)) => Ok(Some((bytes, r))),
+            Ok(None) => Ok(None),
+            Err(err) => {
+                tracing::error!(blob = %blob_id, error = ?err, "serving the original failed mid-stream");
+                Err(err)
+            }
+        }
+    });
+    futures::stream::once(async move { Ok(first) }).chain(rest)
 }
 
 enum RangeOutcome {

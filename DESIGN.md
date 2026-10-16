@@ -311,7 +311,11 @@ Instead: **envelope encryption with a chunked streaming AEAD.**
   `i > 0` starts at ciphertext offset `i * chunk`. The header is also cached
   on the blob row (`encryption_header`), so a `Range` request maps to a chunk
   range, one byte-range `GET` to the bucket, decrypt, trim, stream.
-  `Content-Length` is exact.
+  `Content-Length` is exact. The first segment is opened before the response
+  starts, so a wrong key, a tampered object or a missing one is a logged
+  `500`. A segment that fails later cannot change the status any more: the
+  connection is cut, and the failure is logged, because the client cannot
+  tell a corrupt object from a dropped connection.
 
 The crypto code is small (a few hundred lines on RustCrypto `aes-gcm` and
 `hkdf`) and owned by us, in the `agrafe-crypto` crate so it can be reviewed in

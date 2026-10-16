@@ -1265,6 +1265,70 @@ async fn get_original_ranges() {
 }
 
 #[tokio::test]
+async fn get_original_corrupt_object() {
+    use object_store::ObjectStoreExt;
+    use object_store::path::Path as ObjectPath;
+
+    let app = setup().await;
+    let bytes = png_bytes(3500);
+    let blob = ready_blob(&app, &bytes, true).await;
+    let id = blob["id"].as_str().unwrap();
+    let uri = format!("/blobs/{id}/original/photo.png");
+    let key = {
+        use agrafe::blob::repo;
+        let b = repo::find(app.state.pool(), id.parse().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        ObjectPath::from(b.storage_key.unwrap())
+    };
+    let stored = app
+        .state
+        .store()
+        .get(&key)
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap()
+        .to_vec();
+
+    // A flipped byte in the first segment is caught before the status line:
+    // a 500 in the error envelope, not a 200 cut short.
+    let mut first_bad = stored.clone();
+    first_bad[agrafe_crypto::streaming::HEADER_LEN + 3] ^= 1;
+    app.state.store().put(&key, first_bad.into()).await.unwrap();
+    let (status, body) = call(&app.private, req(Method::GET, &uri)).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert_eq!(body["error"]["code"], "internal");
+
+    // A flipped byte in the second 1 KiB segment: the first one serves, so
+    // the response has started; the body then fails instead of lying.
+    let mut later_bad = stored.clone();
+    later_bad[1024 + 3] ^= 1;
+    app.state.store().put(&key, later_bad.into()).await.unwrap();
+    let res = app
+        .private
+        .clone()
+        .oneshot(get_with(&uri, &[]))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert!(res.into_body().collect().await.is_err());
+    // A range inside the intact first segment is unaffected, one inside the
+    // damaged segment is a 500.
+    let (status, _, body) = fetch(&app.private, get_with(&uri, &[("range", "bytes=0-99")])).await;
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(body, &bytes[..100]);
+    let (status, _) = call(
+        &app.private,
+        get_with(&uri, &[("range", "bytes=1000-1100")]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
 async fn get_original_unreadable() {
     let app = setup().await;
     let bytes = png_bytes(100);
