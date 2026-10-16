@@ -25,3 +25,12 @@ cargo test
 
 Tests connect as the current OS user to `agrafe_test`; set `DATABASE_URL` to
 override.
+
+Coverage needs [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov)
+(`cargo install cargo-llvm-cov`):
+
+```sh
+cargo coverage                        # summary per file
+cargo coverage --show-missing-lines   # plus the uncovered lines
+cargo coverage --html --open          # browsable report
+```

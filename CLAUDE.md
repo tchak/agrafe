@@ -28,6 +28,8 @@ squash, bookmarks and pushing. `jj st`, `jj diff`, `jj log`, `jj describe -m`,
 - Tests need a `agrafe_test` database reachable as the current OS user, or
   `DATABASE_URL`. Run `cargo test`, `cargo clippy --all-targets`, `cargo fmt`
   before committing.
+- `cargo coverage` (an alias in `.cargo/config.toml`, needs cargo-llvm-cov)
+  reports line coverage; add `--show-missing-lines` to see what is uncovered.
 
 ## Conventions
 
