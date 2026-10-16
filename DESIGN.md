@@ -156,7 +156,12 @@ lifetime.
 created ──► uploading ──► uploaded ──► ready
    ▲            │             │
    └────────────┘             └──► infected
-   (failed upload)
+   (failed upload, nothing stored)
+
+ready ──► uploading ──► uploaded ──► ready        (mutable blobs only)
+             │
+             └──► ready
+   (failed re-upload, previous object kept)
 
 any non-terminal ──► expired
 any ──► deleted
@@ -165,7 +170,7 @@ any ──► deleted
 | State | Meaning |
 |---|---|
 | `created` | Row exists, no bytes. `PUT` allowed. |
-| `uploading` | A `PUT` is in flight. Concurrent `PUT` gets `409`. Stale rows are reset to `created` by the reaper. |
+| `uploading` | A `PUT` is in flight. Concurrent `PUT` gets `409`. Stale rows are reset by the reaper (see below). |
 | `uploaded` | Bytes are in the bucket, encrypted. Scan pending. Not readable. |
 | `ready` | Scan passed or skipped. Readable. |
 | `infected` | Scan failed. Never readable. Object kept for forensics until purge. |
@@ -178,6 +183,12 @@ from any state other than `created`. For mutable blobs, `PUT` is also allowed
 from `ready`, must carry a new checksum and size in headers, writes to a new
 object key and swaps the pointer on the row. Readers mid-stream keep the old
 object; the reaper deletes it.
+
+A failed or stale upload leaves `uploading` for the state it came from, decided
+by whether an object exists: `created` when `storage_key` is null, `ready`
+otherwise. A mutable blob whose re-upload fails therefore keeps serving its
+previous version instead of becoming unreadable. Both the abort path and the
+reaper apply this one rule.
 
 Separate from the blob state, each blob tracks `scan_state`
 (`pending`, `clean`, `infected`, `skipped`) and a state per derived

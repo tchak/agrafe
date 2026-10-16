@@ -510,7 +510,7 @@ async fn state_machine_transitions() {
     ));
 
     // ...while a mutable blob accepts one.
-    sqlx::query("UPDATE blobs SET write_once = false WHERE id = $1")
+    sqlx::query("UPDATE blobs SET write_once = false, storage_key = 'k/1' WHERE id = $1")
         .bind(id)
         .execute(pool)
         .await
@@ -520,6 +520,12 @@ async fn state_machine_transitions() {
         repo::begin_upload(&mut conn, &mutable).await.unwrap(),
         Transition::Done(_)
     ));
+
+    // A failed re-upload keeps the previous object readable.
+    let Transition::Done(after_abort) = repo::abort_upload(&mut conn, id).await.unwrap() else {
+        panic!("abort should apply");
+    };
+    assert_eq!(after_abort.state, BlobState::Ready);
 
     assert!(matches!(
         repo::transition(

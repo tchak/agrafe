@@ -152,9 +152,32 @@ pub async fn begin_upload(conn: &mut PgConnection, blob: &Blob) -> sqlx::Result<
     transition(conn, blob.id, from, BlobState::Uploading).await
 }
 
-/// A failed upload gives the single write back.
+/// A failed upload hands the blob back to where it came from: `created` when
+/// nothing was ever stored, `ready` when a mutable blob still has its previous
+/// object. The stale-upload reaper applies the same rule.
 pub async fn abort_upload(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Transition> {
-    transition(conn, id, &[BlobState::Uploading], BlobState::Created).await
+    let updated = sqlx::query_as::<_, Blob>(
+        r#"
+        UPDATE blobs
+        SET state = CASE WHEN storage_key IS NULL THEN $2 ELSE $3 END,
+            updated_at = now()
+        WHERE id = $1 AND state = $4
+        RETURNING *
+        "#,
+    )
+    .bind(id)
+    .bind(BlobState::Created.as_str())
+    .bind(BlobState::Ready.as_str())
+    .bind(BlobState::Uploading.as_str())
+    .fetch_optional(&mut *conn)
+    .await?;
+    match updated {
+        Some(blob) => Ok(Transition::Done(blob)),
+        None => match find(&mut *conn, id).await? {
+            Some(blob) => Ok(Transition::Conflict(blob)),
+            None => Ok(Transition::Missing),
+        },
+    }
 }
 
 /// Soft delete from any state, and enqueue a purge of the stored object.
