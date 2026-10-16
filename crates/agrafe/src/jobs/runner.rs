@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context as _;
 use futures::FutureExt as _;
@@ -19,6 +20,9 @@ use crate::app::AppState;
 
 /// Kinds this binary knows how to run. Others wait in the table.
 pub const HANDLED: &[JobKind] = &[JobKind::Scan];
+
+/// Pause after a listener error before asking Postgres again.
+const LISTEN_RETRY: Duration = Duration::from_secs(1);
 
 /// Run the workers until `shutdown` resolves. A job in flight finishes;
 /// nothing new is claimed afterwards.
@@ -176,7 +180,16 @@ where
                 }
                 Err(err) => tracing::warn!(error = %err, "ignoring job notification"),
             },
-            Err(err) => tracing::warn!(error = ?err, "job listener error"),
+            Err(err) => {
+                tracing::warn!(error = ?err, "job listener error");
+                // `recv` tries to reconnect on the next call; while the
+                // database is down that would be a hot loop of failed
+                // connects. The pollers keep draining the table meanwhile.
+                tokio::select! {
+                    _ = &mut shutdown => return Ok(()),
+                    _ = tokio::time::sleep(LISTEN_RETRY) => {}
+                }
+            }
         }
     }
 }
