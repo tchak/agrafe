@@ -24,6 +24,7 @@ const MAX_REPLY: usize = 4096;
 pub struct Clamd {
     addr: String,
     timeout: Duration,
+    connect_timeout: Duration,
     /// Permits for inline sessions, which last as long as the upload they
     /// ride on. Without a cap, slow uploaders would hold every clamd thread.
     inline: Arc<Semaphore>,
@@ -59,6 +60,7 @@ impl Clamd {
         Self {
             addr: config.addr.clone(),
             timeout: config.timeout,
+            connect_timeout: config.connect_timeout,
             inline: Arc::new(Semaphore::new(config.max_inline_scans)),
             max_inline: config.max_inline_scans,
         }
@@ -87,7 +89,7 @@ impl Clamd {
 
     async fn connect(&self, permit: Option<OwnedSemaphorePermit>) -> Result<Session, Error> {
         let mut stream = self
-            .wait(TcpStream::connect(&self.addr))
+            .wait_for(self.connect_timeout, TcpStream::connect(&self.addr))
             .await?
             .map_err(|e| self.io(e))?;
         self.wait(stream.write_all(b"zINSTREAM\0"))
@@ -102,11 +104,19 @@ impl Clamd {
     }
 
     async fn wait<T>(&self, fut: impl Future<Output = T>) -> Result<T, Error> {
-        tokio::time::timeout(self.timeout, fut)
+        self.wait_for(self.timeout, fut).await
+    }
+
+    async fn wait_for<T>(
+        &self,
+        timeout: Duration,
+        fut: impl Future<Output = T>,
+    ) -> Result<T, Error> {
+        tokio::time::timeout(timeout, fut)
             .await
             .map_err(|_| Error::Timeout {
                 addr: self.addr.clone(),
-                timeout: self.timeout,
+                timeout,
             })
     }
 

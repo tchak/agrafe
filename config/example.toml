@@ -86,8 +86,11 @@ kek1 = "REPLACE_ME_WITH_32_RANDOM_BYTES_IN_BASE64_____"
 # MaxFileSize it scans a prefix and still answers OK. Set AlertExceedsMax to
 # yes so that a limit hit anyway is reported as FOUND rather than as clean.
 addr = "127.0.0.1:3310"
-# Bounds each connect, write and the wait for the verdict, not a whole scan.
+# Bounds each write and the wait for the verdict, not a whole scan.
 timeout = "60s"
+# The TCP connect alone. An upload waits this long at most before giving up
+# on an inline scan and deferring it, so keep it short.
+connect_timeout = "5s"
 # Inline scans open at most this many clamd connections at once; an upload
 # that finds them all taken is stored and scanned by a job instead. An inline
 # session lasts as long as the upload, at the uploader's pace, so keep this
