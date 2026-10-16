@@ -207,7 +207,7 @@ where
                 unreachable!("only an infected outcome lands in `infected`");
             };
             tracing::warn!(blob = %blob.id, signature = name, "inline scan found a virus");
-            Err(ApiError::Infected(name))
+            Err(ApiError::Infected(Some(name)))
         }
         Transition::Done(blob) => Ok(blob),
         Transition::Conflict(current) => {

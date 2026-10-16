@@ -281,9 +281,11 @@ clean, so nothing renders a file that has not been scanned.
 An infected verdict from the inline scan is not a failed check. The object is
 stored and the blob becomes `infected`, the same terminal state a deferred
 scan produces, so the backend learns of it from the metadata whatever the
-file size. The `PUT` itself answers `422` with code `infected` and the
-signature name, so the uploader learns at once rather than from a `200` that
-leads nowhere. The verdict is read after the other checks: a wrong checksum
+file size. The `PUT` itself answers `422` with code `infected`, so the
+uploader learns at once rather than from a `200` that leads nowhere. The
+signature name is in the message on the private port only: a backend wants
+it, an anonymous uploader would use it to learn which signature to evade.
+The verdict is read after the other checks: a wrong checksum
 on an infected file is a plain `422` and nothing is stored.
 
 The pipeline runs in its own task, fed by the request handler through a

@@ -70,7 +70,14 @@ async fn upload_blob(
         )));
     }
     let declared = upload::declared(&blob)?;
-    let blob = body::upload(&state, blob, declared, req).await?;
+    let blob = body::upload(&state, blob, declared, req)
+        .await
+        .map_err(|err| match err {
+            // Which signature caught the file is an evasion hint for an
+            // anonymous uploader; the backend reads it from the metadata.
+            ApiError::Infected(_) => ApiError::Infected(None),
+            other => other,
+        })?;
     Ok(Json(PublicBlobResponse::new(&blob)))
 }
 

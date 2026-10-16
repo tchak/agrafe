@@ -1488,10 +1488,8 @@ async fn inline_scan() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert_eq!(body["error"]["code"], "infected");
     assert!(
-        body["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("Eicar-Test-Signature")
+        !body["error"]["message"].as_str().unwrap().contains("Eicar"),
+        "the public port does not say which signature: {body}"
     );
     let got = get_blob(&app, id).await;
     assert_eq!(got["state"], "infected");
@@ -1515,6 +1513,22 @@ async fn inline_scan() {
     assert_eq!(status, StatusCode::CONFLICT);
     let (status, _) = call(&app.public, put_raw(&upload, bytes)).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "write-once holds");
+
+    // The private port names the signature; the backend is who needs it.
+    let bytes = infected_png(1500);
+    let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
+    let id = created["id"].as_str().unwrap();
+    let (status, body) = call(&app.private, put_raw(&format!("/blobs/{id}"), bytes)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "infected");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Eicar-Test-Signature"),
+        "{body}"
+    );
+    assert_eq!(get_blob(&app, id).await["state"], "infected");
 
     // The cheap checks come first: a wrong checksum is a plain 422 even when
     // the bytes are infected, and nothing is stored.

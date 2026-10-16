@@ -15,9 +15,10 @@ pub enum ApiError {
     UnsupportedMediaType(String),
     #[error("{0}")]
     Unprocessable(String),
-    /// The upload was stored and the blob is `infected`; the signature name.
-    #[error("file is infected: {0}")]
-    Infected(String),
+    /// The upload was stored and the blob is `infected`. The signature name
+    /// is for the private port; the public port says only that it is.
+    #[error("file is infected{}", .0.as_deref().map(|s| format!(": {s}")).unwrap_or_default())]
+    Infected(Option<String>),
     #[error("not found")]
     NotFound,
     #[error("method not allowed")]
