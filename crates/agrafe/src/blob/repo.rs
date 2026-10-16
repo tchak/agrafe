@@ -1,4 +1,5 @@
 //! Blob persistence. Every state change is a conditional update.
+//! `updated_at` is maintained by a database trigger, never by hand.
 
 use chrono::Utc;
 use sqlx::{PgConnection, PgExecutor, PgPool, Postgres, QueryBuilder};
@@ -122,7 +123,7 @@ pub async fn transition(
         _ => None,
     };
     let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("UPDATE blobs SET state = ");
-    qb.push_bind(to.as_str()).push(", updated_at = now()");
+    qb.push_bind(to.as_str());
     if let Some(column) = timestamp_column {
         // The column name comes from the match above, never from input.
         qb.push(", ").push(column).push(" = now()");
@@ -159,8 +160,7 @@ pub async fn abort_upload(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Tra
     let updated = sqlx::query_as::<_, Blob>(
         r#"
         UPDATE blobs
-        SET state = CASE WHEN storage_key IS NULL THEN $2 ELSE $3 END,
-            updated_at = now()
+        SET state = CASE WHEN storage_key IS NULL THEN $2 ELSE $3 END
         WHERE id = $1 AND state = $4
         RETURNING *
         "#,

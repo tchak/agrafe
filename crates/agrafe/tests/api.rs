@@ -565,6 +565,10 @@ async fn state_machine_transitions() {
     };
     assert_eq!(uploading.state, BlobState::Uploading);
     assert!(uploading.upload_started_at.is_some());
+    assert!(
+        uploading.updated_at > blob.updated_at,
+        "trigger bumps updated_at"
+    );
 
     // A concurrent PUT loses.
     assert!(matches!(
