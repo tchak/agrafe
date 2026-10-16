@@ -388,14 +388,16 @@ pub struct JobsConfig {
     #[serde(with = "humantime_serde", default = "default_lease_timeout")]
     pub lease_timeout: Duration,
     #[serde(default)]
-    pub concurrency: HashMap<String, usize>,
+    /// Keyed by kind, so an unknown name is a configuration error rather
+    /// than a silently ignored line.
+    pub concurrency: HashMap<JobKind, usize>,
 }
 
 impl JobsConfig {
     /// Workers for `kind`: the configured count, else a default suited to
     /// what the kind waits on.
     pub fn concurrency_for(&self, kind: JobKind) -> usize {
-        if let Some(n) = self.concurrency.get(kind.as_str()) {
+        if let Some(n) = self.concurrency.get(&kind) {
             return *n;
         }
         match kind {
@@ -420,5 +422,28 @@ impl Default for JobsConfig {
             lease_timeout: default_lease_timeout(),
             concurrency: HashMap::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use figment::Figment;
+    use figment::providers::{Format, Toml};
+
+    use super::*;
+
+    fn jobs(toml: &str) -> Option<JobsConfig> {
+        Figment::from(Toml::string(toml)).extract().ok()
+    }
+
+    #[test]
+    fn concurrency_is_keyed_by_kind() {
+        let cfg = jobs("[concurrency]\nscan = 7").unwrap();
+        assert_eq!(cfg.concurrency_for(JobKind::Scan), 7);
+        assert_eq!(cfg.concurrency_for(JobKind::Preview), 2, "default");
+        assert!(
+            jobs("[concurrency]\nscann = 7").is_none(),
+            "a typo is an error"
+        );
     }
 }
