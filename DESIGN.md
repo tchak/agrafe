@@ -266,6 +266,16 @@ that is `ready`, plus a `purge` of the object a re-upload replaced. The scan
 job enqueues the representations once the file is clean, so nothing renders
 a file that has not been scanned.
 
+The pipeline runs in its own task, fed by the request handler through a
+channel. A handler future can be dropped at any moment (hyper cancels it on an
+HTTP/2 stream reset, and a closed connection ends it on HTTP/1), and nothing
+in that future is allowed to matter: dropping it closes the channel, the task
+sees the body end before the declared size, aborts the multipart upload and
+hands the blob back exactly as any other failed check does. Only a process
+crash leaves work behind, which is what the stale-upload reaper is for. On S3
+the bucket also needs an `AbortIncompleteMultipartUpload` lifecycle rule, since
+a crashed process cannot abort the multipart uploads it had open.
+
 Objects are keyed `<blob id>/<version>/original`; `version` increments on
 every upload, so a re-upload never overwrites. Representations of a version
 will live under the same prefix, which is what a purge deletes.

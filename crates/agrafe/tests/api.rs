@@ -12,9 +12,11 @@ use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use futures::StreamExt as _;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::time::Duration;
 use tokio::sync::{Mutex, MutexGuard};
 use tower::ServiceExt;
 
@@ -696,6 +698,64 @@ async fn mutable_reupload() {
 
     // The public port never accepts a re-upload, even with headers.
     assert!(created["urls"]["upload"].is_null());
+}
+
+#[tokio::test]
+async fn dropped_upload_is_aborted() {
+    let app = setup().await;
+    let bytes = png_bytes(5000);
+    let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
+    let id = created["id"].as_str().unwrap();
+    let uri = format!("/blobs/{id}");
+
+    // Half the file, then a body that never ends, in a handler future that is
+    // dropped while it waits: what an HTTP/2 stream reset or a closed
+    // connection does to a handler.
+    let half = bytes::Bytes::from(bytes[..2500].to_vec());
+    let body = Body::from_stream(
+        futures::stream::once(async move { Ok::<_, std::io::Error>(half) })
+            .chain(futures::stream::pending()),
+    );
+    let hanging = Request::builder()
+        .method(Method::PUT)
+        .uri(&uri)
+        .body(body)
+        .unwrap();
+    let outcome = tokio::time::timeout(
+        Duration::from_millis(200),
+        app.private.clone().oneshot(hanging),
+    )
+    .await;
+    assert!(
+        outcome.is_err(),
+        "the handler should still be reading the body"
+    );
+
+    // The pipeline task sees the body end early and hands the blob back.
+    let mut state = String::new();
+    for _ in 0..100 {
+        let (_, got) = call(&app.private, req(Method::GET, &uri)).await;
+        state = got["state"].as_str().unwrap().to_string();
+        if state == "created" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(state, "created");
+    let objects: Vec<_> = {
+        use futures::TryStreamExt;
+        app.state
+            .store()
+            .list(None)
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap()
+    };
+    assert!(objects.is_empty(), "{objects:?}");
+
+    // And the upload can be retried.
+    let (status, body) = call(&app.private, put_raw(&uri, bytes.clone())).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 }
 
 #[tokio::test]

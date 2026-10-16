@@ -14,6 +14,8 @@ use object_store::ObjectStoreExt;
 use object_store::WriteMultipart;
 use object_store::path::Path as ObjectPath;
 use sha2::{Digest, Sha256};
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
 use crate::app::AppState;
@@ -30,6 +32,9 @@ pub const SIZE_HEADER: &str = "x-agrafe-size";
 
 /// Parts of the object in flight at once while streaming.
 const PART_CONCURRENCY: usize = 4;
+
+/// Body chunks buffered between the request handler and the pipeline task.
+const CHANNEL_DEPTH: usize = 8;
 
 /// Slack allowed on top of `upload.max_size` for multipart framing.
 const MULTIPART_OVERHEAD: u64 = 1024 * 1024;
@@ -144,11 +149,17 @@ impl From<UploadError> for ApiError {
 
 /// Run the pipeline on `body`, the file bytes. The caller has checked that
 /// the blob accepts an upload; the transition here is what makes it atomic.
+///
+/// Everything after the transition runs in its own task, fed through a
+/// channel. The handler future can be dropped at any point (an HTTP/2 stream
+/// reset, a closed connection), and that only closes the channel: the task
+/// sees the body end early, fails the size check, aborts the multipart
+/// upload and hands the blob back. Nothing is ever left half done.
 pub async fn run<S>(
     state: &AppState,
     blob: Blob,
     declared: Declared,
-    body: S,
+    mut body: S,
 ) -> Result<Blob, ApiError>
 where
     S: Stream<Item = Result<Bytes, ApiError>> + Unpin,
@@ -162,13 +173,43 @@ where
         }
     };
 
+    let (tx, rx) = mpsc::channel(CHANNEL_DEPTH);
+    let task = tokio::spawn(store_and_complete(
+        state.clone(),
+        blob,
+        declared,
+        ReceiverStream::new(rx),
+    ));
+    while let Some(chunk) = body.next().await {
+        // A closed receiver means the pipeline already failed; its error is
+        // what the task returns.
+        if tx.send(chunk).await.is_err() {
+            break;
+        }
+    }
+    drop(tx);
+    task.await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("upload task failed: {e}")))?
+}
+
+/// Encrypt and store `body` as the next version of `blob`, which is in
+/// `uploading`, then complete or abort the transition.
+async fn store_and_complete<S>(
+    state: AppState,
+    blob: Blob,
+    declared: Declared,
+    body: S,
+) -> Result<Blob, ApiError>
+where
+    S: Stream<Item = Result<Bytes, ApiError>> + Unpin,
+{
     let version = blob.version + 1;
     let storage_key = object_key(blob.id, version);
     let envelope = state.keks().new_envelope(blob.id);
     let layout = state.keks().layout();
 
     let header = match stream_to_store(
-        state,
+        &state,
         &blob,
         &declared,
         &storage_key,
@@ -209,11 +250,11 @@ where
         Transition::Conflict(current) => {
             // The row changed under us (reaper or delete); the object we just
             // wrote belongs to nobody.
-            delete_quietly(state, &storage_key).await;
+            delete_quietly(&state, &storage_key).await;
             Err(conflict(&current))
         }
         Transition::Missing => {
-            delete_quietly(state, &storage_key).await;
+            delete_quietly(&state, &storage_key).await;
             Err(ApiError::NotFound)
         }
     }
