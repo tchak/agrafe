@@ -366,8 +366,8 @@ backoff until clamd answers. In the job, a connection failure or an `ERROR`
 reply (the stream limit exceeded, for instance) is a job failure and the blob
 stays `uploaded`; once the job is out of attempts the blob is stuck there,
 unreadable, until it expires or is deleted. clamd closes the connection as
-soon as it has a verdict, so the client treats a failed write as "read the
-reply", not as an error. A deferred scan is bounded by clamd's `StreamMaxLength`, which the
+soon as it has a verdict, so the client treats a failed write as "stop
+sending and read the reply", not as an error. A deferred scan is bounded by clamd's `StreamMaxLength`, which the
 workers' clamd must set above `upload.max_size`.
 
 Skipped only when the blob was created with `skip_virus_scan = true`, which is

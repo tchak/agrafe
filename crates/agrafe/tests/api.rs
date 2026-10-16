@@ -38,11 +38,13 @@ const VIRUS: &[u8] = b"$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!";
 async fn fake_clamd() -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    fake_clamd_on(listener);
+    fake_clamd_on(listener, None);
     addr
 }
 
-fn fake_clamd_on(listener: TcpListener) {
+/// With a `limit`, the fake behaves like clamd at `StreamMaxLength`: it
+/// answers `ERROR` and hangs up as soon as the bytes exceed it.
+fn fake_clamd_on(listener: TcpListener, limit: Option<usize>) {
     tokio::spawn(async move {
         while let Ok((mut sock, _)) = listener.accept().await {
             tokio::spawn(async move {
@@ -66,6 +68,12 @@ fn fake_clamd_on(listener: TcpListener) {
                         return;
                     }
                     data.extend(chunk);
+                    if limit.is_some_and(|limit| data.len() > limit) {
+                        let _ = sock
+                            .write_all(b"INSTREAM size limit exceeded. ERROR\0")
+                            .await;
+                        return;
+                    }
                 }
                 let infected = data.windows(VIRUS.len()).any(|w| w == VIRUS);
                 let reply: &[u8] = if infected {
@@ -1600,12 +1608,42 @@ async fn empty_file_deferred_scan() {
     assert_eq!(jobs_for(&app, id).await, vec!["scan"]);
 
     // clamd comes back on the same address and the retry goes through.
-    fake_clamd_on(TcpListener::bind(addr).await.unwrap());
+    fake_clamd_on(TcpListener::bind(addr).await.unwrap(), None);
     assert!(run_scan_job(&app).await);
     let got = get_blob(&app, id).await;
     assert_eq!(got["state"], "ready", "{got}");
     assert_eq!(got["scan_state"], "clean");
     assert!(jobs_for(&app, id).await.contains(&"thumbnail".to_string()));
+}
+
+#[tokio::test]
+async fn clamd_stream_limit() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    fake_clamd_on(listener, Some(1000));
+    let app = setup_with(addr).await;
+
+    // Inline: clamd hangs up midway. The upload still succeeds and the scan
+    // is deferred, exactly as when clamd is unreachable.
+    let bytes = png_bytes(1500);
+    let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
+    let id = created["id"].as_str().unwrap();
+    let (status, body) = call(&app.private, put_raw(&format!("/blobs/{id}"), bytes)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], "uploaded");
+    assert_eq!(body["scan_state"], "pending");
+    assert_eq!(jobs_for(&app, id).await, vec!["scan"]);
+
+    // The job meets the same limit: a failed attempt, the blob stays
+    // unreadable, and the error names clamd.
+    assert!(run_scan_job(&app).await);
+    assert_eq!(get_blob(&app, id).await["state"], "uploaded");
+    let error: String = sqlx::query_scalar("SELECT last_error FROM jobs WHERE blob_id = $1")
+        .bind(uuid::Uuid::parse_str(id).unwrap())
+        .fetch_one(app.state.pool())
+        .await
+        .unwrap();
+    assert!(error.contains("clamd"), "{error}");
 }
 
 #[tokio::test]

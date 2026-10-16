@@ -97,10 +97,13 @@ pub struct Session {
 }
 
 impl Session {
-    /// Send more bytes. After a failure this is a no-op; `finish` reports it.
-    pub async fn write(&mut self, bytes: &[u8]) -> Result<(), Error> {
+    /// Send more bytes. Returns whether clamd is still taking them: once a
+    /// write has failed it is not, further bytes are dropped, and `finish`
+    /// reports the verdict or the error waiting on the socket. A caller
+    /// producing the bytes for clamd alone should stop at `false`.
+    pub async fn write(&mut self, bytes: &[u8]) -> bool {
         if self.broken.is_some() {
-            return Ok(());
+            return false;
         }
         for chunk in bytes.chunks(CHUNK) {
             let len = (chunk.len() as u32).to_be_bytes();
@@ -115,10 +118,10 @@ impl Session {
                 .and_then(|r| r.map_err(|e| self.clamd.io(e)))
             {
                 self.broken = Some(err);
-                return Ok(());
+                return false;
             }
         }
-        Ok(())
+        true
     }
 
     /// Close the stream and read the verdict.

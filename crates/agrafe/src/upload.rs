@@ -342,8 +342,9 @@ where
         hasher.update(&chunk);
         if let Some(session) = &mut session {
             // A write failure is remembered by the session and surfaces
-            // from `finish`, where it defers the scan.
-            let _ = session.write(&chunk).await;
+            // from `finish`, where it defers the scan; the upload itself
+            // carries on regardless.
+            session.write(&chunk).await;
         }
         if !sniffed {
             let take = (sniff::SNIFF_LEN - head.len()).min(chunk.len());
