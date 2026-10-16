@@ -460,8 +460,8 @@ Each row: `kind`, `blob_id`, `payload`, `run_at`, `attempts`, `max_attempts`,
 oldest due job of its kind with `UPDATE ... WHERE id = (SELECT ... FOR UPDATE
 SKIP LOCKED)`, which locks it and counts the attempt. A locked job is
 claimable again once `jobs.lease_timeout` has passed, which is how a crashed
-worker's job gets picked up. Success deletes the row. Failure unlocks it with
-exponential backoff (30 s, doubling, capped at an hour) until `max_attempts`
+worker's job gets picked up. Success deletes the row. Failure, a handler
+panic included, unlocks it with exponential backoff (30 s, doubling, capped at an hour) until `max_attempts`
 (5), then sets `failed_at` and leaves it locked: never run again, not holding
 the one pending slot per kind and blob, and still there to read. A failing
 job whose twin was enqueued while it was locked is dropped in favour of the

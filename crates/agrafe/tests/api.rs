@@ -38,6 +38,11 @@ const VIRUS: &[u8] = b"$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!";
 async fn fake_clamd() -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    fake_clamd_on(listener);
+    addr
+}
+
+fn fake_clamd_on(listener: TcpListener) {
     tokio::spawn(async move {
         while let Ok((mut sock, _)) = listener.accept().await {
             tokio::spawn(async move {
@@ -72,7 +77,6 @@ async fn fake_clamd() -> SocketAddr {
             });
         }
     });
-    addr
 }
 
 /// An address nothing listens on.
@@ -1579,6 +1583,29 @@ async fn deferred_scan_job() {
     assert_eq!(get_blob(&app, id).await["state"], "deleted");
     assert!(jobs_for(&app, id).await.is_empty());
     assert!(!run_scan_job(&app).await);
+}
+
+#[tokio::test]
+async fn empty_file_deferred_scan() {
+    // clamd is down when an empty file arrives, so even that scan is
+    // deferred; the job must cope with a file that has no segments.
+    let addr = closed_port().await;
+    let app = setup_with(addr).await;
+    let bytes: Vec<u8> = Vec::new();
+    let created = create(&app, blob_for(&bytes, "text/plain", "raw")).await;
+    let id = created["id"].as_str().unwrap();
+    let (status, body) = call(&app.private, put_raw(&format!("/blobs/{id}"), bytes)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], "uploaded");
+    assert_eq!(jobs_for(&app, id).await, vec!["scan"]);
+
+    // clamd comes back on the same address and the retry goes through.
+    fake_clamd_on(TcpListener::bind(addr).await.unwrap());
+    assert!(run_scan_job(&app).await);
+    let got = get_blob(&app, id).await;
+    assert_eq!(got["state"], "ready", "{got}");
+    assert_eq!(got["scan_state"], "clean");
+    assert!(jobs_for(&app, id).await.contains(&"thumbnail".to_string()));
 }
 
 #[tokio::test]

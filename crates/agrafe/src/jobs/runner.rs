@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Context as _;
+use futures::FutureExt as _;
 use jiff::Timestamp;
 use sqlx::postgres::PgListener;
 use tokio::sync::Notify;
@@ -71,7 +72,18 @@ pub async fn run_one(state: &AppState, kind: JobKind, worker: &str) -> anyhow::R
         attempt = job.attempts
     );
     let _enter = span.enter();
-    match handle(state, &job).await {
+    // A handler that panics has failed this attempt; it must not take the
+    // worker, or the process in the `all` role, down with it.
+    let outcome = std::panic::AssertUnwindSafe(handle(state, &job))
+        .catch_unwind()
+        .await
+        .unwrap_or_else(|panic| {
+            Err(anyhow::anyhow!(
+                "handler panicked: {}",
+                panic_message(&*panic)
+            ))
+        });
+    match outcome {
         Ok(()) => {
             super::succeed(state.pool(), job.id).await?;
             tracing::info!("job done");
@@ -159,6 +171,14 @@ where
             Err(err) => tracing::warn!(error = ?err, "job listener error"),
         }
     }
+}
+
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> &str {
+    panic
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("non-string panic payload")
 }
 
 fn hostname() -> String {

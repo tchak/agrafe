@@ -100,6 +100,20 @@ impl Reader {
             &stored.header,
             stored.layout,
         );
+        if span.is_empty() {
+            // An empty file, or an empty range of one: nothing to fetch, and
+            // `ciphertext_span` has no segment to point at.
+            return Ok(Self {
+                source: futures::stream::empty().boxed(),
+                buffer: BytesMut::new(),
+                decryptor,
+                layout: stored.layout,
+                size: stored.size,
+                segment: 0,
+                skip: 0,
+                remaining: 0,
+            });
+        }
         let (first, bytes) = stored.layout.ciphertext_span(span.clone(), stored.size);
         let source = state
             .store()
