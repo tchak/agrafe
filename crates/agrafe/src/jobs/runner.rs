@@ -11,6 +11,7 @@ use jiff::Timestamp;
 use sqlx::postgres::PgListener;
 use tokio::sync::Notify;
 use tokio::task::JoinSet;
+use tracing::Instrument as _;
 use uuid::Uuid;
 
 use super::{Failure, Job, JobKind, scan};
@@ -71,10 +72,17 @@ pub async fn run_one(state: &AppState, kind: JobKind, worker: &str) -> anyhow::R
         blob = ?job.blob_id,
         attempt = job.attempts
     );
-    let _enter = span.enter();
+    // The span is attached to the future rather than entered on the
+    // thread: a guard held across an await would tag whatever else the
+    // thread polls meanwhile.
+    run_claimed(state, &job).instrument(span).await?;
+    Ok(true)
+}
+
+async fn run_claimed(state: &AppState, job: &Job) -> anyhow::Result<()> {
     // A handler that panics has failed this attempt; it must not take the
     // worker, or the process in the `all` role, down with it.
-    let outcome = std::panic::AssertUnwindSafe(handle(state, &job))
+    let outcome = std::panic::AssertUnwindSafe(handle(state, job))
         .catch_unwind()
         .await
         .unwrap_or_else(|panic| {
@@ -91,14 +99,14 @@ pub async fn run_one(state: &AppState, kind: JobKind, worker: &str) -> anyhow::R
         Err(err) => {
             let mut conn = state.pool().acquire().await?;
             let error = format!("{err:#}");
-            match super::fail(&mut conn, &job, &error, Timestamp::now()).await? {
+            match super::fail(&mut conn, job, &error, Timestamp::now()).await? {
                 Failure::Retry(at) => tracing::warn!(error, retry_at = %at, "job failed"),
                 Failure::Dead => tracing::error!(error, "job failed for the last time"),
                 Failure::Superseded => tracing::warn!(error, "job failed and was superseded"),
             }
         }
     }
-    Ok(true)
+    Ok(())
 }
 
 async fn handle(state: &AppState, job: &Job) -> anyhow::Result<()> {
