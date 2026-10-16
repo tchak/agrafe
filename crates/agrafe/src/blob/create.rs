@@ -147,7 +147,8 @@ pub fn normalize_content_type(raw: &str) -> Result<String, &'static str> {
     if mime.type_() == "*" || mime.subtype() == "*" {
         return Err("content_type must not contain wildcards");
     }
-    Ok(format!("{}/{}", mime.type_(), mime.subtype()).to_ascii_lowercase())
+    // The essence keeps a `+xml` or `+json` suffix, which `subtype()` drops.
+    Ok(mime.essence_str().trim().to_ascii_lowercase())
 }
 
 pub(crate) fn decode_checksum(encoded: &str) -> Result<Vec<u8>, ApiError> {
@@ -200,6 +201,17 @@ fn unprocessable(msg: impl Into<String>) -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalizes_content_types() {
+        assert_eq!(
+            normalize_content_type(" Image/SVG+XML; charset=utf-8 ").unwrap(),
+            "image/svg+xml"
+        );
+        assert_eq!(normalize_content_type("text/csv").unwrap(), "text/csv");
+        assert!(normalize_content_type("image/*").is_err());
+        assert!(normalize_content_type("not a type").is_err());
+    }
 
     fn req(input_type: InputType, content_type: &str) -> CreateBlobRequest {
         CreateBlobRequest {
