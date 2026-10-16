@@ -12,7 +12,7 @@ use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use futures::StreamExt as _;
+use futures::{FutureExt as _, StreamExt as _};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -55,6 +55,8 @@ enum FakeClamd {
     /// clamd dying: hangs up without a word as soon as the bytes exceed
     /// the limit.
     Crash(usize),
+    /// Reads it whole and never answers: clamd wedged.
+    Hang,
     /// Reads it whole, signals `received`, then answers as `Scan` once
     /// `release` is signalled: a scan caught in the middle.
     Held {
@@ -99,9 +101,13 @@ fn fake_clamd_on(listener: TcpListener, mode: FakeClamd) {
                         _ => {}
                     }
                 }
-                if let FakeClamd::Held { received, release } = &mode {
-                    received.notify_one();
-                    release.notified().await;
+                match &mode {
+                    FakeClamd::Hang => std::future::pending::<()>().await,
+                    FakeClamd::Held { received, release } => {
+                        received.notify_one();
+                        release.notified().await;
+                    }
+                    _ => {}
                 }
                 let infected = data.windows(VIRUS.len()).any(|w| w == VIRUS);
                 let reply: &[u8] = if infected {
@@ -113,6 +119,14 @@ fn fake_clamd_on(listener: TcpListener, mode: FakeClamd) {
             });
         }
     });
+}
+
+/// A fake clamd in `mode`.
+async fn fake_clamd_in(mode: FakeClamd) -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    fake_clamd_on(listener, mode);
+    addr
 }
 
 /// An address nothing listens on.
@@ -127,6 +141,11 @@ async fn setup() -> TestApp {
 }
 
 async fn setup_with(clamd: SocketAddr) -> TestApp {
+    setup_tuned(clamd, |_| {}).await
+}
+
+/// `setup_with`, with `tune` applied to the configuration first.
+async fn setup_tuned(clamd: SocketAddr, tune: impl FnOnce(&mut Config)) -> TestApp {
     let guard = LOCK.lock().await;
     let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
         let user = std::env::var("USER").unwrap_or_else(|_| "postgres".to_string());
@@ -180,7 +199,8 @@ async fn setup_with(clamd: SocketAddr) -> TestApp {
     let dir = tempdir();
     let path = dir.join("agrafe.toml");
     std::fs::write(&path, toml).unwrap();
-    let config = Config::load(Some(&path)).unwrap();
+    let mut config = Config::load(Some(&path)).unwrap();
+    tune(&mut config);
 
     let pool = db::connect(&config.database).await.unwrap();
     db::migrate(&pool).await.unwrap();
@@ -545,6 +565,22 @@ async fn wait_for_state(app: &TestApp, id: &str, want: &str) {
     panic!("blob {id} is {state}, never {want}");
 }
 
+/// The `last_error` of the blob's one job.
+async fn last_error(app: &TestApp, id: &str) -> String {
+    sqlx::query_scalar("SELECT last_error FROM jobs WHERE blob_id = $1")
+        .bind(uuid::Uuid::parse_str(id).unwrap())
+        .fetch_one(app.state.pool())
+        .await
+        .unwrap()
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
 /// The object key a blob's original is stored under.
 async fn storage_key(app: &TestApp, id: &str) -> String {
     agrafe::blob::repo::find(app.state.pool(), id.parse().unwrap())
@@ -776,6 +812,33 @@ async fn type_mismatch_past_the_sniff_window() {
     assert!(objects.is_empty(), "{objects:?}");
 }
 
+/// The client's body fails partway: a 400, the blob handed back, nothing
+/// stored.
+#[tokio::test]
+async fn body_error_midway() {
+    let app = setup().await;
+    let bytes = png_bytes(5000);
+    let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
+    let id = created["id"].as_str().unwrap();
+
+    let half = bytes::Bytes::copy_from_slice(&bytes[..2500]);
+    let failing = futures::stream::iter([
+        Ok(half),
+        Err(std::io::Error::other("connection reset by peer")),
+    ]);
+    let put = Request::builder()
+        .method(Method::PUT)
+        .uri(format!("/blobs/{id}"))
+        .body(Body::from_stream(failing))
+        .unwrap();
+    let (status, body) = call(&app.private, put).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "bad_request");
+    assert_eq!(get_blob(&app, id).await["state"], "created");
+    let objects = stored_objects(&app).await;
+    assert!(objects.is_empty(), "{objects:?}");
+}
+
 #[tokio::test]
 async fn multipart_upload_public() {
     let app = setup().await;
@@ -965,6 +1028,17 @@ async fn mint_urls_with_options() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    // The TTL counts from the next 1h window boundary.
+    let expires = body["expires_at"].as_u64().unwrap();
+    let now = unix_now();
+    assert!(
+        (now + 600..=now + 600 + 3600).contains(&expires),
+        "{expires} for now {now}"
+    );
+    assert!(
+        created["urls"]["expires_at"].as_u64().unwrap() >= now + 24 * 3600,
+        "the default read TTL is longer"
+    );
     let original = body["original"].as_str().unwrap();
     assert!(original.ends_with("?disposition=attachment"), "{original}");
     // Representation routes accept the signed query string; the blob has no
@@ -1017,6 +1091,67 @@ async fn mint_urls_with_options() {
     )
     .await;
     assert_eq!(a, b);
+}
+
+#[tokio::test]
+async fn permanent_urls_when_allowed() {
+    let clamd = fake_clamd().await;
+    let app = setup_tuned(clamd, |c| c.signing.allow_permanent = true).await;
+    let blob = ready_blob(&app, &png_bytes(1500)).await;
+    let id = blob["id"].as_str().unwrap();
+
+    let (status, body) = call(
+        &app.private,
+        json_req(
+            Method::POST,
+            &format!("/blobs/{id}/urls"),
+            json!({"permanent": true}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["expires_at"], 0);
+    let original = public_path(body["original"].as_str().unwrap());
+    assert!(
+        original.contains(".0."),
+        "expires is 0 in the token: {original}"
+    );
+    let (status, _) = call(&app.public, req(Method::GET, &original)).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = call(
+        &app.private,
+        json_req(
+            Method::POST,
+            &format!("/blobs/{id}/urls"),
+            json!({"permanent": true, "ttl": "1h"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("mutually exclusive"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn representations_are_not_implemented_yet() {
+    let app = setup().await;
+    let blob = ready_blob(&app, &png_bytes(1500)).await;
+    let id = blob["id"].as_str().unwrap();
+    for kind in ["preview", "thumbnail"] {
+        let url = public_path(blob["urls"][kind].as_str().unwrap());
+        let (status, body) = call(&app.public, req(Method::GET, &url)).await;
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{kind}: {body}");
+        assert_eq!(body["error"]["code"], "not_implemented");
+        let uri = format!("/blobs/{id}/{kind}/photo.png");
+        let (status, _) = call(&app.private, req(Method::GET, &uri)).await;
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{kind}");
+    }
 }
 
 #[tokio::test]
@@ -1517,6 +1652,25 @@ async fn get_original_corrupt_object() {
     )
     .await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+
+    // Truncated inside the last segment: the intact start still serves, the
+    // full body fails instead of ending short, and a range in the missing
+    // tail is a 500.
+    let short = stored[..stored.len() - 100].to_vec();
+    app.state.store().put(&key, short.into()).await.unwrap();
+    let (status, _, body) = fetch(&app.private, get_with(&uri, &[("range", "bytes=0-99")])).await;
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(body, &bytes[..100]);
+    let res = app
+        .private
+        .clone()
+        .oneshot(get_with(&uri, &[]))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert!(res.into_body().collect().await.is_err());
+    let (status, _) = call(&app.private, get_with(&uri, &[("range", "bytes=3400-")])).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
 }
 
 #[tokio::test]
@@ -1853,11 +2007,20 @@ async fn clamd_stream_limit() {
     // unreadable, and the error names clamd.
     assert!(run_scan_job(&app).await);
     assert_eq!(get_blob(&app, id).await["state"], "uploaded");
-    let error: String = sqlx::query_scalar("SELECT last_error FROM jobs WHERE blob_id = $1")
-        .bind(uuid::Uuid::parse_str(id).unwrap())
-        .fetch_one(app.state.pool())
-        .await
-        .unwrap();
+    let error = last_error(&app, id).await;
+    assert!(error.contains("clamd"), "{error}");
+
+    // Five segments, clamd gone after the second: whether the job notices
+    // at the next write or only at the verdict, the attempt fails the same
+    // way. (Which one it is depends on when the reset reaches this side.)
+    let bytes = png_bytes(5000);
+    let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
+    let id = created["id"].as_str().unwrap();
+    let (status, body) = call(&app.private, put_raw(&format!("/blobs/{id}"), bytes)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(run_scan_job(&app).await);
+    assert_eq!(get_blob(&app, id).await["state"], "uploaded");
+    let error = last_error(&app, id).await;
     assert!(error.contains("clamd"), "{error}");
 }
 
@@ -1889,12 +2052,143 @@ async fn clamd_dies_midway() {
     // still unreadable.
     assert!(run_scan_job(&app).await);
     assert_eq!(get_blob(&app, id).await["state"], "uploaded");
-    let error: String = sqlx::query_scalar("SELECT last_error FROM jobs WHERE blob_id = $1")
-        .bind(uuid::Uuid::parse_str(id).unwrap())
+    let error = last_error(&app, id).await;
+    assert!(error.contains("clamd"), "{error}");
+}
+
+/// clamd takes the stream and never answers: the timeout defers the inline
+/// scan instead of holding the upload, and fails the job's attempt.
+#[tokio::test]
+async fn clamd_hangs() {
+    let clamd = fake_clamd_in(FakeClamd::Hang).await;
+    let app = setup_tuned(clamd, |c| c.clamav.timeout = Duration::from_millis(200)).await;
+
+    let bytes = png_bytes(1500);
+    let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
+    let id = created["id"].as_str().unwrap();
+    let (status, body) = tokio::time::timeout(
+        Duration::from_secs(5),
+        call(&app.private, put_raw(&format!("/blobs/{id}"), bytes)),
+    )
+    .await
+    .expect("the upload is not held by clamd");
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], "uploaded");
+    assert_eq!(body["scan_state"], "pending");
+
+    assert!(run_scan_job(&app).await);
+    assert_eq!(get_blob(&app, id).await["state"], "uploaded");
+    let error = last_error(&app, id).await;
+    assert!(error.contains("no answer within"), "{error}");
+}
+
+/// The workers proper: an enqueue wakes them long before the poll interval,
+/// and shutdown stops them.
+#[tokio::test]
+async fn workers_wake_on_notify_and_stop_on_shutdown() {
+    let clamd = fake_clamd().await;
+    let app = setup_tuned(clamd, |c| {
+        c.jobs.poll_interval = Duration::from_secs(3600);
+        c.database.max_connections = 8;
+    })
+    .await;
+
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let shutdown = async move {
+        let _ = stopped.await;
+    }
+    .boxed()
+    .shared();
+    let workers = tokio::spawn(agrafe::jobs::runner::run(app.state.clone(), shutdown));
+
+    // Wait for the listener, or the notify could go out before it listens.
+    let mut listening = false;
+    for _ in 0..100 {
+        let n: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity \
+             WHERE datname = current_database() AND query LIKE 'LISTEN%'",
+        )
         .fetch_one(app.state.pool())
         .await
         .unwrap();
-    assert!(error.contains("clamd"), "{error}");
+        if n > 0 {
+            listening = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(listening, "the job listener never started");
+
+    let bytes = png_bytes(5000);
+    let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
+    let id = created["id"].as_str().unwrap();
+    let (status, body) = call(&app.private, put_raw(&format!("/blobs/{id}"), bytes)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], "uploaded");
+    wait_for_state(&app, id, "ready").await;
+
+    stop.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), workers)
+        .await
+        .expect("the workers stop")
+        .unwrap()
+        .unwrap();
+}
+
+/// A job running longer than its lease keeps it: the heartbeat renews it,
+/// so no other worker claims the job meanwhile.
+#[tokio::test]
+async fn running_job_keeps_its_lease() {
+    let received = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let clamd = fake_clamd_in(FakeClamd::Held {
+        received: received.clone(),
+        release: release.clone(),
+    })
+    .await;
+    // The heartbeat beats every second at the least.
+    let lease = Duration::from_millis(1200);
+    let app = setup_tuned(clamd, |c| c.jobs.lease_timeout = lease).await;
+
+    let bytes = png_bytes(5000);
+    let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
+    let id = created["id"].as_str().unwrap();
+    let (status, body) = call(&app.private, put_raw(&format!("/blobs/{id}"), bytes)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let state = app.state.clone();
+    let job = tokio::spawn(async move {
+        agrafe::jobs::runner::run_one(&state, agrafe::jobs::JobKind::Scan, "w1")
+            .await
+            .unwrap()
+    });
+    received.notified().await;
+    let locked_at = || async {
+        let at: jiff_sqlx::Timestamp =
+            sqlx::query_scalar("SELECT locked_at FROM jobs WHERE kind = 'scan'")
+                .fetch_one(app.state.pool())
+                .await
+                .unwrap();
+        at.to_jiff()
+    };
+    let claimed = locked_at().await;
+
+    // Past the lease, with the job still waiting on clamd.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(locked_at().await > claimed, "the lease was renewed");
+    let stolen = agrafe::jobs::claim(
+        app.state.pool(),
+        &[agrafe::jobs::JobKind::Scan],
+        "w2",
+        lease,
+    )
+    .await
+    .unwrap();
+    assert!(stolen.is_none(), "another worker took the job: {stolen:?}");
+
+    release.notify_one();
+    assert!(job.await.unwrap());
+    assert_eq!(get_blob(&app, id).await["state"], "ready");
 }
 
 #[tokio::test]

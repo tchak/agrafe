@@ -433,11 +433,73 @@ impl Default for JobsConfig {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::result_large_err,
+    reason = "figment::Jail closures return figment::Error"
+)]
 mod tests {
-    use figment::Figment;
     use figment::providers::{Format, Toml};
+    use figment::{Figment, Jail};
 
     use super::*;
+
+    /// The documented reference configuration.
+    fn example() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/example.toml")
+    }
+
+    fn load(path: &Path) -> figment::error::Result<Config> {
+        Config::load(Some(path)).map_err(|e| e.to_string().into())
+    }
+
+    #[test]
+    fn example_config_loads() {
+        Jail::expect_with(|_| {
+            let config = load(&example())?;
+            assert_eq!(config.server.role, Role::All);
+            assert_eq!(config.signing.current_key, "k1");
+            assert_eq!(config.jobs.concurrency_for(JobKind::Scan), 4);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn environment_overrides_the_file() {
+        Jail::expect_with(|jail| {
+            jail.set_env(
+                "AGRAFE_DATABASE__URL",
+                "postgres://agrafe:hunter2@db/agrafe",
+            );
+            jail.set_env("AGRAFE_JOBS__CONCURRENCY__SCAN", "9");
+            let config = load(&example())?;
+            assert_eq!(
+                config.database.url.expose(),
+                "postgres://agrafe:hunter2@db/agrafe"
+            );
+            assert_eq!(config.jobs.concurrency_for(JobKind::Scan), 9);
+
+            jail.set_env("AGRAFE_SERVER__PUBLIC_BASE_URL", "https://files.example/");
+            let err = load(&example()).unwrap_err().to_string();
+            assert!(err.contains("must not end with a slash"), "{err}");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn secrets_stay_out_of_debug() {
+        Jail::expect_with(|jail| {
+            jail.set_env(
+                "AGRAFE_DATABASE__URL",
+                "postgres://agrafe:hunter2@db/agrafe",
+            );
+            let debug = format!("{:?}", load(&example())?);
+            assert!(!debug.contains("hunter2"), "{debug}");
+            // The signing key and the KEK placeholders.
+            assert!(!debug.contains("REPLACE_ME"), "{debug}");
+            assert!(debug.contains("Secret(…)"), "{debug}");
+            Ok(())
+        });
+    }
 
     fn jobs(toml: &str) -> Option<JobsConfig> {
         Figment::from(Toml::string(toml)).extract().ok()
