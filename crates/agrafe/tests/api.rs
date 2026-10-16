@@ -38,13 +38,24 @@ const VIRUS: &[u8] = b"$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!";
 async fn fake_clamd() -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    fake_clamd_on(listener, None);
+    fake_clamd_on(listener, FakeClamd::Scan);
     addr
 }
 
-/// With a `limit`, the fake behaves like clamd at `StreamMaxLength`: it
-/// answers `ERROR` and hangs up as soon as the bytes exceed it.
-fn fake_clamd_on(listener: TcpListener, limit: Option<usize>) {
+/// How the fake clamd treats a stream.
+#[derive(Clone, Copy)]
+enum FakeClamd {
+    /// Reads it whole, answers `OK` or `FOUND`.
+    Scan,
+    /// clamd at `StreamMaxLength`: answers `ERROR` and hangs up as soon as
+    /// the bytes exceed the limit.
+    Limit(usize),
+    /// clamd dying: hangs up without a word as soon as the bytes exceed
+    /// the limit.
+    Crash(usize),
+}
+
+fn fake_clamd_on(listener: TcpListener, mode: FakeClamd) {
     tokio::spawn(async move {
         while let Ok((mut sock, _)) = listener.accept().await {
             tokio::spawn(async move {
@@ -68,11 +79,15 @@ fn fake_clamd_on(listener: TcpListener, limit: Option<usize>) {
                         return;
                     }
                     data.extend(chunk);
-                    if limit.is_some_and(|limit| data.len() > limit) {
-                        let _ = sock
-                            .write_all(b"INSTREAM size limit exceeded. ERROR\0")
-                            .await;
-                        return;
+                    match mode {
+                        FakeClamd::Limit(limit) if data.len() > limit => {
+                            let _ = sock
+                                .write_all(b"INSTREAM size limit exceeded. ERROR\0")
+                                .await;
+                            return;
+                        }
+                        FakeClamd::Crash(limit) if data.len() > limit => return,
+                        _ => {}
                     }
                 }
                 let infected = data.windows(VIRUS.len()).any(|w| w == VIRUS);
@@ -444,6 +459,21 @@ fn put_raw(uri: &str, bytes: Vec<u8>) -> Request<Body> {
         .uri(uri)
         .header(header::CONTENT_TYPE, "application/octet-stream")
         .body(Body::from(bytes))
+        .unwrap()
+}
+
+/// A raw `PUT` whose body arrives in pieces of `piece` bytes and carries no
+/// `Content-Length`, the way a browser streams a file.
+fn put_raw_chunked(uri: &str, bytes: Vec<u8>, piece: usize) -> Request<Body> {
+    let pieces: Vec<Result<bytes::Bytes, std::io::Error>> = bytes
+        .chunks(piece)
+        .map(|p| Ok(bytes::Bytes::copy_from_slice(p)))
+        .collect();
+    Request::builder()
+        .method(Method::PUT)
+        .uri(uri)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .body(Body::from_stream(futures::stream::iter(pieces)))
         .unwrap()
 }
 
@@ -1626,7 +1656,7 @@ async fn empty_file_deferred_scan() {
     assert_eq!(jobs_for(&app, id).await, vec!["scan"]);
 
     // clamd comes back on the same address and the retry goes through.
-    fake_clamd_on(TcpListener::bind(addr).await.unwrap(), None);
+    fake_clamd_on(TcpListener::bind(addr).await.unwrap(), FakeClamd::Scan);
     assert!(run_scan_job(&app).await);
     let got = get_blob(&app, id).await;
     assert_eq!(got["state"], "ready", "{got}");
@@ -1662,7 +1692,7 @@ async fn inline_scans_are_bounded() {
 async fn clamd_stream_limit() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    fake_clamd_on(listener, Some(1000));
+    fake_clamd_on(listener, FakeClamd::Limit(1000));
     let app = setup_with(addr).await;
 
     // Inline: clamd hangs up midway. The upload still succeeds and the scan
@@ -1678,6 +1708,42 @@ async fn clamd_stream_limit() {
 
     // The job meets the same limit: a failed attempt, the blob stays
     // unreadable, and the error names clamd.
+    assert!(run_scan_job(&app).await);
+    assert_eq!(get_blob(&app, id).await["state"], "uploaded");
+    let error: String = sqlx::query_scalar("SELECT last_error FROM jobs WHERE blob_id = $1")
+        .bind(uuid::Uuid::parse_str(id).unwrap())
+        .fetch_one(app.state.pool())
+        .await
+        .unwrap();
+    assert!(error.contains("clamd"), "{error}");
+}
+
+#[tokio::test]
+async fn clamd_dies_midway() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    fake_clamd_on(listener, FakeClamd::Crash(1000));
+    let app = setup_with(addr).await;
+
+    // Inline, the body arriving in pieces: clamd vanishes after the third
+    // one without a word. The remaining pieces are dropped on the floor, the
+    // upload completes and the scan is deferred.
+    let bytes = png_bytes(1500);
+    let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
+    let id = created["id"].as_str().unwrap();
+    let (status, body) = call(
+        &app.private,
+        put_raw_chunked(&format!("/blobs/{id}"), bytes.clone(), 400),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], "uploaded");
+    assert_eq!(body["scan_state"], "pending");
+    assert_eq!(jobs_for(&app, id).await, vec!["scan"]);
+    assert_eq!(stored_plaintext(&app, id).await, bytes, "stored whole");
+
+    // The job meets the same fate: a failed attempt naming clamd, the blob
+    // still unreadable.
     assert!(run_scan_job(&app).await);
     assert_eq!(get_blob(&app, id).await["state"], "uploaded");
     let error: String = sqlx::query_scalar("SELECT last_error FROM jobs WHERE blob_id = $1")
