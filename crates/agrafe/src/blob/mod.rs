@@ -149,6 +149,13 @@ impl Blob {
         public_upload_allowed(self.write_once, self.skip_virus_scan, self.input_type)
     }
 
+    /// The public port answers `404` for blobs in a terminal state, so a leaked
+    /// URL reveals nothing once the blob is gone. The private port still sees
+    /// them.
+    pub fn visible_on_public(&self) -> bool {
+        !self.state.is_terminal()
+    }
+
     /// Representations may be served only from `ready`.
     pub fn is_readable(&self) -> bool {
         self.state == BlobState::Ready

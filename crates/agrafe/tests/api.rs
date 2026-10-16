@@ -297,6 +297,33 @@ async fn public_signed_metadata() {
 }
 
 #[tokio::test]
+async fn terminal_blobs_are_404_on_the_public_port() {
+    let app = setup().await;
+    for state in ["expired", "infected"] {
+        let (_, created) = call(&app.private, json_req(Method::POST, "/blobs", raw_blob())).await;
+        let id: uuid::Uuid = created["id"].as_str().unwrap().parse().unwrap();
+        sqlx::query("UPDATE blobs SET state = $2 WHERE id = $1")
+            .bind(id)
+            .bind(state)
+            .execute(app.state.pool())
+            .await
+            .unwrap();
+
+        let metadata_url = public_path(created["urls"]["metadata"].as_str().unwrap());
+        let (status, body) = call(&app.public, req(Method::GET, &metadata_url)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{state}: {body}");
+        let upload_url = public_path(created["urls"]["upload"].as_str().unwrap());
+        let (status, _) = call(&app.public, req(Method::PUT, &upload_url)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{state}");
+
+        // The private port still reports the real state.
+        let (status, body) = call(&app.private, req(Method::GET, &format!("/blobs/{id}"))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["state"], state);
+    }
+}
+
+#[tokio::test]
 async fn public_upload_url_reaches_handler() {
     let app = setup().await;
     let (_, created) = call(&app.private, json_req(Method::POST, "/blobs", raw_blob())).await;
@@ -476,6 +503,9 @@ async fn delete_is_soft_and_idempotent() {
     // Deleted blobs vanish from the public port.
     let metadata_url = public_path(created["urls"]["metadata"].as_str().unwrap());
     let (status, _) = call(&app.public, req(Method::GET, &metadata_url)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let upload_url = public_path(created["urls"]["upload"].as_str().unwrap());
+    let (status, _) = call(&app.public, req(Method::PUT, &upload_url)).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     // Upload is refused.

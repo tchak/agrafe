@@ -57,11 +57,17 @@ handlers are shared.
 | Method | Path | Purpose |
 |---|---|---|
 | `PUT` | `/blobs/:token/:id` | Upload bytes, only `raw` and `multipart` |
-| `GET` | `/blobs/:token/:id` | Reduced metadata: state, scan state, representation states, content type, size |
+| `GET` | `/blobs/:token/:id` | Reduced metadata: state, scan state, representation states, content type, size. `404` once the blob is `expired`, `infected` or `deleted` |
 | `GET` | `/blobs/:token/:id/original/:filename` | Original bytes, supports `Range` |
 | `GET` | `/blobs/:token/:id/preview/:filename` | WebP preview or 404 |
 | `GET` | `/blobs/:token/:id/thumbnail/:filename` | WebP thumbnail, always 200 |
 | `GET` | `/healthz` | Liveness |
+
+Blobs in a terminal state (`expired`, `infected`, `deleted`) do not exist as
+far as the public port is concerned: every public route answers `404`, upload
+included, even with a valid signature. A URL that leaks after the blob is gone
+therefore reveals nothing, not even that it once existed. The private port
+keeps reporting the real state.
 
 The `:filename` segment of representation routes must match the blob's
 filename (percent-decoded), otherwise `404`. It exists so browsers get a

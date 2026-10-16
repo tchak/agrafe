@@ -10,7 +10,7 @@ use super::extract::{Json, Path};
 use super::json::PublicBlobResponse;
 use super::signed::Signed;
 use crate::app::AppState;
-use crate::blob::BlobState;
+use crate::blob::Blob;
 use crate::blob::repo;
 use crate::error::{ApiError, ApiResult};
 
@@ -36,12 +36,7 @@ async fn get_blob(
     State(state): State<AppState>,
     Path((_token, id)): Path<(String, Uuid)>,
 ) -> ApiResult<Json<PublicBlobResponse>> {
-    let blob = repo::find(state.pool(), id)
-        .await?
-        .ok_or(ApiError::NotFound)?;
-    if blob.state == BlobState::Deleted {
-        return Err(ApiError::NotFound);
-    }
+    let blob = find_visible(&state, id).await?;
     Ok(Json(PublicBlobResponse::new(&blob)))
 }
 
@@ -50,9 +45,7 @@ async fn upload_blob(
     State(state): State<AppState>,
     Path((_token, id)): Path<(String, Uuid)>,
 ) -> ApiResult<StatusCode> {
-    let blob = repo::find(state.pool(), id)
-        .await?
-        .ok_or(ApiError::NotFound)?;
+    let blob = find_visible(&state, id).await?;
     // Defense in depth: minting already refuses these, but a leaked key must
     // not turn into a policy bypass.
     if !blob.public_upload_allowed() {
@@ -67,6 +60,14 @@ async fn upload_blob(
         )));
     }
     Err(ApiError::NotImplemented)
+}
+
+/// Look a blob up as the public port sees it: terminal states are `404`.
+async fn find_visible(state: &AppState, id: Uuid) -> ApiResult<Blob> {
+    repo::find(state.pool(), id)
+        .await?
+        .filter(Blob::visible_on_public)
+        .ok_or(ApiError::NotFound)
 }
 
 async fn not_implemented(_signed: Signed) -> ApiError {
