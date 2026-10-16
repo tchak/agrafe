@@ -196,21 +196,31 @@ impl Blob {
         public_upload_allowed(self.skip_virus_scan, self.input_type)
     }
 
+    /// The state the blob is in at `now`. A blob past `expires_at` is
+    /// `expired` from that instant, whether or not the reaper has recorded it
+    /// yet, so expiry never waits on the reaper's schedule.
+    pub fn state_at(&self, now: Timestamp) -> BlobState {
+        match self.expires_at {
+            Some(at) if at <= now && !self.state.is_terminal() => BlobState::Expired,
+            _ => self.state,
+        }
+    }
+
     /// The public port answers `404` for blobs in a terminal state, so a leaked
     /// URL reveals nothing once the blob is gone. The private port still sees
     /// them.
-    pub fn visible_on_public(&self) -> bool {
-        !self.state.is_terminal()
+    pub fn visible_on_public(&self, now: Timestamp) -> bool {
+        !self.state_at(now).is_terminal()
     }
 
     /// Representations may be served only from `ready`.
-    pub fn is_readable(&self) -> bool {
-        self.state == BlobState::Ready
+    pub fn is_readable(&self, now: Timestamp) -> bool {
+        self.state_at(now) == BlobState::Ready
     }
 
     /// Blobs are write-once: a `PUT` may start only before any bytes exist.
-    pub fn accepts_upload(&self) -> bool {
-        self.state == BlobState::Created
+    pub fn accepts_upload(&self, now: Timestamp) -> bool {
+        self.state_at(now) == BlobState::Created
     }
 }
 

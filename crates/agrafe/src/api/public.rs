@@ -5,6 +5,7 @@ use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::{HeaderMap, Method};
 use axum::response::Response;
 use axum::routing::get;
+use jiff::Timestamp;
 use uuid::Uuid;
 
 use super::body;
@@ -63,10 +64,11 @@ async fn upload_blob(
             "this blob can only be uploaded through the private interface".into(),
         ));
     }
-    if !blob.accepts_upload() {
+    let now = Timestamp::now();
+    if !blob.accepts_upload(now) {
         return Err(ApiError::Conflict(format!(
             "blob is {} and cannot be uploaded",
-            blob.state
+            blob.state_at(now)
         )));
     }
     let declared = upload::declared(&blob)?;
@@ -97,7 +99,7 @@ async fn get_original(
 async fn find_visible(state: &AppState, id: Uuid) -> ApiResult<Blob> {
     repo::find(state.pool(), id)
         .await?
-        .filter(Blob::visible_on_public)
+        .filter(|blob| blob.visible_on_public(Timestamp::now()))
         .ok_or(ApiError::NotFound)
 }
 

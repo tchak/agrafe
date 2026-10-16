@@ -202,6 +202,57 @@ async fn terminal_blobs_are_404_on_the_public_port() {
 }
 
 #[tokio::test]
+async fn blobs_past_expires_at_are_expired_before_the_reaper_runs() {
+    let app = setup().await;
+    let ready = ready_blob(&app, &png_bytes(100)).await;
+    let created = create(&app, raw_blob()).await;
+    for blob in [&ready, &created] {
+        sqlx::query("UPDATE blobs SET expires_at = now() - interval '1 second' WHERE id = $1")
+            .bind(parse_id(id_of(blob)))
+            .execute(app.state.pool())
+            .await
+            .unwrap();
+    }
+
+    // The public port treats them as gone.
+    for url in [
+        public_url(&ready, "metadata"),
+        public_url(&ready, "original"),
+        public_url(&created, "metadata"),
+    ] {
+        let (status, body) = call(&app.public, req(Method::GET, &url)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{url}: {body}");
+    }
+    let (status, _) = call(
+        &app.public,
+        put_raw(&public_url(&created, "upload"), vec![0; 1024]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // The private port refuses to read or upload them, and says why.
+    let id = id_of(&ready);
+    let (status, body) = call(
+        &app.private,
+        req(Method::GET, &format!("/blobs/{id}/original/photo.png")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["error"]["message"], "blob is expired and not readable");
+    let (status, body) = put_private(&app, id_of(&created), vec![0; 1024]).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(
+        body["error"]["message"],
+        "blob is expired and cannot be uploaded"
+    );
+
+    // Metadata keeps reporting the stored state until the reaper records it.
+    let (status, body) = call(&app.private, req(Method::GET, &format!("/blobs/{id}"))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["state"], "ready");
+}
+
+#[tokio::test]
 async fn mint_urls_with_options() {
     let app = setup().await;
     let (_, created) = call(&app.private, json_req(Method::POST, "/blobs", raw_blob())).await;

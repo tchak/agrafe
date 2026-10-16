@@ -122,10 +122,11 @@ async fn upload_blob(
     let blob = repo::find(state.pool(), id)
         .await?
         .ok_or(ApiError::NotFound)?;
-    if !blob.accepts_upload() {
+    let now = Timestamp::now();
+    if !blob.accepts_upload(now) {
         return Err(ApiError::Conflict(format!(
             "blob is {} and cannot be uploaded",
-            blob.state
+            blob.state_at(now)
         )));
     }
     if !blob.input_type.is_direct() {

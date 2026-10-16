@@ -40,10 +40,11 @@ pub async fn serve(
     if filename != blob.filename {
         return Err(ApiError::NotFound);
     }
-    if !blob.is_readable() {
+    let now = Timestamp::now();
+    if !blob.is_readable(now) {
         return Err(ApiError::Conflict(format!(
             "blob is {} and not readable",
-            blob.state
+            blob.state_at(now)
         )));
     }
     let stored = Stored::from_blob(&blob).map_err(ApiError::internal)?;

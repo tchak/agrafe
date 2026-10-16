@@ -135,7 +135,7 @@ message = METHOD "\n" expires_unix "\n" path_and_query_after_token
 
 | Field | Required | Notes |
 |---|---|---|
-| `filename` | yes | Stored as given, used in URLs and `Content-Disposition` |
+| `filename` | yes | Stored as given, used in URLs and `Content-Disposition`. No path separators, control characters or bidirectional formatting characters (which can disguise an extension) |
 | `content_type` | yes | Normalised to `type/subtype`, classified into a category |
 | `input_type` | yes | `raw`, `multipart`, `rows`, `archive` |
 | `checksum` | for `raw`, `multipart` | SHA-256 of the bytes, base64 |
@@ -210,6 +210,13 @@ any ──► deleted
 | `infected` | Scan failed. Never readable. Object kept for forensics until purge. |
 | `expired` | Past `expires_at`. Not readable. Object purged by reaper. |
 | `deleted` | Soft deleted. Object purged by reaper. |
+
+A blob is `expired` from the instant `expires_at` passes, not from whenever
+the reaper gets to it: every read, upload and public lookup compares
+`expires_at` with the current time and treats a blob past it as `expired`.
+The reaper only records the state and purges the object, so expiry never
+depends on its schedule. Until it runs, private metadata still reports the
+stored state alongside the past `expires_at`.
 
 Transitions are conditional updates (`UPDATE ... WHERE state = $from`) so two
 concurrent requests cannot both win. Write-once is enforced by refusing `PUT`

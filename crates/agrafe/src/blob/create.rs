@@ -126,13 +126,20 @@ pub(crate) fn validate_filename(filename: &str) -> Result<String, ApiError> {
     }
     if filename
         .chars()
-        .any(|c| c == '/' || c == '\\' || c.is_control())
+        .any(|c| c == '/' || c == '\\' || c.is_control() || is_bidi_control(c))
     {
         return Err(unprocessable(
             "filename must not contain path separators or control characters",
         ));
     }
     Ok(filename.to_string())
+}
+
+/// Bidirectional formatting characters. `char::is_control` covers only the
+/// C0 and C1 controls, and these can make `invoice\u{202E}fdp.exe` display
+/// as `invoiceexe.pdf` in a download prompt or a URL bar.
+fn is_bidi_control(c: char) -> bool {
+    matches!(c, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
 }
 
 /// Parse and reduce to `type/subtype`, lowercase, parameters dropped. The
@@ -283,11 +290,25 @@ mod tests {
 
     #[test]
     fn filename_rules() {
-        for bad in ["", "   ", "a/b", "a\\b", "..", "x\u{0}y"] {
+        for bad in [
+            "",
+            "   ",
+            "a/b",
+            "a\\b",
+            "..",
+            "x\u{0}y",
+            "invoice\u{202E}fdp.exe",
+            "a\u{2066}b",
+            "a\u{200F}b",
+        ] {
             let mut r = req(InputType::Raw, "image/jpeg");
             r.filename = bad.into();
             assert!(validate(r, &cfg(), Timestamp::now()).is_err(), "{bad:?}");
         }
+        // Scripts written right to left are fine; only the controls are not.
+        let mut r = req(InputType::Raw, "image/jpeg");
+        r.filename = "صورة.jpg".into();
+        assert!(validate(r, &cfg(), Timestamp::now()).is_ok());
     }
 
     #[test]
