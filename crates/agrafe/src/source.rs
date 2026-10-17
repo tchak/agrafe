@@ -213,6 +213,9 @@ async fn store_part(
 #[derive(Debug, Default)]
 pub struct Lines {
     buf: BytesMut,
+    /// Bytes at the front of `buf` already searched for a newline, so a
+    /// line arriving in many chunks is scanned once, not once per chunk.
+    scanned: usize,
     /// Number of the next complete line.
     next: u64,
 }
@@ -237,6 +240,7 @@ impl Lines {
     pub fn new() -> Self {
         Self {
             buf: BytesMut::new(),
+            scanned: 0,
             next: 1,
         }
     }
@@ -246,22 +250,33 @@ impl Lines {
     }
 
     /// The next complete line, without its newline, or `None` until more
-    /// bytes arrive. A line still open past `MAX_LINE_LEN` is refused
-    /// without waiting for its end.
+    /// bytes arrive. A line longer than `MAX_LINE_LEN` is refused, whether
+    /// its end has arrived or not.
     pub fn next_line(&mut self) -> Result<Option<(u64, Bytes)>, LineError> {
-        match self.buf.iter().position(|b| *b == b'\n') {
-            Some(at) => {
+        let too_long = || LineError {
+            line: self.next,
+            reason: format!("line is longer than {MAX_LINE_LEN} bytes"),
+        };
+        match memchr::memchr(b'\n', &self.buf[self.scanned..]) {
+            Some(found) => {
+                let at = self.scanned + found;
+                if at > MAX_LINE_LEN {
+                    return Err(too_long());
+                }
                 let line = self.buf.split_to(at).freeze();
                 self.buf.advance(1);
+                self.scanned = 0;
                 let n = self.next;
                 self.next += 1;
                 Ok(Some((n, line)))
             }
-            None if self.buf.len() > MAX_LINE_LEN => Err(LineError {
-                line: self.next,
-                reason: format!("line is longer than {MAX_LINE_LEN} bytes"),
-            }),
-            None => Ok(None),
+            None => {
+                self.scanned = self.buf.len();
+                if self.buf.len() > MAX_LINE_LEN {
+                    return Err(too_long());
+                }
+                Ok(None)
+            }
         }
     }
 
@@ -324,5 +339,46 @@ mod tests {
         let err = splitter.next_line().unwrap_err();
         assert_eq!(err.line, 1);
         assert!(err.reason.contains("longer"), "{err:?}");
+    }
+
+    /// The bound holds when the line's end arrives in the same chunk, and
+    /// a line exactly at the bound passes.
+    #[test]
+    fn refuses_a_long_line_that_ended() {
+        let mut splitter = Lines::new();
+        let mut chunk = vec![b'x'; MAX_LINE_LEN + 1];
+        chunk.push(b'\n');
+        let err = splitter.next_line_after(&chunk).unwrap_err();
+        assert_eq!(err.line, 1);
+        assert!(err.reason.contains("longer"), "{err:?}");
+
+        let mut splitter = Lines::new();
+        let mut chunk = vec![b'x'; MAX_LINE_LEN];
+        chunk.push(b'\n');
+        let (n, line) = splitter.next_line_after(&chunk).unwrap().unwrap();
+        assert_eq!((n, line.len()), (1, MAX_LINE_LEN));
+    }
+
+    /// A line that arrives in pieces is found once its newline lands,
+    /// whichever chunk brings it, with the search picking up where it left.
+    #[test]
+    fn finds_a_newline_across_many_chunks() {
+        let mut splitter = Lines::new();
+        for _ in 0..100 {
+            assert_eq!(splitter.next_line_after(&[b'y'; 1000]).unwrap(), None);
+        }
+        assert_eq!(splitter.scanned, 100_000);
+        let (n, line) = splitter.next_line_after(b"z\nq").unwrap().unwrap();
+        assert_eq!((n, line.len()), (1, 100_001));
+        assert_eq!(splitter.scanned, 0);
+        assert_eq!(splitter.next_line().unwrap(), None);
+        assert_eq!(splitter.scanned, 1);
+    }
+
+    impl Lines {
+        fn next_line_after(&mut self, chunk: &[u8]) -> Result<Option<(u64, Bytes)>, LineError> {
+            self.push(chunk);
+            self.next_line()
+        }
     }
 }

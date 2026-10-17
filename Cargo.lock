@@ -80,6 +80,7 @@ dependencies = [
  "humantime-serde",
  "jiff",
  "jiff-sqlx",
+ "memchr",
  "mime",
  "object_store",
  "percent-encoding",
