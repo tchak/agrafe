@@ -27,6 +27,22 @@ CREATE TABLE blobs (
     -- storage: blobs are write-once, the original lives at `<id>/original`
     storage_key       text,
 
+    -- generated blobs: a `rows` or `archive` blob is built from a source
+    -- that arrives in parts, stored under `<id>/source/<n>` while the blob
+    -- is still `created`. See DESIGN.md, "Generated blobs".
+    -- Parts accepted so far; the next one must be source_parts + 1.
+    source_parts      integer NOT NULL DEFAULT 0 CHECK (source_parts >= 0),
+    -- Lines across the parts: manifest entries for an archive.
+    source_rows       bigint  NOT NULL DEFAULT 0 CHECK (source_rows >= 0),
+    -- Bytes of source across the parts.
+    source_size       bigint  NOT NULL DEFAULT 0 CHECK (source_size >= 0),
+    -- When the last part landed; the reaper expires a source left here.
+    source_updated_at timestamptz,
+    -- Set by the archive build: members written, and members skipped
+    -- because they were gone by then (listed in the archive's ERRORS.txt).
+    archive_entries   bigint CHECK (archive_entries IS NULL OR archive_entries >= 0),
+    archive_errors    bigint CHECK (archive_errors IS NULL OR archive_errors >= 0),
+
     -- encryption (envelope: data key wrapped by the KEK named kek_id). The
     -- streaming AEAD header is cached on the row so a range request needs
     -- a single bucket read.
@@ -82,7 +98,11 @@ CREATE INDEX blobs_expires_at_idx   ON blobs (expires_at)
 -- Reaper: stale uploads.
 CREATE INDEX blobs_uploading_idx    ON blobs (upload_heartbeat_at)
     WHERE state = 'uploading';
--- Reaper: terminal blobs whose objects are still in the bucket.
+-- Reaper: abandoned sources.
+CREATE INDEX blobs_stale_source_idx ON blobs (source_updated_at)
+    WHERE state = 'created' AND source_parts > 0;
+-- Reaper: terminal blobs whose objects are still in the bucket, the
+-- original or the source parts a generated blob held.
 CREATE INDEX blobs_unpurged_idx     ON blobs (id)
-    WHERE storage_key IS NOT NULL AND purged_at IS NULL
+    WHERE (storage_key IS NOT NULL OR source_parts > 0) AND purged_at IS NULL
       AND state IN ('infected', 'expired', 'deleted');
