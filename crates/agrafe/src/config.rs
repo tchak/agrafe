@@ -72,8 +72,9 @@ impl Config {
         }
         if self.archive.max_size.as_u64() > ArchiveConfig::MAX_SIZE_LIMIT {
             return Err(ConfigError::Invalid(format!(
-                "archive.max_size must be at most {} bytes: the build writes 32 MiB parts \
-                 and the object store allows 10 000 of them",
+                "archive.max_size must be at most {} bytes: the build writes 32 MiB parts, \
+                 the object store allows 10 000 of them, and the encryption and the \
+                 archive's own records need a margin on top of the estimate",
                 ArchiveConfig::MAX_SIZE_LIMIT
             )));
         }
@@ -299,8 +300,15 @@ pub struct ArchiveConfig {
 }
 
 impl ArchiveConfig {
-    /// What the build can write at most: 10 000 parts of 32 MiB.
-    pub const MAX_SIZE_LIMIT: u64 = 10_000 * 32 * 1024 * 1024;
+    /// What the build can write at most: 10 000 parts of 32 MiB, less one
+    /// percent. The limit is checked against the accept-time estimate of
+    /// the plaintext, while the parts carry the ciphertext, a tag per
+    /// segment longer, plus `ERRORS.txt` and the end records the estimate
+    /// leaves out; without the margin an archive at the limit would need a
+    /// part the store refuses. About 309 GiB.
+    pub const MAX_SIZE_LIMIT: u64 =
+        crate::jobs::archive::MAX_BUILD_PARTS * crate::jobs::archive::BUILD_PART_SIZE as u64 / 100
+            * 99;
 }
 
 fn default_archive_max_size() -> ByteSize {
@@ -612,6 +620,12 @@ mod tests {
             jail.set_env("AGRAFE_ARCHIVE__MAX_SIZE", "400 GiB");
             let err = load(&example()).unwrap_err().to_string();
             assert!(err.contains("archive.max_size"), "{err}");
+            // 10 000 parts of 32 MiB is 312.5 GiB; the margin takes it
+            // just under 310.
+            jail.set_env("AGRAFE_ARCHIVE__MAX_SIZE", "310 GiB");
+            assert!(load(&example()).is_err());
+            jail.set_env("AGRAFE_ARCHIVE__MAX_SIZE", "309 GiB");
+            assert_eq!(load(&example())?.archive.max_size, ByteSize::gib(309));
             Ok(())
         });
     }

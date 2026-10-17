@@ -587,7 +587,9 @@ a fixed overhead per entry, accumulated part by part on the row's `size`,
 which is therefore an estimate while the blob is `created` or `uploaded`
 and exact once it is `ready`. It is checked against `archive.max_size`, a
 limit of its own since `upload.max_size` is sized for one request, at most
-312 GiB since the build writes 32 MiB parts.
+309 GiB: 10 000 parts of 32 MiB, less one percent because the parts carry
+the ciphertext, a tag per segment longer than the estimate, plus the
+`ERRORS.txt` and the end records the estimate leaves out.
 
 The build streams the ZIP as it assembles it, through a writer of its own
 in `jobs::archive::zip` rather than the `zip` crate, which stays out of the

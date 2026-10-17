@@ -36,8 +36,12 @@ use crate::source::{LineError, Lines};
 use crate::upload::{self, PART_CONCURRENCY};
 
 /// Parts of the multipart upload. S3 allows 10 000 per object; the default
-/// 5 MiB would cap an archive at 50 GB.
-const BUILD_PART_SIZE: usize = 32 * 1024 * 1024;
+/// 5 MiB would cap an archive at 50 GB. `ArchiveConfig::MAX_SIZE_LIMIT`
+/// follows from the two.
+pub(crate) const BUILD_PART_SIZE: usize = 32 * 1024 * 1024;
+
+/// The object store's limit on parts per object.
+pub(crate) const MAX_BUILD_PARTS: u64 = 10_000;
 
 /// Members fetched ahead of the one being copied: most entries are small,
 /// and a serial build would wait longer for the first byte of each object
