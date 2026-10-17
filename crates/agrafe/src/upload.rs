@@ -77,15 +77,15 @@ pub fn prepare(blob: &Blob, now: Timestamp) -> Result<Declared, UploadError> {
 }
 
 impl Agrafe {
-    /// Upload the bytes of blob `id`, once. The stream is the file itself;
-    /// framing (multipart, content length) is the caller's business.
-    pub async fn upload<S>(&self, id: Uuid, body: S) -> Result<Blob, UploadError>
+    /// Upload the bytes of `blob`, once. The stream is the file itself;
+    /// framing (multipart, content length) is the caller's business, which
+    /// is why the caller fetches the blob and hands it over rather than an
+    /// id: what the body looks like depends on its input type. The checks
+    /// of `prepare` run here regardless of whether the caller ran them.
+    pub async fn upload<S>(&self, blob: Blob, body: S) -> Result<Blob, UploadError>
     where
         S: Stream<Item = Result<Bytes, BoxError>> + Unpin,
     {
-        let blob = repo::find(self.pool(), id)
-            .await?
-            .ok_or(UploadError::NotFound)?;
         let declared = prepare(&blob, Timestamp::now())?;
         run(self, blob, declared, body).await
     }
@@ -142,7 +142,7 @@ pub enum UploadError {
 /// reset, a closed connection), and that only closes the channel: the task
 /// sees the body end early, fails the size check, aborts the multipart
 /// upload and hands the blob back. Nothing is ever left half done.
-pub async fn run<S>(
+async fn run<S>(
     state: &Agrafe,
     blob: Blob,
     declared: Declared,

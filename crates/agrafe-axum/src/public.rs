@@ -16,7 +16,6 @@ use super::representation::{self, Port, RepresentationQuery};
 use super::signed::Signed;
 use agrafe::Agrafe;
 use agrafe::blob::{Blob, Representation};
-use agrafe::upload;
 
 use crate::error::{ApiError, ApiResult};
 
@@ -62,8 +61,7 @@ async fn upload_blob(
             "this blob can only be uploaded through the private interface".into(),
         ));
     }
-    let declared = upload::prepare(&blob, Timestamp::now())?;
-    let blob = body::upload(&state, blob, declared, req)
+    let blob = body::upload(&state, blob, req)
         .await
         .map_err(|err| match err {
             // Which signature caught the file is an evasion hint for an

@@ -1,27 +1,28 @@
 //! Turning a `PUT` request into the stream of file bytes the upload pipeline
-//! consumes, according to the blob's input type.
+//! consumes, according to the blob's input type, and handing it to the
+//! `Agrafe` handle.
 
 use axum::RequestExt;
 use axum::extract::multipart::Multipart;
 use axum::extract::{FromRequest, Request};
 use futures::TryStreamExt;
 use http_body_util::LengthLimitError;
+use jiff::Timestamp;
 
 use agrafe::Agrafe;
 use agrafe::blob::{Blob, InputType};
-use agrafe::upload::{self, BoxError, Declared};
+use agrafe::upload::{self, BoxError};
 
 use crate::error::{ApiError, ApiResult};
 
 /// The multipart part holding the file.
 pub const FILE_PART: &str = "file";
 
-pub async fn upload(
-    state: &Agrafe,
-    blob: Blob,
-    declared: Declared,
-    req: Request,
-) -> ApiResult<Blob> {
+/// Upload the body of `req` as the bytes of `blob`. The handle runs the
+/// same checks again; they run here first so that a blob which cannot take
+/// an upload is refused before any of the body is read.
+pub async fn upload(state: &Agrafe, blob: Blob, req: Request) -> ApiResult<Blob> {
+    let declared = upload::prepare(&blob, Timestamp::now())?;
     match blob.input_type {
         InputType::Raw => {
             // A body whose length is already known not to match is refused
@@ -40,7 +41,7 @@ pub async fn upload(
                 .into_limited_body()
                 .into_data_stream()
                 .map_err(body_error);
-            Ok(upload::run(state, blob, declared, body).await?)
+            Ok(state.upload(blob, body).await?)
         }
         InputType::Multipart => {
             let mut multipart = Multipart::from_request(req, &())
@@ -58,7 +59,7 @@ pub async fn upload(
                 }
             };
             let body = field.map_err(|e| BoxError::from(multipart_error(e)));
-            Ok(upload::run(state, blob, declared, body).await?)
+            Ok(state.upload(blob, body).await?)
         }
         InputType::Rows | InputType::Archive => Err(ApiError::NotImplemented),
     }

@@ -6,7 +6,6 @@ use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::IntoResponse;
 use axum::response::Response;
 use axum::routing::{get, post};
-use jiff::Timestamp;
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -16,7 +15,6 @@ use agrafe::blob::repo::{self, ListParams};
 use agrafe::blob::urls::{BlobUrls, MintOptions};
 use agrafe::blob::{BlobState, Representation, ScanState};
 use agrafe::classify::Category;
-use agrafe::upload;
 
 use super::body;
 use super::extract::{Json, Path, Query};
@@ -102,8 +100,7 @@ async fn upload_blob(
     req: Request,
 ) -> ApiResult<Json<BlobResponse>> {
     let blob = agrafe.find_blob(id).await?.ok_or(ApiError::NotFound)?;
-    let declared = upload::prepare(&blob, Timestamp::now())?;
-    let blob = body::upload(&agrafe, blob, declared, req).await?;
+    let blob = body::upload(&agrafe, blob, req).await?;
     let urls = agrafe.urls(&blob);
     Ok(Json(BlobResponse::new(&blob, urls)))
 }
