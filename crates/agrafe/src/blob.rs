@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::classify::Category;
+use crate::jobs::Priority;
 
 /// Lifecycle of a blob. See DESIGN.md, "State machine".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -204,6 +205,9 @@ pub struct Blob {
     pub skip_virus_scan: bool,
     #[sqlx(try_from = "crate::db::NullableTimestamp")]
     pub expires_at: Option<Timestamp>,
+    /// Copied onto every job enqueued for the blob.
+    #[sqlx(try_from = "String")]
+    pub priority: Priority,
 
     #[sqlx(try_from = "String")]
     pub scan_state: ScanState,

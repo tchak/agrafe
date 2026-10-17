@@ -63,6 +63,11 @@ impl Config {
                 "server.public_base_url must not end with a slash".into(),
             ));
         }
+        if self.jobs.kinds.as_ref().is_some_and(Vec::is_empty) {
+            return Err(ConfigError::Invalid(
+                "jobs.kinds must name at least one kind, or be omitted for all".into(),
+            ));
+        }
         Ok(())
     }
 }
@@ -467,6 +472,9 @@ pub struct JobsConfig {
     /// Keyed by kind, so an unknown name is a configuration error rather
     /// than a silently ignored line.
     pub concurrency: HashMap<JobKind, usize>,
+    /// The kinds this process runs workers for; every kind when omitted.
+    /// A deployment must cover each kind with some process.
+    pub kinds: Option<Vec<JobKind>>,
 }
 
 impl JobsConfig {
@@ -478,8 +486,28 @@ impl JobsConfig {
         }
         match kind {
             JobKind::Scan | JobKind::Render | JobKind::Purge => 4,
-            JobKind::Reap => 1,
+            JobKind::Rows => 2,
+            JobKind::Archive | JobKind::Reap => 1,
         }
+    }
+
+    /// The kinds this process handles, in the order of `JobKind::ALL`, each
+    /// once.
+    pub fn kinds(&self) -> Vec<JobKind> {
+        match &self.kinds {
+            None => JobKind::ALL.to_vec(),
+            Some(kinds) => JobKind::ALL
+                .iter()
+                .copied()
+                .filter(|k| kinds.contains(k))
+                .collect(),
+        }
+    }
+
+    pub fn handles(&self, kind: JobKind) -> bool {
+        self.kinds
+            .as_ref()
+            .is_none_or(|kinds| kinds.contains(&kind))
     }
 }
 
@@ -504,6 +532,7 @@ impl Default for JobsConfig {
             reap_interval: default_reap_interval(),
             keep_failed: default_keep_failed(),
             concurrency: HashMap::new(),
+            kinds: None,
         }
     }
 }
@@ -579,6 +608,28 @@ mod tests {
 
     fn jobs(toml: &str) -> Option<JobsConfig> {
         Figment::from(Toml::string(toml)).extract().ok()
+    }
+
+    #[test]
+    fn kinds_select_the_workers_a_process_runs() {
+        let cfg = jobs("").unwrap();
+        assert_eq!(cfg.kinds(), JobKind::ALL);
+        assert!(cfg.handles(JobKind::Archive));
+
+        let cfg = jobs(r#"kinds = ["archive", "scan", "scan"]"#).unwrap();
+        assert_eq!(cfg.kinds(), [JobKind::Scan, JobKind::Archive]);
+        assert!(!cfg.handles(JobKind::Render));
+        assert!(jobs(r#"kinds = ["scann"]"#).is_none(), "a typo is an error");
+
+        Jail::expect_with(|jail| {
+            jail.set_env("AGRAFE_JOBS__KINDS", r#"["render", "rows"]"#);
+            let config = load(&example())?;
+            assert_eq!(config.jobs.kinds(), [JobKind::Render, JobKind::Rows]);
+            jail.set_env("AGRAFE_JOBS__KINDS", "[]");
+            let err = load(&example()).unwrap_err().to_string();
+            assert!(err.contains("at least one kind"), "{err}");
+            Ok(())
+        });
     }
 
     #[test]

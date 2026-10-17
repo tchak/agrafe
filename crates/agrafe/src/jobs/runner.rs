@@ -18,9 +18,6 @@ use super::{Failure, Job, JobError, JobKind, purge, reap, render, scan};
 use crate::app::AppState;
 use crate::metrics::Outcome;
 
-/// Kinds this binary runs: every one of them.
-pub const HANDLED: &[JobKind] = JobKind::ALL;
-
 /// Pause after a listener error before asking Postgres again.
 const LISTEN_RETRY: Duration = Duration::from_secs(1);
 
@@ -45,14 +42,19 @@ pub async fn run<F>(state: AppState, shutdown: F) -> Result<(), Error>
 where
     F: Future<Output = ()> + Clone + Send + 'static,
 {
-    render::probe(&state.config().media).await?;
-    tracing::info!("renderer probe passed");
-    // The reaper reschedules itself from then on.
-    reap::schedule(state.pool(), Timestamp::now())
-        .await
-        .map_err(Error::Schedule)?;
+    let handled = state.config().jobs.kinds();
+    if handled.contains(&JobKind::Render) {
+        render::probe(&state.config().media).await?;
+        tracing::info!("renderer probe passed");
+    }
+    if handled.contains(&JobKind::Reap) {
+        // The reaper reschedules itself from then on.
+        reap::schedule(state.pool(), Timestamp::now())
+            .await
+            .map_err(Error::Schedule)?;
+    }
 
-    let wakeups: HashMap<JobKind, Arc<Notify>> = HANDLED
+    let wakeups: HashMap<JobKind, Arc<Notify>> = handled
         .iter()
         .map(|kind| (*kind, Arc::new(Notify::new())))
         .collect();
@@ -64,7 +66,7 @@ where
     tasks.spawn(listen(listener, wakeups.clone(), shutdown.clone()));
 
     let worker = format!("{}-{}", hostname(), Uuid::now_v7());
-    for kind in HANDLED {
+    for kind in &handled {
         let count = state.config().jobs.concurrency_for(*kind);
         state.metrics().set_workers(*kind, count);
         tracing::info!(kind = %kind, workers = count, "starting workers");
@@ -155,6 +157,9 @@ async fn handle(state: &AppState, job: &Job) -> Result<(), JobError> {
     match job.kind {
         JobKind::Scan => scan::run(state, job).await,
         JobKind::Render => render::run(state, job).await,
+        // Generated blobs are designed, not built yet; nothing enqueues
+        // these.
+        JobKind::Rows | JobKind::Archive => Err(JobError::Unhandled(job.kind)),
         JobKind::Purge => purge::run(state, job).await,
         JobKind::Reap => reap::run(state, job).await,
     }

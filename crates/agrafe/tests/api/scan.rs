@@ -400,6 +400,7 @@ async fn clamd_down() {
         pool,
         agrafe::jobs::JobKind::Scan,
         Some(parse_id(id)),
+        agrafe::jobs::Priority::Normal,
         json!({}),
         jiff::Timestamp::now(),
     )

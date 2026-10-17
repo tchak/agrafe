@@ -9,6 +9,7 @@ use uuid::Uuid;
 use super::urls::BlobUrls;
 use crate::blob::{Blob, BlobState, InputType, RepresentationState, ScanState};
 use crate::classify::Category;
+use crate::jobs::Priority;
 
 /// Full metadata, private port.
 #[derive(Debug, Serialize)]
@@ -24,6 +25,7 @@ pub struct BlobResponse {
     pub skip_virus_scan: bool,
     pub public_upload_allowed: bool,
     pub expires_at: Option<Timestamp>,
+    pub priority: Priority,
     pub scan_state: ScanState,
     pub scanned_at: Option<Timestamp>,
     pub scan_signature: Option<String>,
@@ -52,6 +54,7 @@ impl BlobResponse {
             skip_virus_scan: blob.skip_virus_scan,
             public_upload_allowed: blob.public_upload_allowed(),
             expires_at: blob.expires_at,
+            priority: blob.priority,
             scan_state: blob.scan_state,
             scanned_at: blob.scanned_at,
             scan_signature: blob.scan_signature.clone(),

@@ -17,6 +17,8 @@ async fn workers_wake_on_notify_and_stop_on_shutdown() {
     let app = setup_tuned(clamd, |c| {
         c.jobs.poll_interval = Duration::from_secs(3600);
         c.database.max_connections = 8;
+        // This process scans; another one would render.
+        c.jobs.kinds = Some(vec![agrafe::jobs::JobKind::Scan]);
     })
     .await;
 
@@ -53,6 +55,11 @@ async fn workers_wake_on_notify_and_stop_on_shutdown() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["state"], "uploaded");
     wait_for_state(&app, id, "ready").await;
+    assert_eq!(
+        jobs_for(&app, id).await,
+        ["render"],
+        "left for a render worker"
+    );
 
     stop.send(()).unwrap();
     tokio::time::timeout(Duration::from_secs(5), workers)
@@ -120,7 +127,7 @@ async fn running_job_keeps_its_lease() {
 
 #[tokio::test]
 async fn job_queue_mechanics() {
-    use agrafe::jobs::{self, Failure, JobKind};
+    use agrafe::jobs::{self, Failure, JobKind, Priority};
 
     let app = setup().await;
     let pool = app.state.pool();
@@ -131,22 +138,36 @@ async fn job_queue_mechanics() {
 
     // One pending job per kind and blob; blob-less jobs count as one blob.
     assert!(
-        jobs::enqueue(pool, JobKind::Scan, Some(blob), json!({}), now)
+        jobs::enqueue(
+            pool,
+            JobKind::Scan,
+            Some(blob),
+            Priority::Normal,
+            json!({}),
+            now
+        )
+        .await
+        .unwrap()
+    );
+    assert!(
+        !jobs::enqueue(
+            pool,
+            JobKind::Scan,
+            Some(blob),
+            Priority::Normal,
+            json!({}),
+            now
+        )
+        .await
+        .unwrap()
+    );
+    assert!(
+        jobs::enqueue(pool, JobKind::Purge, None, Priority::Normal, json!({}), now)
             .await
             .unwrap()
     );
     assert!(
-        !jobs::enqueue(pool, JobKind::Scan, Some(blob), json!({}), now)
-            .await
-            .unwrap()
-    );
-    assert!(
-        jobs::enqueue(pool, JobKind::Purge, None, json!({}), now)
-            .await
-            .unwrap()
-    );
-    assert!(
-        !jobs::enqueue(pool, JobKind::Purge, None, json!({}), now)
+        !jobs::enqueue(pool, JobKind::Purge, None, Priority::Normal, json!({}), now)
             .await
             .unwrap()
     );
@@ -200,6 +221,7 @@ async fn job_queue_mechanics() {
             pool,
             JobKind::Render,
             Some(blob),
+            Priority::Normal,
             json!({}),
             now + Duration::from_secs(3600)
         )
@@ -244,9 +266,16 @@ async fn job_queue_mechanics() {
         .unwrap()
         .unwrap();
     assert!(
-        jobs::enqueue(pool, JobKind::Scan, Some(blob), json!({}), now)
-            .await
-            .unwrap()
+        jobs::enqueue(
+            pool,
+            JobKind::Scan,
+            Some(blob),
+            Priority::Normal,
+            json!({}),
+            now
+        )
+        .await
+        .unwrap()
     );
     assert_eq!(
         jobs::fail(&mut conn, &held, "boom", now).await.unwrap(),
@@ -275,7 +304,7 @@ async fn job_queue_mechanics() {
 /// attempts back or throw it away; a live job is out of their reach.
 #[tokio::test]
 async fn operators_see_retry_and_discard_dead_jobs() {
-    use agrafe::jobs::{self, JobKind};
+    use agrafe::jobs::{self, JobKind, Priority};
     use axum::http::Method;
 
     let app = setup().await;
@@ -284,10 +313,17 @@ async fn operators_see_retry_and_discard_dead_jobs() {
     let created = create(&app, raw_blob()).await;
     let blob = parse_id(id_of(&created));
 
-    jobs::enqueue(pool, JobKind::Scan, Some(blob), json!({}), now)
-        .await
-        .unwrap();
-    jobs::enqueue(pool, JobKind::Purge, None, json!({}), now)
+    jobs::enqueue(
+        pool,
+        JobKind::Scan,
+        Some(blob),
+        Priority::Normal,
+        json!({}),
+        now,
+    )
+    .await
+    .unwrap();
+    jobs::enqueue(pool, JobKind::Purge, None, Priority::Normal, json!({}), now)
         .await
         .unwrap();
     let dead: i64 = sqlx::query_scalar(
@@ -382,9 +418,16 @@ async fn operators_see_retry_and_discard_dead_jobs() {
         .await
         .unwrap();
     assert!(
-        jobs::enqueue(pool, JobKind::Scan, Some(blob), json!({}), now)
-            .await
-            .unwrap()
+        jobs::enqueue(
+            pool,
+            JobKind::Scan,
+            Some(blob),
+            Priority::Normal,
+            json!({}),
+            now
+        )
+        .await
+        .unwrap()
     );
     let (status, body) = call(
         &app.private,
@@ -423,7 +466,7 @@ async fn metrics_report_queue_depth_and_runs() {
 
     let text = scrape().await;
     assert!(
-        text.contains("agrafe_jobs{kind=\"scan\",state=\"due\"} 0"),
+        text.contains("agrafe_jobs{kind=\"scan\",priority=\"normal\",state=\"due\"} 0"),
         "{text}"
     );
     assert!(
@@ -438,12 +481,12 @@ async fn metrics_report_queue_depth_and_runs() {
     assert_eq!(status, StatusCode::OK, "{body}");
     let text = scrape().await;
     assert!(
-        text.contains("agrafe_jobs{kind=\"scan\",state=\"due\"} 1"),
+        text.contains("agrafe_jobs{kind=\"scan\",priority=\"normal\",state=\"due\"} 1"),
         "{text}"
     );
     let oldest = text
         .lines()
-        .find(|l| l.starts_with("agrafe_jobs_oldest_due_seconds{kind=\"scan\"}"))
+        .find(|l| l.starts_with("agrafe_jobs_oldest_due_seconds{kind=\"scan\",priority=\"normal\"}"))
         .unwrap_or_else(|| panic!("{text}"));
     let age: f64 = oldest.rsplit(' ').next().unwrap().parse().unwrap();
     assert!(age >= 0.0, "{oldest}");
@@ -451,11 +494,11 @@ async fn metrics_report_queue_depth_and_runs() {
     assert!(run_scan_job(&app).await);
     let text = scrape().await;
     assert!(
-        text.contains("agrafe_jobs{kind=\"scan\",state=\"due\"} 0"),
+        text.contains("agrafe_jobs{kind=\"scan\",priority=\"normal\",state=\"due\"} 0"),
         "{text}"
     );
     assert!(
-        text.contains("agrafe_jobs{kind=\"render\",state=\"due\"} 1"),
+        text.contains("agrafe_jobs{kind=\"render\",priority=\"normal\",state=\"due\"} 1"),
         "{text}"
     );
     assert!(
@@ -466,4 +509,79 @@ async fn metrics_report_queue_depth_and_runs() {
         text.contains("agrafe_job_duration_seconds_count{kind=\"scan\"} 1"),
         "{text}"
     );
+}
+
+/// Within a kind, the highest priority goes first and age breaks ties; a
+/// blob's priority travels onto its jobs.
+#[tokio::test]
+async fn priority_orders_a_kind_and_comes_from_the_blob() {
+    use agrafe::jobs::{self, JobKind, Priority};
+    use axum::http::Method;
+
+    let app = setup().await;
+    let pool = app.state.pool();
+    let lease = Duration::from_secs(600);
+    let now = jiff::Timestamp::now();
+
+    let mut ids = Vec::new();
+    for (priority, name) in [
+        (Priority::Low, "low"),
+        (Priority::Normal, "first-normal"),
+        (Priority::High, "high"),
+        (Priority::Normal, "second-normal"),
+    ] {
+        let created = create(&app, raw_blob()).await;
+        let id = parse_id(id_of(&created));
+        jobs::enqueue(pool, JobKind::Scan, Some(id), priority, json!({}), now)
+            .await
+            .unwrap();
+        ids.push((name, id));
+    }
+    let mut order = Vec::new();
+    while let Some(job) = jobs::claim(pool, &[JobKind::Scan], "w", lease)
+        .await
+        .unwrap()
+    {
+        let name = ids
+            .iter()
+            .find(|(_, id)| Some(*id) == job.blob_id)
+            .unwrap()
+            .0;
+        order.push((name, job.priority));
+    }
+    assert_eq!(
+        order,
+        [
+            ("high", Priority::High),
+            ("first-normal", Priority::Normal),
+            ("second-normal", Priority::Normal),
+            ("low", Priority::Low),
+        ]
+    );
+
+    let (_, body) = call(&app.private, req(Method::GET, "/jobs?priority=high")).await;
+    assert_eq!(body["items"].as_array().unwrap().len(), 1);
+    assert_eq!(body["items"][0]["priority"], "high");
+
+    // Created with a priority, the blob's scan job carries it.
+    let mut blob = blob_for(&png_bytes(5000), "image/png", "raw");
+    blob["priority"] = json!("high");
+    let created = create(&app, blob).await;
+    assert_eq!(created["priority"], "high");
+    let id = id_of(&created);
+    let (status, body) = put_private(&app, id, png_bytes(5000)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, body) = call(
+        &app.private,
+        req(Method::GET, &format!("/jobs?blob_id={id}&kind=scan")),
+    )
+    .await;
+    assert_eq!(body["items"][0]["priority"], "high");
+
+    let mut blob = raw_blob();
+    blob["priority"] = json!("urgent");
+    let (status, body) = call(&app.private, json_req(Method::POST, "/blobs", blob)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let (_, created) = call(&app.private, json_req(Method::POST, "/blobs", raw_blob())).await;
+    assert_eq!(created["priority"], "normal", "the default");
 }

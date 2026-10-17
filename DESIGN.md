@@ -148,6 +148,7 @@ message = METHOD "\n" expires_unix "\n" path_and_query_after_token
 | `checksum` | for `raw`, `multipart` | SHA-256 of the bytes, base64 |
 | `size` | for `raw`, `multipart` | Declared size in bytes, enforced on upload |
 | `skip_virus_scan` | no, default `false` | Private-only, backend vouches for the source |
+| `priority` | no, default `normal` | `high`, `normal` or `low`: where the blob's jobs go in their kind's queue, see "Jobs" |
 | `expires_at` or `expires_in` | no | Absolute timestamp or duration such as `7d` |
 
 Checksum is SHA-256 because browsers compute it cheaply with
@@ -352,9 +353,9 @@ the description, in parts when it is large, and polls, the same "accepted,
 finished by a job" contract a deferred scan already has.
 
 `rows` would mostly be fast enough to build inline. It follows the same
-shape anyway: one contract for the backend, one `build` job, one way for a
-generated blob to become `ready`, rather than a second path to keep correct
-for the one type that happens to be small.
+shape anyway: one contract for the backend, one build job per type, one way
+for a generated blob to become `ready`, rather than a second path to keep
+correct for the one type that happens to be small.
 
 ### Accept
 
@@ -386,8 +387,9 @@ below. A failing line answers `422` naming the line and the reason, the
 part is discarded and the blob returns to `created` with the parts it
 already had, like any failed upload: a failed part leaves nothing of itself.
 A finish on a blob with no parts, or an uploaded part out of sequence,
-answers `409`. The finish moves the blob to `uploaded` with the `build` job
-enqueued in the same transaction, unreadable until the job is done.
+answers `409`. The finish moves the blob to `uploaded` with its build job,
+`rows` or `archive` after the input type, enqueued in the same transaction,
+unreadable until the job is done.
 
 This is the one place a blob holds objects before it is `uploaded`.
 Everywhere else `created` has meant an empty prefix: the failed-upload rule
@@ -409,7 +411,7 @@ the purge takes the parts with the prefix.
 
 ### Build
 
-The `build` job streams the generated file into the bucket as it produces
+The build job streams the generated file into the bucket as it produces
 it: nothing touches local disk and nothing is held whole in memory. The
 bytes go through the same encryptor and multipart upload as an uploaded
 file, with 32 MiB parts (S3 allows 10 000 parts per upload; the default
@@ -426,9 +428,16 @@ unreadable, like a scan that never completes. No new state: `uploaded`
 already means that what the client sent is in the bucket and a job has to
 finish the blob. The source is purged with the rest of the prefix.
 
-Builds have their own worker count, `jobs.concurrency.build`, default one:
-an archive build saturates a network interface, and a batch of exports must
-not starve scans and renders.
+Builds are two job kinds, `rows` and `archive`, each with its own worker
+pool: `jobs.concurrency.rows` (default two) and `jobs.concurrency.archive`
+(default one). A kind's workers are the only thing that runs it, so a batch
+of exports cannot take a scan or render worker, and a hundred-gigabyte
+archive cannot hold up a rows export of a hundred lines. An archive build
+saturates a network interface, hence one at a time per process; a process
+given `jobs.kinds = ["archive"]` on a machine of its own is how to run
+more. Within `archive`, the blob's priority orders the queue: an export a
+user is waiting on, created `high`, goes before a nightly batch created
+`low`.
 
 ### Rows
 
@@ -862,8 +871,8 @@ absorb. The enqueue function stays the seam; the table would become the
 outbox.
 
 Job kinds: `scan`, `render` (thumbnail and preview, whichever is pending),
-`build` (generate a `rows` or `archive` blob from its stored source, see
-"Generated blobs"), `purge`
+`rows` and `archive` (generate a blob of that input type from its stored
+source, see "Generated blobs"), `purge`
 (delete the objects under a blob's prefix) and `reap`, the periodic
 housekeeping. One reap, in one transaction: record `expired` on every
 non-terminal blob past its `expires_at`; prune dead jobs that failed more
@@ -889,10 +898,11 @@ leaving the job in the table as evidence of the bug that enqueued it. An
 object missing between the listing and its delete is not an error, so a purge
 that runs twice is harmless.
 
-Each row: `kind`, `blob_id`, `payload`, `run_at`, `attempts`, `max_attempts`,
-`locked_at`, `locked_by`, `last_error`, `failed_at`. A worker claims the
-oldest due job of its kind with `UPDATE ... WHERE id = (SELECT ... FOR UPDATE
-SKIP LOCKED)`, which locks it and counts the attempt. A locked job is
+Each row: `kind`, `blob_id`, `priority`, `payload`, `run_at`, `attempts`,
+`max_attempts`, `locked_at`, `locked_by`, `last_error`, `failed_at`. A
+worker claims the highest-priority, then oldest, due job of its kind with
+`UPDATE ... WHERE id = (SELECT ... FOR UPDATE SKIP LOCKED)`, which locks it
+and counts the attempt. A locked job is
 claimable again once `jobs.lease_timeout` has passed, which is how a crashed
 worker's job gets picked up. A live worker renews its lease every third of
 it while the handler runs, so a scan longer than the lease is not handed to
@@ -906,30 +916,49 @@ newer one.
 `enqueue` calls `pg_notify` in the same statement, so the notification
 travels with the commit. One listener per process wakes the pollers of that
 kind; `jobs.poll_interval` is the fallback for a missed wakeup. Concurrency is
-per kind in `jobs.concurrency` (defaults: `scan` 4, `render` 4, `purge` 4,
-`reap` 1): rendering is CPU bound, scanning waits on clamd, and one reaper
-per process is plenty since a row is pending at a time anyway.
+per kind in `jobs.concurrency` (defaults: `scan` 4, `render` 4, `rows` 2,
+`archive` 1, `purge` 4, `reap` 1): rendering is CPU bound, scanning waits on
+clamd, a build on the network, and one reaper per process is plenty since a
+row is pending at a time anyway.
+
+Isolation is by kind. Every kind has its own workers, so however many slow
+jobs of one kind are queued, the others keep flowing; that is the property
+production relies on and the reason there is no priority across kinds.
+Priority orders within a kind: `high`, `normal` or `low`, set on the blob
+at creation and copied onto every job enqueued for it, blob-less jobs
+running `normal`. It orders, it does not reserve: a kind fed `high` jobs
+without end runs its `low` ones never, which is the point for an archive
+queue and visible on the per-priority oldest-due metric for everything
+else. Scans and renders carry it too, so an interactive upload can jump a
+bulk import of the same kind, but the default, `normal` everywhere, is a
+FIFO per kind.
 
 The binary takes `--role api|worker|all` so workers can move to separate
-machines without code changes.
+machines without code changes, and `jobs.kinds` (or `--kinds`, comma
+separated) names the kinds a process runs workers for, every kind when
+omitted. That is how the archive builders get machines of their own, or
+the renderers more of them. A kind no process handles only piles up, which
+the oldest-due metric shows; a process not handling `render` skips the
+renderer probe, one not handling `reap` does not schedule the first reap.
 
 ### Observability
 
 `GET /metrics` on the private port, Prometheus text format. The queue gauges
 are read from the `jobs` table at scrape time, so any process reports for the
-whole deployment: `agrafe_jobs{kind,state}` with `state` one of `due`
-(unclaimed, runnable now), `scheduled` (unclaimed, `run_at` ahead: a retry
-backing off, a purge waiting for its delay), `running` (lease current) and
-`dead`; and `agrafe_jobs_oldest_due_seconds{kind}`, the wait of the oldest
-due job, which is the number to alert on: it grows when a kind's workers
-cannot keep up. A lapsed lease counts as unclaimed, as the claim query sees
+whole deployment: `agrafe_jobs{kind,state,priority}` with `state` one of
+`due` (unclaimed, runnable now), `scheduled` (unclaimed, `run_at` ahead: a
+retry backing off, a purge waiting for its delay), `running` (lease
+current) and `dead`; and `agrafe_jobs_oldest_due_seconds{kind,priority}`,
+the wait of the oldest due job, which is the number to alert on: it grows
+when a kind's workers cannot keep up, or, for one priority alone, when the
+higher ones starve it. A lapsed lease counts as unclaimed, as the claim query sees
 it. Per process: `agrafe_job_runs_total{kind,outcome}` with `ok`, `retry`,
 `dead` and `superseded`, `agrafe_job_duration_seconds{kind}` and
 `agrafe_workers{kind}`. A `worker` process has no API; it binds
 `server.private_addr` all the same, serving `/healthz` and `/metrics` only.
 
 `GET /jobs` lists jobs newest first, cursor paginated on the id, filtered by
-`kind`, `state` and `blob_id`. `GET /jobs/:id` shows one with its
+`kind`, `state`, `priority` and `blob_id`. `GET /jobs/:id` shows one with its
 `last_error`. `POST /jobs/:id/retry` resets a dead job's attempts, makes it
 due and notifies the workers; `DELETE /jobs/:id` removes one. Both answer
 `409` for a job that is not dead: a pending job is the only thing that will

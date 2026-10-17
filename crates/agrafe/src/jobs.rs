@@ -50,12 +50,16 @@ pub const CHANNEL: &str = "agrafe_jobs";
 const BACKOFF_BASE: Duration = Duration::from_secs(30);
 const BACKOFF_MAX: Duration = Duration::from_secs(3600);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum JobKind {
     Scan,
     /// Thumbnail and preview, whichever is pending.
     Render,
+    /// Build a `rows` blob from its stored source.
+    Rows,
+    /// Build an `archive` blob from its stored source.
+    Archive,
     Purge,
     Reap,
 }
@@ -63,9 +67,56 @@ pub enum JobKind {
 crate::str_enum!(JobKind {
     Scan => "scan",
     Render => "render",
+    Rows => "rows",
+    Archive => "archive",
     Purge => "purge",
     Reap => "reap",
 });
+
+/// Order within a kind's queue. A blob's priority is copied onto its jobs;
+/// jobs without a blob run at `Normal`. Kinds, not priorities, keep one
+/// sort of work from starving another: a priority only orders its own kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Priority {
+    High,
+    #[default]
+    Normal,
+    Low,
+}
+
+crate::str_enum!(Priority {
+    High => "high",
+    Normal => "normal",
+    Low => "low",
+});
+
+impl Priority {
+    /// What the `jobs.priority` column holds; the claim orders on it.
+    pub fn rank(self) -> i16 {
+        match self {
+            Priority::High => 1,
+            Priority::Normal => 0,
+            Priority::Low => -1,
+        }
+    }
+}
+
+impl TryFrom<i16> for Priority {
+    type Error = crate::ParseEnumError;
+
+    fn try_from(rank: i16) -> Result<Self, Self::Error> {
+        match rank {
+            1 => Ok(Priority::High),
+            0 => Ok(Priority::Normal),
+            -1 => Ok(Priority::Low),
+            other => Err(crate::ParseEnumError {
+                kind: "Priority",
+                value: other.to_string(),
+            }),
+        }
+    }
+}
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Job {
@@ -73,6 +124,8 @@ pub struct Job {
     #[sqlx(try_from = "String")]
     pub kind: JobKind,
     pub blob_id: Option<Uuid>,
+    #[sqlx(try_from = "i16")]
+    pub priority: Priority,
     pub payload: serde_json::Value,
     #[sqlx(try_from = "jiff_sqlx::Timestamp")]
     pub run_at: Timestamp,
@@ -145,28 +198,30 @@ fn push_state(qb: &mut QueryBuilder<Postgres>, lease: Duration) {
         .push(STATE_SQL.1);
 }
 
-/// One line of the queue census: how many jobs of `kind` are in `state`,
-/// and for the due ones how long the oldest has waited.
+/// One line of the queue census: how many jobs of `kind` and `priority`
+/// are in `state`, and for the due ones how long the oldest has waited.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Count {
     #[sqlx(try_from = "String")]
     pub kind: JobKind,
+    #[sqlx(try_from = "i16")]
+    pub priority: Priority,
     #[sqlx(try_from = "String")]
     pub state: JobState,
     pub count: i64,
     pub oldest_seconds: Option<f64>,
 }
 
-/// Count the jobs by kind and state. Kinds and states with nothing in them
-/// have no row.
+/// Count the jobs by kind, priority and state. Combinations with nothing
+/// in them have no row.
 pub async fn counts(exec: impl PgExecutor<'_>, lease: Duration) -> sqlx::Result<Vec<Count>> {
     let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
-        "SELECT kind, state, count(*) AS count, \
+        "SELECT kind, priority, state, count(*) AS count, \
                 EXTRACT(EPOCH FROM now() - min(run_at))::float8 AS oldest_seconds \
-         FROM (SELECT kind, run_at, ",
+         FROM (SELECT kind, priority, run_at, ",
     );
     push_state(&mut qb, lease);
-    qb.push(" AS state FROM jobs) s GROUP BY kind, state");
+    qb.push(" AS state FROM jobs) s GROUP BY kind, priority, state");
     qb.build_query_as().fetch_all(exec).await
 }
 
@@ -177,6 +232,7 @@ pub const MAX_LIMIT: usize = 200;
 pub struct ListParams {
     pub kind: Option<JobKind>,
     pub state: Option<JobState>,
+    pub priority: Option<Priority>,
     pub blob_id: Option<Uuid>,
     pub cursor: Option<i64>,
     pub limit: usize,
@@ -203,6 +259,9 @@ pub async fn list(
         qb.push(" AND ");
         push_state(&mut qb, lease);
         qb.push(" = ").push_bind(state.as_str());
+    }
+    if let Some(priority) = params.priority {
+        qb.push(" AND priority = ").push_bind(priority.rank());
     }
     if let Some(blob_id) = params.blob_id {
         qb.push(" AND blob_id = ").push_bind(blob_id);
@@ -298,18 +357,21 @@ pub async fn enqueue(
     exec: impl PgExecutor<'_>,
     kind: JobKind,
     blob_id: Option<Uuid>,
+    priority: Priority,
     payload: serde_json::Value,
     run_at: Timestamp,
 ) -> sqlx::Result<bool> {
     let result = sqlx::query(
         "WITH inserted AS (\
-             INSERT INTO jobs (kind, blob_id, payload, run_at) VALUES ($1, $2, $3, $4) \
+             INSERT INTO jobs (kind, blob_id, priority, payload, run_at) \
+             VALUES ($1, $2, $3, $4, $5) \
              ON CONFLICT DO NOTHING RETURNING kind\
          ) \
-         SELECT pg_notify($5, kind) FROM inserted",
+         SELECT pg_notify($6, kind) FROM inserted",
     )
     .bind(kind.as_str())
     .bind(blob_id)
+    .bind(priority.rank())
     .bind(payload)
     .bind(run_at.to_sqlx())
     .bind(CHANNEL)
@@ -318,9 +380,9 @@ pub async fn enqueue(
     Ok(result.rows_affected() == 1)
 }
 
-/// Lock the oldest runnable job of one of `kinds` for `worker`. A job is
-/// runnable when it is due, not dead, and either unlocked or held by a lease
-/// older than `lease`.
+/// Lock the highest-priority, then oldest, runnable job of one of `kinds`
+/// for `worker`. A job is runnable when it is due, not dead, and either
+/// unlocked or held by a lease older than `lease`.
 pub async fn claim(
     exec: impl PgExecutor<'_>,
     kinds: &[JobKind],
@@ -334,7 +396,7 @@ pub async fn claim(
              SELECT id FROM jobs \
              WHERE kind = ANY($2) AND run_at <= now() AND failed_at IS NULL \
                AND (locked_at IS NULL OR locked_at < now() - make_interval(secs => $3)) \
-             ORDER BY run_at, id \
+             ORDER BY priority DESC, run_at, id \
              FOR UPDATE SKIP LOCKED \
              LIMIT 1\
          ) \

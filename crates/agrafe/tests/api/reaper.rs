@@ -88,6 +88,7 @@ async fn purge_removes_every_object_of_a_deleted_blob() {
         app.state.pool(),
         JobKind::Purge,
         Some(parse_id(id)),
+        agrafe::jobs::Priority::Normal,
         json!({}),
         Timestamp::now(),
     )
@@ -106,6 +107,7 @@ async fn purge_refuses_a_readable_blob() {
         app.state.pool(),
         JobKind::Purge,
         Some(parse_id(id)),
+        agrafe::jobs::Priority::Normal,
         json!({}),
         Timestamp::now(),
     )

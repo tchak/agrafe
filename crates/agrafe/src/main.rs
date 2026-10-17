@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use agrafe::app::{AppState, InitError};
 use agrafe::config::{Config, ConfigError, Role};
+use agrafe::jobs::JobKind;
 use agrafe::media::{extract, text};
 use agrafe::{api, db, jobs};
 use clap::{Parser, Subcommand};
@@ -30,6 +31,10 @@ enum Command {
         /// Overrides server.role from the configuration.
         #[arg(long, value_enum)]
         role: Option<Role>,
+        /// Overrides jobs.kinds: the job kinds this process runs workers
+        /// for, comma separated.
+        #[arg(long, value_enum, value_delimiter = ',')]
+        kinds: Option<Vec<JobKind>>,
     },
     /// Apply pending database migrations.
     Migrate,
@@ -141,9 +146,12 @@ async fn main() -> Result<(), Error> {
             tracing::info!("migrations applied");
             Ok(())
         }
-        Command::Serve { role } => {
+        Command::Serve { role, kinds } => {
             if let Some(role) = role {
                 config.server.role = role;
+            }
+            if let Some(kinds) = kinds {
+                config.jobs.kinds = Some(kinds);
             }
             serve(config).await
         }

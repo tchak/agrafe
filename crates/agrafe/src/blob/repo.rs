@@ -24,9 +24,9 @@ pub async fn insert(exec: impl PgExecutor<'_>, new: &NewBlob) -> sqlx::Result<Bl
         r#"
         INSERT INTO blobs (
             id, state, filename, content_type, category, input_type,
-            checksum_sha256, size, skip_virus_scan, expires_at, scan_state
+            checksum_sha256, size, skip_virus_scan, expires_at, scan_state, priority
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         RETURNING *
         "#,
     )
@@ -41,6 +41,7 @@ pub async fn insert(exec: impl PgExecutor<'_>, new: &NewBlob) -> sqlx::Result<Bl
     .bind(new.skip_virus_scan)
     .bind(new.expires_at.map(ToSqlx::to_sqlx))
     .bind(scan_state.as_str())
+    .bind(new.priority.as_str())
     .fetch_one(exec)
     .await
 }
@@ -277,7 +278,15 @@ async fn enqueue_next(conn: &mut PgConnection, blob: &Blob) -> sqlx::Result<()> 
     };
     let now = Timestamp::now();
     for kind in kinds {
-        jobs::enqueue(&mut *conn, *kind, Some(blob.id), serde_json::json!({}), now).await?;
+        jobs::enqueue(
+            &mut *conn,
+            *kind,
+            Some(blob.id),
+            blob.priority,
+            serde_json::json!({}),
+            now,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -300,6 +309,7 @@ pub async fn soft_delete(pool: &PgPool, id: Uuid, purge_at: Timestamp) -> sqlx::
             &mut *tx,
             JobKind::Purge,
             Some(blob.id),
+            blob.priority,
             serde_json::json!({}),
             purge_at,
         )
@@ -427,15 +437,22 @@ pub async fn request_representation(
         .push(" WHERE id = ")
         .push_bind(id)
         .push(" AND state = ")
-        .push_bind(BlobState::Ready.as_str());
-    if qb.build().execute(&mut *tx).await?.rows_affected() == 0 {
+        .push_bind(BlobState::Ready.as_str())
+        .push(" RETURNING priority");
+    let Some(priority) = qb
+        .build_query_scalar::<String>()
+        .fetch_optional(&mut *tx)
+        .await?
+    else {
         tx.rollback().await?;
         return Ok(false);
-    }
+    };
+    let priority = priority.parse().unwrap_or_default();
     jobs::enqueue(
         &mut *tx,
         JobKind::Render,
         Some(id),
+        priority,
         serde_json::json!({}),
         Timestamp::now(),
     )

@@ -11,7 +11,7 @@
 use jiff::Timestamp;
 use sqlx::PgExecutor;
 
-use super::{Job, JobError, JobKind};
+use super::{Job, JobError, JobKind, Priority};
 use crate::app::AppState;
 use crate::blob::repo;
 
@@ -34,7 +34,15 @@ pub async fn run(state: &AppState, job: &Job) -> Result<(), JobError> {
 
 /// Enqueue a reap at `run_at`, unless one is already pending.
 pub async fn schedule(exec: impl PgExecutor<'_>, run_at: Timestamp) -> sqlx::Result<bool> {
-    super::enqueue(exec, JobKind::Reap, None, serde_json::json!({}), run_at).await
+    super::enqueue(
+        exec,
+        JobKind::Reap,
+        None,
+        Priority::Normal,
+        serde_json::json!({}),
+        run_at,
+    )
+    .await
 }
 
 /// What one reap did.
@@ -74,6 +82,7 @@ pub async fn reap(state: &AppState, now: Timestamp) -> Result<Report, JobError> 
             &mut *tx,
             JobKind::Purge,
             Some(id),
+            Priority::Normal,
             serde_json::json!({}),
             purge_at,
         )

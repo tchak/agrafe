@@ -10,7 +10,7 @@ use prometheus::{
 };
 use sqlx::PgPool;
 
-use crate::jobs::{self, JobKind, JobState};
+use crate::jobs::{self, JobKind, JobState, Priority};
 
 /// What a scrape can fail on.
 #[derive(Debug, thiserror::Error)]
@@ -89,17 +89,17 @@ impl Metrics {
         let jobs = IntGaugeVec::new(
             Opts::new(
                 "agrafe_jobs",
-                "Jobs in the queue, by kind and state (due, scheduled, running, dead)",
+                "Jobs in the queue, by kind, priority and state (due, scheduled, running, dead)",
             ),
-            &["kind", "state"],
+            &["kind", "state", "priority"],
         )
         .expect("valid metric");
         let oldest_due = GaugeVec::new(
             Opts::new(
                 "agrafe_jobs_oldest_due_seconds",
-                "How long the oldest unclaimed due job of each kind has been waiting",
+                "How long the oldest unclaimed due job of each kind and priority has been waiting",
             ),
-            &["kind"],
+            &["kind", "priority"],
         )
         .expect("valid metric");
         let collectors: [Box<dyn prometheus::core::Collector>; 5] = [
@@ -154,20 +154,25 @@ impl Metrics {
     /// the Prometheus text format.
     pub async fn render(&self, pool: &PgPool, lease: Duration) -> Result<String, MetricsError> {
         for kind in JobKind::ALL {
-            for state in JobState::ALL {
-                self.jobs
-                    .with_label_values(&[kind.as_str(), state.as_str()])
-                    .set(0);
+            for priority in Priority::ALL {
+                for state in JobState::ALL {
+                    self.jobs
+                        .with_label_values(&[kind.as_str(), state.as_str(), priority.as_str()])
+                        .set(0);
+                }
+                self.oldest_due
+                    .with_label_values(&[kind.as_str(), priority.as_str()])
+                    .set(0.0);
             }
-            self.oldest_due.with_label_values(&[kind.as_str()]).set(0.0);
         }
         for row in jobs::counts(pool, lease).await? {
+            let (kind, priority) = (row.kind.as_str(), row.priority.as_str());
             self.jobs
-                .with_label_values(&[row.kind.as_str(), row.state.as_str()])
+                .with_label_values(&[kind, row.state.as_str(), priority])
                 .set(row.count);
             if row.state == JobState::Due {
                 self.oldest_due
-                    .with_label_values(&[row.kind.as_str()])
+                    .with_label_values(&[kind, priority])
                     .set(row.oldest_seconds.unwrap_or(0.0).max(0.0));
             }
         }

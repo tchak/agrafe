@@ -154,9 +154,18 @@ reap_interval = "1m"
 # for this long before the reaper removes it.
 keep_failed = "7d"
 
-# Workers per job kind; these are the defaults.
+# The job kinds this process runs workers for; every kind when omitted.
+# A worker process dedicated to archive builds would say ["archive"]. Every
+# kind must be handled by some process of the deployment. The --kinds flag
+# takes precedence.
+# kinds = ["scan", "render", "rows", "archive", "purge", "reap"]
+
+# Workers per job kind; these are the defaults. Each kind has its own pool,
+# which is what keeps slow archive builds from holding up scans and renders.
 [jobs.concurrency]
 scan = 4
 render = 4
+rows = 2
+archive = 1
 purge = 4
 reap = 1

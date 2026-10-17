@@ -13,7 +13,7 @@ use uuid::Uuid;
 use super::extract::{Json, Path, Query};
 use crate::app::AppState;
 use crate::error::{ApiError, ApiResult};
-use crate::jobs::{self, Action, Job, JobKind, JobState, ListParams};
+use crate::jobs::{self, Action, Job, JobKind, JobState, ListParams, Priority};
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -28,6 +28,7 @@ pub struct JobResponse {
     pub kind: JobKind,
     pub state: JobState,
     pub blob_id: Option<Uuid>,
+    pub priority: Priority,
     pub payload: serde_json::Value,
     pub run_at: Timestamp,
     pub attempts: i32,
@@ -47,6 +48,7 @@ impl JobResponse {
             kind: job.kind,
             state: job_state,
             blob_id: job.blob_id,
+            priority: job.priority,
             payload: job.payload,
             run_at: job.run_at,
             attempts: job.attempts,
@@ -70,6 +72,7 @@ pub struct JobListResponse {
 pub struct JobListQuery {
     pub kind: Option<JobKind>,
     pub state: Option<JobState>,
+    pub priority: Option<Priority>,
     pub blob_id: Option<Uuid>,
     pub cursor: Option<i64>,
     pub limit: Option<usize>,
@@ -89,6 +92,7 @@ async fn list_jobs(
     let params = ListParams {
         kind: q.kind,
         state: q.state,
+        priority: q.priority,
         blob_id: q.blob_id,
         cursor: q.cursor,
         limit,

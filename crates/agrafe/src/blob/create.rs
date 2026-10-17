@@ -12,6 +12,7 @@ use super::InputType;
 use crate::classify::{self, Category};
 use crate::config::UploadConfig;
 use crate::error::ApiError;
+use crate::jobs::Priority;
 use crate::media::text;
 
 #[derive(Debug, Deserialize)]
@@ -29,6 +30,9 @@ pub struct CreateBlobRequest {
     pub expires_at: Option<Timestamp>,
     #[serde(default, with = "humantime_serde")]
     pub expires_in: Option<Duration>,
+    /// Where the blob's jobs go in their kind's queue.
+    #[serde(default)]
+    pub priority: Priority,
 }
 
 /// A validated blob, ready to insert.
@@ -43,6 +47,7 @@ pub struct NewBlob {
     pub size: Option<i64>,
     pub skip_virus_scan: bool,
     pub expires_at: Option<Timestamp>,
+    pub priority: Priority,
 }
 
 pub const MAX_FILENAME_LEN: usize = 255;
@@ -111,6 +116,7 @@ pub fn validate(
         size,
         skip_virus_scan: req.skip_virus_scan,
         expires_at,
+        priority: req.priority,
     })
 }
 
@@ -223,6 +229,7 @@ mod tests {
             skip_virus_scan: false,
             expires_at: None,
             expires_in: None,
+            priority: Priority::Normal,
         }
     }
 
