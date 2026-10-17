@@ -17,7 +17,7 @@ use object_store::{GetOptions, GetRange};
 use uuid::Uuid;
 
 use super::Blob;
-use crate::app::AppState;
+use crate::app::Agrafe;
 use crate::encryption::UnwrapError;
 
 /// Why a stored original could not be read back.
@@ -116,7 +116,7 @@ impl Reader {
     /// decrypted yet; the first `next_segment` is where a wrong key or a
     /// tampered object shows up.
     pub async fn open(
-        state: &AppState,
+        state: &Agrafe,
         blob: &Blob,
         stored: &Stored,
         span: Range<u64>,

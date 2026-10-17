@@ -16,6 +16,51 @@ use serde::{Deserialize, Serialize};
 use sqlx::{PgConnection, PgExecutor, Postgres, QueryBuilder};
 use uuid::Uuid;
 
+use crate::app::Agrafe;
+
+/// Why a job listing was refused.
+#[derive(Debug, thiserror::Error)]
+pub enum ListError {
+    #[error("limit must be between 1 and {0}")]
+    Limit(usize),
+    #[error("database: {0}")]
+    Db(#[from] sqlx::Error),
+}
+
+/// The queue as operators see it. Jobs are listed in any state; only a
+/// dead one can be retried or discarded, since a pending job is the only
+/// thing that will finish its blob.
+impl Agrafe {
+    /// List jobs, newest first. `limit` must lie in `1..=MAX_LIMIT`.
+    pub async fn list_jobs(&self, params: &ListParams) -> Result<Page, ListError> {
+        if !(1..=MAX_LIMIT).contains(&params.limit) {
+            return Err(ListError::Limit(MAX_LIMIT));
+        }
+        Ok(list(self.pool(), params, self.config().jobs.lease_timeout).await?)
+    }
+
+    pub async fn find_job(&self, id: i64) -> sqlx::Result<Option<Job>> {
+        find(self.pool(), id).await
+    }
+
+    /// The state of `job` now, given this instance's lease timeout.
+    pub fn job_state(&self, job: &Job) -> JobState {
+        job.state(self.config().jobs.lease_timeout, Timestamp::now())
+    }
+
+    /// Put a dead job back in the queue.
+    pub async fn retry_job(&self, id: i64) -> sqlx::Result<Action> {
+        let mut conn = self.pool().acquire().await?;
+        retry(&mut conn, id).await
+    }
+
+    /// Remove a dead job.
+    pub async fn discard_job(&self, id: i64) -> sqlx::Result<Action> {
+        let mut conn = self.pool().acquire().await?;
+        discard(&mut conn, id).await
+    }
+}
+
 /// Why one attempt at a job failed. The message is what `last_error` keeps.
 #[derive(Debug, thiserror::Error)]
 pub enum JobError {

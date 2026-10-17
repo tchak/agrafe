@@ -1,10 +1,12 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use agrafe::app::{AppState, InitError};
+use agrafe::Agrafe;
+use agrafe::app::InitError;
 use agrafe::config::{Config, ConfigError, Role};
 use agrafe::jobs::JobKind;
-use agrafe::{api, db, jobs};
+use agrafe::{db, jobs};
+use agrafe_axum as api;
 use clap::{Parser, Subcommand};
 use futures::FutureExt;
 use tokio::net::TcpListener;
@@ -112,7 +114,7 @@ async fn main() -> Result<(), Error> {
 async fn serve(config: Config) -> Result<(), Error> {
     let role = config.server.role;
     let pool = db::connect(&config.database).await?;
-    let state = AppState::new(config, pool)?;
+    let state = Agrafe::new(config, pool)?;
     let shutdown = shutdown_signal().shared();
 
     let mut tasks = tokio::task::JoinSet::new();

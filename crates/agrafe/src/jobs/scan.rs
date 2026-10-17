@@ -2,13 +2,13 @@
 //! the blob out of `uploaded`.
 
 use super::{Job, JobError};
-use crate::app::AppState;
+use crate::app::Agrafe;
 use crate::blob::BlobState;
 use crate::blob::read::{Reader, Stored};
 use crate::blob::repo::{self, Transition};
 use crate::clamav::Verdict;
 
-pub async fn run(state: &AppState, job: &Job) -> Result<(), JobError> {
+pub async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
     let id = job.blob_id.ok_or(JobError::NoBlob(job.kind))?;
     let Some(blob) = repo::find(state.pool(), id).await? else {
         tracing::info!("blob is gone, nothing to scan");

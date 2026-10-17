@@ -14,16 +14,16 @@ use super::json::PublicBlobResponse;
 use super::original::{self, OriginalQuery};
 use super::representation::{self, Port, RepresentationQuery};
 use super::signed::Signed;
-use crate::app::AppState;
-use crate::blob::repo;
-use crate::blob::{Blob, Representation};
+use agrafe::Agrafe;
+use agrafe::blob::{Blob, Representation};
+use agrafe::upload;
+
 use crate::error::{ApiError, ApiResult};
-use crate::upload;
 
 /// `body_limit` caps the request body of the upload route. It is a backstop:
 /// the pipeline stops at the declared size, which is at most
 /// `upload.max_size`; the limit only matters for multipart framing around it.
-pub fn routes(body_limit: usize) -> Router<AppState> {
+pub fn routes(body_limit: usize) -> Router<Agrafe> {
     Router::new()
         .route(
             "/blobs/{token}/{id}",
@@ -41,7 +41,7 @@ pub fn routes(body_limit: usize) -> Router<AppState> {
 
 async fn get_blob(
     _signed: Signed,
-    State(state): State<AppState>,
+    State(state): State<Agrafe>,
     Path((_token, id)): Path<(String, Uuid)>,
 ) -> ApiResult<Json<PublicBlobResponse>> {
     let blob = find_visible(&state, id).await?;
@@ -50,7 +50,7 @@ async fn get_blob(
 
 async fn upload_blob(
     _signed: Signed,
-    State(state): State<AppState>,
+    State(state): State<Agrafe>,
     Path((_token, id)): Path<(String, Uuid)>,
     req: Request,
 ) -> ApiResult<Json<PublicBlobResponse>> {
@@ -62,14 +62,7 @@ async fn upload_blob(
             "this blob can only be uploaded through the private interface".into(),
         ));
     }
-    let now = Timestamp::now();
-    if !blob.accepts_upload(now) {
-        return Err(ApiError::Conflict(format!(
-            "blob is {} and cannot be uploaded",
-            blob.state_at(now)
-        )));
-    }
-    let declared = upload::declared(&blob)?;
+    let declared = upload::prepare(&blob, Timestamp::now())?;
     let blob = body::upload(&state, blob, declared, req)
         .await
         .map_err(|err| match err {
@@ -83,7 +76,7 @@ async fn upload_blob(
 
 async fn get_original(
     _signed: Signed,
-    State(state): State<AppState>,
+    State(state): State<Agrafe>,
     Path((_token, id, filename)): Path<(String, Uuid, String)>,
     Query(query): Query<OriginalQuery>,
     method: Method,
@@ -94,8 +87,9 @@ async fn get_original(
 }
 
 /// Look a blob up as the public port sees it: terminal states are `404`.
-async fn find_visible(state: &AppState, id: Uuid) -> ApiResult<Blob> {
-    repo::find(state.pool(), id)
+async fn find_visible(state: &Agrafe, id: Uuid) -> ApiResult<Blob> {
+    state
+        .find_blob(id)
         .await?
         .filter(|blob| blob.visible_on_public(Timestamp::now()))
         .ok_or(ApiError::NotFound)
@@ -103,7 +97,7 @@ async fn find_visible(state: &AppState, id: Uuid) -> ApiResult<Blob> {
 
 async fn get_preview(
     _signed: Signed,
-    State(state): State<AppState>,
+    State(state): State<Agrafe>,
     Path((_token, id, filename)): Path<(String, Uuid, String)>,
     Query(query): Query<RepresentationQuery>,
     method: Method,
@@ -125,7 +119,7 @@ async fn get_preview(
 
 async fn get_thumbnail(
     _signed: Signed,
-    State(state): State<AppState>,
+    State(state): State<Agrafe>,
     Path((_token, id, filename)): Path<(String, Uuid, String)>,
     Query(query): Query<RepresentationQuery>,
     method: Method,

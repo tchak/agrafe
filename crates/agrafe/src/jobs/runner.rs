@@ -15,7 +15,7 @@ use tracing::Instrument as _;
 use uuid::Uuid;
 
 use super::{Failure, Job, JobError, JobKind, purge, reap, render, scan};
-use crate::app::AppState;
+use crate::app::Agrafe;
 use crate::metrics::Outcome;
 
 /// Pause after a listener error before asking Postgres again.
@@ -38,7 +38,7 @@ pub enum Error {
 
 /// Run the workers until `shutdown` resolves. A job in flight finishes;
 /// nothing new is claimed afterwards.
-pub async fn run<F>(state: AppState, shutdown: F) -> Result<(), Error>
+pub async fn run<F>(state: Agrafe, shutdown: F) -> Result<(), Error>
 where
     F: Future<Output = ()> + Clone + Send + 'static,
 {
@@ -90,7 +90,7 @@ where
 
 /// Claim and run one job of `kind`. Returns whether there was one. This is
 /// one turn of a worker, and what tests call.
-pub async fn run_one(state: &AppState, kind: JobKind, worker: &str) -> sqlx::Result<bool> {
+pub async fn run_one(state: &Agrafe, kind: JobKind, worker: &str) -> sqlx::Result<bool> {
     let lease = state.config().jobs.lease_timeout;
     let Some(job) = super::claim(state.pool(), &[kind], worker, lease).await? else {
         return Ok(false);
@@ -109,7 +109,7 @@ pub async fn run_one(state: &AppState, kind: JobKind, worker: &str) -> sqlx::Res
     Ok(true)
 }
 
-async fn run_claimed(state: &AppState, job: &Job, worker: &str) -> sqlx::Result<()> {
+async fn run_claimed(state: &Agrafe, job: &Job, worker: &str) -> sqlx::Result<()> {
     let lease = state.config().jobs.lease_timeout;
     let started = Instant::now();
     // A handler that panics has failed this attempt; it must not take the
@@ -154,7 +154,7 @@ async fn run_claimed(state: &AppState, job: &Job, worker: &str) -> sqlx::Result<
     Ok(())
 }
 
-async fn handle(state: &AppState, job: &Job) -> Result<(), JobError> {
+async fn handle(state: &Agrafe, job: &Job) -> Result<(), JobError> {
     match job.kind {
         JobKind::Scan => scan::run(state, job).await,
         JobKind::Render => render::run(state, job).await,
@@ -167,7 +167,7 @@ async fn handle(state: &AppState, job: &Job) -> Result<(), JobError> {
 }
 
 async fn poll<F>(
-    state: AppState,
+    state: Agrafe,
     kind: JobKind,
     worker: String,
     wakeup: Arc<Notify>,
@@ -241,7 +241,7 @@ where
 }
 
 /// Renew the lease every third of it, for as long as this future is polled.
-async fn heartbeat(state: &AppState, id: i64, worker: &str, lease: Duration) {
+async fn heartbeat(state: &Agrafe, id: i64, worker: &str, lease: Duration) {
     let period = (lease / 3).max(Duration::from_secs(1));
     let mut ticks = tokio::time::interval(period);
     ticks.tick().await; // the first tick is immediate; the claim just set the lease

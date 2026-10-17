@@ -7,16 +7,17 @@ use axum::extract::{FromRequest, Request};
 use futures::TryStreamExt;
 use http_body_util::LengthLimitError;
 
-use crate::app::AppState;
-use crate::blob::{Blob, InputType};
+use agrafe::Agrafe;
+use agrafe::blob::{Blob, InputType};
+use agrafe::upload::{self, BoxError, Declared};
+
 use crate::error::{ApiError, ApiResult};
-use crate::upload::{self, Declared};
 
 /// The multipart part holding the file.
 pub const FILE_PART: &str = "file";
 
 pub async fn upload(
-    state: &AppState,
+    state: &Agrafe,
     blob: Blob,
     declared: Declared,
     req: Request,
@@ -39,7 +40,7 @@ pub async fn upload(
                 .into_limited_body()
                 .into_data_stream()
                 .map_err(body_error);
-            upload::run(state, blob, declared, body).await
+            Ok(upload::run(state, blob, declared, body).await?)
         }
         InputType::Multipart => {
             let mut multipart = Multipart::from_request(req, &())
@@ -56,8 +57,8 @@ pub async fn upload(
                     }
                 }
             };
-            let body = field.map_err(multipart_error);
-            upload::run(state, blob, declared, body).await
+            let body = field.map_err(|e| BoxError::from(multipart_error(e)));
+            Ok(upload::run(state, blob, declared, body).await?)
         }
         InputType::Rows | InputType::Archive => Err(ApiError::NotImplemented),
     }
@@ -73,12 +74,15 @@ fn content_length(req: &Request) -> Option<u64> {
         .ok()
 }
 
-fn body_error(e: axum::Error) -> ApiError {
+/// Body errors travel through the pipeline boxed and come back out as the
+/// `ApiError` put in here (see `From<UploadError> for ApiError`).
+fn body_error(e: axum::Error) -> BoxError {
     let inner = e.into_inner();
     if inner.downcast_ref::<LengthLimitError>().is_some() {
-        return ApiError::PayloadTooLarge("request body exceeds the upload size limit".into());
+        return ApiError::PayloadTooLarge("request body exceeds the upload size limit".into())
+            .into();
     }
-    ApiError::BadRequest(format!("reading the request body: {inner}"))
+    ApiError::BadRequest(format!("reading the request body: {inner}")).into()
 }
 
 fn multipart_error(e: axum::extract::multipart::MultipartError) -> ApiError {

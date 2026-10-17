@@ -1,7 +1,10 @@
-//! HTTP interfaces. `private` is unsigned and trusted; `public` verifies a
-//! signature on every route before touching the database.
+//! The HTTP interfaces of agrafe as axum routers. `private` is unsigned and
+//! trusted; `public` verifies a signature on every route before touching
+//! the database. Each router carries its state, so a host application can
+//! nest one under a prefix and keep the private API in Rust.
 
 pub mod body;
+pub mod error;
 pub mod extract;
 pub mod jobs;
 pub mod json;
@@ -10,7 +13,6 @@ pub mod private;
 pub mod public;
 pub mod representation;
 pub mod signed;
-pub mod urls;
 
 use axum::Router;
 use axum::body::Body;
@@ -20,11 +22,12 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use tower_http::trace::TraceLayer;
 
-use crate::app::AppState;
-use crate::error::{ApiError, ApiResult};
-use crate::upload;
+use agrafe::Agrafe;
+use agrafe::upload;
 
-pub fn private_router(state: AppState) -> Router {
+pub use error::{ApiError, ApiResult};
+
+pub fn private_router(state: Agrafe) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/metrics", get(metrics))
@@ -36,7 +39,7 @@ pub fn private_router(state: AppState) -> Router {
         .with_state(state)
 }
 
-pub fn public_router(state: AppState) -> Router {
+pub fn public_router(state: Agrafe) -> Router {
     // Public URLs carry bearer tokens; the span records a redacted path
     // instead of the full URI so tokens never reach log storage.
     let trace = TraceLayer::new_for_http().make_span_with(|req: &Request<Body>| {
@@ -58,7 +61,7 @@ pub fn public_router(state: AppState) -> Router {
 
 /// What a process without an API serves on the private address: enough
 /// for liveness checks and scraping.
-pub fn ops_router(state: AppState) -> Router {
+pub fn ops_router(state: Agrafe) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/metrics", get(metrics))
@@ -72,7 +75,7 @@ async fn healthz() -> &'static str {
     "ok"
 }
 
-async fn metrics(State(state): State<AppState>) -> ApiResult<Response> {
+async fn metrics(State(state): State<Agrafe>) -> ApiResult<Response> {
     let lease = state.config().jobs.lease_timeout;
     let body = state
         .metrics()

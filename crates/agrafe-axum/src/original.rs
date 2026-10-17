@@ -13,9 +13,11 @@ use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::app::AppState;
-use crate::blob::Blob;
-use crate::blob::read::{ReadError, Reader, Stored};
+use agrafe::Agrafe;
+use agrafe::blob::Blob;
+use agrafe::blob::read::{ReadError, Reader, Stored};
+use agrafe::blob::urls::disposition_kind;
+
 use crate::error::{ApiError, ApiResult};
 
 /// Signed query parameters the minter may attach to an original URL.
@@ -30,7 +32,7 @@ pub struct OriginalQuery {
 /// Serve `blob`'s original. `filename` is the path segment, which must match
 /// the blob's filename so a URL cannot pretend to serve another file.
 pub async fn serve(
-    state: &AppState,
+    state: &Agrafe,
     blob: Blob,
     filename: &str,
     query: OriginalQuery,
@@ -241,18 +243,6 @@ fn etag(checksum: &[u8]) -> String {
 
 fn http_date(at: Timestamp) -> HeaderValue {
     HeaderValue::from_str(&at.strftime("%a, %d %b %Y %H:%M:%S GMT").to_string()).expect("ascii")
-}
-
-/// The `disposition` parameter: `inline` (default) or `attachment`. The
-/// message is reused when minting, where it answers `422`.
-pub(crate) fn disposition_kind(value: Option<&str>) -> Result<&'static str, String> {
-    match value {
-        None | Some("inline") => Ok("inline"),
-        Some("attachment") => Ok("attachment"),
-        Some(other) => Err(format!(
-            "disposition must be inline or attachment, not `{other}`"
-        )),
-    }
 }
 
 /// RFC 6266: an ASCII fallback plus the UTF-8 name.

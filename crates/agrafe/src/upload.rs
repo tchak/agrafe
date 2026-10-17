@@ -22,13 +22,18 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
-use crate::app::AppState;
+use jiff::Timestamp;
+
+use crate::app::Agrafe;
 use crate::blob::repo::{self, Completed, Transition};
-use crate::blob::{Blob, ScanOutcome};
+use crate::blob::{Blob, BlobState, ScanOutcome};
 use crate::clamav::{self, Verdict};
 use crate::config::UploadConfig;
-use crate::error::ApiError;
 use crate::sniff;
+
+/// The error a body stream may yield. The HTTP layer puts its own error
+/// type in the box and takes it back out of `UploadError::Body`.
+pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 /// Parts of the object in flight at once while streaming.
 const PART_CONCURRENCY: usize = 4;
@@ -52,17 +57,37 @@ pub struct Declared {
     pub size: u64,
 }
 
-/// What the blob was created with. `raw` and `multipart` blobs always have
-/// both; a generated blob does not, and does not go through this pipeline.
-pub fn declared(blob: &Blob) -> Result<Declared, ApiError> {
+/// Check that `blob` can take an upload at `now`, and what its bytes must
+/// turn out to be. `raw` and `multipart` blobs always declare both; a
+/// generated blob does not, and does not go through this pipeline.
+pub fn prepare(blob: &Blob, now: Timestamp) -> Result<Declared, UploadError> {
+    if !blob.accepts_upload(now) {
+        return Err(UploadError::Conflict(blob.state_at(now)));
+    }
+    if !blob.input_type.is_direct() {
+        return Err(UploadError::Generated);
+    }
     match (&blob.checksum_sha256, blob.size) {
         (Some(c), Some(s)) => Ok(Declared {
             checksum: c.clone(),
             size: s as u64,
         }),
-        _ => Err(ApiError::Unprocessable(
-            "blob has no declared checksum and size".into(),
-        )),
+        _ => Err(UploadError::Undeclared),
+    }
+}
+
+impl Agrafe {
+    /// Upload the bytes of blob `id`, once. The stream is the file itself;
+    /// framing (multipart, content length) is the caller's business.
+    pub async fn upload<S>(&self, id: Uuid, body: S) -> Result<Blob, UploadError>
+    where
+        S: Stream<Item = Result<Bytes, BoxError>> + Unpin,
+    {
+        let blob = repo::find(self.pool(), id)
+            .await?
+            .ok_or(UploadError::NotFound)?;
+        let declared = prepare(&blob, Timestamp::now())?;
+        run(self, blob, declared, body).await
     }
 }
 
@@ -71,10 +96,22 @@ pub fn object_key(blob_id: Uuid) -> String {
     format!("{blob_id}/original")
 }
 
+/// Why an upload was refused or failed. The first group is the caller's
+/// or the file's fault, the last the service's.
 #[derive(Debug, thiserror::Error)]
-enum UploadError {
+pub enum UploadError {
+    #[error("no such blob")]
+    NotFound,
+    #[error("blob is {0} and cannot be uploaded")]
+    Conflict(BlobState),
+    /// `rows` and `archive` blobs are built server side, not uploaded.
+    #[error("rows and archive blobs are built server side, not uploaded")]
+    Generated,
+    #[error("blob has no declared checksum and size")]
+    Undeclared,
+    /// The body stream failed; the boxed error is the caller's own.
     #[error(transparent)]
-    Body(ApiError),
+    Body(BoxError),
     #[error("body size does not match the declared size")]
     SizeMismatch,
     #[error("body checksum does not match the declared checksum")]
@@ -84,22 +121,17 @@ enum UploadError {
         declared: String,
         sniffed: &'static str,
     },
+    /// The bytes were stored and the blob is `infected`, by this signature.
+    #[error("file is infected: {0}")]
+    Infected(String),
     #[error("object store: {0}")]
     Store(#[from] object_store::Error),
     #[error("encryption: {0}")]
     Crypto(#[from] agrafe_crypto::Error),
-}
-
-impl From<UploadError> for ApiError {
-    fn from(err: UploadError) -> Self {
-        match err {
-            UploadError::Body(e) => e,
-            UploadError::SizeMismatch
-            | UploadError::ChecksumMismatch
-            | UploadError::TypeMismatch { .. } => ApiError::Unprocessable(err.to_string()),
-            UploadError::Store(_) | UploadError::Crypto(_) => ApiError::internal(err),
-        }
-    }
+    #[error("database: {0}")]
+    Db(#[from] sqlx::Error),
+    #[error("upload task failed: {0}")]
+    Task(#[from] tokio::task::JoinError),
 }
 
 /// Run the pipeline on `body`, the file bytes. The caller has checked that
@@ -111,20 +143,20 @@ impl From<UploadError> for ApiError {
 /// sees the body end early, fails the size check, aborts the multipart
 /// upload and hands the blob back. Nothing is ever left half done.
 pub async fn run<S>(
-    state: &AppState,
+    state: &Agrafe,
     blob: Blob,
     declared: Declared,
     mut body: S,
-) -> Result<Blob, ApiError>
+) -> Result<Blob, UploadError>
 where
-    S: Stream<Item = Result<Bytes, ApiError>> + Unpin,
+    S: Stream<Item = Result<Bytes, BoxError>> + Unpin,
 {
     let blob = {
         let mut conn = state.pool().acquire().await?;
         match repo::begin_upload(&mut conn, &blob).await? {
             Transition::Done(blob) => blob,
-            Transition::Conflict(blob) => return Err(conflict(&blob)),
-            Transition::Missing => return Err(ApiError::NotFound),
+            Transition::Conflict(blob) => return Err(UploadError::Conflict(blob.state)),
+            Transition::Missing => return Err(UploadError::NotFound),
         }
     };
 
@@ -143,20 +175,19 @@ where
         }
     }
     drop(tx);
-    task.await
-        .map_err(|e| ApiError::internal(format!("upload task failed: {e}")))?
+    task.await?
 }
 
 /// Encrypt and store `body` as the original of `blob`, which is in
 /// `uploading`, then complete or abort the transition.
 async fn store_and_complete<S>(
-    state: AppState,
+    state: Agrafe,
     blob: Blob,
     declared: Declared,
     body: S,
-) -> Result<Blob, ApiError>
+) -> Result<Blob, UploadError>
 where
-    S: Stream<Item = Result<Bytes, ApiError>> + Unpin,
+    S: Stream<Item = Result<Bytes, BoxError>> + Unpin,
 {
     let storage_key = object_key(blob.id);
     let envelope = state.keks().new_envelope(blob.id);
@@ -191,7 +222,7 @@ where
                     tracing::error!(blob = %blob.id, error = ?db, "could not reset blob after failed upload");
                 }
             }
-            return Err(err.into());
+            return Err(err);
         }
     };
 
@@ -209,7 +240,7 @@ where
         Transition::Done(blob) => match completed.scan {
             ScanOutcome::Infected(name) => {
                 tracing::warn!(blob = %blob.id, signature = name, "inline scan found a virus");
-                Err(ApiError::Infected(Some(name)))
+                Err(UploadError::Infected(name))
             }
             _ => Ok(blob),
         },
@@ -217,17 +248,13 @@ where
             // The row changed under us (reaper or delete); the object we just
             // wrote belongs to nobody.
             delete_quietly(&state, &storage_key).await;
-            Err(conflict(&current))
+            Err(UploadError::Conflict(current.state))
         }
         Transition::Missing => {
             delete_quietly(&state, &storage_key).await;
-            Err(ApiError::NotFound)
+            Err(UploadError::NotFound)
         }
     }
-}
-
-fn conflict(blob: &Blob) -> ApiError {
-    ApiError::Conflict(format!("blob is {} and cannot be uploaded", blob.state))
 }
 
 /// Where the bytes go for scanning while they stream.
@@ -244,7 +271,7 @@ enum Scanner {
 /// being down must not refuse uploads, and uploaders must not be able to
 /// tie up every clamd thread by trickling bytes, so both cases defer the
 /// scan to a job instead.
-async fn inline_scanner(state: &AppState, blob: &Blob, declared: &Declared) -> Scanner {
+async fn inline_scanner(state: &Agrafe, blob: &Blob, declared: &Declared) -> Scanner {
     if blob.skip_virus_scan {
         return Scanner::Skipped;
     }
@@ -262,7 +289,7 @@ async fn inline_scanner(state: &AppState, blob: &Blob, declared: &Declared) -> S
 
 /// Touch the row every third of `upload.stale_after`, for as long as this
 /// future is polled.
-async fn heartbeat(state: &AppState, id: Uuid) {
+async fn heartbeat(state: &Agrafe, id: Uuid) {
     let period = (state.config().upload.stale_after / 3).max(Duration::from_secs(1));
     let mut ticks = tokio::time::interval(period);
     ticks.tick().await; // the first tick is immediate; the transition just set it
@@ -278,7 +305,7 @@ async fn heartbeat(state: &AppState, id: Uuid) {
     }
 }
 
-async fn delete_quietly(state: &AppState, key: &str) {
+async fn delete_quietly(state: &Agrafe, key: &str) {
     if let Err(err) = state.store().delete(&ObjectPath::from(key)).await {
         tracing::warn!(key, error = ?err, "could not delete orphaned object");
     }
@@ -289,7 +316,7 @@ async fn delete_quietly(state: &AppState, key: &str) {
 /// nothing is left behind.
 #[allow(clippy::too_many_arguments)]
 async fn stream_to_store<S>(
-    state: &AppState,
+    state: &Agrafe,
     blob: &Blob,
     declared: &Declared,
     storage_key: &str,
@@ -299,7 +326,7 @@ async fn stream_to_store<S>(
     body: S,
 ) -> Result<(Vec<u8>, ScanOutcome), UploadError>
 where
-    S: Stream<Item = Result<Bytes, ApiError>> + Unpin,
+    S: Stream<Item = Result<Bytes, BoxError>> + Unpin,
 {
     let path = ObjectPath::from(storage_key);
     let upload = state.store().put_multipart(&path).await?;
@@ -341,7 +368,7 @@ async fn pump<S>(
     mut body: S,
 ) -> Result<ScanOutcome, UploadError>
 where
-    S: Stream<Item = Result<Bytes, ApiError>> + Unpin,
+    S: Stream<Item = Result<Bytes, BoxError>> + Unpin,
 {
     writer.write(encryptor.header().as_bytes());
     let mut hasher = Sha256::new();

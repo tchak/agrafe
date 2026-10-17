@@ -12,10 +12,10 @@ use jiff::Timestamp;
 use sqlx::PgExecutor;
 
 use super::{Job, JobError, JobKind, Priority};
-use crate::app::AppState;
+use crate::app::Agrafe;
 use crate::blob::repo;
 
-pub async fn run(state: &AppState, job: &Job) -> Result<(), JobError> {
+pub async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
     if job.kind != JobKind::Reap {
         return Err(JobError::Unhandled(job.kind));
     }
@@ -59,7 +59,7 @@ pub struct Report {
 }
 
 /// One pass, in one transaction, as of `now`.
-pub async fn reap(state: &AppState, now: Timestamp) -> Result<Report, JobError> {
+pub async fn reap(state: &Agrafe, now: Timestamp) -> Result<Report, JobError> {
     let config = state.config();
     let mut tx = state.pool().begin().await?;
 

@@ -14,7 +14,12 @@ squash, bookmarks and pushing. `jj st`, `jj diff`, `jj log`, `jj describe -m`,
 
 See "Crates" in `DESIGN.md` for the dependency graph.
 
-- `crates/agrafe` — the server binary and library.
+- `crates/agrafe` — the library: domain, jobs, config, and the `Agrafe`
+  handle whose methods are the private API. No axum anywhere in it.
+- `crates/agrafe-axum` — the HTTP interfaces as routers, `ApiError`, and the
+  integration tests under `tests/api`.
+- `crates/agrafe-server` — the clap entry point; its binary is named
+  `agrafe`.
 - `crates/agrafe-crypto` — streaming AEAD and key wrapping, reviewed in
   isolation; no dependency on the server crate.
 - `crates/agrafe-types` — content types, classification, sniffing,
@@ -34,8 +39,9 @@ See "Crates" in `DESIGN.md` for the dependency graph.
 - Copy `config/example.toml` to `config/agrafe.toml` (gitignored), set real
   keys, and point `database.url` at `agrafe_dev`. Ports 8080/8081 are taken on
   this machine; the local config uses 18080/18081.
-- `cargo run -- --config config/agrafe.toml migrate`, then
-  `cargo run -- --config config/agrafe.toml serve`. The workers need the
+- `cargo run --bin agrafe -- --config config/agrafe.toml migrate`, then
+  `cargo run --bin agrafe -- --config config/agrafe.toml serve` (the
+  workspace has several binaries, so `--bin` is needed). The workers need the
   helper binaries: `cargo build --workspace` and point
   `media.extract_command` and `media.render_text_command` at
   `target/debug/agrafe-extract` and `target/debug/agrafe-render-text`, or
@@ -43,8 +49,9 @@ See "Crates" in `DESIGN.md` for the dependency graph.
 - Tests need a `agrafe_test` database reachable as the current OS user, or
   `DATABASE_URL`, and `vips` on the `PATH` (`brew install vips`). Run
   `cargo test`, `cargo clippy --all-targets`, `cargo fmt` before committing.
-  The integration tests run the helper binaries from `target/`; a plain
-  `cargo test` builds them, `cargo test -p agrafe` builds them on demand.
+  The integration tests live in `agrafe-axum` and run the helper binaries
+  from `target/`; a plain `cargo test` builds them, `cargo test -p
+  agrafe-axum` builds them on demand.
 - Test fixtures and the renderer probe files in
   `crates/agrafe-render/assets/probe` come from `fixtures/make.py`
   (Pillow), the thumbnail icons from `scripts/icons.sh`; regenerate rather
@@ -67,9 +74,14 @@ See "Crates" in `DESIGN.md` for the dependency graph.
   are dependencies of the helper crates only; never add them to `agrafe`
   or `agrafe-render`.
 - Errors are `thiserror` enums, one per module that fails in its own way
-  (`ConfigError`, `ReadError`, `JobError`, …). No `anyhow`. Messages inline
-  their cause (`"reading the object: {0}"`), so log them with `%err`.
-  `ApiError::internal(e)` is the only type-erased boundary.
+  (`ConfigError`, `ReadError`, `JobError`, `UploadError`, …). No `anyhow`.
+  Messages inline their cause (`"reading the object: {0}"`), so log them
+  with `%err`. `ApiError::internal(e)` is the only type-erased boundary.
+- HTTP stays in `agrafe-axum`. The library never names a status code; a
+  new operation is a method on `Agrafe` returning its own error enum, and
+  the mapping to `ApiError` goes in `crates/agrafe-axum/src/error.rs`.
+  Handlers parse the request, call the handle and shape the response,
+  nothing more.
 - `blobs.updated_at` is set by a trigger (migration 0002). Do not set it in
   queries.
 - Tests run against the `agrafe_test` database: `DATABASE_URL` from the

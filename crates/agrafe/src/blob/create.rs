@@ -1,4 +1,4 @@
-//! Validation of `POST /blobs`.
+//! Creating a blob: validation of the request, then the insert.
 
 use std::time::Duration;
 
@@ -8,11 +8,29 @@ use jiff::{SignedDuration, Timestamp};
 use serde::Deserialize;
 use uuid::Uuid;
 
-use super::InputType;
+use super::{Blob, InputType, repo};
+use crate::app::Agrafe;
 use crate::classify::{self, Category};
 use crate::config::UploadConfig;
-use crate::error::ApiError;
 use crate::jobs::Priority;
+
+/// Why a blob could not be created.
+#[derive(Debug, thiserror::Error)]
+pub enum CreateError {
+    /// The request is well formed but not acceptable; the message says why.
+    #[error("{0}")]
+    Invalid(String),
+    #[error("database: {0}")]
+    Db(#[from] sqlx::Error),
+}
+
+impl Agrafe {
+    /// Create a blob: metadata only, no bytes yet.
+    pub async fn create_blob(&self, req: CreateBlobRequest) -> Result<Blob, CreateError> {
+        let new = validate(req, &self.config().upload, Timestamp::now())?;
+        Ok(repo::insert(self.pool(), &new).await?)
+    }
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -55,7 +73,7 @@ pub fn validate(
     req: CreateBlobRequest,
     upload: &UploadConfig,
     now: Timestamp,
-) -> Result<NewBlob, ApiError> {
+) -> Result<NewBlob, CreateError> {
     let filename = validate_filename(&req.filename)?;
     let content_type = normalize_content_type(&req.content_type).map_err(unprocessable)?;
     let category = classify::classify(&content_type);
@@ -119,7 +137,7 @@ pub fn validate(
     })
 }
 
-pub(crate) fn validate_filename(filename: &str) -> Result<String, ApiError> {
+pub(crate) fn validate_filename(filename: &str) -> Result<String, CreateError> {
     let filename = filename.trim();
     if filename.is_empty() {
         return Err(unprocessable("filename must not be empty"));
@@ -163,7 +181,7 @@ pub fn normalize_content_type(raw: &str) -> Result<String, &'static str> {
     Ok(mime.essence_str().trim().to_ascii_lowercase())
 }
 
-pub(crate) fn decode_checksum(encoded: &str) -> Result<Vec<u8>, ApiError> {
+pub(crate) fn decode_checksum(encoded: &str) -> Result<Vec<u8>, CreateError> {
     let bytes = STANDARD
         .decode(encoded.trim())
         .map_err(|_| unprocessable("checksum must be base64"))?;
@@ -175,7 +193,7 @@ pub(crate) fn decode_checksum(encoded: &str) -> Result<Vec<u8>, ApiError> {
     Ok(bytes)
 }
 
-pub(crate) fn validate_size(size: i64, upload: &UploadConfig) -> Result<i64, ApiError> {
+pub(crate) fn validate_size(size: i64, upload: &UploadConfig) -> Result<i64, CreateError> {
     if size < 0 {
         return Err(unprocessable("size must not be negative"));
     }
@@ -191,7 +209,7 @@ pub(crate) fn validate_size(size: i64, upload: &UploadConfig) -> Result<i64, Api
 fn validate_generated_content_type(
     input_type: InputType,
     content_type: &str,
-) -> Result<(), ApiError> {
+) -> Result<(), CreateError> {
     let ok = match input_type {
         InputType::Rows => matches!(content_type, classify::CSV | classify::XLSX | classify::ODS),
         InputType::Archive => content_type == classify::ZIP,
@@ -206,8 +224,8 @@ fn validate_generated_content_type(
     }
 }
 
-fn unprocessable(msg: impl Into<String>) -> ApiError {
-    ApiError::Unprocessable(msg.into())
+fn unprocessable(msg: impl Into<String>) -> CreateError {
+    CreateError::Invalid(msg.into())
 }
 
 #[cfg(test)]

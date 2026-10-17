@@ -18,17 +18,17 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::original;
+use agrafe::Agrafe;
+use agrafe::blob::representation::Resolved;
+use agrafe::blob::urls::MAX_WAIT;
+use agrafe::blob::{Blob, Representation, RepresentationState};
 use agrafe_render::icons;
 
-use crate::app::AppState;
-use crate::blob::{Blob, BlobState, Representation, RepresentationState, repo, representation};
+use super::original;
 use crate::error::{ApiError, ApiResult};
 
 pub const STATE_HEADER: &str = "x-representation-state";
 
-/// Longest a request may wait for a pending representation.
-pub const MAX_WAIT: Duration = Duration::from_secs(30);
 const WAIT_POLL: Duration = Duration::from_millis(250);
 
 /// Ready representations change only on a variant version bump; the URL's
@@ -44,18 +44,6 @@ pub struct RepresentationQuery {
     pub wait: Option<u64>,
 }
 
-/// The `wait` parameter, checked when minting.
-pub fn validate_wait(value: &str) -> Result<Duration, String> {
-    let ms: u64 = value
-        .parse()
-        .map_err(|_| format!("wait must be a number of milliseconds, not `{value}`"))?;
-    let wait = Duration::from_millis(ms);
-    if wait > MAX_WAIT {
-        return Err(format!("wait must be at most {} ms", MAX_WAIT.as_millis()));
-    }
-    Ok(wait)
-}
-
 /// Which port is asking: the public one does not see terminal blobs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Port {
@@ -63,17 +51,9 @@ pub enum Port {
     Public,
 }
 
-/// What the request resolves to.
-enum Served {
-    Bytes(Vec<u8>),
-    Placeholder(RepresentationState),
-    /// The blob itself is not readable (yet, or ever).
-    NotReady(BlobState),
-}
-
 #[allow(clippy::too_many_arguments)]
 pub async fn serve(
-    state: &AppState,
+    state: &Agrafe,
     blob: Blob,
     kind: Representation,
     filename: &str,
@@ -93,10 +73,10 @@ pub async fn serve(
     let deadline = Instant::now() + wait;
     let mut blob = blob;
     let served = loop {
-        let served = resolve(state, &blob, kind).await?;
+        let served = state.representation(&blob, kind).await?;
         let pending = match &served {
-            Served::Placeholder(RepresentationState::Pending) => true,
-            Served::NotReady(state) => !state.is_terminal(),
+            Resolved::Placeholder(RepresentationState::Pending) => true,
+            Resolved::NotReady(state) => !state.is_terminal(),
             _ => false,
         };
         if !pending || Instant::now() >= deadline {
@@ -109,9 +89,11 @@ pub async fn serve(
     let name = webp_name(query.filename.as_deref().unwrap_or(&blob.filename));
     let disposition = original::content_disposition(query.disposition.as_deref(), &name)?;
     match served {
-        Served::Bytes(bytes) => Ok(image(bytes, disposition, method, headers)),
-        Served::Placeholder(rep_state) => placeholder(kind, &blob, rep_state, disposition, method),
-        Served::NotReady(blob_state) => match kind {
+        Resolved::Bytes(bytes) => Ok(image(bytes, disposition, method, headers)),
+        Resolved::Placeholder(rep_state) => {
+            placeholder(kind, &blob, rep_state, disposition, method)
+        }
+        Resolved::NotReady(blob_state) => match kind {
             Representation::Thumbnail => {
                 let rep_state = if blob_state.is_terminal() {
                     RepresentationState::Unavailable
@@ -127,42 +109,9 @@ pub async fn serve(
     }
 }
 
-/// Decide what to serve from the row and the store, queueing a render when
-/// what is there is missing or stale.
-async fn resolve(state: &AppState, blob: &Blob, kind: Representation) -> ApiResult<Served> {
-    let now = Timestamp::now();
-    if !blob.is_readable(now) {
-        return Ok(Served::NotReady(blob.state_at(now)));
-    }
-    let version = state.config().media.variant_version;
-    let rep_state = blob.representation_state(kind);
-    if rep_state != RepresentationState::Pending
-        && blob.representation_version(kind) != Some(version)
-    {
-        tracing::info!(blob = %blob.id, kind = %kind, "built with another variant version, regenerating");
-        repo::request_representation(state.pool(), blob.id, kind).await?;
-        return Ok(Served::Placeholder(RepresentationState::Pending));
-    }
-    match rep_state {
-        RepresentationState::Ready => {
-            match representation::load(state, blob, kind)
-                .await
-                .map_err(ApiError::internal)?
-            {
-                Some(bytes) => Ok(Served::Bytes(bytes)),
-                None => {
-                    tracing::warn!(blob = %blob.id, kind = %kind, "object is missing, regenerating");
-                    repo::request_representation(state.pool(), blob.id, kind).await?;
-                    Ok(Served::Placeholder(RepresentationState::Pending))
-                }
-            }
-        }
-        other => Ok(Served::Placeholder(other)),
-    }
-}
-
-async fn refetch(state: &AppState, id: Uuid, port: Port) -> ApiResult<Blob> {
-    repo::find(state.pool(), id)
+async fn refetch(state: &Agrafe, id: Uuid, port: Port) -> ApiResult<Blob> {
+    state
+        .find_blob(id)
         .await?
         .filter(|blob| port == Port::Private || blob.visible_on_public(Timestamp::now()))
         .ok_or(ApiError::NotFound)
@@ -273,14 +222,5 @@ mod tests {
         assert_eq!(webp_name("archive.tar.gz"), "archive.tar.webp");
         assert_eq!(webp_name("README"), "README.webp");
         assert_eq!(webp_name(".bashrc"), ".bashrc.webp");
-    }
-
-    #[test]
-    fn wait_bounds() {
-        assert_eq!(validate_wait("0").unwrap(), Duration::ZERO);
-        assert_eq!(validate_wait("30000").unwrap(), MAX_WAIT);
-        assert!(validate_wait("30001").is_err());
-        assert!(validate_wait("-1").is_err());
-        assert!(validate_wait("soon").is_err());
     }
 }

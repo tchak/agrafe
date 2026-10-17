@@ -43,7 +43,9 @@ into a server process. Dependencies point downwards only.
 | `agrafe-extract` | The `agrafe-extract` helper: pulls the one image out of a PDF, DOCX or ODT. Library plus binary | `agrafe-types`, `lopdf`, `zip`, `quick-xml` |
 | `agrafe-render-text` | The `agrafe-render-text` helper: rasterises a text sample. Library plus binary | `ab_glyph` |
 | `agrafe-render` | Which files render and from what, `vips thumbnail`, the icons, the drivers that spawn the helpers, the startup probe, the `[media]` tool config | `agrafe-types`, `agrafe-sandbox` |
-| `agrafe` | Config, database, blobs, upload pipeline, encryption, signing, storage, ClamAV, jobs, metrics, and for now the HTTP interfaces and the binary | `agrafe-crypto`, `agrafe-types`, `agrafe-render`, `sqlx`, `object_store`, `axum` |
+| `agrafe` | The library: config, database, blobs, upload pipeline, encryption, signing, storage, ClamAV, jobs, metrics, URL minting, and the `Agrafe` handle whose methods are the private API | `agrafe-crypto`, `agrafe-types`, `agrafe-render`, `sqlx`, `object_store` |
+| `agrafe-axum` | The two HTTP interfaces as axum routers, the extractors, `ApiError` and the mapping of the library's errors onto status codes | `agrafe`, `axum` |
+| `agrafe-server` | The clap entry point: `serve`, `migrate`. Produces the binary named `agrafe` | `agrafe`, `agrafe-axum` |
 
 The helpers are separate binaries, not subcommands of the server, so that
 the server links none of their parsers: `lopdf`, `zip`, `quick-xml` and
@@ -58,18 +60,28 @@ does today. The `Source` enum and the ordered match in the render job are
 the seam that becomes a list of producers when the second one arrives;
 the trait is not written against a single implementation.
 
-The second stage of the split, next in the build order, takes the HTTP
-layer and the binary out of `agrafe`: `agrafe-axum` holds the routers and
-`ApiError`, `agrafe-server` the clap entry point producing the binary still
-named `agrafe`, and `agrafe` itself becomes the library an embedder depends
-on. That stage is where `ApiError` stops being the error type of
-`blob::create` and `upload`, and where the handler bodies move onto a
-handle so that a Rust caller gets the private API without HTTP. Three
-consumers then exist: the standalone service; a host application that
-nests `public_router` under a prefix, runs the job runner as a task and
-calls the private API in Rust; and one that also nests `private_router` on
-an internal listener. Embedding into a host's own database (a schema name
-for `blobs` and `jobs`) is a decision for that stage, not a blocker.
+The library knows nothing of HTTP. Its operations are methods on the
+`Agrafe` handle (`create_blob`, `list_blobs`, `find_blob`, `delete_blob`,
+`upload`, `urls`, `mint_urls`, `representation`, `list_jobs`, `retry_job`,
+`discard_job`, ...), each returning its own `thiserror` enum
+(`CreateError`, `UploadError`, `MintError`, `ListError`). `agrafe-axum`
+maps those onto `ApiError` in one place, its `error.rs`, and its handlers
+are a line or two each: parse the request, call the handle, shape the
+response. The upload body reaches the library as a stream whose error is
+boxed; the HTTP layer puts its own error in the box and takes it back out,
+so a body cut short by the size limit still answers `413` without the
+pipeline knowing what that is. Reading an original is the one place the
+HTTP layer goes below the handle, to `blob::read::Reader`, because `Range`
+handling and streaming the plaintext into a response body are its job.
+
+Three consumers exist: the standalone service, `agrafe-server`; a host
+application that builds an `Agrafe` from a configuration and a pool, nests
+`agrafe_axum::public_router` under a prefix, runs `jobs::runner::run` as a
+task and calls the private API in Rust; and one that also nests
+`private_router` on an internal listener. The routers come with their
+state applied, so nesting needs no state plumbing in the host. Embedding
+into a host's own database (a schema name for `blobs` and `jobs`) is an
+open decision, not a blocker.
 
 ## Interfaces
 
@@ -1050,5 +1062,4 @@ is redacted so a dumped config cannot leak them. See `config/example.toml`.
    renderer out of the server crate.
 7. Crate split, second stage: `agrafe-axum` and `agrafe-server` off the
    library; domain error types; the private API as a Rust handle.
-   **← current**
-8. `rows` to CSV/XLSX/ODS, then `archive` to ZIP.
+8. `rows` to CSV/XLSX/ODS, then `archive` to ZIP. **← current**

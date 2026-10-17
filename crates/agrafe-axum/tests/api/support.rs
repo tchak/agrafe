@@ -1,10 +1,10 @@
 //! What every test builds on: the app under test, a fake clamd, request
 //! builders and peeks at the database and the object store.
 
-use agrafe::api;
-use agrafe::app::AppState;
+use agrafe::Agrafe;
 use agrafe::config::Config;
 use agrafe::db;
+use agrafe_axum as api;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
@@ -33,7 +33,7 @@ static MIGRATED: AtomicBool = AtomicBool::new(false);
 pub struct TestApp {
     pub private: Router,
     pub public: Router,
-    pub state: AppState,
+    pub state: Agrafe,
     storage: PathBuf,
     _guard: MutexGuard<'static, ()>,
 }
@@ -222,7 +222,7 @@ pub async fn setup_tuned(clamd: SocketAddr, tune: impl FnOnce(&mut Config)) -> T
         .await
         .unwrap();
 
-    let state = AppState::new(config, pool).unwrap();
+    let state = Agrafe::new(config, pool).unwrap();
     TestApp {
         private: api::private_router(state.clone()),
         public: api::public_router(state.clone()),

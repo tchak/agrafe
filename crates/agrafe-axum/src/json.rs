@@ -6,10 +6,10 @@ use jiff::Timestamp;
 use serde::Serialize;
 use uuid::Uuid;
 
-use super::urls::BlobUrls;
-use crate::blob::{Blob, BlobState, InputType, RepresentationState, ScanState};
-use crate::classify::Category;
-use crate::jobs::Priority;
+use agrafe::blob::urls::BlobUrls;
+use agrafe::blob::{Blob, BlobState, InputType, RepresentationState, ScanState};
+use agrafe::classify::Category;
+use agrafe::jobs::Priority;
 
 /// Full metadata, private port.
 #[derive(Debug, Serialize)]

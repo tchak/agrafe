@@ -4,13 +4,55 @@ pub mod create;
 pub mod read;
 pub mod repo;
 pub mod representation;
+pub mod urls;
 
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::app::Agrafe;
 use crate::classify::Category;
 use crate::jobs::Priority;
+use repo::{ListParams, Page, Transition};
+
+/// Why a listing was refused.
+#[derive(Debug, thiserror::Error)]
+pub enum ListError {
+    #[error("limit must be between 1 and {0}")]
+    Limit(usize),
+    #[error("{0}")]
+    ContentType(&'static str),
+    #[error("database: {0}")]
+    Db(#[from] sqlx::Error),
+}
+
+impl Agrafe {
+    /// A blob by id, in any state.
+    pub async fn find_blob(&self, id: Uuid) -> sqlx::Result<Option<Blob>> {
+        repo::find(self.pool(), id).await
+    }
+
+    /// List blobs, newest first. `content_type` is normalised here, and
+    /// `limit` must lie in `1..=repo::MAX_LIMIT`.
+    pub async fn list_blobs(&self, mut params: ListParams) -> Result<Page, ListError> {
+        if let Some(raw) = &params.content_type {
+            params.content_type =
+                Some(create::normalize_content_type(raw).map_err(ListError::ContentType)?);
+        }
+        if !(1..=repo::MAX_LIMIT).contains(&params.limit) {
+            return Err(ListError::Limit(repo::MAX_LIMIT));
+        }
+        Ok(repo::list(self.pool(), &params).await?)
+    }
+
+    /// Soft delete: the objects are purged asynchronously. `false` when
+    /// there is no such blob; deleting twice is not an error.
+    pub async fn delete_blob(&self, id: Uuid) -> sqlx::Result<bool> {
+        let purge_at = self.config().upload.purge_at(Timestamp::now());
+        let transition = repo::soft_delete(self.pool(), id, purge_at).await?;
+        Ok(!matches!(transition, Transition::Missing))
+    }
+}
 
 /// Lifecycle of a blob. See DESIGN.md, "State machine".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

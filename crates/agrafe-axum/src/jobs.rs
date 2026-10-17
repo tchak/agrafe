@@ -10,12 +10,13 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::extract::{Json, Path, Query};
-use crate::app::AppState;
-use crate::error::{ApiError, ApiResult};
-use crate::jobs::{self, Action, Job, JobKind, JobState, ListParams, Priority};
+use agrafe::Agrafe;
+use agrafe::jobs::{self, Action, Job, JobKind, JobState, ListParams, Priority};
 
-pub fn routes() -> Router<AppState> {
+use super::extract::{Json, Path, Query};
+use crate::error::{ApiError, ApiResult};
+
+pub fn routes() -> Router<Agrafe> {
     Router::new()
         .route("/jobs", get(list_jobs))
         .route("/jobs/{id}", get(get_job).delete(discard_job))
@@ -41,8 +42,8 @@ pub struct JobResponse {
 }
 
 impl JobResponse {
-    fn new(state: &AppState, job: Job) -> Self {
-        let job_state = job.state(state.config().jobs.lease_timeout, Timestamp::now());
+    fn new(state: &Agrafe, job: Job) -> Self {
+        let job_state = state.job_state(&job);
         Self {
             id: job.id,
             kind: job.kind,
@@ -79,25 +80,18 @@ pub struct JobListQuery {
 }
 
 async fn list_jobs(
-    State(state): State<AppState>,
+    State(state): State<Agrafe>,
     Query(q): Query<JobListQuery>,
 ) -> ApiResult<Json<JobListResponse>> {
-    let limit = q.limit.unwrap_or(jobs::DEFAULT_LIMIT);
-    if !(1..=jobs::MAX_LIMIT).contains(&limit) {
-        return Err(ApiError::BadRequest(format!(
-            "limit must be between 1 and {}",
-            jobs::MAX_LIMIT
-        )));
-    }
     let params = ListParams {
         kind: q.kind,
         state: q.state,
         priority: q.priority,
         blob_id: q.blob_id,
         cursor: q.cursor,
-        limit,
+        limit: q.limit.unwrap_or(jobs::DEFAULT_LIMIT),
     };
-    let page = jobs::list(state.pool(), &params, state.config().jobs.lease_timeout).await?;
+    let page = state.list_jobs(&params).await?;
     Ok(Json(JobListResponse {
         items: page
             .items
@@ -108,22 +102,16 @@ async fn list_jobs(
     }))
 }
 
-async fn get_job(
-    State(state): State<AppState>,
-    Path(id): Path<i64>,
-) -> ApiResult<Json<JobResponse>> {
-    let job = jobs::find(state.pool(), id)
-        .await?
-        .ok_or(ApiError::NotFound)?;
+async fn get_job(State(state): State<Agrafe>, Path(id): Path<i64>) -> ApiResult<Json<JobResponse>> {
+    let job = state.find_job(id).await?.ok_or(ApiError::NotFound)?;
     Ok(Json(JobResponse::new(&state, job)))
 }
 
 async fn retry_job(
-    State(state): State<AppState>,
+    State(state): State<Agrafe>,
     Path(id): Path<i64>,
 ) -> ApiResult<Json<JobResponse>> {
-    let mut conn = state.pool().acquire().await?;
-    match jobs::retry(&mut conn, id).await? {
+    match state.retry_job(id).await? {
         Action::Done(job) => Ok(Json(JobResponse::new(&state, job))),
         Action::NotDead(job) => Err(not_dead(&state, &job)),
         Action::Duplicate(job) => Err(ApiError::Conflict(format!(
@@ -134,18 +122,17 @@ async fn retry_job(
     }
 }
 
-async fn discard_job(State(state): State<AppState>, Path(id): Path<i64>) -> ApiResult<StatusCode> {
-    let mut conn = state.pool().acquire().await?;
-    match jobs::discard(&mut conn, id).await? {
+async fn discard_job(State(state): State<Agrafe>, Path(id): Path<i64>) -> ApiResult<StatusCode> {
+    match state.discard_job(id).await? {
         Action::Done(_) => Ok(StatusCode::NO_CONTENT),
         Action::NotDead(job) | Action::Duplicate(job) => Err(not_dead(&state, &job)),
         Action::Missing => Err(ApiError::NotFound),
     }
 }
 
-fn not_dead(state: &AppState, job: &Job) -> ApiError {
+fn not_dead(state: &Agrafe, job: &Job) -> ApiError {
     ApiError::Conflict(format!(
         "job is {}, only a dead job can be retried or discarded",
-        job.state(state.config().jobs.lease_timeout, Timestamp::now())
+        state.job_state(job)
     ))
 }

@@ -9,7 +9,7 @@ use object_store::path::Path as ObjectPath;
 use uuid::Uuid;
 
 use super::{Job, JobError};
-use crate::app::AppState;
+use crate::app::Agrafe;
 use crate::blob::{BlobState, repo};
 use crate::storage::Store;
 
@@ -23,7 +23,7 @@ pub enum PurgeError {
     Store(#[from] object_store::Error),
 }
 
-pub async fn run(state: &AppState, job: &Job) -> Result<(), JobError> {
+pub async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
     let id = job.blob_id.ok_or(JobError::NoBlob(job.kind))?;
     if let Some(blob) = repo::find(state.pool(), id).await?
         && !blob.state.is_terminal()

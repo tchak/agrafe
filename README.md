@@ -4,6 +4,10 @@ File storage service: encrypted at rest, virus scanned, with WebP previews and
 thumbnails. Rust, Postgres, any S3-compatible object store.
 
 See [DESIGN.md](DESIGN.md) for the architecture and the decisions behind it.
+It runs as its own service (`agrafe-server`), or inside another axum
+application: the `agrafe` crate is the service as a library with a Rust
+private API, and `agrafe-axum` provides its two interfaces as routers to
+nest.
 
 ## Running locally
 
@@ -19,8 +23,8 @@ thumbnails come from two helper binaries built by this workspace,
 createdb agrafe_dev
 cp config/example.toml config/agrafe.toml   # then set database.url and real keys
 cargo build --workspace                     # the helpers land in target/debug
-cargo run -- --config config/agrafe.toml migrate
-PATH="$PWD/target/debug:$PATH" cargo run -- --config config/agrafe.toml serve
+cargo run --bin agrafe -- --config config/agrafe.toml migrate
+PATH="$PWD/target/debug:$PATH" cargo run --bin agrafe -- --config config/agrafe.toml serve
 ```
 
 Generate keys with `openssl rand -base64 32`.
@@ -34,7 +38,8 @@ cargo test
 
 Tests connect as the current OS user to `agrafe_test`; set `DATABASE_URL` to
 override. They need `vips` on the `PATH` as well, and run the helper
-binaries from `target/`, building them if a `cargo test -p agrafe` has not.
+binaries from `target/`, building them if a `cargo test -p agrafe-axum` has
+not.
 The files under `fixtures/` and the renderer probe files under
 `crates/agrafe-render/assets/probe` are built by `fixtures/make.py` (needs
 Pillow), the placeholder icons by `scripts/icons.sh`; all outputs are

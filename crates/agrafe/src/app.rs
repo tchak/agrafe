@@ -1,4 +1,7 @@
-//! Shared application state.
+//! The handle everything hangs off: configuration, pool, store, keys,
+//! signer, clamd client and metrics behind one `Arc`. The private API is a
+//! set of methods on it, spread over the modules that implement them
+//! (`blob`, `blob::create`, `blob::urls`, `upload`, `jobs`).
 
 use std::sync::Arc;
 
@@ -20,8 +23,9 @@ pub enum InitError {
     Config(#[from] ConfigError),
 }
 
+/// A cheap-to-clone handle on one agrafe instance.
 #[derive(Clone)]
-pub struct AppState(Arc<Inner>);
+pub struct Agrafe(Arc<Inner>);
 
 struct Inner {
     config: Config,
@@ -33,7 +37,7 @@ struct Inner {
     metrics: Metrics,
 }
 
-impl AppState {
+impl Agrafe {
     pub fn new(config: Config, pool: PgPool) -> Result<Self, InitError> {
         let store = storage::build(&config.storage)?;
         let signer = Signer::from_config(&config.signing)?;

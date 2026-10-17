@@ -1,0 +1,198 @@
+//! Private interface handlers.
+
+use axum::Router;
+use axum::extract::{DefaultBodyLimit, Request, State};
+use axum::http::{HeaderMap, Method, StatusCode};
+use axum::response::IntoResponse;
+use axum::response::Response;
+use axum::routing::{get, post};
+use jiff::Timestamp;
+use serde::Deserialize;
+use uuid::Uuid;
+
+use agrafe::Agrafe;
+use agrafe::blob::create::CreateBlobRequest;
+use agrafe::blob::repo::{self, ListParams};
+use agrafe::blob::urls::{BlobUrls, MintOptions};
+use agrafe::blob::{BlobState, Representation, ScanState};
+use agrafe::classify::Category;
+use agrafe::upload;
+
+use super::body;
+use super::extract::{Json, Path, Query};
+use super::json::{BlobResponse, ListResponse};
+use super::original::{self, OriginalQuery};
+use super::representation::{self, Port, RepresentationQuery};
+use crate::error::{ApiError, ApiResult};
+
+/// `body_limit` caps the request body of the upload route. It is a backstop:
+/// the pipeline stops at the declared size, which is at most
+/// `upload.max_size`; the limit only matters for multipart framing around it.
+pub fn routes(body_limit: usize) -> Router<Agrafe> {
+    Router::new()
+        .route("/blobs", post(create_blob).get(list_blobs))
+        .route(
+            "/blobs/{id}",
+            get(get_blob)
+                .put(upload_blob)
+                .delete(delete_blob)
+                .layer(DefaultBodyLimit::max(body_limit)),
+        )
+        .route("/blobs/{id}/urls", post(mint_urls))
+        .route("/blobs/{id}/original/{filename}", get(get_original))
+        .route("/blobs/{id}/preview/{filename}", get(get_preview))
+        .route("/blobs/{id}/thumbnail/{filename}", get(get_thumbnail))
+}
+
+async fn create_blob(
+    State(agrafe): State<Agrafe>,
+    Json(req): Json<CreateBlobRequest>,
+) -> ApiResult<impl IntoResponse> {
+    let blob = agrafe.create_blob(req).await?;
+    let urls = agrafe.urls(&blob);
+    Ok((StatusCode::CREATED, Json(BlobResponse::new(&blob, urls))))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListQuery {
+    pub content_type: Option<String>,
+    pub category: Option<Category>,
+    pub state: Option<BlobState>,
+    pub scan_state: Option<ScanState>,
+    pub cursor: Option<Uuid>,
+    pub limit: Option<usize>,
+}
+
+async fn list_blobs(
+    State(agrafe): State<Agrafe>,
+    Query(q): Query<ListQuery>,
+) -> ApiResult<Json<ListResponse>> {
+    let params = ListParams {
+        content_type: q.content_type,
+        category: q.category,
+        state: q.state,
+        scan_state: q.scan_state,
+        cursor: q.cursor,
+        limit: q.limit.unwrap_or(repo::DEFAULT_LIMIT),
+    };
+    let page = agrafe.list_blobs(params).await?;
+    let items = page
+        .items
+        .iter()
+        .map(|b| BlobResponse::new(b, agrafe.urls(b)))
+        .collect();
+    Ok(Json(ListResponse {
+        items,
+        next_cursor: page.next_cursor,
+    }))
+}
+
+async fn get_blob(
+    State(agrafe): State<Agrafe>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<BlobResponse>> {
+    let blob = agrafe.find_blob(id).await?.ok_or(ApiError::NotFound)?;
+    let urls = agrafe.urls(&blob);
+    Ok(Json(BlobResponse::new(&blob, urls)))
+}
+
+async fn upload_blob(
+    State(agrafe): State<Agrafe>,
+    Path(id): Path<Uuid>,
+    req: Request,
+) -> ApiResult<Json<BlobResponse>> {
+    let blob = agrafe.find_blob(id).await?.ok_or(ApiError::NotFound)?;
+    let declared = upload::prepare(&blob, Timestamp::now())?;
+    let blob = body::upload(&agrafe, blob, declared, req).await?;
+    let urls = agrafe.urls(&blob);
+    Ok(Json(BlobResponse::new(&blob, urls)))
+}
+
+async fn delete_blob(State(agrafe): State<Agrafe>, Path(id): Path<Uuid>) -> ApiResult<StatusCode> {
+    if agrafe.delete_blob(id).await? {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::NotFound)
+    }
+}
+
+async fn mint_urls(
+    State(agrafe): State<Agrafe>,
+    Path(id): Path<Uuid>,
+    body: Option<Json<MintOptions>>,
+) -> ApiResult<Json<BlobUrls>> {
+    let Json(opts) = body.unwrap_or_default();
+    Ok(Json(agrafe.mint_urls(id, &opts).await?))
+}
+
+async fn get_original(
+    State(agrafe): State<Agrafe>,
+    Path((id, filename)): Path<(Uuid, String)>,
+    Query(query): Query<OriginalQuery>,
+    method: Method,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    let blob = agrafe.find_blob(id).await?.ok_or(ApiError::NotFound)?;
+    original::serve(&agrafe, blob, &filename, query, &method, &headers).await
+}
+
+async fn get_preview(
+    State(state): State<Agrafe>,
+    Path((id, filename)): Path<(Uuid, String)>,
+    Query(query): Query<RepresentationQuery>,
+    method: Method,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    get_representation(
+        state,
+        id,
+        Representation::Preview,
+        filename,
+        query,
+        method,
+        headers,
+    )
+    .await
+}
+
+async fn get_thumbnail(
+    State(state): State<Agrafe>,
+    Path((id, filename)): Path<(Uuid, String)>,
+    Query(query): Query<RepresentationQuery>,
+    method: Method,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    get_representation(
+        state,
+        id,
+        Representation::Thumbnail,
+        filename,
+        query,
+        method,
+        headers,
+    )
+    .await
+}
+
+async fn get_representation(
+    state: Agrafe,
+    id: Uuid,
+    kind: Representation,
+    filename: String,
+    query: RepresentationQuery,
+    method: Method,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    let blob = state.find_blob(id).await?.ok_or(ApiError::NotFound)?;
+    representation::serve(
+        &state,
+        blob,
+        kind,
+        &filename,
+        query,
+        &method,
+        &headers,
+        Port::Private,
+    )
+    .await
+}

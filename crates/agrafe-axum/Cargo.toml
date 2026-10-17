@@ -1,0 +1,41 @@
+[package]
+name = "agrafe-axum"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "The HTTP interfaces of agrafe as axum routers, to serve or to nest in another application"
+
+[lints]
+workspace = true
+
+[dependencies]
+agrafe = { version = "0.1.0", path = "../agrafe" }
+agrafe-render = { version = "0.1.0", path = "../agrafe-render" }
+axum = { version = "0.8.9", features = ["macros", "multipart"] }
+base64 = "0.23.1"
+bytes = "1"
+futures = "0.3.34"
+http = "1.5.0"
+http-body-util = "0.1.5"
+jiff = { version = "0.2.38", features = ["serde"] }
+percent-encoding = "2.3.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+sqlx = { version = "0.9.0", default-features = false }
+thiserror = "2.0.21"
+tokio = { version = "1.53.3", features = ["time"] }
+tower-http = { version = "0.7.1", features = ["trace"] }
+tracing = "0.1.44"
+uuid = { version = "1.28.0", features = ["v7", "serde"] }
+
+[dev-dependencies]
+agrafe-crypto = { version = "0.1.0", path = "../agrafe-crypto" }
+bytesize = "2.7.0"
+figment = { version = "0.10.19", features = ["toml", "test"] }
+jiff-sqlx = { version = "0.2.0", features = ["postgres"] }
+object_store = "0.14.2"
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "fs"] }
+tokio-stream = "0.1.17"
+tower = { version = "0.5.3", features = ["util"] }

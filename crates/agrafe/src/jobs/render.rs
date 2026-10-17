@@ -25,7 +25,7 @@ use agrafe_render::{Source, sources, text_sample};
 use tokio::io::AsyncWriteExt;
 
 use super::{Job, JobError, JobKind};
-use crate::app::AppState;
+use crate::app::Agrafe;
 use crate::blob::read::{Reader, Stored};
 use crate::blob::{Blob, BlobState, PreviewSource, Representation, RepresentationState};
 use crate::blob::{repo, representation};
@@ -34,7 +34,7 @@ use crate::config::MediaConfig;
 /// The preview's file in the work directory.
 const PREVIEW: &str = "preview.webp";
 
-pub async fn run(state: &AppState, job: &Job) -> Result<(), JobError> {
+pub async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
     if job.kind != JobKind::Render {
         return Err(JobError::Unhandled(job.kind));
     }
@@ -119,7 +119,7 @@ impl<T> Verdict<T> {
 /// One job's rendering: the blob, its keys, and a work directory removed
 /// when the job is done.
 struct Render<'a> {
-    state: &'a AppState,
+    state: &'a Agrafe,
     blob: &'a Blob,
     stored: Stored,
     workdir: tempfile::TempDir,
@@ -128,7 +128,7 @@ struct Render<'a> {
 }
 
 impl<'a> Render<'a> {
-    fn new(state: &'a AppState, blob: &'a Blob) -> Result<Self, JobError> {
+    fn new(state: &'a Agrafe, blob: &'a Blob) -> Result<Self, JobError> {
         Ok(Self {
             state,
             blob,
@@ -139,7 +139,7 @@ impl<'a> Render<'a> {
     }
 
     fn media(&self) -> &'a MediaConfig {
-        let state: &'a AppState = self.state;
+        let state: &'a Agrafe = self.state;
         &state.config().media
     }
 

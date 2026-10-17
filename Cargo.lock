@@ -68,7 +68,6 @@ dependencies = [
  "agrafe-crypto",
  "agrafe-render",
  "agrafe-types",
- "axum",
  "base64 0.23.1",
  "bytes",
  "bytesize",
@@ -78,7 +77,6 @@ dependencies = [
  "futures",
  "hmac",
  "http",
- "http-body-util",
  "humantime-serde",
  "jiff",
  "jiff-sqlx",
@@ -94,10 +92,40 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-stream",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "agrafe-axum"
+version = "0.1.0"
+dependencies = [
+ "agrafe",
+ "agrafe-crypto",
+ "agrafe-render",
+ "axum",
+ "base64 0.23.1",
+ "bytes",
+ "bytesize",
+ "figment",
+ "futures",
+ "http",
+ "http-body-util",
+ "jiff",
+ "jiff-sqlx",
+ "object_store",
+ "percent-encoding",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
  "tower",
  "tower-http 0.7.1",
  "tracing",
- "tracing-subscriber",
  "uuid",
 ]
 
@@ -156,6 +184,22 @@ dependencies = [
  "serde",
  "thiserror",
  "tokio",
+]
+
+[[package]]
+name = "agrafe-server"
+version = "0.1.0"
+dependencies = [
+ "agrafe",
+ "agrafe-axum",
+ "axum",
+ "clap",
+ "futures",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

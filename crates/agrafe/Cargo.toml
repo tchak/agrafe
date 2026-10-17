@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "File storage service: encrypted, scanned, with previews"
+description = "File storage service: encrypted, scanned, with previews. The library; see agrafe-axum and agrafe-server"
 
 [lints]
 workspace = true
@@ -13,7 +13,6 @@ workspace = true
 agrafe-crypto = { version = "0.1.0", path = "../agrafe-crypto" }
 agrafe-render = { version = "0.1.0", path = "../agrafe-render" }
 agrafe-types = { version = "0.1.0", path = "../agrafe-types" }
-axum = { version = "0.8.9", features = ["macros", "multipart"] }
 base64 = "0.23.1"
 bytes = "1"
 bytesize = { version = "2.7.0", features = ["serde"] }
@@ -21,7 +20,6 @@ clap = { version = "4.6.7", features = ["derive", "env"] }
 figment = { version = "0.10.19", features = ["toml", "env"] }
 form_urlencoded = "1.2.2"
 futures = "0.3.34"
-http-body-util = "0.1.5"
 hmac = "0.13.0"
 http = "1.5.0"
 humantime-serde = "1.1.1"
@@ -39,14 +37,9 @@ tempfile = "3.27.0"
 thiserror = "2.0.21"
 tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "signal", "net", "io-util", "sync", "time", "process", "fs"] }
 tokio-stream = "0.1.17"
-tower-http = { version = "0.7.1", features = ["trace"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 uuid = { version = "1.28.0", features = ["v7", "serde"] }
 
 [dev-dependencies]
 figment = { version = "0.10.19", features = ["test"] }
-futures = "0.3"
-object_store = "0.14.2"
-sha2 = "0.11.1"
-tower = { version = "0.5.3", features = ["util"] }

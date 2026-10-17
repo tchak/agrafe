@@ -1,5 +1,11 @@
-//! API error type: every handler failure becomes a JSON body with a stable code.
+//! API error type: every handler failure becomes a JSON body with a stable
+//! code. The library's own error types map onto it here, and nowhere else.
 
+use agrafe::blob::create::CreateError;
+use agrafe::blob::urls::MintError;
+use agrafe::blob::{self, representation};
+use agrafe::jobs;
+use agrafe::upload::UploadError;
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -94,6 +100,78 @@ impl ApiError {
 
 impl From<sqlx::Error> for ApiError {
     fn from(err: sqlx::Error) -> Self {
+        ApiError::internal(err)
+    }
+}
+
+impl From<CreateError> for ApiError {
+    fn from(err: CreateError) -> Self {
+        match err {
+            CreateError::Invalid(msg) => ApiError::Unprocessable(msg),
+            CreateError::Db(e) => ApiError::internal(e),
+        }
+    }
+}
+
+impl From<blob::ListError> for ApiError {
+    fn from(err: blob::ListError) -> Self {
+        match err {
+            blob::ListError::Limit(_) | blob::ListError::ContentType(_) => {
+                ApiError::BadRequest(err.to_string())
+            }
+            blob::ListError::Db(e) => ApiError::internal(e),
+        }
+    }
+}
+
+impl From<jobs::ListError> for ApiError {
+    fn from(err: jobs::ListError) -> Self {
+        match err {
+            jobs::ListError::Limit(_) => ApiError::BadRequest(err.to_string()),
+            jobs::ListError::Db(e) => ApiError::internal(e),
+        }
+    }
+}
+
+impl From<MintError> for ApiError {
+    fn from(err: MintError) -> Self {
+        match err {
+            MintError::NotFound => ApiError::NotFound,
+            MintError::Invalid(msg) => ApiError::Unprocessable(msg),
+            MintError::Db(e) => ApiError::internal(e),
+        }
+    }
+}
+
+impl From<UploadError> for ApiError {
+    fn from(err: UploadError) -> Self {
+        match err {
+            UploadError::NotFound => ApiError::NotFound,
+            UploadError::Conflict(_) => ApiError::Conflict(err.to_string()),
+            // Generated blobs are built from parts, a later build step.
+            UploadError::Generated => ApiError::NotImplemented,
+            UploadError::Undeclared
+            | UploadError::SizeMismatch
+            | UploadError::ChecksumMismatch
+            | UploadError::TypeMismatch { .. } => ApiError::Unprocessable(err.to_string()),
+            UploadError::Infected(name) => ApiError::Infected(Some(name)),
+            // The body stream is ours (`body.rs`), so the box holds an
+            // `ApiError` with the right status; anything else is a plain
+            // bad request.
+            UploadError::Body(e) => match e.downcast::<ApiError>() {
+                Ok(api) => *api,
+                Err(other) => ApiError::BadRequest(format!("reading the request body: {other}")),
+            },
+            UploadError::Store(_)
+            | UploadError::Crypto(_)
+            | UploadError::Db(_)
+            | UploadError::Task(_) => ApiError::internal(err),
+        }
+    }
+}
+
+impl From<representation::Error> for ApiError {
+    fn from(err: representation::Error) -> Self {
         ApiError::internal(err)
     }
 }
