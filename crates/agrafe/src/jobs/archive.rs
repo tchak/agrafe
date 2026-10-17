@@ -95,11 +95,14 @@ pub async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
             state = %blob.state,
             "archive built"
         ),
-        // The blob left `uploaded` in the moment since the last check: only
-        // for a terminal state, so the object is nobody's.
+        // The blob left `uploaded` in the moment since the last check.
+        // Expired or deleted, the object is nobody's and goes. `ready`
+        // means another build of the same blob finished first, which a
+        // lapsed job lease allows: the object is its, and deleting it here
+        // would leave a `ready` blob with nothing behind it.
         Transition::Conflict(current) => {
             tracing::warn!(state = %current.state, "blob changed state as the build finished");
-            upload::delete_quietly(state, &built.storage_key).await;
+            upload::disown(state, &current, &built.storage_key).await;
         }
         Transition::Missing => upload::delete_quietly(state, &built.storage_key).await,
     }
