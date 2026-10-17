@@ -194,12 +194,14 @@ impl Reader {
 
         let storage_key = Blob::source_key(blob.id, n);
         let path = ObjectPath::from(storage_key.as_str());
-        let len = state.store().head(&path).await?.size;
+        // One request: the object's length comes with the response.
+        let got = state.store().get(&path).await?;
+        let len = got.meta.size;
         let size = layout.plaintext_len(len).map_err(|_| ReadError::Length {
             key: storage_key.clone(),
             len,
         })?;
-        let mut source = state.store().get(&path).await?.into_stream().boxed();
+        let mut source = got.into_stream().boxed();
         let mut buffer = BytesMut::new();
         while buffer.len() < HEADER_LEN {
             match source.next().await {
