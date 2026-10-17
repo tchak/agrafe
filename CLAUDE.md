@@ -82,7 +82,7 @@ See "Crates" in `DESIGN.md` for the dependency graph.
   the mapping to `ApiError` goes in `crates/agrafe-axum/src/error.rs`.
   Handlers parse the request, call the handle and shape the response,
   nothing more.
-- `blobs.updated_at` is set by a trigger (migration 0002). Do not set it in
+- `blobs.updated_at` is set by a trigger (`migrations/0001_blobs.sql`). Do not set it in
   queries.
 - Tests run against the `agrafe_test` database: `DATABASE_URL` from the
   environment, else `postgres://$USER@localhost/agrafe_test`. Integration
