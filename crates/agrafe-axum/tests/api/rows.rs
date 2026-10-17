@@ -1,0 +1,565 @@
+//! Generated spreadsheets: the columns declared at creation, the rows
+//! accepted in parts against them, and the build to CSV, XLSX or ODS.
+
+use std::io::{Cursor, Read};
+
+use agrafe::jobs::JobKind;
+use axum::http::{Method, StatusCode};
+use serde_json::{Value, json};
+
+use crate::support::*;
+
+const XLSX: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const ODS: &str = "application/vnd.oasis.opendocument.spreadsheet";
+
+fn columns() -> Value {
+    json!([
+        {"name": "Nom"},
+        {"name": "Montant"},
+        {"name": "Validé"},
+        {"name": "Date", "type": "date"},
+        {"name": "Créé le", "type": "datetime"},
+    ])
+}
+
+fn rows_blob(filename: &str, content_type: &str) -> Value {
+    json!({
+        "filename": filename,
+        "content_type": content_type,
+        "input_type": "rows",
+        "columns": columns(),
+    })
+}
+
+/// A source of `lines`, each a JSON array.
+fn source(lines: &[Value]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for line in lines {
+        out.extend_from_slice(line.to_string().as_bytes());
+        out.push(b'\n');
+    }
+    out
+}
+
+/// Three rows as the backend would send them, verbatim: the `1.10` lexeme
+/// is the point, and `json!` would normalise it.
+const SAMPLE: [&str; 3] = [
+    r#"["Dupont", 1.10, true, "2026-10-17", "2026-10-17T08:44:26+02:00"]"#,
+    r#"["=HYPERLINK(\"x\")", -5, false, null, null]"#,
+    r#"["a,b \"c\"\nd", 12345678901234567890, null, "1850-01-01", "2026-10-17T12:00:00.5Z"]"#,
+];
+
+/// A source of verbatim `lines`.
+fn lines(lines: &[&str]) -> Vec<u8> {
+    lines
+        .iter()
+        .flat_map(|l| format!("{l}\n").into_bytes())
+        .collect()
+}
+
+async fn put_part(app: &TestApp, id: &str, n: u32, bytes: Vec<u8>) -> (StatusCode, Value) {
+    call(
+        &app.private,
+        put_raw(&format!("/blobs/{id}/parts/{n}"), bytes),
+    )
+    .await
+}
+
+async fn finish(app: &TestApp, id: &str) -> (StatusCode, Value) {
+    call(
+        &app.private,
+        req(Method::POST, &format!("/blobs/{id}/finish")),
+    )
+    .await
+}
+
+/// The original of `blob`, downloaded whole through the private port.
+async fn download(app: &TestApp, blob: &Value) -> Vec<u8> {
+    let id = id_of(blob);
+    let filename = agrafe::blob::urls::encode_segment(blob["filename"].as_str().unwrap());
+    let (status, headers, bytes) = fetch(
+        &app.private,
+        get_with(&format!("/blobs/{id}/original/{filename}"), &[]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers["content-type"],
+        blob["content_type"].as_str().unwrap()
+    );
+    // For checking the file with other tools: `AGRAFE_ROWS_OUT=/tmp/dir`.
+    if let Ok(dir) = std::env::var("AGRAFE_ROWS_OUT") {
+        std::fs::write(
+            format!("{dir}/{}", blob["filename"].as_str().unwrap()),
+            &bytes,
+        )
+        .unwrap();
+    }
+    bytes
+}
+
+/// Every entry of a ZIP package: name, compression method and bytes, read
+/// back by an independent implementation, which checks each CRC.
+fn unzip(bytes: &[u8]) -> Vec<(String, zip::CompressionMethod, Vec<u8>)> {
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("a readable ZIP");
+    (0..archive.len())
+        .map(|i| {
+            let mut file = archive.by_index(i).unwrap();
+            let mut data = Vec::new();
+            file.read_to_end(&mut data).unwrap();
+            (file.name().unwrap().into_owned(), file.compression(), data)
+        })
+        .collect()
+}
+
+fn entry<'a>(entries: &'a [(String, zip::CompressionMethod, Vec<u8>)], name: &str) -> &'a [u8] {
+    &entries
+        .iter()
+        .find(|(n, _, _)| n == name)
+        .unwrap_or_else(|| panic!("no entry {name}"))
+        .2
+}
+
+/// Build the blob and return it `ready`.
+async fn build(app: &TestApp, id: &str) -> Value {
+    assert!(run_job(app, JobKind::Rows).await);
+    let built = get_blob(app, id).await;
+    assert_eq!(built["state"], "ready", "{built}");
+    built
+}
+
+#[tokio::test]
+async fn csv_is_built_from_rows_in_parts() {
+    let app = setup().await;
+    let created = create(&app, rows_blob("export été.csv", "text/csv")).await;
+    let id = id_of(&created);
+    assert_eq!(created["state"], "created");
+    assert_eq!(created["skip_virus_scan"], true);
+    assert_eq!(created["source_parts"], 0);
+    assert!(created["size"].is_null());
+    assert!(created.get("columns").is_none(), "not reported back");
+
+    let (status, body) = put_part(&app, id, 1, lines(&SAMPLE[..2])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], "created");
+    assert_eq!(body["source_parts"], 1);
+    assert_eq!(body["source_rows"], 2);
+    assert!(body["size"].is_null(), "unknown until built");
+    let (status, body) = put_part(&app, id, 2, lines(&SAMPLE[2..])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["source_rows"], 3);
+    assert!(jobs_for(&app, id).await.is_empty());
+
+    let (status, body) = finish(&app, id).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], "uploaded");
+    assert_eq!(jobs_for(&app, id).await, vec!["rows"]);
+
+    let built = build(&app, id).await;
+    assert!(built["archive_entries"].is_null());
+    assert_eq!(jobs_for(&app, id).await, vec!["render"]);
+    let bytes = download(&app, &built).await;
+    assert_eq!(built["size"], bytes.len());
+    assert_eq!(&bytes[..3], b"\xEF\xBB\xBF", "byte order mark");
+    let text = String::from_utf8(bytes[3..].to_vec()).unwrap();
+    assert_eq!(
+        text,
+        concat!(
+            "Nom,Montant,Validé,Date,Créé le\r\n",
+            "Dupont,1.10,true,2026-10-17,2026-10-17T08:44:26\r\n",
+            "\"'=HYPERLINK(\"\"x\"\")\",-5,false,,\r\n",
+            "\"a,b \"\"c\"\"\nd\",12345678901234567890,,1850-01-01,2026-10-17T12:00:00.5\r\n",
+        )
+    );
+
+    // No preview; a CSV is text, so its thumbnail is a sample of its
+    // first lines, like any text file's.
+    while run_job(&app, JobKind::Render).await {}
+    let rendered = get_blob(&app, id).await;
+    assert_eq!(rendered["preview_state"], "unavailable");
+    assert_eq!(rendered["thumbnail_state"], "ready");
+}
+
+#[tokio::test]
+async fn xlsx_package() {
+    let app = setup().await;
+    let created = create(&app, rows_blob("Export: 2026.xlsx", XLSX)).await;
+    let id = id_of(&created);
+    let (status, body) = put_private(&app, id, lines(&SAMPLE)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], "uploaded");
+    let built = build(&app, id).await;
+    let entries = unzip(&download(&app, &built).await);
+    let names: Vec<&str> = entries.iter().map(|(n, _, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "[Content_Types].xml",
+            "_rels/.rels",
+            "xl/workbook.xml",
+            "xl/_rels/workbook.xml.rels",
+            "xl/styles.xml",
+            "xl/worksheets/sheet1.xml",
+        ]
+    );
+    assert!(
+        entries
+            .iter()
+            .all(|(_, method, _)| *method == zip::CompressionMethod::Deflated)
+    );
+    let workbook = String::from_utf8(entry(&entries, "xl/workbook.xml").to_vec()).unwrap();
+    assert!(
+        workbook.contains(r#"<sheet name="Export_ 2026" sheetId="1" r:id="rId1"/>"#),
+        "{workbook}"
+    );
+    let sheet = String::from_utf8(entry(&entries, "xl/worksheets/sheet1.xml").to_vec()).unwrap();
+    assert!(sheet.starts_with("<?xml"), "{sheet}");
+    assert!(sheet.ends_with("</sheetData></worksheet>"), "{sheet}");
+    for want in [
+        // The header, inline strings.
+        r#"<row r="1"><c r="A1" t="inlineStr"><is><t xml:space="preserve">Nom</t></is></c>"#,
+        r#"<c r="E1" t="inlineStr"><is><t xml:space="preserve">Créé le</t></is></c></row>"#,
+        // Typed cells; the datetime's offset dropped.
+        r#"<row r="2"><c r="A2" t="inlineStr"><is><t xml:space="preserve">Dupont</t></is></c><c r="B2"><v>1.10</v></c><c r="C2" t="b"><v>1</v></c><c r="D2" s="1"><v>46312</v></c><c r="E2" s="2"><v>46312.3641898"#,
+        // A formula is text, which Excel never evaluates; empty cells are left out.
+        r#"<row r="3"><c r="A3" t="inlineStr"><is><t xml:space="preserve">=HYPERLINK("x")</t></is></c><c r="B3"><v>-5</v></c><c r="C3" t="b"><v>0</v></c></row>"#,
+        // Line breaks kept; a date Excel cannot show as a serial is text.
+        "<c r=\"A4\" t=\"inlineStr\"><is><t xml:space=\"preserve\">a,b \"c\"\nd</t></is></c><c r=\"B4\"><v>12345678901234567890</v></c><c r=\"D4\" t=\"inlineStr\"><is><t xml:space=\"preserve\">1850-01-01</t></is></c><c r=\"E4\" s=\"2\"><v>46312.5000057",
+    ] {
+        assert!(sheet.contains(want), "missing {want}\nin {sheet}");
+    }
+    let styles = String::from_utf8(entry(&entries, "xl/styles.xml").to_vec()).unwrap();
+    assert!(styles.contains(r#"numFmtId="14""#) && styles.contains(r#"numFmtId="22""#));
+}
+
+#[tokio::test]
+async fn ods_package() {
+    let app = setup().await;
+    let created = create(&app, rows_blob("export.ods", ODS)).await;
+    let id = id_of(&created);
+    let (status, body) = put_private(&app, id, lines(&SAMPLE)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let built = build(&app, id).await;
+    let bytes = download(&app, &built).await;
+    // The format's detection: `mimetype` first, stored, no extra field,
+    // so the media type sits at a fixed offset.
+    assert_eq!(&bytes[30..38], b"mimetype");
+    assert_eq!(&bytes[38..38 + ODS.len()], ODS.as_bytes());
+    let entries = unzip(&bytes);
+    let names: Vec<&str> = entries.iter().map(|(n, _, _)| n.as_str()).collect();
+    assert_eq!(names, ["mimetype", "META-INF/manifest.xml", "content.xml"]);
+    assert_eq!(entries[0].1, zip::CompressionMethod::Stored);
+    assert_eq!(entries[2].1, zip::CompressionMethod::Deflated);
+    let content = String::from_utf8(entry(&entries, "content.xml").to_vec()).unwrap();
+    for want in [
+        r#"<table:table table:name="export"><table:table-column table:number-columns-repeated="5"/>"#,
+        r#"<table:table-row><table:table-cell office:value-type="string"><text:p>Nom</text:p></table:table-cell>"#,
+        r#"<table:table-cell office:value-type="float" office:value="1.10"><text:p>1.10</text:p></table:table-cell>"#,
+        r#"<table:table-cell office:value-type="boolean" office:boolean-value="true"><text:p>true</text:p></table:table-cell>"#,
+        r#"<table:table-cell office:value-type="date" office:date-value="2026-10-17"><text:p>2026-10-17</text:p></table:table-cell>"#,
+        r#"<table:table-cell office:value-type="date" office:date-value="2026-10-17T08:44:26"><text:p>2026-10-17T08:44:26</text:p></table:table-cell>"#,
+        r#"<table:table-cell office:value-type="string"><text:p>=HYPERLINK("x")</text:p></table:table-cell>"#,
+        r#"<table:table-cell/><table:table-cell/></table:table-row>"#,
+        r#"<table:table-cell office:value-type="string"><text:p>a,b "c"</text:p><text:p>d</text:p></table:table-cell>"#,
+        r#"<table:table-cell office:value-type="date" office:date-value="1850-01-01">"#,
+        r#"office:date-value="2026-10-17T12:00:00.5""#,
+    ] {
+        assert!(content.contains(want), "missing {want}\nin {content}");
+    }
+    assert!(
+        content.ends_with(
+            "</table:table></office:spreadsheet></office:body></office:document-content>"
+        )
+    );
+}
+
+/// A source with no lines produces a header alone, in every format.
+#[tokio::test]
+async fn empty_source_is_a_header() {
+    let app = setup().await;
+    for (filename, content_type) in [("e.csv", "text/csv"), ("e.xlsx", XLSX), ("e.ods", ODS)] {
+        let created = create(&app, rows_blob(filename, content_type)).await;
+        let id = id_of(&created);
+        let (status, body) = put_private(&app, id, vec![]).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["source_rows"], 0);
+        let built = build(&app, id).await;
+        let bytes = download(&app, &built).await;
+        if content_type == "text/csv" {
+            assert_eq!(
+                bytes,
+                b"\xEF\xBB\xBFNom,Montant,Valid\xC3\xA9,Date,Cr\xC3\xA9\xC3\xA9 le\r\n"
+            );
+        } else {
+            let entries = unzip(&bytes);
+            let sheet = entries.last().unwrap();
+            let xml = String::from_utf8(sheet.2.clone()).unwrap();
+            assert!(xml.contains("Nom"), "{xml}");
+            assert!(
+                !xml.contains("r=\"2\"") && !xml.contains("<table:table-row><table:table-cell/>"),
+                "{xml}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn creation_checks_the_columns() {
+    let app = setup().await;
+    let post = |body: Value| call(&app.private, json_req(Method::POST, "/blobs", body));
+    let cases: Vec<(&str, Value, &str)> = vec![
+        (
+            "missing",
+            json!({"filename": "e.csv", "content_type": "text/csv", "input_type": "rows"}),
+            "columns are required",
+        ),
+        (
+            "empty",
+            json!({"filename": "e.csv", "content_type": "text/csv", "input_type": "rows", "columns": []}),
+            "at least one",
+        ),
+        (
+            "unnamed",
+            json!({"filename": "e.csv", "content_type": "text/csv", "input_type": "rows", "columns": [{"name": ""}]}),
+            "empty name",
+        ),
+        (
+            "unknown type",
+            json!({"filename": "e.csv", "content_type": "text/csv", "input_type": "rows", "columns": [{"name": "a", "type": "time"}]}),
+            "type",
+        ),
+        (
+            "unknown key",
+            json!({"filename": "e.csv", "content_type": "text/csv", "input_type": "rows", "columns": [{"name": "a", "width": 3}]}),
+            "width",
+        ),
+        (
+            "not for archives",
+            json!({"filename": "e.zip", "content_type": "application/zip", "input_type": "archive", "columns": [{"name": "a"}]}),
+            "rows input only",
+        ),
+        (
+            "not for files",
+            json!({"filename": "e.png", "content_type": "image/png", "input_type": "raw", "checksum": raw_blob()["checksum"], "size": 1, "columns": [{"name": "a"}]}),
+            "rows input only",
+        ),
+        (
+            "wrong output type",
+            json!({"filename": "e.pdf", "content_type": "application/pdf", "input_type": "rows", "columns": [{"name": "a"}]}),
+            "cannot be produced",
+        ),
+    ];
+    for (name, body, says) in cases {
+        let (status, res) = post(body).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{name}: {res}");
+        let message = res["error"]["message"].as_str().unwrap();
+        assert!(message.contains(says), "{name}: {res}");
+    }
+    let many: Vec<Value> = (0..=16_384)
+        .map(|i| json!({"name": i.to_string()}))
+        .collect();
+    let (status, res) = post(
+        json!({"filename": "e.xlsx", "content_type": XLSX, "input_type": "rows", "columns": many}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{res}");
+    assert!(
+        res["error"]["message"].as_str().unwrap().contains("16384"),
+        "{res}"
+    );
+    let many: Vec<Value> = (0..=16_384)
+        .map(|i| json!({"name": i.to_string()}))
+        .collect();
+    let (status, res) = post(json!({"filename": "e.csv", "content_type": "text/csv", "input_type": "rows", "columns": many})).await;
+    assert_eq!(status, StatusCode::CREATED, "{res}");
+}
+
+/// Every bad line answers 422 naming it and the cell; the part is
+/// discarded and the blob keeps the parts it had.
+#[tokio::test]
+async fn row_rejections() {
+    let app = setup().await;
+    let created = create(&app, rows_blob("bad.xlsx", XLSX)).await;
+    let id = id_of(&created);
+    let (status, body) = put_part(&app, id, 1, lines(&SAMPLE[..1])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let cases: Vec<(&str, Vec<u8>, &str)> = vec![
+        (
+            "not json",
+            b"nope\n".to_vec(),
+            "line 1: expected a JSON array",
+        ),
+        (
+            "an object",
+            b"{\"Nom\": \"x\"}\n".to_vec(),
+            "line 1: expected a JSON array",
+        ),
+        (
+            "too short",
+            b"[\"x\", 1, true, null]\n".to_vec(),
+            "expected 5 cells",
+        ),
+        (
+            "too long",
+            b"[\"x\", 1, true, null, null, 1]\n".to_vec(),
+            "got 6",
+        ),
+        (
+            "nested",
+            b"[[\"x\"], 1, true, null, null]\n".to_vec(),
+            "cell 1 (Nom): must be a scalar",
+        ),
+        (
+            "object cell",
+            b"[{}, 1, true, null, null]\n".to_vec(),
+            "cell 1 (Nom)",
+        ),
+        (
+            "huge number",
+            b"[\"x\", 1e999, true, null, null]\n".to_vec(),
+            "cell 2 (Montant): is a number too large",
+        ),
+        (
+            "bad date",
+            b"[\"x\", 1, true, \"17/10/2026\", null]\n".to_vec(),
+            "cell 4 (Date): must be a date as YYYY-MM-DD",
+        ),
+        (
+            "date as number",
+            b"[\"x\", 1, true, 20261017, null]\n".to_vec(),
+            "cell 4 (Date)",
+        ),
+        (
+            "bad datetime",
+            b"[\"x\", 1, true, null, \"2026-10-17\"]\n".to_vec(),
+            "cell 5 (Créé le): must be a datetime",
+        ),
+        (
+            "second line",
+            b"[\"x\", 1, true, null, null]\n[\"x\", 1, \"yes\", \"nope\", null]\n".to_vec(),
+            "line 2: cell 4 (Date)",
+        ),
+        (
+            "no newline",
+            b"[\"x\", 1, true, null, null]".to_vec(),
+            "newline",
+        ),
+    ];
+    for (name, bytes, says) in cases {
+        let (status, body) = put_part(&app, id, 2, bytes).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{name}: {body}");
+        let message = body["error"]["message"].as_str().unwrap();
+        assert!(message.contains(says), "{name}: {body}");
+        let got = get_blob(&app, id).await;
+        assert_eq!(got["state"], "created", "{name}");
+        assert_eq!(got["source_parts"], 1, "{name}");
+        assert_eq!(got["source_rows"], 1, "{name}");
+    }
+    // A boolean is a scalar like any other in an untyped column, and a
+    // string that looks like a date stays text there.
+    let (status, body) = put_part(
+        &app,
+        id,
+        2,
+        b"[true, \"n/a\", \"2026-10-17\", null, null]\n".to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["source_rows"], 2);
+}
+
+/// A sheet holds 1 048 576 rows, the header included; the source is
+/// refused at the line that would cross it, whichever part it is in. CSV
+/// has no such limit.
+#[tokio::test]
+async fn sheet_row_limit() {
+    let app = setup().await;
+    let one = json!(["x", 1, true, null, null]);
+    for (filename, content_type, limited) in [("l.xlsx", XLSX, true), ("l.csv", "text/csv", false)]
+    {
+        let created = create(&app, rows_blob(filename, content_type)).await;
+        let id = id_of(&created);
+        let (status, _) = put_part(&app, id, 1, source(std::slice::from_ref(&one))).await;
+        assert_eq!(status, StatusCode::OK);
+        // As if 1 048 572 rows had landed: three more fit, a fourth does not.
+        sqlx::query("UPDATE blobs SET source_rows = 1048572 WHERE id = $1")
+            .bind(parse_id(id))
+            .execute(app.state.pool())
+            .await
+            .unwrap();
+        let (status, body) = put_part(&app, id, 2, source(&vec![one.clone(); 4])).await;
+        if limited {
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+            let message = body["error"]["message"].as_str().unwrap();
+            assert!(message.starts_with("line 4:"), "{body}");
+            assert!(message.contains("1048576"), "{body}");
+            assert_eq!(get_blob(&app, id).await["source_parts"], 1);
+            let (status, body) = put_part(&app, id, 2, source(&vec![one.clone(); 3])).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body["source_rows"], 1_048_575);
+        } else {
+            assert_eq!(status, StatusCode::OK, "{body}");
+        }
+    }
+}
+
+/// A build that cannot succeed, here a row stripped of its key material,
+/// is dead after its first attempt; the blob stays `uploaded`.
+#[tokio::test]
+async fn permanent_rows_build_failures_die_at_once() {
+    let app = setup().await;
+    let created = create(&app, rows_blob("broken.csv", "text/csv")).await;
+    let id = id_of(&created);
+    let (status, _) = put_private(&app, id, lines(&SAMPLE)).await;
+    assert_eq!(status, StatusCode::OK);
+    sqlx::query("UPDATE blobs SET wrapped_key = NULL WHERE id = $1")
+        .bind(parse_id(id))
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+    assert!(run_job(&app, JobKind::Rows).await);
+    let (attempts, dead, error): (i32, bool, String) = sqlx::query_as(
+        "SELECT attempts, failed_at IS NOT NULL, last_error FROM jobs \
+         WHERE kind = 'rows' AND blob_id = $1",
+    )
+    .bind(parse_id(id))
+    .fetch_one(app.state.pool())
+    .await
+    .unwrap();
+    assert_eq!((attempts, dead), (1, true), "{error}");
+    assert!(error.contains("wrapped key"), "{error}");
+    assert_eq!(get_blob(&app, id).await["state"], "uploaded");
+}
+
+/// A source larger than one flush of the writer and one encryption
+/// segment streams through whole: every row comes out, in order.
+#[tokio::test]
+async fn long_source_streams() {
+    let app = setup_tuned(fake_clamd().await, |c| {
+        c.upload.max_size = bytesize::ByteSize::mib(4);
+    })
+    .await;
+    let n = 20_000;
+    let lines: Vec<Value> = (0..n)
+        .map(|i| json!([format!("item {i}"), i, i % 2 == 0, "2026-01-01", null]))
+        .collect();
+    for (filename, content_type) in [("long.csv", "text/csv"), ("long.xlsx", XLSX)] {
+        let created = create(&app, rows_blob(filename, content_type)).await;
+        let id = id_of(&created);
+        let (status, body) = put_private(&app, id, source(&lines)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["source_rows"], n);
+        let built = build(&app, id).await;
+        let bytes = download(&app, &built).await;
+        let text = if content_type == "text/csv" {
+            String::from_utf8(bytes).unwrap()
+        } else {
+            let entries = unzip(&bytes);
+            String::from_utf8(entry(&entries, "xl/worksheets/sheet1.xml").to_vec()).unwrap()
+        };
+        assert!(text.contains("item 0"), "{filename}");
+        assert!(text.contains(&format!("item {}", n - 1)), "{filename}");
+        let count = text.matches("item ").count();
+        assert_eq!(count, n, "{filename}");
+    }
+}

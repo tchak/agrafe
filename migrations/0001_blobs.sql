@@ -38,6 +38,10 @@ CREATE TABLE blobs (
     source_size       bigint  NOT NULL DEFAULT 0 CHECK (source_size >= 0),
     -- When the last part landed; the reaper expires a source left here.
     source_updated_at timestamptz,
+    -- The sheets of a `rows` blob, one for now, each with its columns in
+    -- order: [{"name": ..., "columns": [{"name": ..., "type": ...}, ...]}].
+    -- Written at creation, read by accept and build.
+    source_columns    jsonb,
     -- Set by the archive build: members written, and members skipped
     -- because they were gone by then (listed in the archive's ERRORS.txt).
     archive_entries   bigint CHECK (archive_entries IS NULL OR archive_entries >= 0),

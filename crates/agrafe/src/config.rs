@@ -307,8 +307,7 @@ impl ArchiveConfig {
     /// leaves out; without the margin an archive at the limit would need a
     /// part the store refuses. About 309 GiB.
     pub const MAX_SIZE_LIMIT: u64 =
-        crate::jobs::archive::MAX_BUILD_PARTS * crate::jobs::archive::BUILD_PART_SIZE as u64 / 100
-            * 99;
+        crate::jobs::build::MAX_BUILD_PARTS * crate::jobs::build::BUILD_PART_SIZE as u64 / 100 * 99;
 }
 
 fn default_archive_max_size() -> ByteSize {

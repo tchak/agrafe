@@ -4,7 +4,7 @@
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
 use futures::StreamExt as _;
-use serde_json::json;
+
 use std::time::Duration;
 use tokio_stream::wrappers::ReceiverStream;
 use tower::ServiceExt;
@@ -123,20 +123,6 @@ async fn content_length_mismatch_is_refused_up_front() {
     let said = res["error"]["message"].as_str().unwrap();
     assert!(said.contains("Content-Length"), "{res}");
     assert_eq!(get_blob(&app, id).await["state"], "created");
-}
-
-/// `rows` blobs are generated server side, a later build step; archives
-/// have their own tests.
-#[tokio::test]
-async fn rows_input_is_not_uploadable_yet() {
-    let app = setup().await;
-    let created = create(
-        &app,
-        json!({"filename": "export.csv", "content_type": "text/csv", "input_type": "rows"}),
-    )
-    .await;
-    let (status, _) = put_private(&app, id_of(&created), b"a,b\n".to_vec()).await;
-    assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
 }
 
 /// Past the sniff window the type is checked while the body still arrives.

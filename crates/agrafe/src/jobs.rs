@@ -3,9 +3,11 @@
 //! `runner`, the handlers in their own modules.
 
 pub mod archive;
+pub mod build;
 pub mod purge;
 pub mod reap;
 pub mod render;
+pub mod rows;
 pub mod runner;
 pub mod scan;
 
@@ -85,8 +87,8 @@ pub enum JobError {
     Representation(#[from] crate::blob::representation::Error),
     #[error("purge: {0}")]
     Purge(#[from] purge::PurgeError),
-    #[error("archive build: {0}")]
-    Archive(#[from] archive::BuildError),
+    #[error("build: {0}")]
+    Build(#[from] build::BuildError),
 }
 
 impl JobError {
@@ -97,7 +99,7 @@ impl JobError {
     pub fn is_permanent(&self) -> bool {
         match self {
             JobError::NoBlob(_) | JobError::Unhandled(_) => true,
-            JobError::Archive(err) => err.is_permanent(),
+            JobError::Build(err) => err.is_permanent(),
             _ => false,
         }
     }

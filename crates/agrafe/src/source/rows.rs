@@ -1,0 +1,471 @@
+//! The source of a `rows` blob: the columns declared at creation, and one
+//! JSON array of cell values per line, positional against them, checked
+//! as the part arrives. See DESIGN.md, "Rows".
+
+use bytes::Bytes;
+use jiff::civil;
+use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
+
+use super::{LineError, Lines};
+use crate::app::Agrafe;
+use crate::blob::Blob;
+use crate::blob::repo::PartAccepted;
+use crate::classify;
+use crate::upload::{Tap, UploadError};
+
+/// Rows an XLSX or ODS sheet holds at most, the header included.
+pub const MAX_SHEET_ROWS: u64 = 1_048_576;
+
+/// Columns an XLSX or ODS sheet holds at most.
+pub const MAX_SHEET_COLUMNS: usize = 16_384;
+
+/// Longest name an XLSX sheet may have.
+pub const MAX_SHEET_NAME_LEN: usize = 31;
+
+/// The name a sheet gets when nothing of the filename is usable.
+pub const DEFAULT_SHEET_NAME: &str = "Sheet1";
+
+/// Whether `content_type` is a sheet format, with its row and column
+/// limits, rather than CSV.
+pub fn is_sheet(content_type: &str) -> bool {
+    matches!(content_type, classify::XLSX | classify::ODS)
+}
+
+/// What a typed column's values must be. A column without a type takes
+/// what the JSON scalar says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ColumnType {
+    Date,
+    Datetime,
+}
+
+agrafe_types::str_enum!(ColumnType {
+    Date => "date",
+    Datetime => "datetime",
+});
+
+/// One column, as declared at creation and stored on the row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Column {
+    /// The header text.
+    pub name: String,
+    #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ColumnType>,
+}
+
+/// One sheet of the workbook. `source_columns` is a list of these from the
+/// start, one for now, so a multi-sheet extension adds and changes nothing
+/// of the stored shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Sheet {
+    pub name: String,
+    pub columns: Vec<Column>,
+}
+
+/// The sheet name a `rows` blob's one sheet gets: the filename's stem,
+/// made acceptable to Excel, which caps names at 31 characters, forbids
+/// `[ ] : * ? / \` and a leading or trailing apostrophe, and wants
+/// something there.
+pub fn sheet_name(filename: &str) -> String {
+    let stem = match filename.rsplit_once('.') {
+        Some((stem, _)) if !stem.is_empty() => stem,
+        _ => filename,
+    };
+    let cleaned: String = stem
+        .chars()
+        .map(|c| match c {
+            '[' | ']' | ':' | '*' | '?' | '/' | '\\' => '_',
+            c => c,
+        })
+        .collect();
+    let trimmed = cleaned.trim().trim_matches('\'').trim();
+    let name: String = trimmed.chars().take(MAX_SHEET_NAME_LEN).collect();
+    let name = name.trim_end().trim_end_matches('\'').trim_end();
+    if name.is_empty() {
+        DEFAULT_SHEET_NAME.to_string()
+    } else {
+        name.to_string()
+    }
+}
+
+/// One cell as the source gave it: a scalar, or an empty cell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Cell<'a> {
+    Null,
+    Bool(bool),
+    /// The JSON lexeme, written as given rather than parsed to a float
+    /// and back, so `1.10` stays `1.10`.
+    Number(&'a str),
+    Text(String),
+    Date(civil::Date),
+    DateTime(civil::DateTime),
+}
+
+/// Parse and check one line against `columns`. The message names what is
+/// wrong with it.
+pub fn parse_line<'a>(line: &'a [u8], columns: &[Column]) -> Result<Vec<Cell<'a>>, String> {
+    let values: Vec<&'a RawValue> = serde_json::from_slice(line)
+        .map_err(|e| format!("expected a JSON array of cell values: {e}"))?;
+    if values.len() != columns.len() {
+        return Err(format!(
+            "expected {} cells for the {} declared columns, got {}",
+            columns.len(),
+            columns.len(),
+            values.len()
+        ));
+    }
+    values
+        .iter()
+        .zip(columns)
+        .enumerate()
+        .map(|(i, (raw, column))| {
+            parse_cell(raw.get(), column.kind)
+                .map_err(|reason| format!("cell {} ({}): {reason}", i + 1, column.name))
+        })
+        .collect()
+}
+
+fn parse_cell(raw: &str, kind: Option<ColumnType>) -> Result<Cell<'_>, String> {
+    let expects = |kind: ColumnType| {
+        match kind {
+        ColumnType::Date => "must be a date as YYYY-MM-DD, or null".to_string(),
+        ColumnType::Datetime => {
+            "must be a datetime as YYYY-MM-DDTHH:MM:SS, with an optional fraction and offset, or null"
+                .to_string()
+        }
+    }
+    };
+    match raw.as_bytes().first() {
+        Some(b'n') => Ok(Cell::Null),
+        Some(b'"') => {
+            let text: String = serde_json::from_str(raw).map_err(|e| e.to_string())?;
+            match kind {
+                None => Ok(Cell::Text(text)),
+                Some(ColumnType::Date) => parse_date(&text)
+                    .map(Cell::Date)
+                    .ok_or_else(|| expects(ColumnType::Date)),
+                Some(ColumnType::Datetime) => parse_datetime(&text)
+                    .map(Cell::DateTime)
+                    .ok_or_else(|| expects(ColumnType::Datetime)),
+            }
+        }
+        Some(b'[') | Some(b'{') => Err(
+            "must be a scalar: a string, a number, a boolean or null, not an array or an object"
+                .to_string(),
+        ),
+        Some(b't') | Some(b'f') => match kind {
+            None => Ok(Cell::Bool(raw == "true")),
+            Some(kind) => Err(expects(kind)),
+        },
+        _ => match kind {
+            Some(kind) => Err(expects(kind)),
+            None => {
+                let value: f64 = raw.parse().map_err(|_| "is not a number".to_string())?;
+                if !value.is_finite() {
+                    return Err("is a number too large for a spreadsheet cell".to_string());
+                }
+                Ok(Cell::Number(raw))
+            }
+        },
+    }
+}
+
+/// `YYYY-MM-DD`, a valid calendar date.
+pub fn parse_date(s: &str) -> Option<civil::Date> {
+    let b = s.as_bytes();
+    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
+        return None;
+    }
+    let year = digits(&b[0..4])?;
+    let month = digits(&b[5..7])?;
+    let day = digits(&b[8..10])?;
+    civil::Date::new(year as i16, month as i8, day as i8).ok()
+}
+
+/// `YYYY-MM-DDTHH:MM:SS`, an optional fraction of up to nine digits, an
+/// optional `Z` or `±HH:MM` offset, which is dropped: a spreadsheet has no
+/// timezone, and what the backend sends is what shows.
+pub fn parse_datetime(s: &str) -> Option<civil::DateTime> {
+    let (date, rest) = s.split_at_checked(10)?;
+    let date = parse_date(date)?;
+    let rest = rest.strip_prefix('T')?;
+    let b = rest.as_bytes();
+    if b.len() < 8 || b[2] != b':' || b[5] != b':' {
+        return None;
+    }
+    let hour = digits(&b[0..2])?;
+    let minute = digits(&b[3..5])?;
+    let second = digits(&b[6..8])?;
+    let mut rest = &rest[8..];
+    let mut nanos: i32 = 0;
+    if let Some(fraction) = rest.strip_prefix('.') {
+        let n = fraction.bytes().take_while(u8::is_ascii_digit).count();
+        if n == 0 || n > 9 {
+            return None;
+        }
+        nanos = digits(&fraction.as_bytes()[..n])? as i32 * 10i32.pow(9 - n as u32);
+        rest = &fraction[n..];
+    }
+    match rest {
+        "" | "Z" => {}
+        offset => {
+            let b = offset.as_bytes();
+            if b.len() != 6 || !(b[0] == b'+' || b[0] == b'-') || b[3] != b':' {
+                return None;
+            }
+            if digits(&b[1..3])? > 23 || digits(&b[4..6])? > 59 {
+                return None;
+            }
+        }
+    }
+    civil::DateTime::new(
+        date.year(),
+        date.month(),
+        date.day(),
+        hour as i8,
+        minute as i8,
+        second as i8,
+        nanos,
+    )
+    .ok()
+}
+
+/// A run of ASCII digits as a number, up to nine of them.
+fn digits(b: &[u8]) -> Option<u32> {
+    if b.is_empty() || b.len() > 9 || !b.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    Some(b.iter().fold(0u32, |n, d| n * 10 + u32::from(d - b'0')))
+}
+
+/// The accept pass over one part of rows: lines parsed as they arrive,
+/// against the blob's columns, within the sheet's row limit.
+pub struct Accept {
+    columns: Vec<Column>,
+    /// `upload.max_size`, the bound on one part.
+    max_part: u64,
+    /// Data rows the sheet holds at most, when the format has a limit.
+    row_limit: Option<u64>,
+    /// Lines across the parts before this one.
+    rows_before: u64,
+    lines: Lines,
+    rows: u64,
+    bytes: u64,
+}
+
+impl Accept {
+    pub fn new(state: &Agrafe, blob: &Blob) -> Result<Self, UploadError> {
+        let columns = blob.columns().ok_or(UploadError::NoColumns)?.to_vec();
+        Ok(Self {
+            columns,
+            max_part: state.config().upload.max_size.as_u64(),
+            // The header takes one row of the sheet.
+            row_limit: is_sheet(&blob.content_type).then_some(MAX_SHEET_ROWS - 1),
+            rows_before: blob.source_rows.max(0) as u64,
+            lines: Lines::new(),
+            rows: 0,
+            bytes: 0,
+        })
+    }
+}
+
+impl Tap for Accept {
+    type Output = PartAccepted;
+
+    async fn chunk(&mut self, chunk: &Bytes) -> Result<(), UploadError> {
+        self.bytes += chunk.len() as u64;
+        if self.bytes > self.max_part {
+            return Err(UploadError::PartTooLarge(self.max_part));
+        }
+        self.lines.push(chunk);
+        while let Some((line, bytes)) = self.lines.next_line()? {
+            parse_line(&bytes, &self.columns).map_err(|reason| LineError { line, reason })?;
+            self.rows += 1;
+            if let Some(limit) = self.row_limit
+                && self.rows_before + self.rows > limit
+            {
+                return Err(LineError {
+                    line,
+                    reason: format!(
+                        "the sheet would exceed {MAX_SHEET_ROWS} rows, the header included"
+                    ),
+                }
+                .into());
+            }
+        }
+        Ok(())
+    }
+
+    async fn end(mut self) -> Result<PartAccepted, UploadError> {
+        self.lines.end()?;
+        Ok(PartAccepted {
+            rows: self.rows,
+            bytes: self.bytes,
+            size: None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn columns(spec: &[(&str, Option<ColumnType>)]) -> Vec<Column> {
+        spec.iter()
+            .map(|(name, kind)| Column {
+                name: name.to_string(),
+                kind: *kind,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn lines_are_positional_arrays_of_scalars() {
+        let cols = columns(&[
+            ("name", None),
+            ("n", None),
+            ("ok", None),
+            ("day", Some(ColumnType::Date)),
+            ("at", Some(ColumnType::Datetime)),
+        ]);
+        let cells = parse_line(
+            br#"["a\"b", 1.10, true, "2026-10-17", "2026-10-17T08:44:26.5+02:00"]"#,
+            &cols,
+        )
+        .unwrap();
+        assert_eq!(
+            cells,
+            vec![
+                Cell::Text("a\"b".into()),
+                Cell::Number("1.10"),
+                Cell::Bool(true),
+                Cell::Date(civil::date(2026, 10, 17)),
+                Cell::DateTime(civil::date(2026, 10, 17).at(8, 44, 26, 500_000_000)),
+            ]
+        );
+        let cells = parse_line(br#"[null, -0.5e3, false, null, null]"#, &cols).unwrap();
+        assert_eq!(cells[0], Cell::Null);
+        assert_eq!(cells[1], Cell::Number("-0.5e3"));
+        assert_eq!(cells[2], Cell::Bool(false));
+        assert_eq!(cells[3], Cell::Null);
+
+        for (bad, says) in [
+            (&br#"{"name": "a"}"#[..], "array"),
+            (b"nope", "array"),
+            (br#"["a", 1, true, null]"#, "expected 5 cells"),
+            (br#"["a", 1, true, null, null, 1]"#, "got 6"),
+            (
+                br#"[["a"], 1, true, null, null]"#,
+                "cell 1 (name): must be a scalar",
+            ),
+            (br#"[{}, 1, true, null, null]"#, "not an array or an object"),
+            (
+                br#"["a", 1e999, true, null, null]"#,
+                "cell 2 (n): is a number too large",
+            ),
+            (
+                br#"["a", 1, true, "17/10/2026", null]"#,
+                "cell 4 (day): must be a date",
+            ),
+            (
+                br#"["a", 1, true, 20261017, null]"#,
+                "cell 4 (day): must be a date",
+            ),
+            (br#"["a", 1, true, true, null]"#, "cell 4 (day)"),
+            (
+                br#"["a", 1, true, null, "2026-10-17"]"#,
+                "cell 5 (at): must be a datetime",
+            ),
+            (
+                br#"["a", 1, true, null, "2026-10-17 08:44:26"]"#,
+                "cell 5 (at)",
+            ),
+        ] {
+            let err = parse_line(bad, &cols).unwrap_err();
+            assert!(err.contains(says), "{bad:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn dates() {
+        assert_eq!(parse_date("2026-10-17"), Some(civil::date(2026, 10, 17)));
+        assert_eq!(parse_date("2024-02-29"), Some(civil::date(2024, 2, 29)));
+        for bad in [
+            "2023-02-29",
+            "2026-13-01",
+            "2026-1-01",
+            "20261017",
+            "2026-10-17T00:00:00",
+            "",
+            "abcd-ef-gh",
+        ] {
+            assert_eq!(parse_date(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn datetimes() {
+        let noon = civil::date(2026, 10, 17).at(12, 0, 0, 0);
+        assert_eq!(parse_datetime("2026-10-17T12:00:00"), Some(noon));
+        assert_eq!(parse_datetime("2026-10-17T12:00:00Z"), Some(noon));
+        assert_eq!(parse_datetime("2026-10-17T12:00:00+02:00"), Some(noon));
+        assert_eq!(parse_datetime("2026-10-17T12:00:00-05:30"), Some(noon));
+        assert_eq!(
+            parse_datetime("2026-10-17T12:00:00.123456789"),
+            Some(civil::date(2026, 10, 17).at(12, 0, 0, 123_456_789))
+        );
+        assert_eq!(
+            parse_datetime("2026-10-17T12:00:00.5Z"),
+            Some(civil::date(2026, 10, 17).at(12, 0, 0, 500_000_000))
+        );
+        for bad in [
+            "2026-10-17",
+            "2026-10-17 12:00:00",
+            "2026-10-17T12:00",
+            "2026-10-17T24:00:00",
+            "2026-10-17T12:60:00",
+            "2026-10-17T12:00:00.",
+            "2026-10-17T12:00:00.1234567890",
+            "2026-10-17T12:00:00+2:00",
+            "2026-10-17T12:00:00+0200",
+            "2026-10-17T12:00:00+24:00",
+            "2026-10-17T12:00:00z",
+            "2026-10-17T12:00:00Zx",
+        ] {
+            assert_eq!(parse_datetime(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn sheet_names() {
+        assert_eq!(sheet_name("export.xlsx"), "export");
+        assert_eq!(sheet_name("dossiers 2026.ods"), "dossiers 2026");
+        assert_eq!(sheet_name("export"), "export");
+        assert_eq!(sheet_name(".xlsx"), ".xlsx");
+        assert_eq!(sheet_name("a:b[c]*d?e.xlsx"), "a_b_c__d_e");
+        assert_eq!(sheet_name("'quoted'.xlsx"), "quoted");
+        assert_eq!(sheet_name("'.xlsx"), DEFAULT_SHEET_NAME);
+        assert_eq!(sheet_name("???.xlsx"), "___");
+        let long = format!("{}.xlsx", "é".repeat(40));
+        assert_eq!(sheet_name(&long).chars().count(), MAX_SHEET_NAME_LEN);
+    }
+
+    #[test]
+    fn columns_serialize_without_an_absent_type() {
+        let sheet = Sheet {
+            name: "s".into(),
+            columns: columns(&[("a", None), ("b", Some(ColumnType::Date))]),
+        };
+        assert_eq!(
+            serde_json::to_string(&sheet).unwrap(),
+            r#"{"name":"s","columns":[{"name":"a"},{"name":"b","type":"date"}]}"#
+        );
+        let parsed: Column = serde_json::from_str(r#"{"name":"x","type":"datetime"}"#).unwrap();
+        assert_eq!(parsed.kind, Some(ColumnType::Datetime));
+        assert!(serde_json::from_str::<Column>(r#"{"name":"x","type":"time"}"#).is_err());
+        assert!(serde_json::from_str::<Column>(r#"{"name":"x","width":3}"#).is_err());
+    }
+}

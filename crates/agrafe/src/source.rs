@@ -7,8 +7,13 @@
 //! `<blob id>/source/<n>`. The blob is `uploading` while the part is in
 //! flight and back in `created` after, with the part counted on the row.
 //! A failing part leaves nothing of itself, like any failed upload.
+//!
+//! The build reads the parts back through [`Source`], which splits them
+//! with the same [`Lines`], so what accept let through, the build parses
+//! the same way.
 
 pub mod archive;
+pub mod rows;
 
 use agrafe_crypto::Key;
 use agrafe_crypto::streaming::Layout;
@@ -18,10 +23,11 @@ use jiff::Timestamp;
 use uuid::Uuid;
 
 use crate::app::Agrafe;
-use crate::blob::repo::{self, Transition};
+use crate::blob::read::{ReadError, Reader};
+use crate::blob::repo::{self, PartAccepted, Transition};
 use crate::blob::{Blob, BlobState, InputType};
 use crate::encryption::Envelope;
-use crate::upload::{self, BoxError, Fed, UploadError};
+use crate::upload::{self, BoxError, Fed, Tap, UploadError};
 
 /// A source has at most this many parts.
 pub const MAX_PARTS: u32 = 10_000;
@@ -109,12 +115,8 @@ impl Agrafe {
 /// Whether `blob` can take part `n` at `now`. Run by the HTTP layer before
 /// it reads the body, and again by `upload_part`.
 pub fn prepare_part(blob: &Blob, n: u32, now: Timestamp) -> Result<(), UploadError> {
-    match blob.input_type {
-        InputType::Raw | InputType::Multipart => {
-            return Err(UploadError::NotGenerated(blob.input_type));
-        }
-        InputType::Rows => return Err(UploadError::Unsupported(blob.input_type)),
-        InputType::Archive => {}
+    if blob.input_type.is_direct() {
+        return Err(UploadError::NotGenerated(blob.input_type));
     }
     if !blob.accepts_upload(now) {
         return Err(UploadError::Conflict(blob.state_at(now)));
@@ -167,12 +169,13 @@ async fn store_part(
         .upload_started_at
         .expect("begin_part sets upload_started_at");
     let storage_key = Blob::source_key(blob.id, n);
-    debug_assert_eq!(
-        blob.input_type,
-        InputType::Archive,
-        "prepare_part admits archives only"
-    );
-    let tap = archive::Accept::new(state.clone(), &blob);
+    let tap = match blob.input_type {
+        InputType::Archive => SourceTap::Archive(archive::Accept::new(state.clone(), &blob)),
+        InputType::Rows => SourceTap::Rows(rows::Accept::new(&state, &blob)?),
+        InputType::Raw | InputType::Multipart => {
+            unreachable!("prepare_part admits generated blobs only")
+        }
+    };
 
     let stored = upload::stream_to_store(
         &state,
@@ -203,6 +206,124 @@ async fn store_part(
         Transition::Missing => {
             upload::delete_quietly(&state, &storage_key).await;
             Err(UploadError::NotFound)
+        }
+    }
+}
+
+/// The accept pass of a part, by the blob's input type.
+enum SourceTap {
+    Archive(archive::Accept),
+    Rows(rows::Accept),
+}
+
+impl Tap for SourceTap {
+    type Output = PartAccepted;
+
+    async fn chunk(&mut self, chunk: &Bytes) -> Result<(), UploadError> {
+        match self {
+            SourceTap::Archive(tap) => tap.chunk(chunk).await,
+            SourceTap::Rows(tap) => tap.chunk(chunk).await,
+        }
+    }
+
+    async fn end(self) -> Result<PartAccepted, UploadError> {
+        match self {
+            SourceTap::Archive(tap) => tap.end().await,
+            SourceTap::Rows(tap) => tap.end().await,
+        }
+    }
+}
+
+/// Why a stored source could not be read back.
+#[derive(Debug, thiserror::Error)]
+pub enum SourceError {
+    /// A line does not parse: accept let something through, or the object
+    /// is not what accept stored.
+    #[error("part {part}, line {line}: {reason}")]
+    Malformed {
+        part: u32,
+        line: u64,
+        reason: String,
+    },
+    #[error(transparent)]
+    Read(#[from] ReadError),
+}
+
+/// One line of a stored source, numbered within its part as accept
+/// numbered it.
+#[derive(Debug, Clone)]
+pub struct SourceLine {
+    pub part: u32,
+    pub line: u64,
+    pub bytes: Bytes,
+}
+
+/// A blob's source read back part by part through the same line splitter
+/// accept used, so every line the build sees is one accept checked.
+pub struct Source<'a> {
+    state: &'a Agrafe,
+    blob: &'a Blob,
+    /// The part being read, zero before the first.
+    part: u32,
+    reader: Option<Reader>,
+    lines: Lines,
+}
+
+impl<'a> Source<'a> {
+    pub fn new(state: &'a Agrafe, blob: &'a Blob) -> Self {
+        Self {
+            state,
+            blob,
+            part: 0,
+            reader: None,
+            lines: Lines::new(),
+        }
+    }
+
+    /// The next line, or `None` after the last part's last one.
+    pub async fn next_line(&mut self) -> Result<Option<SourceLine>, SourceError> {
+        loop {
+            if let Some((line, bytes)) = self
+                .lines
+                .next_line()
+                .map_err(|e| self.malformed(e.line, e.reason))?
+            {
+                return Ok(Some(SourceLine {
+                    part: self.part,
+                    line,
+                    bytes,
+                }));
+            }
+            let reader = match &mut self.reader {
+                Some(reader) => reader,
+                None => {
+                    if self.part >= self.blob.source_parts as u32 {
+                        return Ok(None);
+                    }
+                    self.part += 1;
+                    self.lines = Lines::new();
+                    self.reader = Some(Reader::open_part(self.state, self.blob, self.part).await?);
+                    continue;
+                }
+            };
+            match reader.next_segment().await? {
+                Some(segment) => self.lines.push(&segment),
+                None => {
+                    self.lines
+                        .end()
+                        .map_err(|e| self.malformed(e.line, e.reason))?;
+                    self.reader = None;
+                }
+            }
+        }
+    }
+
+    /// The error for `line` of the part being read failing `reason`.
+    pub fn malformed(&self, line: u64, reason: String) -> SourceError {
+        SourceError::Malformed {
+            part: self.part,
+            line,
+            reason,
         }
     }
 }

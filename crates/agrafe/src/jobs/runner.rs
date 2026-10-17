@@ -14,7 +14,7 @@ use tokio::task::JoinSet;
 use tracing::Instrument as _;
 use uuid::Uuid;
 
-use super::{Failure, Job, JobError, JobKind, archive, purge, reap, render, scan};
+use super::{Failure, Job, JobError, JobKind, archive, purge, reap, render, rows, scan};
 use crate::app::Agrafe;
 use crate::metrics::Outcome;
 
@@ -159,8 +159,7 @@ async fn handle(state: &Agrafe, job: &Job) -> Result<(), JobError> {
     match job.kind {
         JobKind::Scan => scan::run(state, job).await,
         JobKind::Render => render::run(state, job).await,
-        // The rows build is designed, not built yet; nothing enqueues it.
-        JobKind::Rows => Err(JobError::Unhandled(job.kind)),
+        JobKind::Rows => rows::run(state, job).await,
         JobKind::Archive => archive::run(state, job).await,
         JobKind::Purge => purge::run(state, job).await,
         JobKind::Reap => reap::run(state, job).await,

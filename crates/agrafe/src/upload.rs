@@ -117,11 +117,11 @@ pub enum UploadError {
     /// Parts and finish apply to generated blobs only.
     #[error("a {0} blob is uploaded as a file: parts and finish apply to rows and archive blobs")]
     NotGenerated(InputType),
-    /// The build for this input type does not exist yet.
-    #[error("{0} blobs cannot be built yet")]
-    Unsupported(InputType),
     #[error("blob has no declared checksum and size")]
     Undeclared,
+    /// A `rows` blob without its columns: creation never lets one through.
+    #[error("rows blob has no declared columns")]
+    NoColumns,
     /// Parts are numbered from one and consecutive; this is the one the
     /// blob is waiting for.
     #[error("expected part {expected}")]

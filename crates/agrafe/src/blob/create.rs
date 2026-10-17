@@ -13,6 +13,7 @@ use crate::app::Agrafe;
 use crate::classify::{self, Category};
 use crate::config::UploadConfig;
 use crate::jobs::Priority;
+use crate::source::rows::{self, Column, Sheet};
 use crate::text::is_bidi_control;
 
 /// Why a blob could not be created.
@@ -43,6 +44,8 @@ pub struct CreateBlobRequest {
     pub checksum: Option<String>,
     /// Declared size in bytes. Required for `raw` and `multipart`.
     pub size: Option<i64>,
+    /// The columns of the sheet, in order. Required for `rows`.
+    pub columns: Option<Vec<Column>>,
     #[serde(default)]
     pub skip_virus_scan: bool,
     pub expires_at: Option<Timestamp>,
@@ -63,6 +66,8 @@ pub struct NewBlob {
     pub input_type: InputType,
     pub checksum_sha256: Option<Vec<u8>>,
     pub size: Option<i64>,
+    /// The sheets of a `rows` blob.
+    pub source_columns: Option<Vec<Sheet>>,
     pub skip_virus_scan: bool,
     pub expires_at: Option<Timestamp>,
     pub priority: Priority,
@@ -100,6 +105,19 @@ pub fn validate(
         validate_generated_content_type(req.input_type, &content_type)?;
         (None, None)
     };
+    let source_columns = match (req.input_type, req.columns) {
+        (InputType::Rows, Some(columns)) => Some(vec![Sheet {
+            name: rows::sheet_name(&filename),
+            columns: validate_columns(columns, &content_type)?,
+        }]),
+        (InputType::Rows, None) => {
+            return Err(unprocessable("columns are required for rows input"));
+        }
+        (_, Some(_)) => {
+            return Err(unprocessable("columns apply to rows input only"));
+        }
+        (_, None) => None,
+    };
 
     let expires_at = match (req.expires_at, req.expires_in) {
         (Some(_), Some(_)) => {
@@ -132,6 +150,7 @@ pub fn validate(
         input_type: req.input_type,
         checksum_sha256,
         size,
+        source_columns,
         // A generated file holds only what the service wrote, from scanned
         // members or from scalar values: skipped by construction.
         skip_virus_scan: req.skip_virus_scan || !req.input_type.is_direct(),
@@ -202,6 +221,24 @@ pub(crate) fn validate_size(size: i64, upload: &UploadConfig) -> Result<i64, Cre
     Ok(size)
 }
 
+/// The columns of a `rows` blob: at least one, each with a header, no more
+/// than a sheet holds when the output is one.
+fn validate_columns(columns: Vec<Column>, content_type: &str) -> Result<Vec<Column>, CreateError> {
+    if columns.is_empty() {
+        return Err(unprocessable("columns must name at least one column"));
+    }
+    if rows::is_sheet(content_type) && columns.len() > rows::MAX_SHEET_COLUMNS {
+        return Err(unprocessable(format!(
+            "a sheet holds at most {} columns",
+            rows::MAX_SHEET_COLUMNS
+        )));
+    }
+    if let Some(i) = columns.iter().position(|c| c.name.is_empty()) {
+        return Err(unprocessable(format!("column {} has an empty name", i + 1)));
+    }
+    Ok(columns)
+}
+
 fn validate_generated_content_type(
     input_type: InputType,
     content_type: &str,
@@ -246,6 +283,12 @@ mod tests {
             input_type,
             checksum: input_type.is_direct().then(|| STANDARD.encode([7u8; 32])),
             size: input_type.is_direct().then_some(1234),
+            columns: (input_type == InputType::Rows).then(|| {
+                vec![Column {
+                    name: "a".into(),
+                    kind: None,
+                }]
+            }),
             skip_virus_scan: false,
             expires_at: None,
             expires_in: None,
@@ -318,6 +361,56 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn rows_declare_their_columns() {
+        let now = Timestamp::now();
+        let mut r = req(InputType::Rows, classify::XLSX);
+        r.filename = "export: 2026.xlsx".into();
+        let b = validate(r, &cfg(), now).unwrap();
+        let sheets = b.source_columns.unwrap();
+        assert_eq!(sheets.len(), 1);
+        assert_eq!(sheets[0].name, "export_ 2026");
+        assert_eq!(sheets[0].columns.len(), 1);
+        assert!(
+            validate(req(InputType::Raw, "image/jpeg"), &cfg(), now)
+                .unwrap()
+                .source_columns
+                .is_none()
+        );
+
+        let mut r = req(InputType::Rows, classify::CSV);
+        r.columns = None;
+        assert!(validate(r, &cfg(), now).is_err(), "required");
+        let mut r = req(InputType::Rows, classify::CSV);
+        r.columns = Some(vec![]);
+        assert!(validate(r, &cfg(), now).is_err(), "at least one");
+        let mut r = req(InputType::Rows, classify::CSV);
+        r.columns = Some(vec![Column {
+            name: "".into(),
+            kind: None,
+        }]);
+        assert!(validate(r, &cfg(), now).is_err(), "named");
+        let mut r = req(InputType::Archive, classify::ZIP);
+        r.columns = Some(vec![Column {
+            name: "a".into(),
+            kind: None,
+        }]);
+        assert!(validate(r, &cfg(), now).is_err(), "rows only");
+
+        let many: Vec<Column> = (0..=rows::MAX_SHEET_COLUMNS)
+            .map(|i| Column {
+                name: i.to_string(),
+                kind: None,
+            })
+            .collect();
+        let mut r = req(InputType::Rows, classify::ODS);
+        r.columns = Some(many.clone());
+        assert!(validate(r, &cfg(), now).is_err(), "a sheet's limit");
+        let mut r = req(InputType::Rows, classify::CSV);
+        r.columns = Some(many);
+        assert!(validate(r, &cfg(), now).is_ok(), "CSV has no such limit");
     }
 
     #[test]

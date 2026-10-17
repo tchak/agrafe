@@ -1,14 +1,21 @@
-//! A ZIP writer that never seeks: stored entries, each a local header, the
-//! bytes, then a data descriptor with the CRC and sizes, and the central
-//! directory last. Zip64 is decided per entry from its size before its
-//! header goes out, since a streamed header cannot be rewritten; the
-//! central directory switches to zip64 on its own for the entry count and
-//! the offsets. See DESIGN.md, "Archives".
+//! A ZIP writer that never seeks: each entry is a local header, the bytes,
+//! then a data descriptor with the CRC and sizes, and the central directory
+//! comes last. Zip64 is decided per entry from its size before its header
+//! goes out, since a streamed header cannot be rewritten; the central
+//! directory switches to zip64 on its own for the entry count and the
+//! offsets. See DESIGN.md, "Archives".
 //!
 //! The writer produces bytes and does no I/O: [`ZipWriter::begin_entry`]
 //! and [`ZipWriter::end_entry`] return the headers to emit, the caller
 //! emits the member's bytes itself and reports them with
 //! [`ZipWriter::data`], and [`ZipWriter::finish`] returns the directory.
+//!
+//! Three kinds of entry: a stored one of known size (an archive member), a
+//! deflated one of unknown size (a spreadsheet's XML, compressed as it is
+//! produced, whose compressed bytes the caller reports with
+//! [`ZipWriter::compressed`]), and a whole stored one given at once
+//! ([`ZipWriter::whole_entry`]), which carries its CRC in the local header
+//! and needs no descriptor: what an ODS `mimetype` entry has to be.
 
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
@@ -21,9 +28,9 @@ const ZIP64_END_OF_CENTRAL_DIRECTORY: u32 = 0x0606_4b50;
 const ZIP64_LOCATOR: u32 = 0x0706_4b50;
 const ZIP64_EXTRA: u16 = 0x0001;
 
-/// Bit 3: sizes and CRC follow the data; bit 11: names are UTF-8.
-const FLAGS: u16 = 0x0008 | 0x0800;
-const STORED: u16 = 0;
+/// Bit 3: sizes and CRC follow the data. Bit 11: names are UTF-8.
+const FLAG_DESCRIPTOR: u16 = 0x0008;
+const FLAG_UTF8: u16 = 0x0800;
 const VERSION_STORED: u16 = 20;
 const VERSION_ZIP64: u16 = 45;
 /// Made on Unix, so the external attributes carry a mode.
@@ -46,10 +53,23 @@ pub enum ZipError {
         declared: u64,
         written: u64,
     },
+    /// A deflated entry's header went out without zip64 fields, its size
+    /// being unknown then, so neither of its sizes may reach 4 GiB.
+    #[error("deflated entry `{0}` reached 4 GiB")]
+    EntryTooLarge(String),
     #[error("an entry is still open")]
     EntryOpen,
     #[error("no entry is open")]
     NoEntry,
+    #[error("the open entry is not deflated")]
+    NotDeflated,
+}
+
+/// How an entry's bytes are written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Method {
+    Stored = 0,
+    Deflated = 8,
 }
 
 /// MS-DOS date and time, what a ZIP entry carries.
@@ -88,17 +108,27 @@ impl DosTime {
 struct Open {
     name: Vec<u8>,
     offset: u64,
-    declared: u64,
+    method: Method,
+    /// The size the local header announced, for a stored entry.
+    declared: Option<u64>,
     zip64: bool,
     time: DosTime,
     crc: crc32fast::Hasher,
+    /// Plaintext bytes reported so far.
     written: u64,
+    /// Bytes emitted after the header so far: the plaintext of a stored
+    /// entry, what the caller reported for a deflated one.
+    compressed: u64,
 }
 
 struct Central {
     name: Vec<u8>,
     offset: u64,
+    method: Method,
+    /// Whether the entry has a data descriptor, which its flags say.
+    descriptor: bool,
     size: u64,
+    compressed: u64,
     crc: u32,
     zip64: bool,
     time: DosTime,
@@ -134,13 +164,65 @@ impl ZipWriter {
         }
     }
 
-    /// Open an entry of `size` bytes named `name`: the local header to
-    /// emit. The bytes follow, reported through [`Self::data`].
+    /// Open a stored entry of `size` bytes named `name`: the local header
+    /// to emit. The bytes follow, reported through [`Self::data`].
     pub fn begin_entry(
         &mut self,
         name: &str,
         size: u64,
         time: DosTime,
+    ) -> Result<Vec<u8>, ZipError> {
+        let zip64 = size >= self.threshold;
+        self.open_entry(name, time, Method::Stored, Some(size), zip64, None)
+    }
+
+    /// Open a deflated entry of a size not known yet: the local header to
+    /// emit. The caller compresses the bytes itself, reporting the plain
+    /// ones through [`Self::data`] and the compressed ones it emits through
+    /// [`Self::compressed`]. Such an entry stays under 4 GiB either way.
+    pub fn begin_deflated(&mut self, name: &str, time: DosTime) -> Result<Vec<u8>, ZipError> {
+        self.open_entry(name, time, Method::Deflated, None, false, None)
+    }
+
+    /// A stored entry given whole: the local header, carrying the CRC, and
+    /// the bytes, with no descriptor to follow. The entry is closed.
+    pub fn whole_entry(
+        &mut self,
+        name: &str,
+        bytes: &[u8],
+        time: DosTime,
+    ) -> Result<Vec<u8>, ZipError> {
+        let size = bytes.len() as u64;
+        let crc = crc32fast::hash(bytes);
+        let zip64 = size >= self.threshold;
+        let mut out = self.open_entry(name, time, Method::Stored, Some(size), zip64, Some(crc))?;
+        out.extend_from_slice(bytes);
+        let open = self.open.take().expect("just opened");
+        self.offset += size;
+        self.entries.push(Central {
+            name: open.name,
+            offset: open.offset,
+            method: Method::Stored,
+            descriptor: false,
+            size,
+            compressed: size,
+            crc,
+            zip64,
+            time,
+        });
+        Ok(out)
+    }
+
+    /// The local header of an entry, which `crc` turns into one without a
+    /// descriptor; `declared` is the size a stored entry announces.
+    fn open_entry(
+        &mut self,
+        name: &str,
+        time: DosTime,
+        method: Method,
+        declared: Option<u64>,
+        zip64: bool,
+        crc: Option<u32>,
     ) -> Result<Vec<u8>, ZipError> {
         if self.open.is_some() {
             return Err(ZipError::EntryOpen);
@@ -148,18 +230,19 @@ impl ZipWriter {
         if name.len() > FIELD_LIMIT_16 as usize {
             return Err(ZipError::NameTooLong(name.to_string()));
         }
-        let zip64 = size >= self.threshold;
         let mut out = Vec::with_capacity(30 + name.len() + 20);
         put_u32(&mut out, LOCAL_HEADER);
         put_u16(&mut out, if zip64 { VERSION_ZIP64 } else { VERSION_STORED });
-        put_u16(&mut out, FLAGS);
-        put_u16(&mut out, STORED);
+        put_u16(&mut out, flags(crc.is_none()));
+        put_u16(&mut out, method as u16);
         put_u16(&mut out, time.time);
         put_u16(&mut out, time.date);
-        put_u32(&mut out, 0); // CRC, in the descriptor
-        // The sizes are known up front, stored being stored, so they go in
-        // the header too for readers that walk the entries without the
-        // directory; the descriptor repeats them with the CRC.
+        put_u32(&mut out, crc.unwrap_or(0));
+        // A stored entry's sizes are known up front, so they go in the
+        // header too for readers that walk the entries without the
+        // directory; the descriptor repeats them with the CRC. A deflated
+        // entry's are zero until its descriptor.
+        let size = declared.unwrap_or(0);
         let field = if zip64 { FIELD_LIMIT_32 } else { size } as u32;
         put_u32(&mut out, field);
         put_u32(&mut out, field);
@@ -175,32 +258,63 @@ impl ZipWriter {
         self.open = Some(Open {
             name: name.as_bytes().to_vec(),
             offset: self.offset,
-            declared: size,
+            method,
+            declared,
             zip64,
             time,
             crc: crc32fast::Hasher::new(),
             written: 0,
+            compressed: 0,
         });
         self.offset += out.len() as u64;
         Ok(out)
     }
 
-    /// Bytes of the open entry the caller has emitted.
+    /// Plain bytes of the open entry: emitted as they are for a stored
+    /// entry, handed to the compressor for a deflated one.
     pub fn data(&mut self, bytes: &[u8]) -> Result<(), ZipError> {
         let open = self.open.as_mut().ok_or(ZipError::NoEntry)?;
         open.crc.update(bytes);
         open.written += bytes.len() as u64;
-        self.offset += bytes.len() as u64;
+        match open.method {
+            Method::Stored => {
+                open.compressed += bytes.len() as u64;
+                self.offset += bytes.len() as u64;
+                Ok(())
+            }
+            Method::Deflated if open.written >= FIELD_LIMIT_32 => Err(ZipError::EntryTooLarge(
+                String::from_utf8_lossy(&open.name).into_owned(),
+            )),
+            Method::Deflated => Ok(()),
+        }
+    }
+
+    /// `n` compressed bytes of the open deflated entry the caller has
+    /// emitted.
+    pub fn compressed(&mut self, n: u64) -> Result<(), ZipError> {
+        let open = self.open.as_mut().ok_or(ZipError::NoEntry)?;
+        if open.method != Method::Deflated {
+            return Err(ZipError::NotDeflated);
+        }
+        open.compressed += n;
+        self.offset += n;
+        if open.compressed >= FIELD_LIMIT_32 {
+            return Err(ZipError::EntryTooLarge(
+                String::from_utf8_lossy(&open.name).into_owned(),
+            ));
+        }
         Ok(())
     }
 
     /// Close the open entry: the data descriptor to emit.
     pub fn end_entry(&mut self) -> Result<Vec<u8>, ZipError> {
         let open = self.open.take().ok_or(ZipError::NoEntry)?;
-        if open.written != open.declared {
+        if let Some(declared) = open.declared
+            && open.written != declared
+        {
             return Err(ZipError::SizeMismatch {
                 name: String::from_utf8_lossy(&open.name).into_owned(),
-                declared: open.declared,
+                declared,
                 written: open.written,
             });
         }
@@ -209,17 +323,20 @@ impl ZipWriter {
         put_u32(&mut out, DATA_DESCRIPTOR);
         put_u32(&mut out, crc);
         if open.zip64 {
-            put_u64(&mut out, open.written);
+            put_u64(&mut out, open.compressed);
             put_u64(&mut out, open.written);
         } else {
-            put_u32(&mut out, open.written as u32);
+            put_u32(&mut out, open.compressed as u32);
             put_u32(&mut out, open.written as u32);
         }
         self.offset += out.len() as u64;
         self.entries.push(Central {
             name: open.name,
             offset: open.offset,
+            method: open.method,
+            descriptor: true,
             size: open.written,
+            compressed: open.compressed,
             crc,
             zip64: open.zip64,
             time: open.time,
@@ -236,13 +353,14 @@ impl ZipWriter {
         let mut out = Vec::new();
         let mut any_zip64 = false;
         for entry in &self.entries {
-            let size_overflows = entry.zip64 || entry.size >= self.threshold;
+            let size_overflows =
+                entry.zip64 || entry.size >= self.threshold || entry.compressed >= self.threshold;
             let offset_overflows = entry.offset >= self.threshold;
             any_zip64 |= size_overflows || offset_overflows;
             let mut extra = Vec::new();
             if size_overflows {
                 put_u64(&mut extra, entry.size);
-                put_u64(&mut extra, entry.size);
+                put_u64(&mut extra, entry.compressed);
             }
             if offset_overflows {
                 put_u64(&mut extra, entry.offset);
@@ -257,18 +375,18 @@ impl ZipWriter {
                     VERSION_ZIP64
                 },
             );
-            put_u16(&mut out, FLAGS);
-            put_u16(&mut out, STORED);
+            put_u16(&mut out, flags(entry.descriptor));
+            put_u16(&mut out, entry.method as u16);
             put_u16(&mut out, entry.time.time);
             put_u16(&mut out, entry.time.date);
             put_u32(&mut out, entry.crc);
-            let size = if size_overflows {
-                FIELD_LIMIT_32
+            let (compressed, size) = if size_overflows {
+                (FIELD_LIMIT_32, FIELD_LIMIT_32)
             } else {
-                entry.size
-            } as u32;
-            put_u32(&mut out, size);
-            put_u32(&mut out, size);
+                (entry.compressed, entry.size)
+            };
+            put_u32(&mut out, compressed as u32);
+            put_u32(&mut out, size as u32);
             put_u16(&mut out, entry.name.len() as u16);
             put_u16(
                 &mut out,
@@ -333,6 +451,14 @@ impl ZipWriter {
     }
 }
 
+fn flags(descriptor: bool) -> u16 {
+    if descriptor {
+        FLAG_UTF8 | FLAG_DESCRIPTOR
+    } else {
+        FLAG_UTF8
+    }
+}
+
 fn put_u16(out: &mut Vec<u8>, v: u16) {
     out.extend_from_slice(&v.to_le_bytes());
 }
@@ -347,7 +473,7 @@ fn put_u64(out: &mut Vec<u8>, v: u64) {
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Cursor, Read};
+    use std::io::{Cursor, Read, Write};
 
     use super::*;
 
@@ -376,14 +502,19 @@ mod tests {
         out
     }
 
-    /// Every entry as the `zip` crate reads it back: name, bytes, whether
-    /// its directory entry used zip64.
-    fn read_back(bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
+    /// Every entry as the `zip` crate reads it back: name and bytes, with
+    /// the method checked against `stored`.
+    fn read_back(bytes: &[u8], stored: bool) -> Vec<(String, Vec<u8>)> {
         let mut archive = ::zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
         (0..archive.len())
             .map(|i| {
                 let mut file = archive.by_index(i).unwrap();
-                assert_eq!(file.compression(), ::zip::CompressionMethod::Stored);
+                let want = if stored {
+                    ::zip::CompressionMethod::Stored
+                } else {
+                    ::zip::CompressionMethod::Deflated
+                };
+                assert_eq!(file.compression(), want);
                 let mut data = Vec::new();
                 // Checks the CRC against the directory.
                 file.read_to_end(&mut data).unwrap();
@@ -415,7 +546,7 @@ mod tests {
             ("big.bin", &big),
         ];
         let bytes = archive(FIELD_LIMIT_32, entries);
-        let got = read_back(&bytes);
+        let got = read_back(&bytes, true);
         assert_eq!(got.len(), 3);
         for ((name, data), (want_name, want_data)) in got.iter().zip(entries) {
             assert_eq!(name, want_name);
@@ -433,7 +564,7 @@ mod tests {
     fn empty_archive() {
         let bytes = archive(FIELD_LIMIT_32, &[]);
         assert_eq!(bytes.len(), 22);
-        assert!(read_back(&bytes).is_empty());
+        assert!(read_back(&bytes, true).is_empty());
     }
 
     /// With the threshold lowered to a few bytes, every size and offset
@@ -451,7 +582,7 @@ mod tests {
                 .windows(4)
                 .any(|w| w == ZIP64_END_OF_CENTRAL_DIRECTORY.to_le_bytes())
         );
-        let got = read_back(&bytes);
+        let got = read_back(&bytes, true);
         assert_eq!(got.len(), 3);
         for ((name, data), (want_name, want_data)) in got.iter().zip(entries) {
             assert_eq!(name, want_name);
@@ -479,14 +610,69 @@ mod tests {
         assert_eq!(archive.len(), n);
     }
 
+    /// Deflated entries compressed by the caller in pieces, a whole stored
+    /// one first as an ODS has it: every entry reads back, the whole one
+    /// with its CRC in the local header and no descriptor flag.
+    #[test]
+    fn deflated_and_whole_entries() {
+        let t = DosTime::from_timestamp(at());
+        let mut zip = ZipWriter::new();
+        let mut out = Vec::new();
+        out.extend(zip.whole_entry("mimetype", b"text/plain", t).unwrap());
+        // Local header: flags at 6, CRC at 14, then the name at 30.
+        assert_eq!(&out[6..8], &FLAG_UTF8.to_le_bytes());
+        assert_eq!(&out[14..18], &crc32fast::hash(b"text/plain").to_le_bytes());
+        assert_eq!(&out[30..38], b"mimetype");
+        assert_eq!(&out[38..], b"text/plain");
+
+        let text: Vec<u8> = (0..20_000u32)
+            .flat_map(|i| format!("<row r=\"{i}\"/>").into_bytes())
+            .collect();
+        out.extend(zip.begin_deflated("content.xml", t).unwrap());
+        let mut encoder =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        for piece in text.chunks(7000) {
+            zip.data(piece).unwrap();
+            encoder.write_all(piece).unwrap();
+            let compressed = std::mem::take(encoder.get_mut());
+            zip.compressed(compressed.len() as u64).unwrap();
+            out.extend(compressed);
+        }
+        let compressed = encoder.finish().unwrap();
+        zip.compressed(compressed.len() as u64).unwrap();
+        out.extend(compressed);
+        out.extend(zip.end_entry().unwrap());
+        out.extend(zip.finish().unwrap());
+        assert!(out.len() < text.len() / 4, "{} bytes", out.len());
+
+        let mut archive = ::zip::ZipArchive::new(Cursor::new(&out)).unwrap();
+        assert_eq!(archive.len(), 2);
+        let mut first = archive.by_index(0).unwrap();
+        assert_eq!(first.name().unwrap(), "mimetype");
+        assert_eq!(first.compression(), ::zip::CompressionMethod::Stored);
+        let mut got = Vec::new();
+        first.read_to_end(&mut got).unwrap();
+        assert_eq!(got, b"text/plain");
+        drop(first);
+        let mut second = archive.by_index(1).unwrap();
+        assert_eq!(second.name().unwrap(), "content.xml");
+        assert_eq!(second.compression(), ::zip::CompressionMethod::Deflated);
+        let mut got = Vec::new();
+        second.read_to_end(&mut got).unwrap();
+        assert_eq!(got, text);
+    }
+
     #[test]
     fn misuse() {
         let mut zip = ZipWriter::new();
         assert_eq!(zip.data(b"x"), Err(ZipError::NoEntry));
         assert_eq!(zip.end_entry(), Err(ZipError::NoEntry));
+        assert_eq!(zip.compressed(1), Err(ZipError::NoEntry));
         let t = DosTime::from_timestamp(at());
         zip.begin_entry("a", 2, t).unwrap();
         assert_eq!(zip.begin_entry("b", 2, t), Err(ZipError::EntryOpen));
+        assert_eq!(zip.whole_entry("b", b"", t), Err(ZipError::EntryOpen));
+        assert_eq!(zip.compressed(1), Err(ZipError::NotDeflated));
         zip.data(b"x").unwrap();
         assert!(matches!(
             zip.end_entry(),
@@ -496,6 +682,12 @@ mod tests {
         assert!(matches!(
             ZipWriter::new().begin_entry(&long, 0, t),
             Err(ZipError::NameTooLong(_))
+        ));
+        let mut zip = ZipWriter::new();
+        zip.begin_deflated("d", t).unwrap();
+        assert!(matches!(
+            zip.compressed(FIELD_LIMIT_32),
+            Err(ZipError::EntryTooLarge(_))
         ));
     }
 

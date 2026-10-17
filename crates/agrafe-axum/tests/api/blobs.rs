@@ -65,7 +65,7 @@ async fn validation_errors() {
         json_req(
             Method::POST,
             "/blobs",
-            json!({"filename": "export.csv", "content_type": "text/csv", "input_type": "rows", "size": 10}),
+            json!({"filename": "export.csv", "content_type": "text/csv", "input_type": "rows", "size": 10, "columns": [{"name": "a"}]}),
         ),
     )
     .await;
@@ -76,7 +76,7 @@ async fn validation_errors() {
         json_req(
             Method::POST,
             "/blobs",
-            json!({"filename": "export.csv", "content_type": "text/csv", "input_type": "rows"}),
+            json!({"filename": "export.csv", "content_type": "text/csv", "input_type": "rows", "columns": [{"name": "a"}]}),
         ),
     )
     .await;

@@ -12,5 +12,6 @@ mod jobs;
 mod original;
 mod reaper;
 mod representations;
+mod rows;
 mod scan;
 mod upload;

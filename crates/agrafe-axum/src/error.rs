@@ -38,8 +38,6 @@ pub enum ApiError {
     Forbidden(String),
     #[error("{0}")]
     Gone(String),
-    #[error("not implemented yet")]
-    NotImplemented,
     /// The server's fault: logged in full, answered as `internal error`.
     #[error("{0}")]
     Internal(Box<dyn std::error::Error + Send + Sync>),
@@ -75,7 +73,6 @@ impl ApiError {
             ApiError::Conflict(_) => StatusCode::CONFLICT,
             ApiError::Forbidden(_) => StatusCode::FORBIDDEN,
             ApiError::Gone(_) => StatusCode::GONE,
-            ApiError::NotImplemented => StatusCode::NOT_IMPLEMENTED,
             ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -92,7 +89,6 @@ impl ApiError {
             ApiError::Conflict(_) => "conflict",
             ApiError::Forbidden(_) => "forbidden",
             ApiError::Gone(_) => "gone",
-            ApiError::NotImplemented => "not_implemented",
             ApiError::Internal(_) => "internal",
         }
     }
@@ -153,8 +149,6 @@ impl From<UploadError> for ApiError {
             | UploadError::NotGenerated(_)
             | UploadError::PartSequence { .. }
             | UploadError::NoParts => ApiError::Conflict(err.to_string()),
-            // The rows build is a later step.
-            UploadError::Unsupported(_) => ApiError::NotImplemented,
             UploadError::PartTooLarge(_) => ApiError::PayloadTooLarge(err.to_string()),
             UploadError::Undeclared
             | UploadError::SizeMismatch
@@ -171,7 +165,8 @@ impl From<UploadError> for ApiError {
                 Ok(api) => *api,
                 Err(other) => ApiError::BadRequest(format!("reading the request body: {other}")),
             },
-            UploadError::Store(_)
+            UploadError::NoColumns
+            | UploadError::Store(_)
             | UploadError::Crypto(_)
             | UploadError::Key(_)
             | UploadError::Db(_)

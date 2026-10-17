@@ -73,6 +73,7 @@ dependencies = [
  "bytesize",
  "crc32fast",
  "figment",
+ "flate2",
  "form_urlencoded",
  "futures",
  "hmac",

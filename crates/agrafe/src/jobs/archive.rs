@@ -1,8 +1,8 @@
 //! Building an `archive` blob: the manifest parts read back in order, each
 //! member streamed into a stored ZIP entry, the ZIP encrypted and uploaded
-//! in 32 MiB parts as it is produced. Nothing touches local disk and nothing
-//! larger than a small member is held whole in memory. See DESIGN.md,
-//! "Build" and "Archives".
+//! as it is produced through the shared `build` sink. Nothing larger than
+//! a small member is held whole in memory. See DESIGN.md, "Build" and
+//! "Archives".
 //!
 //! A member that was `ready` at accept time may be gone by now: it is
 //! skipped and listed in an `ERRORS.txt` at the root, and the row counts
@@ -10,38 +10,22 @@
 //! retries from the source; a failed attempt aborts its multipart upload
 //! and leaves nothing behind.
 
-pub mod zip;
-
 use std::collections::{HashMap, HashSet};
 
-use agrafe_crypto::Key;
-use agrafe_crypto::streaming::{Encryptor, Layout};
 use bytes::Bytes;
 use futures::StreamExt;
 use jiff::Timestamp;
-use object_store::path::Path as ObjectPath;
-use object_store::{ObjectStoreExt, WriteMultipart};
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use self::zip::{DosTime, ZipError, ZipWriter};
+use super::build::zip::{DosTime, ZipWriter};
+use super::build::{self, Assemble, BuildError, Counts, Sink};
 use super::{Job, JobError};
 use crate::app::Agrafe;
-use crate::blob::read::{ReadError, Reader, Stored};
-use crate::blob::repo::{self, Built, Transition};
+use crate::blob::read::{Reader, Stored};
+use crate::blob::repo;
 use crate::blob::{Blob, BlobState, InputType};
-use crate::encryption::UnwrapError;
+use crate::source::Source;
 use crate::source::archive::{ERRORS_FILE, Entry, parse_line};
-use crate::source::{LineError, Lines};
-use crate::upload::{self, PART_CONCURRENCY};
-
-/// Parts of the multipart upload. S3 allows 10 000 per object; the default
-/// 5 MiB would cap an archive at 50 GB. `ArchiveConfig::MAX_SIZE_LIMIT`
-/// follows from the two.
-pub(crate) const BUILD_PART_SIZE: usize = 32 * 1024 * 1024;
-
-/// The object store's limit on parts per object.
-pub(crate) const MAX_BUILD_PARTS: u64 = 10_000;
 
 /// Members fetched ahead of the one being copied: most entries are small,
 /// and a serial build would wait longer for the first byte of each object
@@ -58,132 +42,22 @@ const PREFETCH_MAX: u64 = 8 * 1024 * 1024;
 /// Manifest lines resolved per database query.
 const BATCH: usize = 256;
 
-/// Why a build attempt failed.
-#[derive(Debug, thiserror::Error)]
-pub enum BuildError {
-    /// The stored source does not parse: accept let something through, or
-    /// the object is not what accept stored.
-    #[error("part {part}, line {line}: {reason}")]
-    Source {
-        part: u32,
-        line: u64,
-        reason: String,
-    },
-    #[error("blob {blob_id} is stored but has no {what}")]
-    Incomplete { blob_id: Uuid, what: &'static str },
-    #[error(transparent)]
-    Key(#[from] UnwrapError),
-    #[error("encryption: {0}")]
-    Crypto(#[from] agrafe_crypto::Error),
-    #[error("reading a source: {0}")]
-    Read(#[from] ReadError),
-    #[error("object store: {0}")]
-    Store(#[from] object_store::Error),
-    #[error("writing the archive: {0}")]
-    Zip(#[from] ZipError),
-    #[error("database: {0}")]
-    Db(#[from] sqlx::Error),
-}
-
-impl BuildError {
-    /// Whether the next attempt would fail the same way. A source that does
-    /// not parse, a row missing its key material, a key that does not
-    /// unwrap and a ZIP the writer refuses are the blob's own; the bucket
-    /// and the database may come back.
-    pub fn is_permanent(&self) -> bool {
-        matches!(
-            self,
-            BuildError::Source { .. }
-                | BuildError::Incomplete { .. }
-                | BuildError::Key(_)
-                | BuildError::Zip(_)
-        )
-    }
-}
-
 pub async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
-    let id = job.blob_id.ok_or(JobError::NoBlob(job.kind))?;
-    let Some(blob) = repo::find(state.pool(), id).await? else {
-        tracing::info!("blob is gone, nothing to build");
-        return Ok(());
-    };
-    if blob.state != BlobState::Uploaded || blob.input_type != InputType::Archive {
-        tracing::info!(state = %blob.state, input_type = %blob.input_type, "blob is not waiting for an archive build");
-        return Ok(());
-    }
-    let Some(built) = build(state, &blob).await? else {
-        tracing::warn!("blob left `uploaded` during the build, nothing written");
-        return Ok(());
-    };
-    match repo::complete_build(state.pool(), id, &built).await? {
-        Transition::Done(blob) => tracing::info!(
-            size = built.size,
-            entries = built.archive.map(|a| a.0),
-            skipped = built.archive.map(|a| a.1),
-            state = %blob.state,
-            "archive built"
-        ),
-        // The blob left `uploaded` in the moment since the last check.
-        // Expired or deleted, the object is nobody's and goes. `ready`
-        // means another build of the same blob finished first, which a
-        // lapsed job lease allows: the object is its, and deleting it here
-        // would leave a `ready` blob with nothing behind it.
-        Transition::Conflict(current) => {
-            tracing::warn!(state = %current.state, "blob changed state as the build finished");
-            upload::disown(state, &current, &built.storage_key).await;
-        }
-        Transition::Missing => upload::delete_quietly(state, &built.storage_key).await,
-    }
-    Ok(())
+    build::run::<Archive>(state, job).await
 }
 
-/// Assemble the archive into `<id>/original`. `None` when the blob was no
-/// longer `uploaded` at the end: the object is not finished and nothing
-/// is written.
-async fn build(state: &Agrafe, blob: &Blob) -> Result<Option<Built>, BuildError> {
-    let missing = |what| BuildError::Incomplete {
-        blob_id: blob.id,
-        what,
-    };
-    let kek_id = blob.kek_id.as_deref().ok_or_else(|| missing("KEK id"))?;
-    let wrapped = blob
-        .wrapped_key
-        .as_deref()
-        .ok_or_else(|| missing("wrapped key"))?;
-    let layout = blob
-        .chunk_size
-        .and_then(|s| usize::try_from(s).ok())
-        .and_then(|s| Layout::new(s).ok())
-        .ok_or_else(|| missing("valid chunk size"))?;
-    let key = state.keks().unwrap(blob.id, kek_id, wrapped)?;
+/// The archive build: every member of the manifest into a stored entry.
+pub(crate) struct Archive;
 
-    let storage_key = upload::object_key(blob.id);
-    let mut sink = Sink::open(state, &storage_key, &key, layout).await?;
-    let assembled = assemble(state, blob, &mut sink).await;
-    let (entries, skipped) = match assembled {
-        Ok(counts) => counts,
-        Err(err) => {
-            sink.abort().await;
-            return Err(err);
-        }
-    };
-    // One last look before the object becomes visible: the key is the
-    // blob's, so only a build of a blob still waiting may finish it.
-    let still_ours = repo::find(state.pool(), blob.id)
-        .await?
-        .is_some_and(|b| b.state == BlobState::Uploaded);
-    if !still_ours {
-        sink.abort().await;
-        return Ok(None);
+impl Assemble for Archive {
+    const INPUT: InputType = InputType::Archive;
+
+    async fn assemble(state: &Agrafe, blob: &Blob, sink: &mut Sink) -> Result<Counts, BuildError> {
+        let (entries, skipped) = assemble(state, blob, sink).await?;
+        Ok(Counts {
+            archive: Some((entries, skipped)),
+        })
     }
-    let (encryption_header, checksum_sha256, size) = sink.finish().await?;
-    Ok(Some(Built {
-        storage_key,
-        encryption_header,
-        checksum_sha256,
-        size: size as i64,
-        archive: Some((entries as i64, skipped as i64)),
-    }))
 }
 
 /// Write every entry into `sink`. Returns how many members were written
@@ -333,25 +207,16 @@ async fn open_member(
     ))
 }
 
-/// The manifest, read back part by part through the same line splitter
-/// accept used, so every line the build sees is one accept checked.
+/// The manifest, read back line by line from the stored parts, every line
+/// parsed as accept parsed it.
 struct Manifest<'a> {
-    state: &'a Agrafe,
-    blob: &'a Blob,
-    /// The part being read, zero before the first.
-    part: u32,
-    reader: Option<Reader>,
-    lines: Lines,
+    source: Source<'a>,
 }
 
 impl<'a> Manifest<'a> {
     fn new(state: &'a Agrafe, blob: &'a Blob) -> Self {
         Self {
-            state,
-            blob,
-            part: 0,
-            reader: None,
-            lines: Lines::new(),
+            source: Source::new(state, blob),
         }
     }
 
@@ -359,49 +224,14 @@ impl<'a> Manifest<'a> {
     async fn next_batch(&mut self, max: usize) -> Result<Vec<Entry>, BuildError> {
         let mut batch = Vec::with_capacity(max);
         while batch.len() < max {
-            match self.next_entry().await? {
-                Some(entry) => batch.push(entry),
-                None => break,
-            }
+            let Some(line) = self.source.next_line().await? else {
+                break;
+            };
+            let entry = parse_line(&line.bytes)
+                .map_err(|reason| self.source.malformed(line.line, reason))?;
+            batch.push(entry);
         }
         Ok(batch)
-    }
-
-    async fn next_entry(&mut self) -> Result<Option<Entry>, BuildError> {
-        loop {
-            if let Some((line, bytes)) = self.lines.next_line().map_err(|e| self.malformed(e))? {
-                let entry = parse_line(&bytes)
-                    .map_err(|reason| self.malformed(LineError { line, reason }))?;
-                return Ok(Some(entry));
-            }
-            let reader = match &mut self.reader {
-                Some(reader) => reader,
-                None => {
-                    if self.part >= self.blob.source_parts as u32 {
-                        return Ok(None);
-                    }
-                    self.part += 1;
-                    self.lines = Lines::new();
-                    self.reader = Some(Reader::open_part(self.state, self.blob, self.part).await?);
-                    continue;
-                }
-            };
-            match reader.next_segment().await? {
-                Some(segment) => self.lines.push(&segment),
-                None => {
-                    self.lines.end().map_err(|e| self.malformed(e))?;
-                    self.reader = None;
-                }
-            }
-        }
-    }
-
-    fn malformed(&self, err: LineError) -> BuildError {
-        BuildError::Source {
-            part: self.part,
-            line: err.line,
-            reason: err.reason,
-        }
     }
 }
 
@@ -459,81 +289,6 @@ impl Taken {
             if self.names.insert(candidate.to_lowercase()) {
                 return candidate;
             }
-        }
-    }
-}
-
-/// The archive's bytes on their way to the bucket: hashed, encrypted,
-/// uploaded in `BUILD_PART_SIZE` parts with a few in flight.
-struct Sink {
-    writer: WriteMultipart,
-    encryptor: Option<Encryptor>,
-    header: Vec<u8>,
-    hasher: Sha256,
-    size: u64,
-    out: Vec<u8>,
-    storage_key: String,
-}
-
-impl Sink {
-    async fn open(
-        state: &Agrafe,
-        storage_key: &str,
-        key: &Key,
-        layout: Layout,
-    ) -> Result<Self, BuildError> {
-        let upload = state
-            .store()
-            .put_multipart(&ObjectPath::from(storage_key))
-            .await?;
-        let mut writer = WriteMultipart::new_with_chunk_size(upload, BUILD_PART_SIZE);
-        let encryptor = Encryptor::new(key, storage_key.as_bytes(), layout);
-        let header = encryptor.header().as_bytes().to_vec();
-        writer.write(&header);
-        Ok(Self {
-            writer,
-            encryptor: Some(encryptor),
-            header,
-            hasher: Sha256::new(),
-            size: 0,
-            out: Vec::new(),
-            storage_key: storage_key.to_string(),
-        })
-    }
-
-    async fn write(&mut self, bytes: &[u8]) -> Result<(), BuildError> {
-        self.hasher.update(bytes);
-        self.size += bytes.len() as u64;
-        self.encryptor
-            .as_mut()
-            .expect("open until finish")
-            .update(bytes, &mut self.out)?;
-        self.flush().await
-    }
-
-    async fn flush(&mut self) -> Result<(), BuildError> {
-        if !self.out.is_empty() {
-            self.writer.wait_for_capacity(PART_CONCURRENCY).await?;
-            self.writer.put(Bytes::from(std::mem::take(&mut self.out)));
-        }
-        Ok(())
-    }
-
-    /// Seal the stream and complete the upload: the header, the SHA-256 of
-    /// the plaintext and its length.
-    async fn finish(mut self) -> Result<(Vec<u8>, Vec<u8>, u64), BuildError> {
-        self.encryptor
-            .take()
-            .expect("open until finish")
-            .finish(&mut self.out)?;
-        self.flush().await?;
-        self.writer.finish().await?;
-        Ok((self.header, self.hasher.finalize().to_vec(), self.size))
-    }
-
-    async fn abort(self) {
-        if let Err(err) = self.writer.abort().await {
-            tracing::warn!(key = self.storage_key, error = ?err, "could not abort multipart upload");
         }
     }
 }

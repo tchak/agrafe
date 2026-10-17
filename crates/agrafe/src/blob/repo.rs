@@ -26,9 +26,10 @@ pub async fn insert(exec: impl PgExecutor<'_>, new: &NewBlob) -> sqlx::Result<Bl
         r#"
         INSERT INTO blobs (
             id, state, filename, content_type, category, input_type,
-            checksum_sha256, size, skip_virus_scan, expires_at, scan_state, priority
+            checksum_sha256, size, skip_virus_scan, expires_at, scan_state, priority,
+            source_columns
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
         RETURNING *
         "#,
     )
@@ -44,6 +45,7 @@ pub async fn insert(exec: impl PgExecutor<'_>, new: &NewBlob) -> sqlx::Result<Bl
     .bind(new.expires_at.map(ToSqlx::to_sqlx))
     .bind(scan_state.as_str())
     .bind(new.priority.rank())
+    .bind(new.source_columns.as_ref().map(sqlx::types::Json))
     .fetch_one(exec)
     .await
 }

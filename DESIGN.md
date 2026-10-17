@@ -201,6 +201,7 @@ message = METHOD "\n" expires_unix "\n" path_and_query_after_token
 | `input_type` | yes | `raw`, `multipart`, `rows`, `archive` |
 | `checksum` | for `raw`, `multipart` | SHA-256 of the bytes, base64 |
 | `size` | for `raw`, `multipart` | Declared size in bytes, enforced on upload |
+| `columns` | for `rows` | The columns of the sheet, in order: a list of `{"name": "...", "type": "..."}`, `type` optional. See "Rows" |
 | `skip_virus_scan` | no, default `false` | Private-only, backend vouches for the source |
 | `priority` | no, default `normal` | `high`, `normal` or `low`: where the blob's jobs go in their kind's queue, see "Jobs" |
 | `expires_at` or `expires_in` | no | Absolute timestamp or duration such as `7d` |
@@ -216,7 +217,7 @@ The name describes the shape of the `PUT` body.
 |---|---|---|
 | `raw` | The file bytes | The file |
 | `multipart` | `multipart/form-data` with one part named `file` holding the bytes; the part's own filename, if any, is ignored | The file |
-| `rows` | JSONL, one object per line | CSV, XLSX or ODS per the blob content type, built by a job after the request (see "Generated blobs") |
+| `rows` | JSONL, one array of cell values per line, positional against the `columns` declared at creation | CSV, XLSX or ODS per the blob content type, built by a job after the request (see "Generated blobs") |
 | `archive` | JSONL, one `{"path": "...", "blob_id": "..."}` per line | ZIP containing the referenced blobs, built by a job after the request (see "Generated blobs") |
 
 `rows` and `archive` are **private-only**. An `archive` upload reads other
@@ -474,10 +475,11 @@ of the row, in the code or in an operator's head, has to read `created` as
 
 What the accept pass has to carry across parts stays small and sits on the
 row: `source_parts`, `source_size` (bytes of source), `source_rows`
-(lines), `source_updated_at` and the `source_columns` of a `rows` blob,
-the first three reported by `GET` for generated blobs. Anything per line is
-left to the build, which reads the source in order anyway. Parts are
-capped at 10 000.
+(lines) and `source_updated_at`, the first three reported by `GET` for
+generated blobs. The `source_columns` of a `rows` blob are written at
+creation and only read by accept and build. Anything per line is left to
+the build, which reads the source in order anyway. Parts are capped at
+10 000.
 
 A source that is never finished is an abandoned export. `DELETE` is the
 backend's way out; as a backstop the reaper expires a `created` blob whose
@@ -519,43 +521,139 @@ user is waiting on, created `high`, goes before a nightly batch created
 
 ### Rows
 
-One JSON object per line. The columns are the keys in order of first
-appearance across the whole source, collected part by part at accept time
-into `source_columns`; a row missing a key gets an empty cell. Values are
-scalars: a string, a number, a boolean or `null` (an empty cell). An object
-or an array as a value is refused, as is a line that is not an object.
+The columns are declared at creation: `columns` is a list of one object
+per column, in sheet order, with a `name` (the header text, any non-empty
+string, duplicates allowed) and an optional `type`. The list is required
+for a `rows` blob, refused on any other input type, and stored on the row
+as `source_columns`, from which accept and build read it. Each line of the
+source is a JSON array with exactly one value per column, in that order; a
+line that is not an array, or has the wrong length, is refused. A value is
+a scalar: a string, a number, a boolean or `null`, which is an empty cell.
+An object or an array as a value is refused.
 
-Why the union rather than the first row's keys: sparse rows are the common
-case for exports of optional fields, and a backend should not have to
-compute the column set itself to send the first line. Why not nested
-values: a spreadsheet cell holds a scalar, and any flattening (JSON text,
-dotted keys) is a guess better made by the backend.
+Why declare rather than infer from the first row or the union of keys: the
+backend always knows its columns, and a column order inferred from the data
+changes between two exports of the same table when an optional field first
+appears on a different row. Why arrays rather than objects: with the
+columns declared, a key on every line is only repetition, a few hundred
+megabytes over a million rows of twenty columns, and object keys cannot
+express two columns with the same header, which form exports produce.
+Why not nested values: a spreadsheet cell holds a scalar, and any
+flattening (JSON text, dotted keys) is a guess better made by the backend.
+
+A column without a `type` takes what the JSON scalar says: a number is a
+numeric cell, a boolean a boolean cell, a string a text cell. Two types can
+be declared, `date` and `datetime`, whose values must be `null` or a string
+in ISO 8601 form, checked at accept: `YYYY-MM-DD` for a date,
+`YYYY-MM-DDTHH:MM:SS` with an optional fraction and an optional offset or
+`Z` for a datetime. Spreadsheets have no timezone, so a datetime is written
+as the wall-clock time given and the offset is dropped: the backend formats
+in the zone its users read, and what it sends is what shows. Dates are
+never inferred from the shape of a string: a free-text value that happens
+to look like a date must stay text, the backend knows which columns are
+dates, and a wrong guess is the classic spreadsheet corruption of
+user-entered data. No other types for now: durations, currencies and
+percentages are display formats, and a backend that wants `Oui` rather
+than `VRAI` sends the string.
+
+Numbers are written as their JSON lexeme, never parsed to a float and back,
+so `1.10` stays `1.10`; one that does not fit a double, `1e999`, is refused
+at accept, since no cell can hold it. Excel keeps fifteen significant
+digits, so a backend exporting 64-bit identifiers sends them as strings.
+
+The one sheet is named after the filename's stem, made acceptable to
+Excel: its forbidden characters `[ ] : * ? / \` replaced, at most 31
+characters, `Sheet1` when nothing is left.
 
 The output format is the blob's `content_type`: `text/csv`, the XLSX type
 or the ODS type; anything else is refused at creation. All three are
-written row by row:
+written row by row, the header first:
 
 - CSV per RFC 4180, comma separated, CRLF, every field quoted when it needs
   to be, UTF-8 with a byte order mark so Excel reads the accents. A value
   starting with `=`, `+`, `-`, `@`, a tab or a carriage return is prefixed
   with a single quote: a CSV opened in a spreadsheet evaluates such cells as
   formulas, and a backend exporting user-entered text must not be able to
-  ship `=HYPERLINK(...)` to an agent's desktop. Numbers and booleans are
-  written bare.
+  ship `=HYPERLINK(...)` to an agent's desktop. Numbers are written bare,
+  booleans as `true` and `false`, dates and datetimes as their ISO string.
+  CSV has no types, so all of it is text to the reader; and a French Excel
+  splits on `;` and reads `3.14` as text, so the CSV is the format for
+  machines and the XLSX is what an agent opens.
 - XLSX as a streamed package: one sheet, inline strings rather than a
-  shared string table, which would need a second pass over the data,
-  numbers and booleans as typed cells, strings as text cells, which Excel
-  never evaluates. `zip` in stream mode and `quick-xml`, both already in
-  the tree, are enough; no spreadsheet library, since the ones available
-  build the workbook in memory.
+  shared string table, which would need a second pass over the data.
+  Numbers are numeric cells, booleans `t="b"` cells holding `1` or `0`,
+  strings text cells, which Excel never evaluates. Dates and datetimes are
+  serial numbers (days since 1899-12-30, the time as the fraction) with a
+  cell style pointing at the built-in number formats 14 and 22, so Excel
+  shows them in the user's locale; the small static `styles.xml` this needs
+  is part of the package anyway. The spec also allows ISO 8601 `t="d"`
+  cells, but older Excel does not read them. Excel takes 1900 for a leap
+  year, so a date before 1900-03-01 has no serial it shows right and is
+  written as its ISO string in a text cell, which is what Excel does when
+  one is typed. A text that happens to contain Excel's own `_x0041_`
+  escape is escaped in turn, so it shows as sent. No spreadsheet library,
+  since the ones available build the workbook in memory: the XML is
+  written by hand, there being nothing to it but escaping, and the
+  package through the archive's own ZIP writer, which for this grew
+  deflated entries of unknown size, compressed as the XML is produced
+  (`flate2`). Such an entry's header goes out before its size is known,
+  without zip64 fields, so an entry reaching 4 GiB fails the build; a
+  sheet that large is beyond what any spreadsheet opens anyway. A
+  character XML 1.0 cannot carry, a control character other than tab and
+  line breaks, becomes U+FFFD in either package; it could not show in a
+  cell either way.
 - ODS the same way: `mimetype` first and stored as the format requires,
-  then the manifest and a streamed `content.xml`, with typed cells.
+  with its CRC in the header and no data descriptor, so the media type sits
+  at the fixed offset detection reads it from; then the manifest and a
+  streamed `content.xml`, with typed cells: `office:value-type` `float`,
+  `boolean`, `string`, `date`, the typed value in `office:value`,
+  `office:boolean-value` or `office:date-value` and the displayed text
+  alongside, the ISO string for a date so a viewer without a data style
+  still shows something sensible. A text's line breaks become paragraphs
+  and its tabs and runs of spaces the markup ODF needs to keep them, since
+  it collapses whitespace in a paragraph otherwise.
+
+A boolean cell is rendered by the viewer in its locale, `VRAI` and `FAUX`
+in a French Excel: that is what a typed cell is for.
 
 XLSX and ODS sheets hold at most 1 048 576 rows and 16 384 columns; a
-source beyond either is refused at accept with the line that crossed the
-limit, whichever part it is in.
-CSV has no such limit. A `rows` blob with no lines produces a header only,
-or an empty file for CSV.
+`columns` list beyond the latter is refused at creation and a source beyond
+the former at accept with the line that crossed the limit, whichever part
+it is in. CSV has no such limit. A `rows` blob with no lines produces a
+header only.
+
+Multi-sheet workbooks are not supported yet, but the design leaves them
+an additive extension. `source_columns` is stored as a list of sheets from
+the start, the one sheet of `columns` named after the filename stem, and
+the build is one function that emits a sheet from a column list and a row
+iterator, called once. The extension, when needed:
+
+- Create takes `sheets`, a list of `{"name": "...", "columns": [...]}` in
+  workbook order, mutually exclusive with `columns`, refused for
+  `text/csv`. Sheet names are validated at creation: XLSX caps them at 31
+  characters, forbids `[ ] : * ? / \` and wants them unique
+  case-insensitively; LibreOffice forbids the same characters.
+- In the source, an object line `{"sheet": "..."}` switches the current
+  sheet; rows are arrays, so the shape is unambiguous. Lines before any
+  switch belong to the first sheet, so a single-sheet source never carries
+  one. The switch must name a declared sheet after the current one, which
+  keeps the source grouped by sheet in workbook order: an XLSX sheet is one
+  zip entry written whole before the next, an ODS `content.xml` holds its
+  tables in sequence, and without grouping the build would need one pass
+  over the source per sheet. A sheet no switch points at gets a header
+  only.
+- Accept carries two more fields on the row, the current sheet index and
+  the row count within it, since the row limit is per sheet; `source_rows`
+  stays the total. The switch line is valid in any part, so parts stay
+  uniform and resuming stays `source_parts` alone.
+- The build loops over the sheets, consuming the source up to the next
+  switch line; the workbook relationships and the ODS table list are the
+  only extra output.
+
+Rejected: parts per sheet (`PUT /blobs/:id/sheets/:s/parts/:n`), which
+breaks the one-counter resume rule for a backend that produces the sheets
+sequentially anyway; and a sheet field on every line, which doubles the
+bytes per line to carry a value that changes a handful of times per export.
 
 ### Archives
 
@@ -602,7 +700,7 @@ the ciphertext, a tag per segment longer than the estimate, plus the
 `ERRORS.txt` and the end records the estimate leaves out.
 
 The build streams the ZIP as it assembles it, through a writer of its own
-in `jobs::archive::zip` rather than the `zip` crate, which stays out of the
+in `jobs::build::zip` rather than the `zip` crate, which stays out of the
 server crates. The format is sequential by design: each entry is a local
 header, the bytes, then a data descriptor with the CRC and sizes, and the
 central directory comes last, so the writer never seeks. Sizes are known
@@ -1086,6 +1184,7 @@ is redacted so a dumped config cannot leak them. See `config/example.toml`.
 | Scanning | clamd `INSTREAM` client |
 | Images, PDF pages | `vips thumbnail` (libvips) in a sandboxed subprocess |
 | Embedded images | `lopdf`, `zip`, `quick-xml` in the sandboxed `agrafe-extract` helper |
+| Generated ZIP, XLSX, ODS | Own streaming ZIP writer (`jobs::build::zip`), `flate2` for the deflated sheet XML, XML written by hand |
 | Text thumbnails | `ab_glyph` with an embedded DejaVu Sans Mono, in the sandboxed `agrafe-render-text` helper |
 | Ids | UUID v7 |
 | Time | `jiff`. `Timestamp` throughout the model; `jiff-sqlx` wrappers only at the SQL boundary |
@@ -1106,4 +1205,4 @@ is redacted so a dumped config cannot leak them. See `config/example.toml`.
    library; domain error types; the private API as a Rust handle.
 8. `archive` to ZIP: source parts and finish, the build job, the streaming
    ZIP writer, abandoned sources.
-9. `rows` to CSV/XLSX/ODS on the same parts and finish. **← current**
+9. `rows` to CSV/XLSX/ODS on the same parts and finish.
