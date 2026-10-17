@@ -85,6 +85,22 @@ pub enum BuildError {
     Db(#[from] sqlx::Error),
 }
 
+impl BuildError {
+    /// Whether the next attempt would fail the same way. A source that does
+    /// not parse, a row missing its key material, a key that does not
+    /// unwrap and a ZIP the writer refuses are the blob's own; the bucket
+    /// and the database may come back.
+    pub fn is_permanent(&self) -> bool {
+        matches!(
+            self,
+            BuildError::Source { .. }
+                | BuildError::Incomplete { .. }
+                | BuildError::Key(_)
+                | BuildError::Zip(_)
+        )
+    }
+}
+
 pub async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
     let id = job.blob_id.ok_or(JobError::NoBlob(job.kind))?;
     let Some(blob) = repo::find(state.pool(), id).await? else {

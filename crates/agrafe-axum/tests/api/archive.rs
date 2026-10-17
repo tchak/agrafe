@@ -714,3 +714,33 @@ async fn large_members_are_streamed_when_reached() {
     assert_eq!(entries[1].1, big_bytes);
     assert_eq!(entries[2].1, png_bytes(500));
 }
+
+/// A build that cannot succeed on a retry, here a row stripped of its key
+/// material, is dead after its first attempt rather than retried through
+/// the backoff; the blob stays `uploaded`.
+#[tokio::test]
+async fn permanent_build_failures_die_at_once() {
+    let app = setup().await;
+    let member = ready_blob(&app, &png_bytes(100)).await;
+    let created = create(&app, archive_blob("broken.zip")).await;
+    let id = id_of(&created);
+    let (status, _) = put_private(&app, id, manifest(&[("a.png", id_of(&member))])).await;
+    assert_eq!(status, StatusCode::OK);
+    sqlx::query("UPDATE blobs SET wrapped_key = NULL WHERE id = $1")
+        .bind(parse_id(id))
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+    assert!(run_job(&app, JobKind::Archive).await);
+    let (attempts, dead, error): (i32, bool, String) = sqlx::query_as(
+        "SELECT attempts, failed_at IS NOT NULL, last_error FROM jobs \
+         WHERE kind = 'archive' AND blob_id = $1",
+    )
+    .bind(parse_id(id))
+    .fetch_one(app.state.pool())
+    .await
+    .unwrap();
+    assert_eq!((attempts, dead), (1, true), "{error}");
+    assert!(error.contains("wrapped key"), "{error}");
+    assert_eq!(get_blob(&app, id).await["state"], "uploaded");
+}

@@ -89,6 +89,20 @@ pub enum JobError {
     Archive(#[from] archive::BuildError),
 }
 
+impl JobError {
+    /// Whether another attempt would fail the same way: the job's own
+    /// inputs are wrong, not the world around it. Such a job is marked dead
+    /// at once rather than retried through the backoff, so the blob it
+    /// leaves behind is visible in the dead jobs now and not an hour on.
+    pub fn is_permanent(&self) -> bool {
+        match self {
+            JobError::NoBlob(_) | JobError::Unhandled(_) => true,
+            JobError::Archive(err) => err.is_permanent(),
+            _ => false,
+        }
+    }
+}
+
 /// Channel every enqueue notifies; the payload is the job kind.
 pub const CHANNEL: &str = "agrafe_jobs";
 
@@ -501,15 +515,17 @@ pub enum Failure {
 }
 
 /// Record a failed attempt: retry with exponential backoff while attempts
-/// remain, otherwise mark the job dead.
+/// remain, otherwise mark the job dead. A `permanent` failure is one a
+/// retry cannot mend, see `JobError::is_permanent`; the job is dead at once.
 pub async fn fail(
     conn: &mut PgConnection,
     job: &Job,
     error: &str,
+    permanent: bool,
     now: Timestamp,
 ) -> sqlx::Result<Failure> {
     let error = truncate(error);
-    if job.attempts >= job.max_attempts {
+    if permanent || job.attempts >= job.max_attempts {
         sqlx::query("UPDATE jobs SET failed_at = now(), last_error = $2 WHERE id = $1")
             .bind(job.id)
             .bind(&error)

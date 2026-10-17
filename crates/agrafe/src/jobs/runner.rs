@@ -134,7 +134,8 @@ async fn run_claimed(state: &Agrafe, job: &Job, worker: &str) -> sqlx::Result<()
         Err(err) => {
             let mut conn = state.pool().acquire().await?;
             let error = err.to_string();
-            match super::fail(&mut conn, job, &error, Timestamp::now()).await? {
+            let permanent = err.is_permanent();
+            match super::fail(&mut conn, job, &error, permanent, Timestamp::now()).await? {
                 Failure::Retry(at) => {
                     tracing::warn!(error, retry_at = %at, "job failed");
                     Outcome::Retry

@@ -244,7 +244,10 @@ async fn job_queue_mechanics() {
     // Failing unlocks with backoff; the next retry needs the lease to pass or
     // the backoff to elapse.
     let mut conn = pool.acquire().await.unwrap();
-    let Failure::Retry(at) = jobs::fail(&mut conn, &again, "boom", now).await.unwrap() else {
+    let Failure::Retry(at) = jobs::fail(&mut conn, &again, "boom", false, now)
+        .await
+        .unwrap()
+    else {
         panic!("attempts remain");
     };
     assert!(at > now);
@@ -278,7 +281,9 @@ async fn job_queue_mechanics() {
         .unwrap()
     );
     assert_eq!(
-        jobs::fail(&mut conn, &held, "boom", now).await.unwrap(),
+        jobs::fail(&mut conn, &held, "boom", false, now)
+            .await
+            .unwrap(),
         Failure::Superseded
     );
     let scans: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE kind = 'scan'")
