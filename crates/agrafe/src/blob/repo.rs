@@ -8,10 +8,12 @@ use uuid::Uuid;
 
 use super::create::NewBlob;
 use super::{
-    Blob, BlobState, PreviewSource, Representation, RepresentationState, ScanOutcome, ScanState,
+    Blob, BlobState, InputType, PreviewSource, Representation, RepresentationState, ScanOutcome,
+    ScanState,
 };
 use crate::clamav::Verdict;
 use crate::classify::Category;
+use crate::encryption::Envelope;
 use crate::jobs::{self, JobKind, Priority};
 
 pub async fn insert(exec: impl PgExecutor<'_>, new: &NewBlob) -> sqlx::Result<Blob> {
@@ -50,6 +52,14 @@ pub async fn find(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Result<Option<Bl
     sqlx::query_as::<_, Blob>("SELECT * FROM blobs WHERE id = $1")
         .bind(id)
         .fetch_optional(exec)
+        .await
+}
+
+/// The blobs among `ids` that exist, in no particular order.
+pub async fn find_many(exec: impl PgExecutor<'_>, ids: &[Uuid]) -> sqlx::Result<Vec<Blob>> {
+    sqlx::query_as::<_, Blob>("SELECT * FROM blobs WHERE id = ANY($1)")
+        .bind(ids)
+        .fetch_all(exec)
         .await
 }
 
@@ -152,6 +162,43 @@ pub async fn transition(
 /// an upload.
 pub async fn begin_upload(conn: &mut PgConnection, blob: &Blob) -> sqlx::Result<Transition> {
     transition(conn, blob.id, &[BlobState::Created], BlobState::Uploading).await
+}
+
+/// `created` to `uploading` for source part `n` of a generated blob, which
+/// must be the next one: the sequence check is in the same statement as
+/// the transition, so two uploads of the same part cannot both win. The
+/// first part fixes the blob's data key and segment layout, which every
+/// part and the built original then share; `envelope` is what to record
+/// when the row has none yet.
+pub async fn begin_part(
+    conn: &mut PgConnection,
+    blob: &Blob,
+    n: u32,
+    envelope: &Envelope,
+    chunk_size: i32,
+) -> sqlx::Result<Transition> {
+    let updated = sqlx::query_as::<_, Blob>(
+        "UPDATE blobs SET state = $2, upload_started_at = now(), upload_heartbeat_at = now(), \
+             kek_id = COALESCE(kek_id, $5), wrapped_key = COALESCE(wrapped_key, $6), \
+             chunk_size = COALESCE(chunk_size, $7) \
+         WHERE id = $1 AND state = $3 AND source_parts = $4 RETURNING *",
+    )
+    .bind(blob.id)
+    .bind(BlobState::Uploading.as_str())
+    .bind(BlobState::Created.as_str())
+    .bind(n as i32 - 1)
+    .bind(&envelope.kek_id)
+    .bind(&envelope.wrapped)
+    .bind(chunk_size)
+    .fetch_optional(&mut *conn)
+    .await?;
+    match updated {
+        Some(blob) => Ok(Transition::Done(blob)),
+        None => match find(&mut *conn, blob.id).await? {
+            Some(blob) => Ok(Transition::Conflict(blob)),
+            None => Ok(Transition::Missing),
+        },
+    }
 }
 
 /// A failed upload hands the blob back to `created`: nothing was stored. The
@@ -271,6 +318,128 @@ pub async fn complete_upload(
     Ok(Transition::Done(updated))
 }
 
+/// What a part adds to its blob's source once stored.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PartAccepted {
+    /// Lines in the part.
+    pub rows: u64,
+    /// Bytes in the part.
+    pub bytes: u64,
+    /// What the part adds to the size of the generated file, when the type
+    /// knows it at accept time: the members of an archive.
+    pub size: Option<u64>,
+}
+
+/// Part `n` is stored: `uploading` back to `created`, the part counted on
+/// the row. Only the upload that began it, identified by `started`, may
+/// record it.
+pub async fn complete_part(
+    conn: &mut PgConnection,
+    id: Uuid,
+    started: Timestamp,
+    n: u32,
+    accepted: &PartAccepted,
+) -> sqlx::Result<Transition> {
+    let updated = sqlx::query_as::<_, Blob>(
+        "UPDATE blobs \
+         SET state = $2, source_parts = $4, source_rows = source_rows + $5, \
+             source_size = source_size + $6, \
+             size = CASE WHEN $7::bigint IS NULL THEN size ELSE COALESCE(size, 0) + $7 END, \
+             source_updated_at = now() \
+         WHERE id = $1 AND state = $3 AND upload_started_at = $8 RETURNING *",
+    )
+    .bind(id)
+    .bind(BlobState::Created.as_str())
+    .bind(BlobState::Uploading.as_str())
+    .bind(n as i32)
+    .bind(accepted.rows as i64)
+    .bind(accepted.bytes as i64)
+    .bind(accepted.size.map(|s| s as i64))
+    .bind(started.to_sqlx())
+    .fetch_optional(&mut *conn)
+    .await?;
+    match updated {
+        Some(blob) => Ok(Transition::Done(blob)),
+        None => match find(&mut *conn, id).await? {
+            Some(blob) => Ok(Transition::Conflict(blob)),
+            None => Ok(Transition::Missing),
+        },
+    }
+}
+
+/// Seal a source: `created` to `uploaded`, with the build job enqueued in
+/// the same transaction. Refused unless the blob is a generated one holding
+/// at least one part; the caller reads the reason off the returned row.
+pub async fn finish_source(pool: &PgPool, id: Uuid) -> sqlx::Result<Transition> {
+    let mut tx = pool.begin().await?;
+    let updated = sqlx::query_as::<_, Blob>(
+        "UPDATE blobs SET state = $2, uploaded_at = now() \
+         WHERE id = $1 AND state = $3 AND source_parts > 0 AND input_type = ANY($4) \
+         RETURNING *",
+    )
+    .bind(id)
+    .bind(BlobState::Uploaded.as_str())
+    .bind(BlobState::Created.as_str())
+    .bind([InputType::Rows.as_str(), InputType::Archive.as_str()])
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(updated) = updated else {
+        tx.rollback().await?;
+        return match find(pool, id).await? {
+            Some(blob) => Ok(Transition::Conflict(blob)),
+            None => Ok(Transition::Missing),
+        };
+    };
+    enqueue_next(&mut tx, &updated).await?;
+    tx.commit().await?;
+    Ok(Transition::Done(updated))
+}
+
+/// What a build writes onto the row when the generated file is stored.
+#[derive(Debug, Clone)]
+pub struct Built {
+    pub storage_key: String,
+    pub encryption_header: Vec<u8>,
+    pub checksum_sha256: Vec<u8>,
+    pub size: i64,
+    /// Members written and members skipped, for an archive.
+    pub archive: Option<(i64, i64)>,
+}
+
+/// The build is done: `uploaded` to `ready`, the row pointed at the object
+/// with its final checksum and size, the representations enqueued. The
+/// data key and layout were fixed by the first part and are not touched.
+pub async fn complete_build(pool: &PgPool, id: Uuid, built: &Built) -> sqlx::Result<Transition> {
+    let mut tx = pool.begin().await?;
+    let updated = sqlx::query_as::<_, Blob>(
+        "UPDATE blobs \
+         SET state = $2, storage_key = $4, encryption_header = $5, checksum_sha256 = $6, \
+             size = $7, archive_entries = $8, archive_errors = $9 \
+         WHERE id = $1 AND state = $3 RETURNING *",
+    )
+    .bind(id)
+    .bind(BlobState::Ready.as_str())
+    .bind(BlobState::Uploaded.as_str())
+    .bind(&built.storage_key)
+    .bind(&built.encryption_header)
+    .bind(&built.checksum_sha256)
+    .bind(built.size)
+    .bind(built.archive.map(|(entries, _)| entries))
+    .bind(built.archive.map(|(_, errors)| errors))
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(updated) = updated else {
+        tx.rollback().await?;
+        return match find(pool, id).await? {
+            Some(blob) => Ok(Transition::Conflict(blob)),
+            None => Ok(Transition::Missing),
+        };
+    };
+    enqueue_next(&mut tx, &updated).await?;
+    tx.commit().await?;
+    Ok(Transition::Done(updated))
+}
+
 /// The deferred scan's verdict: `uploaded` to `ready` or `infected`, with the
 /// representations enqueued once the file is known clean.
 pub async fn finish_scan(pool: &PgPool, id: Uuid, verdict: &Verdict) -> sqlx::Result<Transition> {
@@ -302,12 +471,15 @@ pub async fn finish_scan(pool: &PgPool, id: Uuid, verdict: &Verdict) -> sqlx::Re
     Ok(Transition::Done(updated))
 }
 
-/// What a blob that just changed state needs done: a scan while it waits in
-/// `uploaded`, the representations once it is `ready`, nothing otherwise.
+/// What a blob that just changed state needs done: while it waits in
+/// `uploaded`, a scan for a file or the build for a source; the
+/// representations once it is `ready`; nothing otherwise.
 async fn enqueue_next(conn: &mut PgConnection, blob: &Blob) -> sqlx::Result<()> {
-    let kinds: &[JobKind] = match blob.state {
-        BlobState::Uploaded => &[JobKind::Scan],
-        BlobState::Ready => &[JobKind::Render],
+    let kinds: &[JobKind] = match (blob.state, blob.input_type) {
+        (BlobState::Uploaded, InputType::Raw | InputType::Multipart) => &[JobKind::Scan],
+        (BlobState::Uploaded, InputType::Rows) => &[JobKind::Rows],
+        (BlobState::Uploaded, InputType::Archive) => &[JobKind::Archive],
+        (BlobState::Ready, _) => &[JobKind::Render],
         _ => &[],
     };
     let now = Timestamp::now();
@@ -336,7 +508,7 @@ pub async fn soft_delete(pool: &PgPool, id: Uuid, purge_at: Timestamp) -> sqlx::
         .collect();
     let result = transition(&mut tx, id, &from, BlobState::Deleted).await?;
     if let Transition::Done(blob) = &result
-        && blob.storage_key.is_some()
+        && blob.holds_objects()
         && blob.purged_at.is_none()
     {
         jobs::enqueue(
@@ -373,14 +545,35 @@ pub async fn expire(conn: &mut PgConnection, now: Timestamp) -> sqlx::Result<Vec
     .await
 }
 
+/// Expire every `created` blob holding source parts whose last part landed
+/// before `before`: an export the backend never finished. Its parts are
+/// purged with the prefix.
+pub async fn expire_stale_sources(
+    conn: &mut PgConnection,
+    before: Timestamp,
+) -> sqlx::Result<Vec<Uuid>> {
+    sqlx::query_scalar(
+        "UPDATE blobs SET state = $1 \
+         WHERE state = $2 AND source_parts > 0 AND source_updated_at <= $3 \
+         RETURNING id",
+    )
+    .bind(BlobState::Expired.as_str())
+    .bind(BlobState::Created.as_str())
+    .bind(before.to_sqlx())
+    .fetch_all(&mut *conn)
+    .await
+}
+
 /// Terminal blobs whose objects are still in the bucket and that no purge
 /// job, pending, running or dead, is going to take care of: `expired` and
 /// `deleted` ones, and `infected` ones once past their `expires_at`, since
-/// an infected file is kept for forensics but not forever.
+/// an infected file is kept for forensics but not forever. Objects means
+/// the original or the source parts a generated blob held, see
+/// `Blob::holds_objects`.
 pub async fn awaiting_purge(conn: &mut PgConnection, now: Timestamp) -> sqlx::Result<Vec<Uuid>> {
     sqlx::query_scalar(
         "SELECT id FROM blobs \
-         WHERE storage_key IS NOT NULL AND purged_at IS NULL \
+         WHERE (storage_key IS NOT NULL OR source_parts > 0) AND purged_at IS NULL \
            AND (state = ANY($1) OR (state = $2 AND expires_at <= $3)) \
            AND NOT EXISTS (\
                SELECT 1 FROM jobs WHERE jobs.kind = $4 AND jobs.blob_id = blobs.id\

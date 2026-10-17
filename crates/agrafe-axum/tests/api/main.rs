@@ -6,6 +6,7 @@
 
 mod support;
 
+mod archive;
 mod blobs;
 mod jobs;
 mod original;

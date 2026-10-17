@@ -2,6 +2,7 @@
 //! `FOR UPDATE SKIP LOCKED` and woken by `NOTIFY`. The workers live in
 //! `runner`, the handlers in their own modules.
 
+pub mod archive;
 pub mod purge;
 pub mod reap;
 pub mod render;
@@ -84,6 +85,8 @@ pub enum JobError {
     Representation(#[from] crate::blob::representation::Error),
     #[error("purge: {0}")]
     Purge(#[from] purge::PurgeError),
+    #[error("archive build: {0}")]
+    Archive(#[from] archive::BuildError),
 }
 
 /// Channel every enqueue notifies; the payload is the job kind.

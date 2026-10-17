@@ -8,12 +8,12 @@
 
 use std::ops::Range;
 
-use agrafe_crypto::streaming::{Decryptor, Header, Layout};
+use agrafe_crypto::streaming::{Decryptor, HEADER_LEN, Header, Layout};
 use bytes::{Bytes, BytesMut};
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use object_store::path::Path as ObjectPath;
-use object_store::{GetOptions, GetRange};
+use object_store::{GetOptions, GetRange, ObjectStoreExt};
 use uuid::Uuid;
 
 use super::Blob;
@@ -36,6 +36,8 @@ pub enum ReadError {
     Store(#[from] object_store::Error),
     #[error("object ended before segment {0}")]
     Truncated(u64),
+    #[error("object {key} is {len} bytes, which no stream of this layout produces")]
+    Length { key: String, len: u64 },
     #[error("opening segment {segment}: {source}")]
     Segment {
         segment: u64,
@@ -166,6 +168,60 @@ impl Reader {
             segment: first,
             skip: (span.start - stored.layout.plaintext_start(first)) as usize,
             remaining: span.end - span.start,
+        })
+    }
+
+    /// Start reading the whole of source part `n` of a generated blob. The
+    /// row carries the data key and the layout, fixed by the first part;
+    /// the part's own header is read off the object, and its length comes
+    /// from the object's.
+    pub async fn open_part(state: &Agrafe, blob: &Blob, n: u32) -> Result<Self, ReadError> {
+        let missing = |what| ReadError::Incomplete {
+            blob_id: blob.id,
+            what,
+        };
+        let kek_id = blob.kek_id.as_deref().ok_or_else(|| missing("KEK id"))?;
+        let wrapped = blob
+            .wrapped_key
+            .as_deref()
+            .ok_or_else(|| missing("wrapped key"))?;
+        let layout = blob
+            .chunk_size
+            .and_then(|s| usize::try_from(s).ok())
+            .and_then(|s| Layout::new(s).ok())
+            .ok_or_else(|| missing("valid chunk size"))?;
+        let key = state.keks().unwrap(blob.id, kek_id, wrapped)?;
+
+        let storage_key = Blob::source_key(blob.id, n);
+        let path = ObjectPath::from(storage_key.as_str());
+        let len = state.store().head(&path).await?.size;
+        let size = layout.plaintext_len(len).map_err(|_| ReadError::Length {
+            key: storage_key.clone(),
+            len,
+        })?;
+        let mut source = state.store().get(&path).await?.into_stream().boxed();
+        let mut buffer = BytesMut::new();
+        while buffer.len() < HEADER_LEN {
+            match source.next().await {
+                Some(chunk) => buffer.extend_from_slice(&chunk?),
+                None => return Err(ReadError::Truncated(0)),
+            }
+        }
+        let header =
+            Header::parse(&buffer.split_to(HEADER_LEN)).map_err(|source| ReadError::Header {
+                blob_id: blob.id,
+                source,
+            })?;
+        let decryptor = Decryptor::new(&key, storage_key.as_bytes(), &header, layout);
+        Ok(Self {
+            source,
+            buffer,
+            decryptor,
+            layout,
+            size,
+            segment: 0,
+            skip: 0,
+            remaining: size,
         })
     }
 

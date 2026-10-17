@@ -1,5 +1,6 @@
-//! The periodic housekeeping job: record expiries, schedule the purges that
-//! are due, reset stale uploads and prune dead jobs.
+//! The periodic housekeeping job: record expiries, expire abandoned
+//! sources, schedule the purges that are due, reset stale uploads and
+//! prune dead jobs.
 //!
 //! One `reap` row lives in the table at a time. Each run schedules the
 //! next one `jobs.reap_interval` later before doing its work, so a failing
@@ -27,6 +28,7 @@ pub async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
     } else {
         tracing::info!(
             expired = report.expired,
+            abandoned = report.abandoned,
             purges = report.purges,
             reset = report.reset,
             pruned = report.pruned,
@@ -59,6 +61,8 @@ pub async fn schedule(exec: impl PgExecutor<'_>, run_at: Timestamp) -> sqlx::Res
 pub struct Report {
     /// Blobs recorded as `expired`.
     pub expired: usize,
+    /// `created` blobs expired for holding source parts nobody finished.
+    pub abandoned: usize,
     /// Purges enqueued.
     pub purges: usize,
     /// Stale uploads handed back to `created`.
@@ -87,6 +91,13 @@ pub async fn reap(state: &Agrafe, now: Timestamp) -> Result<Report, JobError> {
     }
 
     let expired = repo::expire(&mut tx, now).await?;
+
+    // An export whose backend stopped sending parts; the purge below takes
+    // the parts with the prefix.
+    let source_stale_before = now
+        .checked_sub(config.upload.source_stale_after)
+        .unwrap_or(Timestamp::MIN);
+    let abandoned = repo::expire_stale_sources(&mut tx, source_stale_before).await?;
 
     // Dead jobs go first, so a purge that died is scheduled again below,
     // in the same pass, once it has been around long enough.
@@ -123,6 +134,7 @@ pub async fn reap(state: &Agrafe, now: Timestamp) -> Result<Report, JobError> {
     tx.commit().await?;
     Ok(Report {
         expired: expired.len(),
+        abandoned: abandoned.len(),
         purges,
         reset: reset.len(),
         pruned,

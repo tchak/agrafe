@@ -5,7 +5,7 @@ use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::IntoResponse;
 use axum::response::Response;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -36,6 +36,11 @@ pub fn routes(body_limit: usize) -> Router<Agrafe> {
                 .delete(delete_blob)
                 .layer(DefaultBodyLimit::max(body_limit)),
         )
+        .route(
+            "/blobs/{id}/parts/{n}",
+            put(upload_part).layer(DefaultBodyLimit::max(body_limit)),
+        )
+        .route("/blobs/{id}/finish", post(finish_source))
         .route("/blobs/{id}/urls", post(mint_urls))
         .route("/blobs/{id}/original/{filename}", get(get_original))
         .route("/blobs/{id}/preview/{filename}", get(get_preview))
@@ -101,6 +106,26 @@ async fn upload_blob(
 ) -> ApiResult<Json<BlobResponse>> {
     let blob = agrafe.find_blob(id).await?.ok_or(ApiError::NotFound)?;
     let blob = body::upload(&agrafe, blob, req).await?;
+    let urls = agrafe.urls(&blob);
+    Ok(Json(BlobResponse::new(&blob, urls)))
+}
+
+async fn upload_part(
+    State(agrafe): State<Agrafe>,
+    Path((id, n)): Path<(Uuid, u32)>,
+    req: Request,
+) -> ApiResult<Json<BlobResponse>> {
+    let blob = agrafe.find_blob(id).await?.ok_or(ApiError::NotFound)?;
+    let blob = body::upload_part(&agrafe, blob, n, req).await?;
+    let urls = agrafe.urls(&blob);
+    Ok(Json(BlobResponse::new(&blob, urls)))
+}
+
+async fn finish_source(
+    State(agrafe): State<Agrafe>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<BlobResponse>> {
+    let blob = agrafe.finish_source(id).await?;
     let urls = agrafe.urls(&blob);
     Ok(Json(BlobResponse::new(&blob, urls)))
 }

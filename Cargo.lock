@@ -71,6 +71,7 @@ dependencies = [
  "base64 0.23.1",
  "bytes",
  "bytesize",
+ "crc32fast",
  "figment",
  "form_urlencoded",
  "futures",
@@ -92,7 +93,9 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tracing",
+ "unicode-normalization",
  "uuid",
+ "zip",
 ]
 
 [[package]]
@@ -125,6 +128,7 @@ dependencies = [
  "tower-http 0.7.1",
  "tracing",
  "uuid",
+ "zip",
 ]
 
 [[package]]

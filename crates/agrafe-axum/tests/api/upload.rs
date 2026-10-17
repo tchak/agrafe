@@ -125,9 +125,10 @@ async fn content_length_mismatch_is_refused_up_front() {
     assert_eq!(get_blob(&app, id).await["state"], "created");
 }
 
-/// `rows` and `archive` are generated server side, a later build step.
+/// `rows` blobs are generated server side, a later build step; archives
+/// have their own tests.
 #[tokio::test]
-async fn generated_input_is_not_uploadable() {
+async fn rows_input_is_not_uploadable_yet() {
     let app = setup().await;
     let created = create(
         &app,

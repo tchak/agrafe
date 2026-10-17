@@ -147,13 +147,22 @@ impl From<UploadError> for ApiError {
     fn from(err: UploadError) -> Self {
         match err {
             UploadError::NotFound => ApiError::NotFound,
-            UploadError::Conflict(_) => ApiError::Conflict(err.to_string()),
-            // Generated blobs are built from parts, a later build step.
-            UploadError::Generated => ApiError::NotImplemented,
+            // The operation does not fit the blob's shape or state.
+            UploadError::Conflict(_)
+            | UploadError::Generated(_)
+            | UploadError::NotGenerated(_)
+            | UploadError::PartSequence { .. }
+            | UploadError::NoParts => ApiError::Conflict(err.to_string()),
+            // The rows build is a later step.
+            UploadError::Unsupported(_) => ApiError::NotImplemented,
+            UploadError::PartTooLarge(_) => ApiError::PayloadTooLarge(err.to_string()),
             UploadError::Undeclared
             | UploadError::SizeMismatch
             | UploadError::ChecksumMismatch
-            | UploadError::TypeMismatch { .. } => ApiError::Unprocessable(err.to_string()),
+            | UploadError::TypeMismatch { .. }
+            | UploadError::TooManyParts(_)
+            | UploadError::Line { .. }
+            | UploadError::ArchiveTooLarge(_) => ApiError::Unprocessable(err.to_string()),
             UploadError::Infected(name) => ApiError::Infected(Some(name)),
             // The body stream is ours (`body.rs`), so the box holds an
             // `ApiError` with the right status; anything else is a plain
@@ -164,6 +173,7 @@ impl From<UploadError> for ApiError {
             },
             UploadError::Store(_)
             | UploadError::Crypto(_)
+            | UploadError::Key(_)
             | UploadError::Db(_)
             | UploadError::Task(_) => ApiError::internal(err),
         }

@@ -288,7 +288,9 @@ port.
 
 A failed or stale upload leaves `uploading` for `created`: nothing of it was
 stored, so there is nothing to keep (the parts a generated blob already
-holds are not its, see "Generated blobs"). Both the abort path and the reaper apply this one
+holds are not its, see "Generated blobs"; they are what makes a `created`
+blob hold objects, and a delete or an expiry of one gets a purge like any
+other). Both the abort path and the reaper apply this one
 rule. Stale means abandoned, not slow: the pipeline touches
 `upload_heartbeat_at` every third of `upload.stale_after` (default ten
 minutes) while it runs, so an upload of any length keeps its row as long as
@@ -436,18 +438,23 @@ learns where to resume from `GET /blobs/:id`, which reports `source_parts`;
 a part that is not the next one answers `409`, so a retry of one that
 landed is harmless.
 
-Each part streams through the upload pipeline like any body: hashed,
-encrypted, stored as `<blob id>/source/<n>`, bounded by `upload.max_size`,
-the row in `uploading` with the heartbeat while it is in flight and back in
-`created` after, where it waits for the next part or the finish. A part is
-whole lines and must end with a newline. It is parsed as it arrives and
-every line is checked before the response, per the rules of its type
-below. A failing line answers `422` naming the line and the reason, the
-part is discarded and the blob returns to `created` with the parts it
-already had, like any failed upload: a failed part leaves nothing of itself.
-A finish on a blob with no parts, or an uploaded part out of sequence,
-answers `409`. The finish moves the blob to `uploaded` with its build job,
-`rows` or `archive` after the input type, enqueued in the same transaction,
+Each part streams through the upload pipeline like any body: encrypted,
+stored as `<blob id>/source/<n>`, bounded by `upload.max_size`, the row in
+`uploading` with the heartbeat while it is in flight and back in `created`
+after, where it waits for the next part or the finish. The first part
+fixes the blob's data key and segment layout on the row; every part and
+the built file are streams under that one key, each with its own header,
+a part's read off its object when the build opens it. A part is whole
+lines, none longer than a megabyte, and must end with a newline; an empty
+part is a part with no lines. It is parsed as it arrives and every line is
+checked before the response, per the rules of its type below. A failing
+line answers `422` naming the line, counted within the part, and the
+reason; the part is discarded and the blob returns to `created` with the
+parts it already had, like any failed upload: a failed part leaves nothing
+of itself. A finish on a blob with no parts, or an uploaded part out of
+sequence, answers `409`, as do parts and finish on a `raw` or `multipart`
+blob. The finish moves the blob to `uploaded` with its build job, `rows` or
+`archive` after the input type, enqueued in the same transaction,
 unreadable until the job is done.
 
 This is the one place a blob holds objects before it is `uploaded`.
@@ -459,9 +466,11 @@ of the row, in the code or in an operator's head, has to read `created` as
 "no original, maybe parts" from now on. Watch for it when implementing.
 
 What the accept pass has to carry across parts stays small and sits on the
-row: `source_parts`, `source_size`, `source_rows` and the `source_columns`
-of a `rows` blob. Anything per line is left to the build, which reads the
-source in order anyway. Parts are capped at 10 000.
+row: `source_parts`, `source_size` (bytes of source), `source_rows`
+(lines), `source_updated_at` and the `source_columns` of a `rows` blob,
+the first three reported by `GET` for generated blobs. Anything per line is
+left to the build, which reads the source in order anyway. Parts are
+capped at 10 000.
 
 A source that is never finished is an abandoned export. `DELETE` is the
 backend's way out; as a backstop the reaper expires a `created` blob whose
@@ -479,10 +488,10 @@ once: a failed attempt aborts its multipart upload and the next starts over
 from the source.
 
 No scan: a generated file contains only what the service wrote, from
-scanned members or from scalar values, so it is `skip_virus_scan` by
-construction. No thumbnail or preview beyond the category icon. When the
-build finishes the blob moves to `ready` with the checksum and the final
-size on the row. Out of attempts, the blob is stuck in `uploaded`,
+scanned members or from scalar values, so a generated blob is created
+`skip_virus_scan` whatever the request said. No thumbnail or preview beyond
+the category icon. When the build finishes the blob moves to `ready` with
+the checksum and the final size on the row. Out of attempts, the blob is stuck in `uploaded`,
 unreadable, like a scan that never completes. No new state: `uploaded`
 already means that what the client sent is in the bucket and a job has to
 finish the blob. The source is purged with the rest of the prefix.
@@ -543,11 +552,12 @@ or an empty file for CSV.
 One `{"path": "...", "blob_id": "..."}` per line, the manifest. At accept,
 per line:
 
-- The path is normalised to NFC and forward slashes, then refused if it is
-  empty, absolute, has a `..` component, a backslash, a control or
-  bidirectional formatting character (the filename rule), or exceeds the
-  ZIP limit of 65 535 bytes. `ERRORS.txt` at the root is reserved, see
-  below, and refused.
+- The path is normalised to NFC, with `/` as the separator, then refused
+  if it is empty, absolute, has an empty, `.` or `..` component (so no
+  trailing slash either), a backslash, a control or bidirectional
+  formatting character (the filename rule), or exceeds the ZIP limit of
+  65 535 bytes. `ERRORS.txt` at the root is reserved, see below, and
+  refused whatever its case.
 - The blob is looked up in batches of a few hundred ids (`WHERE id =
   ANY($1)`) and must exist and be `ready`. Anything else (unknown, not yet
   scanned, infected, expired, deleted) is refused.
@@ -572,19 +582,25 @@ Entries are stored, not compressed: the members are PDFs, images and office
 files, already compressed, and deflate would cost an hour of CPU per hundred
 gigabytes for nothing. With stored entries and every member's size on its
 row, the archive's size is known at the finish, the sum of the members plus
-a fixed overhead per entry, accumulated part by part in `source_size`. It
-is checked against `archive.max_size`, a limit of its own since
-`upload.max_size` is sized for one request, and written to the row so `GET`
-reports it during the build.
+a fixed overhead per entry, accumulated part by part on the row's `size`,
+which is therefore an estimate while the blob is `created` or `uploaded`
+and exact once it is `ready`. It is checked against `archive.max_size`, a
+limit of its own since `upload.max_size` is sized for one request, at most
+312 GiB since the build writes 32 MiB parts.
 
-The build streams the ZIP as it assembles it. The format is sequential by
-design: each entry is a local header, the bytes, then a data descriptor with
-the CRC and sizes, and the central directory comes last, so the writer never
-seeks. Zip64 is decided per entry from its size before its header goes out,
-since a streamed header cannot be rewritten; the central directory switches
-to zip64 on its own for the entry count and the offsets. Readers that go by
-the central directory, which is every desktop tool, handle data descriptors;
-strictly sequential readers of stored entries may not, which is accepted.
+The build streams the ZIP as it assembles it, through a writer of its own
+in `jobs::archive::zip` rather than the `zip` crate, which stays out of the
+server crates. The format is sequential by design: each entry is a local
+header, the bytes, then a data descriptor with the CRC and sizes, and the
+central directory comes last, so the writer never seeks. Sizes are known
+up front, so the local header carries them too and only the CRC waits for
+the descriptor. Zip64 is decided per entry from its size before its header
+goes out, since a streamed header cannot be rewritten; the central
+directory switches to zip64 on its own for the entry count and the
+offsets. Entries are made on Unix with mode `0644` and the member's
+`uploaded_at` as their time. Readers that go by the central directory,
+which is every desktop tool, handle data descriptors; strictly sequential
+readers of stored entries may not, which is accepted.
 
 Sources are read in manifest order through the usual decrypting reader, a
 few opened ahead of the one being copied, because most entries are small
@@ -596,8 +612,8 @@ A source that was `ready` at accept time can be deleted, expire or be purged
 before the build reaches it. The build does not fail for it: the entry is
 skipped, and the archive ends with an `ERRORS.txt` at its root listing every
 skipped entry, one per line, as the path, the blob id and a reason code
-(`deleted`, `expired`, `infected`). No such file is written when nothing was
-skipped. The row records the number of entries and of skipped ones, which
+(`deleted`, `expired`, `infected`), tab separated, which a path cannot
+contain. No such file is written when nothing was skipped. The row records the number of entries and of skipped ones, which
 `GET` reports as `archive_entries` and `archive_errors`, so the backend
 learns that an archive is incomplete without downloading it.
 
@@ -1070,4 +1086,6 @@ is redacted so a dumped config cannot leak them. See `config/example.toml`.
    renderer out of the server crate.
 7. Crate split, second stage: `agrafe-axum` and `agrafe-server` off the
    library; domain error types; the private API as a Rust handle.
-8. `rows` to CSV/XLSX/ODS, then `archive` to ZIP. **← current**
+8. `archive` to ZIP: source parts and finish, the build job, the streaming
+   ZIP writer, abandoned sources.
+9. `rows` to CSV/XLSX/ODS on the same parts and finish. **← current**

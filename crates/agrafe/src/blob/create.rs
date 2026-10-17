@@ -132,7 +132,9 @@ pub fn validate(
         input_type: req.input_type,
         checksum_sha256,
         size,
-        skip_virus_scan: req.skip_virus_scan,
+        // A generated file holds only what the service wrote, from scanned
+        // members or from scalar values: skipped by construction.
+        skip_virus_scan: req.skip_virus_scan || !req.input_type.is_direct(),
         expires_at,
         priority: req.priority,
     })
@@ -284,14 +286,13 @@ mod tests {
         let mut r = req(InputType::Rows, classify::CSV);
         r.checksum = Some(STANDARD.encode([0u8; 32]));
         assert!(validate(r, &cfg(), Timestamp::now()).is_err());
-        assert!(
-            validate(
-                req(InputType::Rows, classify::CSV),
-                &cfg(),
-                Timestamp::now()
-            )
-            .is_ok()
-        );
+        let b = validate(
+            req(InputType::Rows, classify::CSV),
+            &cfg(),
+            Timestamp::now(),
+        )
+        .unwrap();
+        assert!(b.skip_virus_scan, "generated blobs are never scanned");
         assert!(
             validate(
                 req(InputType::Rows, classify::XLSX),

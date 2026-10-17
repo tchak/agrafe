@@ -1,6 +1,7 @@
-//! Turning a `PUT` request into the stream of file bytes the upload pipeline
+//! Turning a `PUT` request into the stream of bytes the upload pipeline
 //! consumes, according to the blob's input type, and handing it to the
-//! `Agrafe` handle.
+//! `Agrafe` handle: the file itself for `raw` and `multipart`, a source for
+//! `rows` and `archive`, whole or one part at a time.
 
 use axum::RequestExt;
 use axum::extract::multipart::Multipart;
@@ -11,6 +12,7 @@ use jiff::Timestamp;
 
 use agrafe::Agrafe;
 use agrafe::blob::{Blob, InputType};
+use agrafe::source;
 use agrafe::upload::{self, BoxError};
 
 use crate::error::{ApiError, ApiResult};
@@ -22,6 +24,15 @@ pub const FILE_PART: &str = "file";
 /// same checks again; they run here first so that a blob which cannot take
 /// an upload is refused before any of the body is read.
 pub async fn upload(state: &Agrafe, blob: Blob, req: Request) -> ApiResult<Blob> {
+    if !blob.input_type.is_direct() {
+        // The whole source in one request: part one and the finish.
+        source::prepare_part(&blob, 1, Timestamp::now())?;
+        let body = req
+            .into_limited_body()
+            .into_data_stream()
+            .map_err(body_error);
+        return Ok(state.upload_source(blob, body).await?);
+    }
     let declared = upload::prepare(&blob, Timestamp::now())?;
     match blob.input_type {
         InputType::Raw => {
@@ -61,8 +72,19 @@ pub async fn upload(state: &Agrafe, blob: Blob, req: Request) -> ApiResult<Blob>
             let body = field.map_err(|e| BoxError::from(multipart_error(e)));
             Ok(state.upload(blob, body).await?)
         }
-        InputType::Rows | InputType::Archive => Err(ApiError::NotImplemented),
+        InputType::Rows | InputType::Archive => unreachable!("handled above"),
     }
+}
+
+/// Store the body of `req` as part `n` of `blob`'s source. As for a file,
+/// a part the blob cannot take is refused before the body is read.
+pub async fn upload_part(state: &Agrafe, blob: Blob, n: u32, req: Request) -> ApiResult<Blob> {
+    source::prepare_part(&blob, n, Timestamp::now())?;
+    let body = req
+        .into_limited_body()
+        .into_data_stream()
+        .map_err(body_error);
+    Ok(state.upload_part(blob, n, body).await?)
 }
 
 fn content_length(req: &Request) -> Option<u64> {

@@ -68,6 +68,15 @@ stale_after = "10m"
 # Grace period before the object a delete released is purged from the bucket.
 # Downloads that started before the delete keep their bytes.
 purge_delay = "1h"
+# A rows or archive source left unfinished for this long after its last part
+# is an abandoned export: the reaper expires the blob and purges the parts.
+source_stale_after = "1d"
+
+[archive]
+# Upper bound on a generated archive, checked against the members' sizes as
+# the manifest is accepted. At most 312 GiB: the build writes 32 MiB parts
+# and the object store allows 10 000 per object.
+max_size = "100 GiB"
 
 [encryption]
 current_kek = "kek1"

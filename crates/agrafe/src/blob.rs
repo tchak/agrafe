@@ -262,6 +262,21 @@ pub struct Blob {
     /// Object key of the original, `<id>/original`.
     pub storage_key: Option<String>,
 
+    /// Source parts accepted so far, for a `rows` or `archive` blob; the
+    /// next one must be `source_parts + 1`. Always zero for a direct blob.
+    pub source_parts: i32,
+    /// Lines across the parts: manifest entries for an archive.
+    pub source_rows: i64,
+    /// Bytes of source across the parts.
+    pub source_size: i64,
+    /// When the last part landed.
+    #[sqlx(try_from = "crate::db::NullableTimestamp")]
+    pub source_updated_at: Option<Timestamp>,
+    /// Set by the archive build: members written, and members skipped
+    /// because they were gone by then.
+    pub archive_entries: Option<i64>,
+    pub archive_errors: Option<i64>,
+
     pub kek_id: Option<String>,
     pub wrapped_key: Option<Vec<u8>>,
     /// Streaming AEAD header (salt and nonce prefix), cached from the object.
@@ -340,6 +355,18 @@ impl Blob {
     /// Blobs are write-once: a `PUT` may start only before any bytes exist.
     pub fn accepts_upload(&self, now: Timestamp) -> bool {
         self.state_at(now) == BlobState::Created
+    }
+
+    /// Whether something of the blob is in the bucket: the original, or the
+    /// source parts a generated blob holds while it is still `created`. A
+    /// delete or an expiry of such a blob needs a purge.
+    pub fn holds_objects(&self) -> bool {
+        self.storage_key.is_some() || self.source_parts > 0
+    }
+
+    /// Object key of source part `n` of a generated blob.
+    pub fn source_key(id: Uuid, n: u32) -> String {
+        format!("{id}/source/{n}")
     }
 }
 

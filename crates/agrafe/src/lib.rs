@@ -14,6 +14,7 @@ pub mod encryption;
 pub mod jobs;
 pub mod metrics;
 pub mod signing;
+pub mod source;
 pub mod storage;
 pub mod upload;
 

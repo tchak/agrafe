@@ -1,4 +1,5 @@
-//! The upload pipeline for `raw` and `multipart` input.
+//! The upload pipeline for `raw` and `multipart` input, and the core the
+//! source parts of a generated blob (see `source`) share with it.
 //!
 //! Bytes flow once through a size counter, a SHA-256 hasher, the magic-byte
 //! sniffer, clamd when the file is small enough to scan inline, the streaming
@@ -7,6 +8,11 @@
 //! from; nothing partial is ever visible. An infected file is not a failed
 //! check: it is stored and the blob becomes `infected`, exactly as a deferred
 //! scan would leave it.
+//!
+//! The checks are a [`Tap`] on the plaintext; the encryptor, the multipart
+//! upload, the heartbeat on the row and the abort on failure are the same
+//! whatever the tap, which is how a manifest part is stored by the same code
+//! as a file.
 
 use std::time::Duration;
 
@@ -26,7 +32,7 @@ use jiff::Timestamp;
 
 use crate::app::Agrafe;
 use crate::blob::repo::{self, Completed, Transition};
-use crate::blob::{Blob, BlobState, ScanOutcome};
+use crate::blob::{Blob, BlobState, InputType, ScanOutcome};
 use crate::clamav::{self, Verdict};
 use crate::config::UploadConfig;
 use crate::sniff;
@@ -36,10 +42,10 @@ use crate::sniff;
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 /// Parts of the object in flight at once while streaming.
-const PART_CONCURRENCY: usize = 4;
+pub(crate) const PART_CONCURRENCY: usize = 4;
 
 /// Body chunks buffered between the request handler and the pipeline task.
-const CHANNEL_DEPTH: usize = 8;
+pub(crate) const CHANNEL_DEPTH: usize = 8;
 
 /// Slack allowed on top of `upload.max_size` for multipart framing.
 const MULTIPART_OVERHEAD: u64 = 1024 * 1024;
@@ -65,7 +71,7 @@ pub fn prepare(blob: &Blob, now: Timestamp) -> Result<Declared, UploadError> {
         return Err(UploadError::Conflict(blob.state_at(now)));
     }
     if !blob.input_type.is_direct() {
-        return Err(UploadError::Generated);
+        return Err(UploadError::Generated(blob.input_type));
     }
     match (&blob.checksum_sha256, blob.size) {
         (Some(c), Some(s)) => Ok(Declared {
@@ -104,11 +110,35 @@ pub enum UploadError {
     NotFound,
     #[error("blob is {0} and cannot be uploaded")]
     Conflict(BlobState),
-    /// `rows` and `archive` blobs are built server side, not uploaded.
-    #[error("rows and archive blobs are built server side, not uploaded")]
-    Generated,
+    /// A `rows` or `archive` blob was handed to the file pipeline: its
+    /// `PUT` body is a source, which goes through `source` instead.
+    #[error("a {0} blob is built from a source, not uploaded as a file")]
+    Generated(InputType),
+    /// Parts and finish apply to generated blobs only.
+    #[error("a {0} blob is uploaded as a file: parts and finish apply to rows and archive blobs")]
+    NotGenerated(InputType),
+    /// The build for this input type does not exist yet.
+    #[error("{0} blobs cannot be built yet")]
+    Unsupported(InputType),
     #[error("blob has no declared checksum and size")]
     Undeclared,
+    /// Parts are numbered from one and consecutive; this is the one the
+    /// blob is waiting for.
+    #[error("expected part {expected}")]
+    PartSequence { expected: u32 },
+    #[error("a source has at most {0} parts")]
+    TooManyParts(u32),
+    #[error("part exceeds the maximum of {0} bytes")]
+    PartTooLarge(u64),
+    /// A line of a source failed its type's rules; the number is within the
+    /// part, counted from one.
+    #[error("line {line}: {reason}")]
+    Line { line: u64, reason: String },
+    /// Nothing to build: no part was accepted.
+    #[error("the source has no parts")]
+    NoParts,
+    #[error("the archive would exceed the maximum of {0} bytes (archive.max_size)")]
+    ArchiveTooLarge(u64),
     /// The body stream failed; the boxed error is the caller's own.
     #[error(transparent)]
     Body(BoxError),
@@ -128,6 +158,8 @@ pub enum UploadError {
     Store(#[from] object_store::Error),
     #[error("encryption: {0}")]
     Crypto(#[from] agrafe_crypto::Error),
+    #[error(transparent)]
+    Key(#[from] crate::encryption::UnwrapError),
     #[error("database: {0}")]
     Db(#[from] sqlx::Error),
     #[error("upload task failed: {0}")]
@@ -146,7 +178,7 @@ async fn run<S>(
     state: &Agrafe,
     blob: Blob,
     declared: Declared,
-    mut body: S,
+    body: S,
 ) -> Result<Blob, UploadError>
 where
     S: Stream<Item = Result<Bytes, BoxError>> + Unpin,
@@ -159,14 +191,25 @@ where
             Transition::Missing => return Err(UploadError::NotFound),
         }
     };
+    let state = state.clone();
+    feed(body, move |fed| {
+        store_and_complete(state, blob, declared, fed)
+    })
+    .await
+}
 
+/// Pump `body` into the channel `task` reads from, in this future, while
+/// the pipeline runs in a task of its own; see `run`. The `Fed` side is
+/// what `task` is given to read.
+pub(crate) async fn feed<S, F, Fut, T>(mut body: S, task: F) -> Result<T, UploadError>
+where
+    S: Stream<Item = Result<Bytes, BoxError>> + Unpin,
+    F: FnOnce(Fed) -> Fut,
+    Fut: Future<Output = Result<T, UploadError>> + Send + 'static,
+    T: Send + 'static,
+{
     let (tx, rx) = mpsc::channel(CHANNEL_DEPTH);
-    let task = tokio::spawn(store_and_complete(
-        state.clone(),
-        blob,
-        declared,
-        ReceiverStream::new(rx),
-    ));
+    let task = tokio::spawn(task(ReceiverStream::new(rx)));
     while let Some(chunk) = body.next().await {
         // A closed receiver means the pipeline already failed; its error is
         // what the task returns.
@@ -178,6 +221,9 @@ where
     task.await?
 }
 
+/// The body as the pipeline task receives it.
+pub(crate) type Fed = ReceiverStream<Result<Bytes, BoxError>>;
+
 /// Encrypt and store `body` as the original of `blob`, which is in
 /// `uploading`, then complete or abort the transition. `blob` is the row as
 /// `begin_upload` returned it: its `upload_started_at` is this upload's
@@ -185,15 +231,12 @@ where
 /// the reaper gave up on, whose blob a later `PUT` may own by now, stops
 /// rather than finishing on top of its successor, and leaves the row to
 /// whoever has it.
-async fn store_and_complete<S>(
+async fn store_and_complete(
     state: Agrafe,
     blob: Blob,
     declared: Declared,
-    body: S,
-) -> Result<Blob, UploadError>
-where
-    S: Stream<Item = Result<Bytes, BoxError>> + Unpin,
-{
+    body: Fed,
+) -> Result<Blob, UploadError> {
     let started = blob
         .upload_started_at
         .expect("begin_upload sets upload_started_at");
@@ -201,34 +244,23 @@ where
     let envelope = state.keks().new_envelope(blob.id);
     let layout = state.keks().layout();
     let scanner = inline_scanner(&state, &blob, &declared).await;
+    let checks = Checks::new(&declared, &blob.content_type, scanner);
 
     let stored = stream_to_store(
         &state,
-        &blob,
+        blob.id,
         started,
-        &declared,
         &storage_key,
         &envelope.key,
         layout,
-        scanner,
+        checks,
         body,
     )
     .await;
     let (header, scan) = match stored {
         Ok(stored) => stored,
         Err(err) => {
-            // Hands the row back if it is still this upload's; one the
-            // reaper reset, or another upload owns by now, is left alone.
-            match state.pool().acquire().await {
-                Ok(mut conn) => {
-                    if let Err(db) = repo::abort_upload(&mut conn, blob.id, started).await {
-                        tracing::error!(blob = %blob.id, error = ?db, "could not reset blob after failed upload");
-                    }
-                }
-                Err(db) => {
-                    tracing::error!(blob = %blob.id, error = ?db, "could not reset blob after failed upload");
-                }
-            }
+            hand_back(&state, blob.id, started).await;
             return Err(err);
         }
     };
@@ -252,22 +284,42 @@ where
             _ => Ok(blob),
         },
         Transition::Conflict(current) => {
-            // The row changed in the moment since the last ownership check.
-            // Reset, expired or deleted, the object just written is
-            // nobody's. Under another upload, or finished by one, the
-            // object may be its: leave it.
-            if matches!(
-                current.state,
-                BlobState::Created | BlobState::Expired | BlobState::Deleted
-            ) {
-                delete_quietly(&state, &storage_key).await;
-            }
+            disown(&state, &current, &storage_key).await;
             Err(UploadError::Conflict(current.state))
         }
         Transition::Missing => {
             delete_quietly(&state, &storage_key).await;
             Err(UploadError::NotFound)
         }
+    }
+}
+
+/// Hand the row back to `created` after a failed upload, if it is still
+/// this upload's; one the reaper reset, or another upload owns by now, is
+/// left alone.
+pub(crate) async fn hand_back(state: &Agrafe, blob_id: Uuid, started: Timestamp) {
+    match state.pool().acquire().await {
+        Ok(mut conn) => {
+            if let Err(db) = repo::abort_upload(&mut conn, blob_id, started).await {
+                tracing::error!(blob = %blob_id, error = ?db, "could not reset blob after failed upload");
+            }
+        }
+        Err(db) => {
+            tracing::error!(blob = %blob_id, error = ?db, "could not reset blob after failed upload");
+        }
+    }
+}
+
+/// The row changed in the moment since the last ownership check, and the
+/// object just written at `storage_key` is complete. Reset, expired or
+/// deleted, it is nobody's and goes. Under another upload, or finished by
+/// one, it may be its: leave it.
+pub(crate) async fn disown(state: &Agrafe, current: &Blob, storage_key: &str) {
+    if matches!(
+        current.state,
+        BlobState::Created | BlobState::Expired | BlobState::Deleted
+    ) {
+        delete_quietly(state, storage_key).await;
     }
 }
 
@@ -335,29 +387,42 @@ async fn lost(state: &Agrafe, id: Uuid) -> UploadError {
     }
 }
 
-async fn delete_quietly(state: &Agrafe, key: &str) {
+pub(crate) async fn delete_quietly(state: &Agrafe, key: &str) {
     if let Err(err) = state.store().delete(&ObjectPath::from(key)).await {
         tracing::warn!(key, error = ?err, "could not delete orphaned object");
     }
 }
 
-/// Encrypt `body` into a new object. Returns the stream header and the scan
-/// outcome on success; on failure, or once the row is no longer this
+/// What a pipeline watches the plaintext for as it streams by, and what it
+/// has to say once the body has ended. The file pipeline checks size,
+/// checksum, type and virus; a source part parses its lines.
+pub(crate) trait Tap: Send {
+    type Output: Send;
+
+    /// Sees every chunk before it is encrypted. An error stops the upload.
+    fn chunk(&mut self, chunk: &Bytes) -> impl Future<Output = Result<(), UploadError>> + Send;
+
+    /// The body ended; the checks that need the whole of it run here.
+    fn end(self) -> impl Future<Output = Result<Self::Output, UploadError>> + Send;
+}
+
+/// Encrypt `body` into a new object. Returns the stream header and the
+/// tap's verdict on success; on failure, or once the row is no longer this
 /// upload's, the multipart upload is aborted and nothing is left behind.
 #[allow(clippy::too_many_arguments)]
-async fn stream_to_store<S>(
+pub(crate) async fn stream_to_store<T, S>(
     state: &Agrafe,
-    blob: &Blob,
+    blob_id: Uuid,
     started: Timestamp,
-    declared: &Declared,
     storage_key: &str,
     key: &Key,
     layout: Layout,
-    scanner: Scanner,
+    tap: T,
     body: S,
-) -> Result<(Vec<u8>, ScanOutcome), UploadError>
+) -> Result<(Vec<u8>, T::Output), UploadError>
 where
-    S: Stream<Item = Result<Bytes, BoxError>> + Unpin,
+    T: Tap,
+    S: Stream<Item = Result<Bytes, BoxError>> + Unpin + Send,
 {
     let path = ObjectPath::from(storage_key);
     let upload = state.store().put_multipart(&path).await?;
@@ -368,30 +433,23 @@ where
     // an upload whose process died, never a slow one; and an upload whose
     // row was taken away stops here.
     let pumped = tokio::select! {
-        scan = pump(
-            &mut writer,
-            encryptor,
-            declared,
-            &blob.content_type,
-            scanner,
-            body,
-        ) => scan,
-        lost = heartbeat(state, blob.id, started) => Err(lost),
+        out = pump(&mut writer, encryptor, tap, body) => out,
+        lost = heartbeat(state, blob_id, started) => Err(lost),
     };
     // One last look before the object becomes visible: every key is the
     // blob's, so the object must only ever be finished by the upload that
     // holds the row.
     let stored = match pumped {
-        Ok(scan) => match repo::touch_upload(state.pool(), blob.id, started).await? {
-            true => Ok(scan),
-            false => Err(lost(state, blob.id).await),
+        Ok(out) => match repo::touch_upload(state.pool(), blob_id, started).await? {
+            true => Ok(out),
+            false => Err(lost(state, blob_id).await),
         },
         Err(err) => Err(err),
     };
     match stored {
-        Ok(scan) => {
+        Ok(out) => {
             writer.finish().await?;
-            Ok((header, scan))
+            Ok((header, out))
         }
         Err(err) => {
             if let Err(abort) = writer.abort().await {
@@ -402,79 +460,111 @@ where
     }
 }
 
-/// Run the checks and the encryption over `body`. The scan verdict is read
-/// last, after the cheap checks have passed: a mismatched checksum is a
-/// `422` whatever clamd would have said.
-async fn pump<S>(
+/// Run the tap and the encryption over `body`.
+async fn pump<T, S>(
     writer: &mut WriteMultipart,
     mut encryptor: Encryptor,
-    declared: &Declared,
-    content_type: &str,
-    mut scanner: Scanner,
+    mut tap: T,
     mut body: S,
-) -> Result<ScanOutcome, UploadError>
+) -> Result<T::Output, UploadError>
 where
+    T: Tap,
     S: Stream<Item = Result<Bytes, BoxError>> + Unpin,
 {
     writer.write(encryptor.header().as_bytes());
-    let mut hasher = Sha256::new();
-    let mut received: u64 = 0;
-    let mut head: Vec<u8> = Vec::with_capacity(sniff::SNIFF_LEN);
-    let mut sniffed = false;
     let mut out = Vec::new();
-
     while let Some(chunk) = body.next().await {
         let chunk = chunk.map_err(UploadError::Body)?;
-        received += chunk.len() as u64;
-        if received > declared.size {
-            return Err(UploadError::SizeMismatch);
-        }
-        hasher.update(&chunk);
-        if let Scanner::Inline(session) = &mut scanner {
-            // A write failure is remembered by the session and surfaces
-            // from `finish`, where it defers the scan; the upload itself
-            // carries on regardless.
-            session.write(&chunk).await;
-        }
-        if !sniffed {
-            let take = (sniff::SNIFF_LEN - head.len()).min(chunk.len());
-            head.extend_from_slice(&chunk[..take]);
-            if head.len() == sniff::SNIFF_LEN {
-                check_type(content_type, &head)?;
-                sniffed = true;
-            }
-        }
+        tap.chunk(&chunk).await?;
         encryptor.update(&chunk, &mut out)?;
         if !out.is_empty() {
             writer.wait_for_capacity(PART_CONCURRENCY).await?;
             writer.put(Bytes::from(std::mem::take(&mut out)));
         }
     }
-
-    if received != declared.size {
-        return Err(UploadError::SizeMismatch);
-    }
-    if !sniffed {
-        check_type(content_type, &head)?;
-    }
-    if hasher.finalize().as_slice() != declared.checksum.as_slice() {
-        return Err(UploadError::ChecksumMismatch);
-    }
+    let verdict = tap.end().await?;
     encryptor.finish(&mut out)?;
     writer.put(Bytes::from(out));
+    Ok(verdict)
+}
 
-    Ok(match scanner {
-        Scanner::Skipped => ScanOutcome::Skipped,
-        Scanner::Deferred => ScanOutcome::Deferred,
-        Scanner::Inline(session) => match session.finish().await {
-            Ok(Verdict::Clean) => ScanOutcome::Clean,
-            Ok(Verdict::Infected(name)) => ScanOutcome::Infected(name),
-            Err(err) => {
-                tracing::warn!(error = %err, "inline scan failed, deferring to a job");
-                ScanOutcome::Deferred
+/// The checks on a file: size against the declaration, SHA-256 against the
+/// checksum, magic bytes against the content type, and the inline scan.
+struct Checks {
+    declared: Declared,
+    content_type: String,
+    hasher: Sha256,
+    received: u64,
+    head: Vec<u8>,
+    sniffed: bool,
+    scanner: Scanner,
+}
+
+impl Checks {
+    fn new(declared: &Declared, content_type: &str, scanner: Scanner) -> Self {
+        Self {
+            declared: declared.clone(),
+            content_type: content_type.to_string(),
+            hasher: Sha256::new(),
+            received: 0,
+            head: Vec::with_capacity(sniff::SNIFF_LEN),
+            sniffed: false,
+            scanner,
+        }
+    }
+}
+
+impl Tap for Checks {
+    type Output = ScanOutcome;
+
+    async fn chunk(&mut self, chunk: &Bytes) -> Result<(), UploadError> {
+        self.received += chunk.len() as u64;
+        if self.received > self.declared.size {
+            return Err(UploadError::SizeMismatch);
+        }
+        self.hasher.update(chunk);
+        if let Scanner::Inline(session) = &mut self.scanner {
+            // A write failure is remembered by the session and surfaces
+            // from `finish`, where it defers the scan; the upload itself
+            // carries on regardless.
+            session.write(chunk).await;
+        }
+        if !self.sniffed {
+            let take = (sniff::SNIFF_LEN - self.head.len()).min(chunk.len());
+            self.head.extend_from_slice(&chunk[..take]);
+            if self.head.len() == sniff::SNIFF_LEN {
+                check_type(&self.content_type, &self.head)?;
+                self.sniffed = true;
             }
-        },
-    })
+        }
+        Ok(())
+    }
+
+    /// The scan verdict is read last, after the cheap checks have passed: a
+    /// mismatched checksum is a `422` whatever clamd would have said.
+    async fn end(self) -> Result<ScanOutcome, UploadError> {
+        if self.received != self.declared.size {
+            return Err(UploadError::SizeMismatch);
+        }
+        if !self.sniffed {
+            check_type(&self.content_type, &self.head)?;
+        }
+        if self.hasher.finalize().as_slice() != self.declared.checksum.as_slice() {
+            return Err(UploadError::ChecksumMismatch);
+        }
+        Ok(match self.scanner {
+            Scanner::Skipped => ScanOutcome::Skipped,
+            Scanner::Deferred => ScanOutcome::Deferred,
+            Scanner::Inline(session) => match session.finish().await {
+                Ok(Verdict::Clean) => ScanOutcome::Clean,
+                Ok(Verdict::Infected(name)) => ScanOutcome::Infected(name),
+                Err(err) => {
+                    tracing::warn!(error = %err, "inline scan failed, deferring to a job");
+                    ScanOutcome::Deferred
+                }
+            },
+        })
+    }
 }
 
 fn check_type(declared: &str, head: &[u8]) -> Result<(), UploadError> {

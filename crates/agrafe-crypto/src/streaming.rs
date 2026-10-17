@@ -133,6 +133,23 @@ impl Layout {
         len
     }
 
+    /// The plaintext length of a ciphertext of `ciphertext_len` bytes,
+    /// header included: the inverse of [`Layout::ciphertext_len`]. An
+    /// `Err` means no plaintext produces that length, so the object is
+    /// truncated or not a stream of this layout.
+    pub fn plaintext_len(&self, ciphertext_len: u64) -> Result<u64, Error> {
+        let full = ciphertext_len / self.segment_size as u64;
+        let rem = ciphertext_len % self.segment_size as u64;
+        let shifted = if rem == 0 {
+            full * self.pps()
+        } else if rem > TAG_LEN as u64 {
+            full * self.pps() + rem - TAG_LEN as u64
+        } else {
+            return Err(Error::Corrupt);
+        };
+        shifted.checked_sub(HEADER_LEN as u64).ok_or(Error::Corrupt)
+    }
+
     /// The segment holding plaintext byte `offset`.
     pub fn segment_of(&self, offset: u64) -> u64 {
         (offset + HEADER_LEN as u64) / self.pps()
@@ -392,6 +409,26 @@ mod tests {
 
     fn layout() -> Layout {
         Layout::new(128).unwrap()
+    }
+
+    #[test]
+    fn plaintext_len_inverts_ciphertext_len() {
+        let l = Layout::new(128).unwrap();
+        for len in (0..600).chain([4000, 1 << 20, (1 << 32) + 7]) {
+            assert_eq!(l.plaintext_len(l.ciphertext_len(len)), Ok(len), "{len}");
+        }
+        // Below the header plus one tag, inside a tag, or one byte past a
+        // full segment: no plaintext produces these.
+        for bad in [
+            0,
+            HEADER_LEN as u64,
+            HEADER_LEN as u64 + TAG_LEN as u64 - 1,
+            129,
+            140,
+        ] {
+            assert_eq!(l.plaintext_len(bad), Err(Error::Corrupt), "{bad}");
+        }
+        assert_eq!(l.plaintext_len(HEADER_LEN as u64 + TAG_LEN as u64), Ok(0));
     }
 
     #[test]

@@ -32,6 +32,14 @@ pub struct BlobResponse {
     pub thumbnail_state: RepresentationState,
     pub preview_state: RepresentationState,
     pub preview_source: Option<String>,
+    /// The source of a generated blob: parts accepted, lines and bytes
+    /// across them. Null for `raw` and `multipart`.
+    pub source_parts: Option<i32>,
+    pub source_rows: Option<i64>,
+    pub source_size: Option<i64>,
+    /// Set once an archive is built: members written and members skipped.
+    pub archive_entries: Option<i64>,
+    pub archive_errors: Option<i64>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
     pub uploaded_at: Option<Timestamp>,
@@ -42,6 +50,7 @@ pub struct BlobResponse {
 
 impl BlobResponse {
     pub fn new(blob: &Blob, urls: BlobUrls) -> Self {
+        let generated = !blob.input_type.is_direct();
         Self {
             id: blob.id,
             state: blob.state,
@@ -61,6 +70,11 @@ impl BlobResponse {
             thumbnail_state: blob.thumbnail_state,
             preview_state: blob.preview_state,
             preview_source: blob.preview_source.clone(),
+            source_parts: generated.then_some(blob.source_parts),
+            source_rows: generated.then_some(blob.source_rows),
+            source_size: generated.then_some(blob.source_size),
+            archive_entries: blob.archive_entries,
+            archive_errors: blob.archive_errors,
             created_at: blob.created_at,
             updated_at: blob.updated_at,
             uploaded_at: blob.uploaded_at,

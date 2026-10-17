@@ -38,6 +38,8 @@ pub struct Config {
     pub media: MediaConfig,
     #[serde(default)]
     pub jobs: JobsConfig,
+    #[serde(default)]
+    pub archive: ArchiveConfig,
 }
 
 impl Config {
@@ -67,6 +69,13 @@ impl Config {
             return Err(ConfigError::Invalid(
                 "jobs.kinds must name at least one kind, or be omitted for all".into(),
             ));
+        }
+        if self.archive.max_size.as_u64() > ArchiveConfig::MAX_SIZE_LIMIT {
+            return Err(ConfigError::Invalid(format!(
+                "archive.max_size must be at most {} bytes: the build writes 32 MiB parts \
+                 and the object store allows 10 000 of them",
+                ArchiveConfig::MAX_SIZE_LIMIT
+            )));
         }
         Ok(())
     }
@@ -235,6 +244,10 @@ pub struct UploadConfig {
     /// bucket: a download that started before the delete keeps its bytes.
     #[serde(with = "humantime_serde", default = "default_purge_delay")]
     pub purge_delay: Duration,
+    /// A `created` blob whose last source part is older than this is an
+    /// abandoned export: the reaper expires it and its parts are purged.
+    #[serde(with = "humantime_serde", default = "default_source_stale_after")]
+    pub source_stale_after: Duration,
 }
 
 impl UploadConfig {
@@ -259,6 +272,9 @@ fn default_stale_after() -> Duration {
 fn default_purge_delay() -> Duration {
     Duration::from_secs(3600)
 }
+fn default_source_stale_after() -> Duration {
+    Duration::from_secs(24 * 3600)
+}
 
 impl Default for UploadConfig {
     fn default() -> Self {
@@ -267,6 +283,34 @@ impl Default for UploadConfig {
             inline_scan_max_size: default_inline_scan_max_size(),
             stale_after: default_stale_after(),
             purge_delay: default_purge_delay(),
+            source_stale_after: default_source_stale_after(),
+        }
+    }
+}
+
+/// Limits on generated archives. See DESIGN.md, "Archives".
+#[derive(Debug, Clone, Deserialize)]
+pub struct ArchiveConfig {
+    /// Upper bound on the size of a generated archive, estimated at accept
+    /// time from the members' sizes. A limit of its own: `upload.max_size`
+    /// is sized for one request, an archive for a whole export.
+    #[serde(default = "default_archive_max_size")]
+    pub max_size: ByteSize,
+}
+
+impl ArchiveConfig {
+    /// What the build can write at most: 10 000 parts of 32 MiB.
+    pub const MAX_SIZE_LIMIT: u64 = 10_000 * 32 * 1024 * 1024;
+}
+
+fn default_archive_max_size() -> ByteSize {
+    ByteSize::gib(100)
+}
+
+impl Default for ArchiveConfig {
+    fn default() -> Self {
+        Self {
+            max_size: default_archive_max_size(),
         }
     }
 }
@@ -555,6 +599,19 @@ mod tests {
             jail.set_env("AGRAFE_JOBS__KINDS", "[]");
             let err = load(&example()).unwrap_err().to_string();
             assert!(err.contains("at least one kind"), "{err}");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn archive_max_size_is_bounded_by_the_part_count() {
+        Jail::expect_with(|jail| {
+            let config = load(&example())?;
+            assert_eq!(config.archive.max_size, ByteSize::gib(100));
+            assert_eq!(config.upload.source_stale_after.as_secs(), 24 * 3600);
+            jail.set_env("AGRAFE_ARCHIVE__MAX_SIZE", "400 GiB");
+            let err = load(&example()).unwrap_err().to_string();
+            assert!(err.contains("archive.max_size"), "{err}");
             Ok(())
         });
     }
