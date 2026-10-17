@@ -12,12 +12,16 @@
 //! A file the renderer rejects, or that crashes a helper, leaves the
 //! representation `failed` and the job done: trying the same bytes again
 //! would end the same way. Only failures of ours (store, database, a
-//! missing renderer) fail the job. `probe` runs the same tools on known
-//! files before a worker starts, so a broken deployment fails there.
+//! missing renderer) fail the job. `agrafe_render::probe` runs the same
+//! tools on known files before a worker starts, so a broken deployment
+//! fails there.
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
+use agrafe_render::helpers::{self, Helper, TEXT_SAMPLE_LEN};
+use agrafe_render::vips::{self, Fit, Input};
+use agrafe_render::{Source, sources, text_sample};
 use tokio::io::AsyncWriteExt;
 
 use super::{Job, JobError, JobKind};
@@ -26,9 +30,6 @@ use crate::blob::read::{Reader, Stored};
 use crate::blob::{Blob, BlobState, PreviewSource, Representation, RepresentationState};
 use crate::blob::{repo, representation};
 use crate::config::MediaConfig;
-use crate::media::render::{self, Fit, Input};
-use crate::media::sandbox::{self, Outcome};
-use crate::media::{self, Source, text};
 
 /// The preview's file in the work directory.
 const PREVIEW: &str = "preview.webp";
@@ -132,7 +133,7 @@ impl<'a> Render<'a> {
             state,
             blob,
             stored: Stored::from_blob(blob)?,
-            workdir: workdir(&state.config().media)?,
+            workdir: agrafe_render::workdir(state.config().media.tmp_dir.as_deref())?,
             original: None,
         })
     }
@@ -170,12 +171,12 @@ impl<'a> Render<'a> {
             .blob
             .size
             .is_some_and(|size| size as u64 > media.max_source_size.as_u64());
-        let sources = media::sources(content_type);
+        let sources = sources(content_type);
         if too_large || sources.is_empty() {
             tracing::info!(%content_type, too_large, "nothing to render a preview from");
             return Ok(Verdict::Declined);
         }
-        let fit = Fit::preview(media);
+        let fit = Fit::preview(&media.render);
         let output = self.path(PREVIEW);
         let mut rejected = false;
         for source in sources {
@@ -193,7 +194,7 @@ impl<'a> Render<'a> {
                 Source::EmbeddedImage => {
                     let whole = self.whole_original().await?;
                     let embedded = self.path("embedded");
-                    match extract(media, content_type, &whole, &embedded).await? {
+                    match helpers::extract(&media.render, content_type, &whole, &embedded).await? {
                         Helper::Produced => {}
                         Helper::Declined => continue,
                         Helper::Failed => {
@@ -204,7 +205,7 @@ impl<'a> Render<'a> {
                     (embedded, Input::Raster, PreviewSource::EmbeddedImage)
                 }
             };
-            match render::to_webp(media, &input, kind, &output, fit).await {
+            match vips::to_webp(&media.render, &input, kind, &output, fit).await {
                 Ok(bytes) => return Ok(Verdict::Rendered((bytes, from))),
                 Err(err) if err.is_input_fault() => {
                     tracing::warn!(source = ?source, error = %err, "rendering failed");
@@ -238,7 +239,16 @@ impl<'a> Render<'a> {
     async fn thumbnail_webp(&self, input: &Path) -> Result<Verdict<Vec<u8>>, JobError> {
         let media = self.media();
         let output = self.path("thumbnail.webp");
-        match render::to_webp(media, input, Input::Raster, &output, Fit::thumbnail(media)).await {
+        let render = &media.render;
+        match vips::to_webp(
+            render,
+            input,
+            Input::Raster,
+            &output,
+            Fit::thumbnail(render),
+        )
+        .await
+        {
             Ok(bytes) => Ok(Verdict::Rendered(bytes)),
             Err(err) if err.is_input_fault() => {
                 tracing::warn!(error = %err, "thumbnail rendering failed");
@@ -251,15 +261,16 @@ impl<'a> Render<'a> {
     /// A thumbnail for a file with no preview: the first lines of a text
     /// file set on a page. Anything else declines, and gets the icon.
     async fn text_sample(&self) -> Result<Verdict<Vec<u8>>, JobError> {
-        if !media::text_sample(&self.blob.content_type) {
+        if !text_sample(&self.blob.content_type) {
             return Ok(Verdict::Declined);
         }
         let media = self.media();
         let sample = self.path("sample");
-        self.download(&sample, 0..self.stored.size.min(text::SAMPLE_LEN))
+        self.download(&sample, 0..self.stored.size.min(TEXT_SAMPLE_LEN))
             .await?;
         let page = self.path("page.pgm");
-        match render_text(media, &sample, &page, Fit::thumbnail(media)).await? {
+        let render = &media.render;
+        match helpers::render_text(render, &sample, &page, Fit::thumbnail(render)).await? {
             Helper::Produced => self.thumbnail_webp(&page).await,
             Helper::Declined => Ok(Verdict::Declined),
             Helper::Failed => Ok(Verdict::Rejected),
@@ -315,171 +326,4 @@ impl<'a> Render<'a> {
         file.flush().await?;
         Ok(())
     }
-}
-
-/// A fresh directory for one render's files, under `media.tmp_dir`.
-fn workdir(media: &MediaConfig) -> std::io::Result<tempfile::TempDir> {
-    tempfile::Builder::new()
-        .prefix("agrafe-")
-        .tempdir_in(media.tmp_dir.clone().unwrap_or_else(std::env::temp_dir))
-}
-
-/// How a helper run ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Helper {
-    /// It wrote its output.
-    Produced,
-    /// It found nothing to do: no embedded image, a sample that is not text.
-    Declined,
-    /// It crashed or ran out of time, which the file takes the blame for.
-    Failed,
-}
-
-/// Run the `agrafe extract` helper on `original`, writing the embedded
-/// image, if there is one, to `output`.
-async fn extract(
-    media: &MediaConfig,
-    content_type: &str,
-    original: &Path,
-    output: &Path,
-) -> Result<Helper, JobError> {
-    let mut command = helper(media)?;
-    command
-        .arg("extract")
-        .arg("--input")
-        .arg(original)
-        .arg("--output")
-        .arg(output)
-        .arg("--content-type")
-        .arg(content_type)
-        .arg("--min-coverage")
-        .arg(media.embedded_image.min_coverage.to_string())
-        .arg("--max-text-chars")
-        .arg(media.embedded_image.max_text_chars.to_string())
-        .arg("--max-output")
-        .arg(media.sandbox.max_output_size.as_u64().to_string());
-    run_helper(media, command, output, "extraction").await
-}
-
-/// Run the `agrafe render-text` helper on `sample`, drawing at twice the
-/// box so the downscale leaves crisp glyphs, writing a page to `output`
-/// when the sample is text.
-async fn render_text(
-    media: &MediaConfig,
-    sample: &Path,
-    output: &Path,
-    fit: Fit,
-) -> Result<Helper, JobError> {
-    let mut command = helper(media)?;
-    command
-        .arg("render-text")
-        .arg("--input")
-        .arg(sample)
-        .arg("--output")
-        .arg(output)
-        .arg("--width")
-        .arg((fit.width * 2).to_string())
-        .arg("--height")
-        .arg((fit.height * 2).to_string());
-    run_helper(media, command, output, "text").await
-}
-
-/// This binary, re-executed in the sandbox.
-fn helper(media: &MediaConfig) -> Result<tokio::process::Command, JobError> {
-    let program = match &media.agrafe_command {
-        Some(path) => path.clone(),
-        None => std::env::current_exe()?,
-    };
-    Ok(sandbox::command(program))
-}
-
-/// A helper that succeeds without writing `output` found nothing to do.
-async fn run_helper(
-    media: &MediaConfig,
-    command: tokio::process::Command,
-    output: &Path,
-    what: &str,
-) -> Result<Helper, JobError> {
-    match sandbox::run(command, &media.sandbox).await? {
-        Outcome::Success => Ok(if tokio::fs::try_exists(output).await? {
-            Helper::Produced
-        } else {
-            Helper::Declined
-        }),
-        Outcome::Failed { status, stderr } => {
-            tracing::warn!(status, stderr, "the {what} helper failed");
-            Ok(Helper::Failed)
-        }
-        Outcome::TimedOut => {
-            tracing::warn!("the {what} helper timed out");
-            Ok(Helper::Failed)
-        }
-    }
-}
-
-/// Why a worker may not start: its tools do not work on files known to be
-/// good.
-#[derive(Debug, thiserror::Error)]
-pub enum ProbeError {
-    #[error("rendering {what} with `{vips}`: {source}")]
-    Render {
-        what: &'static str,
-        vips: String,
-        source: render::Error,
-    },
-    #[error("the render-text helper {what}; is `media.agrafe_command` this binary?")]
-    Helper { what: &'static str },
-    #[error(transparent)]
-    Run(#[from] JobError),
-    #[error("temporary files: {0}")]
-    Io(#[from] std::io::Error),
-}
-
-const PROBE_PNG: &[u8] = include_bytes!("../../assets/probe/pixel.png");
-const PROBE_PDF: &[u8] = include_bytes!("../../assets/probe/page.pdf");
-
-/// Render a text sample, a one-pixel PNG and a one-page PDF through the
-/// exact command lines the jobs use. Run before a worker starts: vips exits
-/// non-zero for a bad file and for a missing loader or an unknown option
-/// alike, so without this a libvips built without PDF support, or too old
-/// for an option, would mark every file `failed` instead of failing the
-/// deployment.
-pub async fn probe(media: &MediaConfig) -> Result<(), ProbeError> {
-    let workdir = workdir(media)?;
-    let fit = Fit::thumbnail(media);
-    let sample = workdir.path().join("sample.txt");
-    tokio::fs::write(&sample, b"agrafe\n").await?;
-    let page = workdir.path().join("page.pgm");
-    match render_text(media, &sample, &page, fit).await? {
-        Helper::Produced => {}
-        Helper::Declined => {
-            return Err(ProbeError::Helper {
-                what: "declined a text sample",
-            });
-        }
-        Helper::Failed => {
-            return Err(ProbeError::Helper {
-                what: "failed on a text sample",
-            });
-        }
-    }
-    let pixel = workdir.path().join("pixel.png");
-    tokio::fs::write(&pixel, PROBE_PNG).await?;
-    let pdf = workdir.path().join("page.pdf");
-    tokio::fs::write(&pdf, PROBE_PDF).await?;
-    let output = workdir.path().join("probe.webp");
-    for (what, input, kind) in [
-        ("a PNG", &pixel, Input::Raster),
-        ("a PDF page", &pdf, Input::Page),
-        ("a text page", &page, Input::Raster),
-    ] {
-        render::to_webp(media, input, kind, &output, fit)
-            .await
-            .map_err(|source| ProbeError::Render {
-                what,
-                vips: media.vips_command.clone(),
-                source,
-            })?;
-    }
-    Ok(())
 }

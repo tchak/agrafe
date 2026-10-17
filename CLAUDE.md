@@ -12,9 +12,20 @@ squash, bookmarks and pushing. `jj st`, `jj diff`, `jj log`, `jj describe -m`,
 
 ## Layout
 
+See "Crates" in `DESIGN.md` for the dependency graph.
+
 - `crates/agrafe` — the server binary and library.
 - `crates/agrafe-crypto` — streaming AEAD and key wrapping, reviewed in
   isolation; no dependency on the server crate.
+- `crates/agrafe-types` — content types, classification, sniffing,
+  `str_enum!`. Pure; shared by every other crate.
+- `crates/agrafe-sandbox` — subprocesses with resource limits.
+- `crates/agrafe-extract`, `crates/agrafe-render-text` — the sandboxed
+  helpers, each a library plus a binary of the same name. The server does
+  not link them; it finds the binaries on `PATH`.
+- `crates/agrafe-render` — what renders and how: `vips`, the helper
+  drivers, the icons, the probe, the `[media]` tool config.
+- `fixtures/` — sample files for tests, with the `make.py` that builds them.
 - `migrations/` — sqlx migrations, plain SQL, forward only.
 - `config/example.toml` — documented configuration reference.
 
@@ -24,13 +35,20 @@ squash, bookmarks and pushing. `jj st`, `jj diff`, `jj log`, `jj describe -m`,
   keys, and point `database.url` at `agrafe_dev`. Ports 8080/8081 are taken on
   this machine; the local config uses 18080/18081.
 - `cargo run -- --config config/agrafe.toml migrate`, then
-  `cargo run -- --config config/agrafe.toml serve`.
+  `cargo run -- --config config/agrafe.toml serve`. The workers need the
+  helper binaries: `cargo build --workspace` and point
+  `media.extract_command` and `media.render_text_command` at
+  `target/debug/agrafe-extract` and `target/debug/agrafe-render-text`, or
+  put `target/debug` on `PATH`.
 - Tests need a `agrafe_test` database reachable as the current OS user, or
   `DATABASE_URL`, and `vips` on the `PATH` (`brew install vips`). Run
   `cargo test`, `cargo clippy --all-targets`, `cargo fmt` before committing.
-- Test fixtures and the renderer probe files in `crates/agrafe/assets/probe`
-  come from `crates/agrafe/tests/fixtures/make.py` (Pillow), the thumbnail
-  icons from `scripts/icons.sh`; regenerate rather than edit the outputs.
+  The integration tests run the helper binaries from `target/`; a plain
+  `cargo test` builds them, `cargo test -p agrafe` builds them on demand.
+- Test fixtures and the renderer probe files in
+  `crates/agrafe-render/assets/probe` come from `fixtures/make.py`
+  (Pillow), the thumbnail icons from `scripts/icons.sh`; regenerate rather
+  than edit the outputs.
 - `cargo coverage` (an alias in `.cargo/config.toml`, needs cargo-llvm-cov)
   reports line coverage; add `--show-missing-lines` to see what is uncovered.
 
@@ -43,9 +61,11 @@ squash, bookmarks and pushing. `jj st`, `jj diff`, `jj log`, `jj describe -m`,
 - Blob state transitions are conditional `UPDATE ... WHERE state = $from`.
   Never set `state` unconditionally.
 - Public routes verify the signature before touching the database.
-- Nothing decodes or renders user files in-process: `vips` and the hidden
-  `agrafe extract` and `agrafe render-text` subcommands run through
-  `media::sandbox`.
+- Nothing decodes or renders user files in-process: `vips` and the
+  `agrafe-extract` and `agrafe-render-text` binaries run through
+  `agrafe_sandbox`. The parsers (`lopdf`, `zip`, `quick-xml`, `ab_glyph`)
+  are dependencies of the helper crates only; never add them to `agrafe`
+  or `agrafe-render`.
 - Errors are `thiserror` enums, one per module that fails in its own way
   (`ConfigError`, `ReadError`, `JobError`, …). No `anyhow`. Messages inline
   their cause (`"reading the object: {0}"`), so log them with `%err`.

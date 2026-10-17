@@ -65,8 +65,9 @@ dependencies = [
 name = "agrafe"
 version = "0.1.0"
 dependencies = [
- "ab_glyph",
  "agrafe-crypto",
+ "agrafe-render",
+ "agrafe-types",
  "axum",
  "base64 0.23.1",
  "bytes",
@@ -79,16 +80,12 @@ dependencies = [
  "http",
  "http-body-util",
  "humantime-serde",
- "infer",
  "jiff",
  "jiff-sqlx",
- "libc",
- "lopdf",
  "mime",
  "object_store",
  "percent-encoding",
  "prometheus",
- "quick-xml 0.42.0",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -102,7 +99,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
- "zip",
 ]
 
 [[package]]
@@ -116,6 +112,59 @@ dependencies = [
  "sha2 0.11.1",
  "thiserror",
  "zeroize",
+]
+
+[[package]]
+name = "agrafe-extract"
+version = "0.1.0"
+dependencies = [
+ "agrafe-types",
+ "clap",
+ "lopdf",
+ "quick-xml 0.42.0",
+ "zip",
+]
+
+[[package]]
+name = "agrafe-render"
+version = "0.1.0"
+dependencies = [
+ "agrafe-sandbox",
+ "agrafe-types",
+ "serde",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "agrafe-render-text"
+version = "0.1.0"
+dependencies = [
+ "ab_glyph",
+ "clap",
+]
+
+[[package]]
+name = "agrafe-sandbox"
+version = "0.1.0"
+dependencies = [
+ "bytesize",
+ "humantime-serde",
+ "libc",
+ "serde",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "agrafe-types"
+version = "0.1.0"
+dependencies = [
+ "infer",
+ "serde",
+ "thiserror",
 ]
 
 [[package]]

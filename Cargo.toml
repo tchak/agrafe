@@ -1,6 +1,14 @@
 [workspace]
 resolver = "3"
-members = ["crates/agrafe", "crates/agrafe-crypto"]
+members = [
+    "crates/agrafe",
+    "crates/agrafe-crypto",
+    "crates/agrafe-extract",
+    "crates/agrafe-render",
+    "crates/agrafe-render-text",
+    "crates/agrafe-sandbox",
+    "crates/agrafe-types",
+]
 
 [workspace.package]
 edition = "2024"

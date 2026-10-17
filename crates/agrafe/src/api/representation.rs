@@ -19,10 +19,11 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::original;
+use agrafe_render::icons;
+
 use crate::app::AppState;
 use crate::blob::{Blob, BlobState, Representation, RepresentationState, repo, representation};
 use crate::error::{ApiError, ApiResult};
-use crate::media::icons;
 
 pub const STATE_HEADER: &str = "x-representation-state";
 

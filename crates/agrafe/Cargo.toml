@@ -10,8 +10,9 @@ description = "File storage service: encrypted, scanned, with previews"
 workspace = true
 
 [dependencies]
-ab_glyph = "0.2.32"
 agrafe-crypto = { version = "0.1.0", path = "../agrafe-crypto" }
+agrafe-render = { version = "0.1.0", path = "../agrafe-render" }
+agrafe-types = { version = "0.1.0", path = "../agrafe-types" }
 axum = { version = "0.8.9", features = ["macros", "multipart"] }
 base64 = "0.23.1"
 bytes = "1"
@@ -24,16 +25,12 @@ http-body-util = "0.1.5"
 hmac = "0.13.0"
 http = "1.5.0"
 humantime-serde = "1.1.1"
-infer = { version = "0.22.0", default-features = false }
 jiff = { version = "0.2.38", features = ["serde"] }
 jiff-sqlx = { version = "0.2.0", features = ["postgres"] }
-libc = "0.2.190"
-lopdf = { version = "0.45.0", default-features = false }
 mime = "0.3.17"
 object_store = { version = "0.14.2", features = ["aws"] }
 percent-encoding = "2.3.2"
 prometheus = { version = "0.14.0", default-features = false }
-quick-xml = "0.42.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"
@@ -46,7 +43,6 @@ tower-http = { version = "0.7.1", features = ["trace"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 uuid = { version = "1.28.0", features = ["v7", "serde"] }
-zip = { version = "9.0.4", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 figment = { version = "0.10.19", features = ["test"] }

@@ -34,9 +34,7 @@ pub enum JobError {
     #[error("temporary files: {0}")]
     Io(#[from] std::io::Error),
     #[error(transparent)]
-    Render(#[from] crate::media::render::Error),
-    #[error(transparent)]
-    Sandbox(#[from] crate::media::sandbox::Error),
+    Render(#[from] agrafe_render::Error),
     #[error(transparent)]
     Representation(#[from] crate::blob::representation::Error),
     #[error("purge: {0}")]
@@ -64,7 +62,7 @@ pub enum JobKind {
     Reap,
 }
 
-crate::str_enum!(JobKind {
+agrafe_types::str_enum!(JobKind {
     Scan => "scan",
     Render => "render",
     Rows => "rows",
@@ -85,7 +83,7 @@ pub enum Priority {
     Low,
 }
 
-crate::str_enum!(Priority {
+agrafe_types::str_enum!(Priority {
     High => "high",
     Normal => "normal",
     Low => "low",
@@ -157,7 +155,7 @@ pub enum JobState {
     Dead,
 }
 
-crate::str_enum!(JobState {
+agrafe_types::str_enum!(JobState {
     Due => "due",
     Scheduled => "scheduled",
     Running => "running",

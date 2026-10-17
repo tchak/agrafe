@@ -1,0 +1,21 @@
+[package]
+name = "agrafe-sandbox"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Runs decoders and renderers as subprocesses with resource limits"
+
+[lints]
+workspace = true
+
+[dependencies]
+bytesize = { version = "2.7.0", features = ["serde"] }
+humantime-serde = "1.1.1"
+libc = "0.2.190"
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.21"
+tokio = { version = "1.53.3", features = ["process", "time", "io-util"] }
+
+[dev-dependencies]
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros"] }

@@ -29,6 +29,48 @@ It is the reference when code and intuition disagree.
   wants new bytes creates a new blob and swaps its own reference.
 - Range requests on previews and thumbnails. They are small and served whole.
 
+## Crates
+
+One workspace, split so that the service can be embedded in another axum
+application and so that the code that parses user files is never linked
+into a server process. Dependencies point downwards only.
+
+| Crate | Contents | Depends on |
+|---|---|---|
+| `agrafe-crypto` | Streaming AEAD and key wrapping, reviewed in isolation | |
+| `agrafe-types` | Content type constants, `classify`, `sniff`, the vips loader allowlist, `str_enum!` | `infer`, `serde` |
+| `agrafe-sandbox` | Running a subprocess with `setrlimit` bounds and a timeout; the `Limits` config | `tokio`, `libc` |
+| `agrafe-extract` | The `agrafe-extract` helper: pulls the one image out of a PDF, DOCX or ODT. Library plus binary | `agrafe-types`, `lopdf`, `zip`, `quick-xml` |
+| `agrafe-render-text` | The `agrafe-render-text` helper: rasterises a text sample. Library plus binary | `ab_glyph` |
+| `agrafe-render` | Which files render and from what, `vips thumbnail`, the icons, the drivers that spawn the helpers, the startup probe, the `[media]` tool config | `agrafe-types`, `agrafe-sandbox` |
+| `agrafe` | Config, database, blobs, upload pipeline, encryption, signing, storage, ClamAV, jobs, metrics, and for now the HTTP interfaces and the binary | `agrafe-crypto`, `agrafe-types`, `agrafe-render`, `sqlx`, `object_store`, `axum` |
+
+The helpers are separate binaries, not subcommands of the server, so that
+the server links none of their parsers: `lopdf`, `zip`, `quick-xml` and
+`ab_glyph` exist only in processes the sandbox bounds. They are found on
+`PATH` by default (`media.extract_command`, `media.render_text_command`),
+read no configuration and write no logs. A deployment ships the three
+binaries together. Each future renderer with a dependency tree of its own
+(LibreOffice, HTML, Typst) follows the same pattern: a crate implementing
+one producer in `agrafe-render`, "turn this file into a raster or a page in
+the work directory", after which vips fits the result into the box as it
+does today. The `Source` enum and the ordered match in the render job are
+the seam that becomes a list of producers when the second one arrives;
+the trait is not written against a single implementation.
+
+The second stage of the split, next in the build order, takes the HTTP
+layer and the binary out of `agrafe`: `agrafe-axum` holds the routers and
+`ApiError`, `agrafe-server` the clap entry point producing the binary still
+named `agrafe`, and `agrafe` itself becomes the library an embedder depends
+on. That stage is where `ApiError` stops being the error type of
+`blob::create` and `upload`, and where the handler bodies move onto a
+handle so that a Rust caller gets the private API without HTTP. Three
+consumers then exist: the standalone service; a host application that
+nests `public_router` under a prefix, runs the job runner as a task and
+calls the private API in Rust; and one that also nests `private_router` on
+an internal listener. Embedding into a host's own database (a schema name
+for `blobs` and `jobs`) is a decision for that stage, not a blocker.
+
 ## Interfaces
 
 ### Private port
@@ -724,9 +766,9 @@ option alike, so a libvips built without PDF support, or too old for
 `keep=`, would mark every file `failed` and need a variant version bump
 once fixed. Before a worker starts it therefore renders a text sample, a
 one-pixel PNG and a one-page PDF through the exact command lines the jobs
-use (`jobs::render::probe`, files in `crates/agrafe/assets/probe`), and the
-process refuses to start if any of them fails. The probe also catches a
-`media.agrafe_command` pointing at a binary without the helper subcommands.
+use (`agrafe_render::probe`, files in `crates/agrafe-render/assets/probe`),
+and the process refuses to start if any of them fails. The probe also
+catches a `media.render_text_command` that is not the helper.
 
 Representations live at `<blob id>/thumbnail` and `<blob id>/preview`,
 encrypted with the blob's own data key: the streaming AEAD derives a fresh
@@ -763,7 +805,7 @@ parameters `disposition` (`inline`, the default, or `attachment`) and
 Always exists. WebP, autorotated from EXIF, fitted into the
 `media.thumbnail` box. For files that cannot be rendered, a pre-rendered
 category icon with a type badge, served with the same URL shape. The icons
-are rendered from `crates/agrafe/assets/icons/icon.svg` by
+are rendered from `crates/agrafe-render/assets/icons/icon.svg` by
 `scripts/icons.sh` and embedded in the binary, so serving one needs no
 renderer and no asset directory.
 
@@ -783,8 +825,9 @@ read it. The first 8 KiB are decoded as UTF-8, or as Windows-1252 when they
 are not, which is what Latin-1 exports from older systems are in practice;
 a sample with NUL bytes or more than a sprinkling of control characters is
 not text and gets the icon. The page is rasterised in Rust by the
-`agrafe render-text` helper, in the sandbox, with `ab_glyph` and a copy of
-DejaVu Sans Mono embedded in the binary (`crates/agrafe/assets/fonts`), so
+`agrafe-render-text` helper, in the sandbox, with `ab_glyph` and a copy of
+DejaVu Sans Mono embedded in that binary
+(`crates/agrafe-render-text/assets/fonts`), so
 the result is the same on every host and needs no font, fontconfig or
 shaping library installed. The trade: no shaping, so Arabic or Indic text
 comes out as unconnected glyphs and anything outside Latin, Greek and
@@ -814,9 +857,9 @@ on "has preview", never on category. Sources, in order:
    or RGB samples as PNM. Anything doubtful (form XObjects, rotation,
    masks, exotic colour spaces, EMF) is left to the next source. This
    addresses users who answer "send a screenshot" with a Word file
-   containing a screenshot. The parsing runs in the `agrafe extract`
-   helper, a hidden subcommand of the binary executed in the sandbox,
-   never in a server process.
+   containing a screenshot. The parsing runs in the `agrafe-extract`
+   helper, its own binary executed in the sandbox, never in a server
+   process.
 3. **First-page render** (`preview_source = first_page`): PDF through
    libvips's PDF loader. libvips builds against either poppler or pdfium;
    production images should use pdfium, the most hardened renderer
@@ -834,9 +877,10 @@ is not `ready` answers `409` as the original does.
 ### Sandboxing
 
 Decoders and renderers are the most attackable code in the service. They run
-in a subprocess, never in the API process: `vips` for rendering, the binary's
-own hidden `extract` and `render-text` subcommands for container parsing and
-text rasterising. Each child gets a clean environment (`PATH` and `HOME`
+in a subprocess, never in the API process: `vips` for rendering, the
+`agrafe-extract` and `agrafe-render-text` binaries for container parsing
+and text rasterising, each its own crate so that the server links none of
+their parsers (see "Crates"). Each child gets a clean environment (`PATH` and `HOME`
 only, no secrets; vips also gets `TMPDIR` and `VIPS_CONCURRENCY`), `setrlimit` bounds on
 address space and data (`media.sandbox.memory`, default 1 GiB), CPU time and
 output file size (`max_output_size`), no core dumps, and is killed at the
@@ -987,8 +1031,8 @@ is redacted so a dumped config cannot leak them. See `config/example.toml`.
 | Metrics | `prometheus`, text exposition on `/metrics` |
 | Scanning | clamd `INSTREAM` client |
 | Images, PDF pages | `vips thumbnail` (libvips) in a sandboxed subprocess |
-| Embedded images | `lopdf`, `zip`, `quick-xml` in the sandboxed `extract` helper |
-| Text thumbnails | `ab_glyph` with an embedded DejaVu Sans Mono, in the sandboxed `render-text` helper |
+| Embedded images | `lopdf`, `zip`, `quick-xml` in the sandboxed `agrafe-extract` helper |
+| Text thumbnails | `ab_glyph` with an embedded DejaVu Sans Mono, in the sandboxed `agrafe-render-text` helper |
 | Ids | UUID v7 |
 | Time | `jiff`. `Timestamp` throughout the model; `jiff-sqlx` wrappers only at the SQL boundary |
 
@@ -1002,4 +1046,9 @@ is redacted so a dumped config cannot leak them. See `config/example.toml`.
 4. Thumbnail and preview workers, icon fallback, autorotate, PDF render,
    embedded image extraction.
 5. Expiration, reaper, purge.
-6. `rows` to CSV/XLSX/ODS, then `archive` to ZIP. **← current**
+6. Crate split, first stage: types, sandbox, the two helpers and the
+   renderer out of the server crate.
+7. Crate split, second stage: `agrafe-axum` and `agrafe-server` off the
+   library; domain error types; the private API as a Rust handle.
+   **← current**
+8. `rows` to CSV/XLSX/ODS, then `archive` to ZIP.

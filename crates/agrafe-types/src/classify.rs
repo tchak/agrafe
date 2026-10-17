@@ -34,16 +34,15 @@ pub const CSV: &str = "text/csv";
 pub const XLSX: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 pub const ODS: &str = "application/vnd.oasis.opendocument.spreadsheet";
 pub const ZIP: &str = "application/zip";
+pub const DOCX: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+pub const ODT: &str = "application/vnd.oasis.opendocument.text";
 
 /// Classify a normalised `type/subtype` content type.
 pub fn classify(content_type: &str) -> Category {
     let exact = match content_type {
-        PDF
-        | "application/msword"
-        | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        | "application/vnd.oasis.opendocument.text"
-        | "application/rtf"
-        | "application/epub+zip" => Some(Category::Document),
+        PDF | "application/msword" | DOCX | ODT | "application/rtf" | "application/epub+zip" => {
+            Some(Category::Document)
+        }
 
         "application/vnd.ms-excel" | XLSX | ODS | CSV | "text/tab-separated-values" => {
             Some(Category::Spreadsheet)

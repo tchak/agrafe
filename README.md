@@ -10,13 +10,17 @@ See [DESIGN.md](DESIGN.md) for the architecture and the decisions behind it.
 Thumbnails and previews are rendered by [libvips](https://www.libvips.org/)
 8.15 or newer, whose `vips` command must be on the `PATH` (`brew install
 vips`, or `libvips-tools` on Debian trixie and later; bookworm's 8.14 is too
-old). Virus scanning needs a reachable `clamd`.
+old). Virus scanning needs a reachable `clamd`. Embedded images and text
+thumbnails come from two helper binaries built by this workspace,
+`agrafe-extract` and `agrafe-render-text`, which the workers look up on the
+`PATH` (or at `media.extract_command` and `media.render_text_command`).
 
 ```sh
 createdb agrafe_dev
 cp config/example.toml config/agrafe.toml   # then set database.url and real keys
+cargo build --workspace                     # the helpers land in target/debug
 cargo run -- --config config/agrafe.toml migrate
-cargo run -- --config config/agrafe.toml serve
+PATH="$PWD/target/debug:$PATH" cargo run -- --config config/agrafe.toml serve
 ```
 
 Generate keys with `openssl rand -base64 32`.
@@ -29,11 +33,12 @@ cargo test
 ```
 
 Tests connect as the current OS user to `agrafe_test`; set `DATABASE_URL` to
-override. They need `vips` on the `PATH` as well. The files under
-`crates/agrafe/tests/fixtures` and the renderer probe files under
-`crates/agrafe/assets/probe` are built by `make.py` in the fixtures
-directory (needs Pillow), the placeholder icons by `scripts/icons.sh`; all
-outputs are committed.
+override. They need `vips` on the `PATH` as well, and run the helper
+binaries from `target/`, building them if a `cargo test -p agrafe` has not.
+The files under `fixtures/` and the renderer probe files under
+`crates/agrafe-render/assets/probe` are built by `fixtures/make.py` (needs
+Pillow), the placeholder icons by `scripts/icons.sh`; all outputs are
+committed.
 
 Coverage needs [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov)
 (`cargo install cargo-llvm-cov`):

@@ -1,0 +1,17 @@
+[package]
+name = "agrafe-extract"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Sandboxed helper: pulls the embedded image out of a PDF, DOCX or ODT that is really a wrapped picture"
+
+[lints]
+workspace = true
+
+[dependencies]
+agrafe-types = { version = "0.1.0", path = "../agrafe-types" }
+clap = { version = "4.6.7", features = ["derive"] }
+lopdf = { version = "0.45.0", default-features = false }
+quick-xml = "0.42.0"
+zip = { version = "9.0.4", default-features = false, features = ["deflate"] }

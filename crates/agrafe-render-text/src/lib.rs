@@ -1,15 +1,15 @@
 //! Thumbnails for text files: the first lines of the file set in an
 //! embedded monospace font and rasterised here, in Rust, so the result does
 //! not depend on the fonts, fontconfig or shaping libraries of the host.
-//! The bytes are untrusted, so this runs in the `agrafe render-text`
-//! helper, in the sandbox. The output is a PGM for vips to turn into the
-//! WebP like any other raster.
+//! The bytes are untrusted, so this runs in the `agrafe-render-text`
+//! helper, in the sandbox; the server does not link this crate. The output
+//! is a PGM for vips to turn into the WebP like any other raster.
 
 use std::borrow::Cow;
 
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont, point};
 
-const FONT: &[u8] = include_bytes!("../../assets/fonts/DejaVuSansMono.ttf");
+const FONT: &[u8] = include_bytes!("../assets/fonts/DejaVuSansMono.ttf");
 
 /// Bytes of the file looked at; more would not fit on the page.
 pub const SAMPLE_LEN: u64 = 8 * 1024;

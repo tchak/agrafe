@@ -323,20 +323,6 @@ impl Default for ClamavConfig {
 pub struct MediaConfig {
     #[serde(default = "default_variant_version")]
     pub variant_version: i32,
-    #[serde(default)]
-    pub thumbnail: ThumbnailConfig,
-    #[serde(default)]
-    pub preview: PreviewConfig,
-    #[serde(default)]
-    pub embedded_image: EmbeddedImageConfig,
-    /// The libvips command line tool, run as a sandboxed subprocess.
-    #[serde(default = "default_vips_command")]
-    pub vips_command: String,
-    /// The agrafe binary the workers re-execute, sandboxed, as the
-    /// `extract` and `render-text` helpers. Defaults to the running
-    /// executable.
-    #[serde(default)]
-    pub agrafe_command: Option<PathBuf>,
     /// Originals above this size get no representations, except the text
     /// thumbnail, which reads only the first few KiB.
     #[serde(default = "default_max_source_size")]
@@ -345,15 +331,16 @@ pub struct MediaConfig {
     /// temporary directory by default.
     #[serde(default)]
     pub tmp_dir: Option<PathBuf>,
-    #[serde(default)]
-    pub sandbox: SandboxConfig,
+    /// The tools, boxes and sandbox limits, owned by the render crate and
+    /// read from the same `[media]` table: `vips_command`,
+    /// `extract_command`, `render_text_command`, `thumbnail`, `preview`,
+    /// `embedded_image`, `sandbox`.
+    #[serde(flatten)]
+    pub render: agrafe_render::Config,
 }
 
 fn default_variant_version() -> i32 {
     1
-}
-fn default_vips_command() -> String {
-    "vips".to_string()
 }
 fn default_max_source_size() -> ByteSize {
     ByteSize::mib(512)
@@ -363,95 +350,9 @@ impl Default for MediaConfig {
     fn default() -> Self {
         Self {
             variant_version: default_variant_version(),
-            thumbnail: ThumbnailConfig::default(),
-            preview: PreviewConfig::default(),
-            embedded_image: EmbeddedImageConfig::default(),
-            vips_command: default_vips_command(),
-            agrafe_command: None,
             max_source_size: default_max_source_size(),
             tmp_dir: None,
-            sandbox: SandboxConfig::default(),
-        }
-    }
-}
-
-/// Limits on the subprocesses that decode and render user files.
-#[derive(Debug, Clone, Deserialize)]
-pub struct SandboxConfig {
-    /// Wall-clock limit; the process is killed past it.
-    #[serde(with = "humantime_serde", default = "default_sandbox_timeout")]
-    pub timeout: Duration,
-    /// Address space limit (`RLIMIT_AS`).
-    #[serde(default = "default_sandbox_memory")]
-    pub memory: ByteSize,
-    /// Largest file the process may write (`RLIMIT_FSIZE`).
-    #[serde(default = "default_sandbox_max_output_size")]
-    pub max_output_size: ByteSize,
-}
-
-fn default_sandbox_timeout() -> Duration {
-    Duration::from_secs(60)
-}
-fn default_sandbox_memory() -> ByteSize {
-    ByteSize::gib(1)
-}
-fn default_sandbox_max_output_size() -> ByteSize {
-    ByteSize::mib(256)
-}
-
-impl Default for SandboxConfig {
-    fn default() -> Self {
-        Self {
-            timeout: default_sandbox_timeout(),
-            memory: default_sandbox_memory(),
-            max_output_size: default_sandbox_max_output_size(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct ThumbnailConfig {
-    pub width: u32,
-    pub height: u32,
-    pub quality: u8,
-}
-
-impl Default for ThumbnailConfig {
-    fn default() -> Self {
-        Self {
-            width: 256,
-            height: 256,
-            quality: 80,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct PreviewConfig {
-    pub max_dimension: u32,
-    pub quality: u8,
-}
-
-impl Default for PreviewConfig {
-    fn default() -> Self {
-        Self {
-            max_dimension: 2048,
-            quality: 85,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct EmbeddedImageConfig {
-    pub min_coverage: f32,
-    pub max_text_chars: u32,
-}
-
-impl Default for EmbeddedImageConfig {
-    fn default() -> Self {
-        Self {
-            min_coverage: 0.7,
-            max_text_chars: 50,
+            render: agrafe_render::Config::default(),
         }
     }
 }
@@ -586,6 +487,26 @@ mod tests {
             jail.set_env("AGRAFE_SERVER__PUBLIC_BASE_URL", "https://files.example/");
             let err = load(&example()).unwrap_err().to_string();
             assert!(err.contains("must not end with a slash"), "{err}");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn media_tools_read_from_the_flattened_section() {
+        Jail::expect_with(|jail| {
+            let config = load(&example())?;
+            assert_eq!(config.media.render.vips_command, "vips");
+            assert_eq!(config.media.render.extract_command, "agrafe-extract");
+            assert_eq!(config.media.render.sandbox.timeout.as_secs(), 60);
+            assert_eq!(config.media.render.thumbnail.width, 256);
+
+            jail.set_env("AGRAFE_MEDIA__VIPS_COMMAND", "/opt/vips/bin/vips");
+            jail.set_env("AGRAFE_MEDIA__SANDBOX__TIMEOUT", "5s");
+            jail.set_env("AGRAFE_MEDIA__MAX_SOURCE_SIZE", "1 MiB");
+            let config = load(&example())?;
+            assert_eq!(config.media.render.vips_command, "/opt/vips/bin/vips");
+            assert_eq!(config.media.render.sandbox.timeout.as_secs(), 5);
+            assert_eq!(config.media.max_source_size.as_u64(), 1 << 20);
             Ok(())
         });
     }

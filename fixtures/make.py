@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Builds the fixture files next to this script, and the renderer probe
-files under crates/agrafe/assets/probe. Needs Pillow. The outputs are
+files under crates/agrafe-render/assets/probe. Needs Pillow. The outputs are
 committed; run this only to change them."""
 
 import io
@@ -12,7 +12,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 HERE = Path(__file__).parent
-PROBE = HERE / "../../assets/probe"
+PROBE = HERE / "../crates/agrafe-render/assets/probe"
 
 
 def jpeg(width, height, quality=60):

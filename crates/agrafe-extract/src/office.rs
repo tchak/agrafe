@@ -111,25 +111,22 @@ mod tests {
 
     #[test]
     fn docx_wrapping_one_picture() {
-        let docx = include_bytes!("../../../tests/fixtures/image.docx");
+        let docx = include_bytes!("../../../fixtures/image.docx");
         let out = extract_docx(docx, &thresholds(), LIMIT).unwrap();
         assert_eq!(out.format, "png");
-        assert_eq!(
-            out.bytes,
-            include_bytes!("../../../tests/fixtures/photo.png")
-        );
+        assert_eq!(out.bytes, include_bytes!("../../../fixtures/photo.png"));
     }
 
     #[test]
     fn odt_wrapping_one_picture() {
-        let odt = include_bytes!("../../../tests/fixtures/image.odt");
+        let odt = include_bytes!("../../../fixtures/image.odt");
         let out = extract_odt(odt, &thresholds(), LIMIT).unwrap();
         assert_eq!(out.format, "png");
     }
 
     #[test]
     fn documents_with_text_are_documents() {
-        let docx = include_bytes!("../../../tests/fixtures/text.docx");
+        let docx = include_bytes!("../../../fixtures/text.docx");
         assert_eq!(extract_docx(docx, &thresholds(), LIMIT), None);
         let lenient = Thresholds {
             max_text_chars: 10_000,
@@ -140,9 +137,9 @@ mod tests {
 
     #[test]
     fn the_picture_must_fit_the_limit_and_be_raster() {
-        let docx = include_bytes!("../../../tests/fixtures/image.docx");
+        let docx = include_bytes!("../../../fixtures/image.docx");
         assert_eq!(extract_docx(docx, &thresholds(), 10), None);
-        let docx = include_bytes!("../../../tests/fixtures/vector.docx");
+        let docx = include_bytes!("../../../fixtures/vector.docx");
         assert_eq!(extract_docx(docx, &thresholds(), LIMIT), None);
     }
 

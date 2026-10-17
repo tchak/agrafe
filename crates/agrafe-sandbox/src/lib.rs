@@ -8,10 +8,46 @@
 
 use std::ffi::OsStr;
 use std::process::Stdio;
+use std::time::Duration;
 
+use bytesize::ByteSize;
+use serde::Deserialize;
 use tokio::process::Command;
 
-use crate::config::SandboxConfig;
+/// Limits on a subprocess that decodes or renders a user file. Deserialises
+/// from the `[media.sandbox]` table of the server configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Limits {
+    /// Wall-clock limit; the process is killed past it.
+    #[serde(with = "humantime_serde", default = "default_timeout")]
+    pub timeout: Duration,
+    /// Address space limit (`RLIMIT_AS`).
+    #[serde(default = "default_memory")]
+    pub memory: ByteSize,
+    /// Largest file the process may write (`RLIMIT_FSIZE`).
+    #[serde(default = "default_max_output_size")]
+    pub max_output_size: ByteSize,
+}
+
+fn default_timeout() -> Duration {
+    Duration::from_secs(60)
+}
+fn default_memory() -> ByteSize {
+    ByteSize::gib(1)
+}
+fn default_max_output_size() -> ByteSize {
+    ByteSize::mib(256)
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            timeout: default_timeout(),
+            memory: default_memory(),
+            max_output_size: default_max_output_size(),
+        }
+    }
+}
 
 /// Bytes of stderr kept, from the end: the error comes after the warnings.
 const STDERR_KEEP: usize = 4096;
@@ -57,7 +93,7 @@ pub fn command(program: impl AsRef<OsStr>) -> Command {
 }
 
 /// Run `command` to completion under `limits`.
-pub async fn run(mut command: Command, limits: &SandboxConfig) -> Result<Outcome, Error> {
+pub async fn run(mut command: Command, limits: &Limits) -> Result<Outcome, Error> {
     let program = command
         .as_std()
         .get_program()
@@ -86,7 +122,7 @@ pub async fn run(mut command: Command, limits: &SandboxConfig) -> Result<Outcome
 }
 
 #[cfg(unix)]
-fn apply_limits(command: &mut Command, limits: &SandboxConfig) {
+fn apply_limits(command: &mut Command, limits: &Limits) {
     let memory = limits.memory.as_u64();
     let cpu = limits.timeout.as_secs().saturating_add(1);
     let output = limits.max_output_size.as_u64();
@@ -110,7 +146,7 @@ fn apply_limits(command: &mut Command, limits: &SandboxConfig) {
 }
 
 #[cfg(not(unix))]
-fn apply_limits(_command: &mut Command, _limits: &SandboxConfig) {}
+fn apply_limits(_command: &mut Command, _limits: &Limits) {}
 
 fn tail(stderr: &[u8]) -> String {
     let start = stderr.len().saturating_sub(STDERR_KEEP);
@@ -120,12 +156,11 @@ fn tail(stderr: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
-    fn limits() -> SandboxConfig {
-        SandboxConfig {
+    fn limits() -> Limits {
+        Limits {
             timeout: Duration::from_millis(500),
-            ..SandboxConfig::default()
+            ..Limits::default()
         }
     }
 

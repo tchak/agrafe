@@ -1,9 +1,9 @@
 #!/bin/sh
-# Renders the thumbnail placeholder icons embedded in the binary from
-# crates/agrafe/assets/icons/icon.svg. Needs `vips` with SVG support. The
+# Renders the thumbnail placeholder icons embedded in agrafe-render from
+# crates/agrafe-render/assets/icons/icon.svg. Needs `vips` with SVG support. The
 # results are committed; run this only to change the design.
 set -eu
-cd "$(dirname "$0")/../crates/agrafe/assets/icons"
+cd "$(dirname "$0")/../crates/agrafe-render/assets/icons"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 

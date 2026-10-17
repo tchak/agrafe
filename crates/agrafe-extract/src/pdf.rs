@@ -293,18 +293,17 @@ mod tests {
 
     #[test]
     fn jpeg_covering_the_page_is_extracted() {
-        let pdf = include_bytes!("../../../tests/fixtures/image.pdf");
+        let pdf = include_bytes!("../../../fixtures/image.pdf");
         let out = extract(pdf, &thresholds(), LIMIT).unwrap();
         assert_eq!(out.format, "jpeg");
         assert_eq!(&out.bytes[..3], &[0xff, 0xd8, 0xff]);
-        let jpeg = include_bytes!("../../../tests/fixtures/photo.jpg");
+        let jpeg = include_bytes!("../../../fixtures/photo.jpg");
         assert_eq!(out.bytes, jpeg);
     }
 
     #[test]
     fn a_jpeg_stream_must_hold_a_jpeg() {
-        let mut doc =
-            Document::load_mem(include_bytes!("../../../tests/fixtures/image.pdf")).unwrap();
+        let mut doc = Document::load_mem(include_bytes!("../../../fixtures/image.pdf")).unwrap();
         let id = doc
             .objects
             .iter()
@@ -324,7 +323,7 @@ mod tests {
 
     #[test]
     fn raw_samples_become_pnm() {
-        let pdf = include_bytes!("../../../tests/fixtures/flate.pdf");
+        let pdf = include_bytes!("../../../fixtures/flate.pdf");
         let out = extract(pdf, &thresholds(), LIMIT).unwrap();
         assert_eq!(out.format, "ppm");
         assert!(out.bytes.starts_with(b"P6\n4 2\n255\n"));
@@ -333,9 +332,9 @@ mod tests {
 
     #[test]
     fn text_pages_are_not_images() {
-        let pdf = include_bytes!("../../../tests/fixtures/text.pdf");
+        let pdf = include_bytes!("../../../fixtures/text.pdf");
         assert_eq!(extract(pdf, &thresholds(), LIMIT), None);
-        let pdf = include_bytes!("../../../tests/fixtures/mixed.pdf");
+        let pdf = include_bytes!("../../../fixtures/mixed.pdf");
         assert_eq!(extract(pdf, &thresholds(), LIMIT), None);
         // The same image with a generous text allowance passes.
         let lenient = Thresholds {
@@ -347,9 +346,9 @@ mod tests {
 
     #[test]
     fn small_or_rotated_images_are_not_extracted() {
-        let pdf = include_bytes!("../../../tests/fixtures/small.pdf");
+        let pdf = include_bytes!("../../../fixtures/small.pdf");
         assert_eq!(extract(pdf, &thresholds(), LIMIT), None);
-        let pdf = include_bytes!("../../../tests/fixtures/rotated.pdf");
+        let pdf = include_bytes!("../../../fixtures/rotated.pdf");
         assert_eq!(extract(pdf, &thresholds(), LIMIT), None);
     }
 

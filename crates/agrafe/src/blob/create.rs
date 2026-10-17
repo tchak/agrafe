@@ -13,7 +13,6 @@ use crate::classify::{self, Category};
 use crate::config::UploadConfig;
 use crate::error::ApiError;
 use crate::jobs::Priority;
-use crate::media::text;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -133,13 +132,20 @@ pub(crate) fn validate_filename(filename: &str) -> Result<String, ApiError> {
     }
     if filename
         .chars()
-        .any(|c| c == '/' || c == '\\' || c.is_control() || text::is_bidi_control(c))
+        .any(|c| c == '/' || c == '\\' || c.is_control() || is_bidi_control(c))
     {
         return Err(unprocessable(
             "filename must not contain path separators or control characters",
         ));
     }
     Ok(filename.to_string())
+}
+
+/// Bidirectional formatting characters. `char::is_control` covers only the
+/// C0 and C1 controls, and these can make `invoice\u{202E}fdp.exe` display
+/// as `invoiceexe.pdf` in a download prompt, a URL bar or a thumbnail.
+fn is_bidi_control(c: char) -> bool {
+    matches!(c, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
 }
 
 /// Parse and reduce to `type/subtype`, lowercase, parameters dropped. The

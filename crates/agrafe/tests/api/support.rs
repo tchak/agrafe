@@ -205,10 +205,11 @@ pub async fn setup_tuned(clamd: SocketAddr, tune: impl FnOnce(&mut Config)) -> T
     // From the string alone: `AGRAFE_` variables in the environment must not
     // change what the tests run against.
     let mut config: Config = Figment::from(Toml::string(&toml)).extract().unwrap();
-    // The extraction helper is this crate's binary, which cargo builds for
-    // integration tests; previews are kept small to keep the fixtures small.
-    config.media.agrafe_command = Some(env!("CARGO_BIN_EXE_agrafe").into());
-    config.media.preview.max_dimension = 400;
+    // The helpers are the workspace's own binaries; previews are kept small
+    // to keep the fixtures small.
+    config.media.render.extract_command = helper("agrafe-extract");
+    config.media.render.render_text_command = helper("agrafe-render-text");
+    config.media.render.preview.max_dimension = 400;
     tune(&mut config);
 
     let pool = db::connect(&config.database).await.unwrap();
@@ -531,10 +532,32 @@ pub async fn run_job(app: &TestApp, kind: agrafe::jobs::JobKind) -> bool {
         .unwrap()
 }
 
-/// A file from `tests/fixtures`, built by `make.py` there.
+/// A file from `fixtures/` at the workspace root, built by `make.py` there.
 pub fn fixture(name: &str) -> Vec<u8> {
-    let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
+    let path = format!("{}/../../fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
     std::fs::read(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
+}
+
+/// A helper binary of this workspace, next to this test executable's
+/// directory (`target/<profile>/deps/api-*` sits below the binaries).
+/// `cargo test` at the workspace root builds them; `cargo test -p agrafe`
+/// does not, so they are built here when missing.
+pub fn helper(name: &str) -> String {
+    static BUILT: std::sync::Once = std::sync::Once::new();
+    let exe = std::env::current_exe().unwrap();
+    let dir = exe.parent().unwrap().parent().unwrap();
+    let path = dir.join(name);
+    if !path.exists() {
+        BUILT.call_once(|| {
+            let status = std::process::Command::new(env!("CARGO"))
+                .args(["build", "-p", "agrafe-extract", "-p", "agrafe-render-text"])
+                .status()
+                .expect("run cargo build for the helpers");
+            assert!(status.success(), "building the helpers failed");
+        });
+    }
+    assert!(path.exists(), "helper {} not found", path.display());
+    path.to_string_lossy().into_owned()
 }
 
 /// Upload `bytes` as a ready blob named `filename` and return its metadata.

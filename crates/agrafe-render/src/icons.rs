@@ -3,15 +3,14 @@
 //! `assets/icons/icon.svg` by `scripts/icons.sh` and embedded in the
 //! binary, so serving one needs no renderer and no asset directory.
 
-use crate::classify::{self, Category};
-use crate::media::{DOCX, ODT};
+use agrafe_types::classify::{self, Category, DOCX, ODT};
 
 /// Edge of the square icons, in pixels.
 pub const SIZE: u32 = 256;
 
 macro_rules! icon {
     ($name:literal) => {
-        include_bytes!(concat!("../../assets/icons/", $name, ".webp"))
+        include_bytes!(concat!("../assets/icons/", $name, ".webp"))
     };
 }
 

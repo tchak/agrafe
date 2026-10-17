@@ -25,7 +25,7 @@ pub enum BlobState {
     Deleted,
 }
 
-crate::str_enum!(BlobState {
+agrafe_types::str_enum!(BlobState {
     Created => "created",
     Uploading => "uploading",
     Uploaded => "uploaded",
@@ -55,7 +55,7 @@ pub enum InputType {
     Archive,
 }
 
-crate::str_enum!(InputType {
+agrafe_types::str_enum!(InputType {
     Raw => "raw",
     Multipart => "multipart",
     Rows => "rows",
@@ -79,7 +79,7 @@ pub enum ScanState {
     Skipped,
 }
 
-crate::str_enum!(ScanState {
+agrafe_types::str_enum!(ScanState {
     Pending => "pending",
     Clean => "clean",
     Infected => "infected",
@@ -131,7 +131,7 @@ pub enum RepresentationState {
     Unavailable,
 }
 
-crate::str_enum!(RepresentationState {
+agrafe_types::str_enum!(RepresentationState {
     Pending => "pending",
     Ready => "ready",
     Failed => "failed",
@@ -146,7 +146,7 @@ pub enum Representation {
     Preview,
 }
 
-crate::str_enum!(Representation {
+agrafe_types::str_enum!(Representation {
     Thumbnail => "thumbnail",
     Preview => "preview",
 });
@@ -183,7 +183,7 @@ pub enum PreviewSource {
     FirstPage,
 }
 
-crate::str_enum!(PreviewSource {
+agrafe_types::str_enum!(PreviewSource {
     Image => "image",
     EmbeddedImage => "embedded_image",
     FirstPage => "first_page",

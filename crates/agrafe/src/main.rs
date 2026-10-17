@@ -4,7 +4,6 @@ use std::path::PathBuf;
 use agrafe::app::{AppState, InitError};
 use agrafe::config::{Config, ConfigError, Role};
 use agrafe::jobs::JobKind;
-use agrafe::media::{extract, text};
 use agrafe::{api, db, jobs};
 use clap::{Parser, Subcommand};
 use futures::FutureExt;
@@ -38,44 +37,6 @@ enum Command {
     },
     /// Apply pending database migrations.
     Migrate,
-    /// Pull the embedded image out of a document. The workers run this in
-    /// a sandbox; it is not meant to be called by hand.
-    #[command(hide = true)]
-    Extract(ExtractArgs),
-    /// Rasterise the first lines of a text file. Same deal as `extract`.
-    #[command(hide = true)]
-    RenderText(RenderTextArgs),
-}
-
-#[derive(clap::Args)]
-struct RenderTextArgs {
-    #[arg(long)]
-    input: PathBuf,
-    /// A PGM, written only when the input looks like text.
-    #[arg(long)]
-    output: PathBuf,
-    #[arg(long)]
-    width: u32,
-    #[arg(long)]
-    height: u32,
-}
-
-#[derive(clap::Args)]
-struct ExtractArgs {
-    #[arg(long)]
-    input: PathBuf,
-    /// Written only when an image was found.
-    #[arg(long)]
-    output: PathBuf,
-    #[arg(long)]
-    content_type: String,
-    #[arg(long)]
-    min_coverage: f32,
-    #[arg(long)]
-    max_text_chars: u32,
-    /// Largest decoded buffer, in bytes.
-    #[arg(long)]
-    max_output: usize,
 }
 
 /// Why the process stopped.
@@ -106,8 +67,6 @@ enum Error {
     Workers(#[from] jobs::runner::Error),
     #[error("task panicked: {0}")]
     Panicked(#[from] tokio::task::JoinError),
-    #[error("reading or writing a helper file: {0}")]
-    Helper(std::io::Error),
 }
 
 /// `main` reports an error through `Debug`; print the message instead.
@@ -120,14 +79,6 @@ impl std::fmt::Debug for Error {
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     let cli = Cli::parse();
-    // The helpers read no configuration and write no logs: they run in a
-    // sandbox with nothing but their two files.
-    match cli.command {
-        Command::Extract(args) => return extract(args),
-        Command::RenderText(args) => return render_text(args),
-        _ => {}
-    }
-
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
@@ -155,31 +106,7 @@ async fn main() -> Result<(), Error> {
             }
             serve(config).await
         }
-        Command::Extract(_) | Command::RenderText(_) => {
-            unreachable!("handled before loading the configuration")
-        }
     }
-}
-
-fn render_text(args: RenderTextArgs) -> Result<(), Error> {
-    let bytes = std::fs::read(&args.input).map_err(Error::Helper)?;
-    if let Some(pgm) = text::render(&bytes, args.width, args.height) {
-        std::fs::write(&args.output, pgm).map_err(Error::Helper)?;
-    }
-    Ok(())
-}
-
-fn extract(args: ExtractArgs) -> Result<(), Error> {
-    let bytes = std::fs::read(&args.input).map_err(Error::Helper)?;
-    let thresholds = extract::Thresholds {
-        min_coverage: args.min_coverage,
-        max_text_chars: args.max_text_chars,
-    };
-    if let Some(found) = extract::extract(&args.content_type, &bytes, &thresholds, args.max_output)
-    {
-        std::fs::write(&args.output, found.bytes).map_err(Error::Helper)?;
-    }
-    Ok(())
 }
 
 async fn serve(config: Config) -> Result<(), Error> {

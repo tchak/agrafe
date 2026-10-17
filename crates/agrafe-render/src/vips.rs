@@ -8,11 +8,11 @@
 
 use std::path::Path;
 
+use agrafe_sandbox::{self as sandbox, Outcome};
+use agrafe_types::sniff::{LOADER_SNIFF_LEN, loader_for};
 use tokio::io::AsyncReadExt;
 
-use super::sandbox::{self, Outcome};
-use crate::config::MediaConfig;
-use crate::media;
+use crate::{Config, Error};
 
 /// Threads per vips process. Parallelism comes from running several
 /// renders at once (`jobs.concurrency`), so each one is kept narrow: the
@@ -29,19 +29,19 @@ pub struct Fit {
 }
 
 impl Fit {
-    pub fn thumbnail(media: &MediaConfig) -> Self {
+    pub fn thumbnail(config: &Config) -> Self {
         Self {
-            width: media.thumbnail.width,
-            height: media.thumbnail.height,
-            quality: media.thumbnail.quality,
+            width: config.thumbnail.width,
+            height: config.thumbnail.height,
+            quality: config.thumbnail.quality,
         }
     }
 
-    pub fn preview(media: &MediaConfig) -> Self {
+    pub fn preview(config: &Config) -> Self {
         Self {
-            width: media.preview.max_dimension,
-            height: media.preview.max_dimension,
-            quality: media.preview.quality,
+            width: config.preview.max_dimension,
+            height: config.preview.max_dimension,
+            quality: config.preview.quality,
         }
     }
 }
@@ -68,53 +68,23 @@ impl Input {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    /// The bytes are not a format the renderer may load: the file's fault.
-    #[error("the file is not in a format the renderer may load")]
-    Unsupported,
-    /// The renderer could not make sense of the file: the file's fault.
-    #[error("the renderer rejected the file ({status}): {stderr}")]
-    Rejected { status: String, stderr: String },
-    /// The file took too long: also the file's fault.
-    #[error("the renderer exceeded the time limit")]
-    TimedOut,
-    #[error(transparent)]
-    Sandbox(#[from] sandbox::Error),
-    #[error("reading the file to render: {0}")]
-    Input(std::io::Error),
-    #[error("reading the rendered file: {0}")]
-    Output(std::io::Error),
-}
-
-impl Error {
-    /// Whether the input is to blame, so that trying again is pointless.
-    pub fn is_input_fault(&self) -> bool {
-        matches!(
-            self,
-            Error::Unsupported | Error::Rejected { .. } | Error::TimedOut
-        )
-    }
-}
-
 /// Render `input` into `output` as a WebP fitting `fit`, and return its
 /// bytes. `output` must not contain `[`, which vips reads as options, and
 /// its directory is where vips spills intermediates.
 pub async fn to_webp(
-    media: &MediaConfig,
+    config: &Config,
     input: &Path,
     kind: Input,
     output: &Path,
     fit: Fit,
 ) -> Result<Vec<u8>, Error> {
-    let loader =
-        media::loader_for(&head(input).await.map_err(Error::Input)?).ok_or(Error::Unsupported)?;
+    let loader = loader_for(&head(input).await.map_err(Error::Input)?).ok_or(Error::Unsupported)?;
     tracing::debug!(loader, "rendering");
     let size = match kind {
         Input::Raster => "down",
         Input::Page => "both",
     };
-    let mut command = sandbox::command(&media.vips_command);
+    let mut command = sandbox::command(&config.vips_command);
     if let Some(dir) = output.parent() {
         command.env("TMPDIR", dir);
     }
@@ -129,19 +99,19 @@ pub async fn to_webp(
         .args(["--size", size])
         .args(["--output-profile", "srgb"])
         .args(["--fail-on", "error"]);
-    match sandbox::run(command, &media.sandbox).await? {
+    match sandbox::run(command, &config.sandbox).await? {
         Outcome::Success => tokio::fs::read(output).await.map_err(Error::Output),
         Outcome::Failed { status, stderr } => Err(Error::Rejected { status, stderr }),
         Outcome::TimedOut => Err(Error::TimedOut),
     }
 }
 
-/// The first `SNIFF_LEN` bytes of `path`, fewer for a shorter file.
+/// The first `LOADER_SNIFF_LEN` bytes of `path`, fewer for a shorter file.
 async fn head(path: &Path) -> std::io::Result<Vec<u8>> {
-    let mut head = Vec::with_capacity(media::SNIFF_LEN);
+    let mut head = Vec::with_capacity(LOADER_SNIFF_LEN);
     tokio::fs::File::open(path)
         .await?
-        .take(media::SNIFF_LEN as u64)
+        .take(LOADER_SNIFF_LEN as u64)
         .read_to_end(&mut head)
         .await?;
     Ok(head)

@@ -486,7 +486,9 @@ async fn metrics_report_queue_depth_and_runs() {
     );
     let oldest = text
         .lines()
-        .find(|l| l.starts_with("agrafe_jobs_oldest_due_seconds{kind=\"scan\",priority=\"normal\"}"))
+        .find(|l| {
+            l.starts_with("agrafe_jobs_oldest_due_seconds{kind=\"scan\",priority=\"normal\"}")
+        })
         .unwrap_or_else(|| panic!("{text}"));
     let age: f64 = oldest.rsplit(' ').next().unwrap().parse().unwrap();
     assert!(age >= 0.0, "{oldest}");

@@ -4,15 +4,16 @@
 //! files, and the embedded image at full resolution is a better preview
 //! than a render of the page around it.
 //!
-//! This code parses untrusted containers, so it runs in the `agrafe
-//! extract` helper, a sandboxed subprocess, never in the server. Every
-//! decode is bounded by `max_output`, and anything doubtful answers `None`:
-//! the caller then falls back to rendering the page, or to no preview.
+//! This code parses untrusted containers, so it runs in the
+//! `agrafe-extract` helper, a sandboxed subprocess, never in the server:
+//! the server does not even link this crate. Every decode is bounded by
+//! `max_output`, and anything doubtful answers `None`: the caller then falls
+//! back to rendering the page, or to no preview.
 
 pub mod office;
 pub mod pdf;
 
-use crate::classify;
+use agrafe_types::classify::{self, DOCX, ODT};
 
 /// What makes a document "really an image". From `media.embedded_image`.
 #[derive(Debug, Clone, Copy)]
@@ -39,8 +40,8 @@ pub fn extract(
 ) -> Option<Extracted> {
     match content_type {
         classify::PDF => pdf::extract(bytes, thresholds, max_output),
-        super::DOCX => office::extract_docx(bytes, thresholds, max_output),
-        super::ODT => office::extract_odt(bytes, thresholds, max_output),
+        DOCX => office::extract_docx(bytes, thresholds, max_output),
+        ODT => office::extract_odt(bytes, thresholds, max_output),
         _ => None,
     }
 }
@@ -49,5 +50,5 @@ pub fn extract(
 /// allowlist minus the vector formats, which are not "a picture inside a
 /// document".
 pub(crate) fn raster_format(bytes: &[u8]) -> Option<&'static str> {
-    super::loader_for(bytes).filter(|format| !matches!(*format, "pdf" | "svg"))
+    agrafe_types::sniff::loader_for(bytes).filter(|format| !matches!(*format, "pdf" | "svg"))
 }

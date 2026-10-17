@@ -330,7 +330,8 @@ async fn text_files_get_a_thumbnail_and_no_preview() {
 async fn a_crashing_helper_fails_the_file_not_the_job() {
     let clamd = fake_clamd().await;
     let app = setup_tuned(clamd, |c| {
-        c.media.agrafe_command = Some("/usr/bin/false".into());
+        c.media.render.extract_command = "/usr/bin/false".into();
+        c.media.render.render_text_command = "/usr/bin/false".into();
     })
     .await;
     let notes = ready_file(&app, "notes.txt", "text/plain", b"plain text\n").await;
@@ -416,7 +417,10 @@ async fn oversized_originals_get_no_representations() {
 #[tokio::test]
 async fn a_missing_renderer_fails_the_job_not_the_file() {
     let clamd = fake_clamd().await;
-    let app = setup_tuned(clamd, |c| c.media.vips_command = "/nonexistent/vips".into()).await;
+    let app = setup_tuned(clamd, |c| {
+        c.media.render.vips_command = "/nonexistent/vips".into()
+    })
+    .await;
     let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
     let id = id_of(&blob);
     assert!(run_job(&app, JobKind::Render).await);
@@ -436,36 +440,35 @@ async fn a_missing_renderer_fails_the_job_not_the_file() {
 async fn the_startup_probe_checks_vips_and_the_helper() {
     let app = setup().await;
     let media = &app.state.config().media;
-    agrafe::jobs::render::probe(media).await.unwrap();
+    let probe = |render| agrafe_render::probe(render, media.tmp_dir.as_deref());
+    probe(&media.render).await.unwrap();
 
-    let no_vips = agrafe::config::MediaConfig {
+    let no_vips = agrafe_render::Config {
         vips_command: "/nonexistent/vips".into(),
-        ..media.clone()
+        ..media.render.clone()
     };
-    let err = agrafe::jobs::render::probe(&no_vips).await.unwrap_err();
+    let err = probe(&no_vips).await.unwrap_err();
     assert!(
         err.to_string()
             .contains("rendering a PNG with `/nonexistent/vips`: starting"),
         "{err}"
     );
 
-    // A binary that exits non-zero on everything, as an older agrafe
-    // without the subcommand would.
-    let wrong_binary = agrafe::config::MediaConfig {
-        agrafe_command: Some("/usr/bin/false".into()),
-        ..media.clone()
+    // A binary that exits non-zero on everything, as a wrong program on the
+    // path would.
+    let wrong_binary = agrafe_render::Config {
+        render_text_command: "/usr/bin/false".into(),
+        ..media.render.clone()
     };
-    let err = agrafe::jobs::render::probe(&wrong_binary)
-        .await
-        .unwrap_err();
+    let err = probe(&wrong_binary).await.unwrap_err();
     assert!(err.to_string().contains("failed on a text sample"), "{err}");
 
     // One that exits zero without doing anything.
-    let idle_binary = agrafe::config::MediaConfig {
-        agrafe_command: Some("/usr/bin/true".into()),
-        ..media.clone()
+    let idle_binary = agrafe_render::Config {
+        render_text_command: "/usr/bin/true".into(),
+        ..media.render.clone()
     };
-    let err = agrafe::jobs::render::probe(&idle_binary).await.unwrap_err();
+    let err = probe(&idle_binary).await.unwrap_err();
     assert!(err.to_string().contains("declined a text sample"), "{err}");
 }
 

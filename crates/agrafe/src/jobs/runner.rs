@@ -31,7 +31,7 @@ pub enum Error {
     #[error("worker panicked: {0}")]
     Panicked(#[from] tokio::task::JoinError),
     #[error("the renderer failed its startup probe: {0}")]
-    Probe(#[from] render::ProbeError),
+    Probe(#[from] agrafe_render::ProbeError),
     #[error("scheduling the first reap: {0}")]
     Schedule(sqlx::Error),
 }
@@ -44,7 +44,8 @@ where
 {
     let handled = state.config().jobs.kinds();
     if handled.contains(&JobKind::Render) {
-        render::probe(&state.config().media).await?;
+        let media = &state.config().media;
+        agrafe_render::probe(&media.render, media.tmp_dir.as_deref()).await?;
         tracing::info!("renderer probe passed");
     }
     if handled.contains(&JobKind::Reap) {
