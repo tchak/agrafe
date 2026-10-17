@@ -18,7 +18,16 @@ use crate::text::is_bidi_control;
 use crate::upload::{Tap, UploadError};
 
 /// The ZIP format's limit on an entry name, in bytes.
-pub const MAX_PATH_LEN: usize = 65_535;
+pub const ZIP_NAME_LIMIT: usize = 65_535;
+
+/// What a deduplicated name may grow by: `-` and the digits of a counter,
+/// which is a `u64`.
+pub const DEDUPE_ROOM: usize = 1 + 20;
+
+/// Longest path a manifest may hold, in bytes: the ZIP limit less the
+/// room the build needs to rename a duplicate, so accept never lets
+/// through a name the build cannot write.
+pub const MAX_PATH_LEN: usize = ZIP_NAME_LIMIT - DEDUPE_ROOM;
 
 /// The file the build writes at the root when members were skipped;
 /// reserved, so a manifest cannot name it.

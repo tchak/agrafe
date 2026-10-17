@@ -555,9 +555,10 @@ per line:
 - The path is normalised to NFC, with `/` as the separator, then refused
   if it is empty, absolute, has an empty, `.` or `..` component (so no
   trailing slash either), a backslash, a control or bidirectional
-  formatting character (the filename rule), or exceeds the ZIP limit of
-  65 535 bytes. `ERRORS.txt` at the root is reserved, see below, and
-  refused whatever its case.
+  formatting character (the filename rule), or exceeds 65 514 bytes: the
+  ZIP limit of 65 535 less the 21 a deduplicated name can grow by, so the
+  build never meets a name it cannot write. `ERRORS.txt` at the root is
+  reserved, see below, and refused whatever its case.
 - The blob is looked up in batches of a few hundred ids (`WHERE id =
   ANY($1)`) and must exist and be `ready`. Anything else (unknown, not yet
   scanned, infected, expired, deleted) is refused.

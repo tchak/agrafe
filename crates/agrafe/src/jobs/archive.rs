@@ -493,6 +493,27 @@ mod tests {
         assert_eq!(taken.claim("errors.txt"), "errors-1.txt", "reserved");
     }
 
+    /// Accept caps paths below the ZIP limit by what a counter adds, so a
+    /// duplicate of the longest path still has a name the writer takes.
+    #[test]
+    fn dedupe_of_the_longest_path_fits_the_zip_limit() {
+        use crate::source::archive::{MAX_PATH_LEN, ZIP_NAME_LIMIT};
+        let longest = format!("{}.pdf", "a".repeat(MAX_PATH_LEN - 4));
+        assert_eq!(longest.len(), MAX_PATH_LEN);
+        let mut taken = Taken::new();
+        assert_eq!(taken.claim(&longest), longest);
+        let renamed = taken.claim(&longest);
+        assert!(renamed.ends_with("-1.pdf"));
+        assert!(renamed.len() <= ZIP_NAME_LIMIT);
+        let t = DosTime::from_timestamp(Timestamp::now());
+        ZipWriter::new()
+            .begin_entry(&renamed, 0, t)
+            .expect("fits the name field");
+        // The counter is a u64, so no number of duplicates outgrows it.
+        let widest = format!("{}-{}.pdf", "a".repeat(MAX_PATH_LEN - 4), u64::MAX);
+        assert_eq!(widest.len(), ZIP_NAME_LIMIT);
+    }
+
     /// Every claim of a repeated path costs one candidate, so a manifest of
     /// identical names is linear: fifty thousand of them in well under a
     /// second, where restarting the counter each time took minutes.
