@@ -5,7 +5,8 @@
 # Secrets should come from the environment in production.
 
 [server]
-# Private interface: no signatures, trusted network only.
+# Private interface: no signatures, trusted network only. A worker-only
+# process binds it too, serving /healthz and /metrics alone.
 private_addr = "127.0.0.1:8080"
 # Public interface: every URL is signed.
 public_addr = "127.0.0.1:8081"

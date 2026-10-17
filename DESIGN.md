@@ -48,6 +48,11 @@ No signature. Reachable only from trusted networks.
 | `GET` | `/blobs/:id/original/:filename` | Original bytes, supports `Range` |
 | `GET` | `/blobs/:id/preview/:filename` | WebP preview or 404 |
 | `GET` | `/blobs/:id/thumbnail/:filename` | WebP thumbnail, always 200 |
+| `GET` | `/jobs` | List jobs, cursor paginated, filterable by `kind`, `state`, `blob_id` |
+| `GET` | `/jobs/:id` | One job, with its last error |
+| `POST` | `/jobs/:id/retry` | Give a dead job its attempts back and run it now |
+| `DELETE` | `/jobs/:id` | Discard a dead job |
+| `GET` | `/metrics` | Prometheus text format, see "Jobs" |
 | `GET` | `/healthz` | Liveness |
 
 ### Public port
@@ -840,6 +845,22 @@ Why: a handful of job kinds at modest volume, every job already touches the
 blob row, and enqueueing in the same transaction as the state change removes
 the dual-write failure where a crash between commit and publish loses the job.
 
+Revisited in October 2026 against apalis (1.0, Postgres and Redis backends,
+a board UI), with a Redis queue in production in mind, and kept. What the
+table gives is the transaction: a state change and the job it implies commit
+together, dedupe is a unique index, the reaper schedules itself with a row. A
+broker loses that and needs an outbox, which is this table plus a relay. Nor
+is the queue where the load goes: a billion blobs is a big `blobs` table, the
+`jobs` table holds only the backlog, the claim is one indexed `SKIP LOCKED`
+update, and the slow part is the workers, vips, clamd and zip. What a broker
+was wanted for, a view of the queue and a way to act on dead jobs, is the
+`/metrics` and `/jobs` endpoints below. Isolation between kinds comes from
+the worker pools, not the queue, see "Build". Revisit when a measurement
+says the database is the bottleneck: oldest-due age growing with idle
+workers, or dead-tuple churn on `jobs` that autovacuum settings do not
+absorb. The enqueue function stays the seam; the table would become the
+outbox.
+
 Job kinds: `scan`, `render` (thumbnail and preview, whichever is pending),
 `build` (generate a `rows` or `archive` blob from its stored source, see
 "Generated blobs"), `purge`
@@ -890,8 +911,30 @@ per kind in `jobs.concurrency` (defaults: `scan` 4, `render` 4, `purge` 4,
 per process is plenty since a row is pending at a time anyway.
 
 The binary takes `--role api|worker|all` so workers can move to separate
-machines without code changes. If volume ever outgrows Postgres polling, the
-enqueue function is swapped for a broker and the table becomes the outbox.
+machines without code changes.
+
+### Observability
+
+`GET /metrics` on the private port, Prometheus text format. The queue gauges
+are read from the `jobs` table at scrape time, so any process reports for the
+whole deployment: `agrafe_jobs{kind,state}` with `state` one of `due`
+(unclaimed, runnable now), `scheduled` (unclaimed, `run_at` ahead: a retry
+backing off, a purge waiting for its delay), `running` (lease current) and
+`dead`; and `agrafe_jobs_oldest_due_seconds{kind}`, the wait of the oldest
+due job, which is the number to alert on: it grows when a kind's workers
+cannot keep up. A lapsed lease counts as unclaimed, as the claim query sees
+it. Per process: `agrafe_job_runs_total{kind,outcome}` with `ok`, `retry`,
+`dead` and `superseded`, `agrafe_job_duration_seconds{kind}` and
+`agrafe_workers{kind}`. A `worker` process has no API; it binds
+`server.private_addr` all the same, serving `/healthz` and `/metrics` only.
+
+`GET /jobs` lists jobs newest first, cursor paginated on the id, filtered by
+`kind`, `state` and `blob_id`. `GET /jobs/:id` shows one with its
+`last_error`. `POST /jobs/:id/retry` resets a dead job's attempts, makes it
+due and notifies the workers; `DELETE /jobs/:id` removes one. Both answer
+`409` for a job that is not dead: a pending job is the only thing that will
+finish its blob, and a running one is a worker's. A retry whose blob already
+has a pending job of that kind is `409` too; the newer job does the work.
 
 ## Configuration
 
@@ -912,6 +955,7 @@ is redacted so a dumped config cannot leak them. See `config/example.toml`.
 | Signing | `hmac` + `sha2` |
 | Encryption | `aes-gcm` + `hkdf`, Tink streaming format, own crate (`agrafe-crypto`) |
 | Sniffing | `infer` |
+| Metrics | `prometheus`, text exposition on `/metrics` |
 | Scanning | clamd `INSTREAM` client |
 | Images, PDF pages | `vips thumbnail` (libvips) in a sandboxed subprocess |
 | Embedded images | `lopdf`, `zip`, `quick-xml` in the sandboxed `extract` helper |

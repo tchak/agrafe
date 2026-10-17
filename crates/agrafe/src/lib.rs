@@ -11,6 +11,7 @@ pub mod encryption;
 pub mod error;
 pub mod jobs;
 pub mod media;
+pub mod metrics;
 pub mod signing;
 pub mod sniff;
 pub mod storage;

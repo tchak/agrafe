@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::FutureExt as _;
 use jiff::Timestamp;
@@ -16,6 +16,7 @@ use uuid::Uuid;
 
 use super::{Failure, Job, JobError, JobKind, purge, reap, render, scan};
 use crate::app::AppState;
+use crate::metrics::Outcome;
 
 /// Kinds this binary runs: every one of them.
 pub const HANDLED: &[JobKind] = JobKind::ALL;
@@ -65,6 +66,7 @@ where
     let worker = format!("{}-{}", hostname(), Uuid::now_v7());
     for kind in HANDLED {
         let count = state.config().jobs.concurrency_for(*kind);
+        state.metrics().set_workers(*kind, count);
         tracing::info!(kind = %kind, workers = count, "starting workers");
         for n in 0..count {
             tasks.spawn(poll(
@@ -106,6 +108,7 @@ pub async fn run_one(state: &AppState, kind: JobKind, worker: &str) -> sqlx::Res
 
 async fn run_claimed(state: &AppState, job: &Job, worker: &str) -> sqlx::Result<()> {
     let lease = state.config().jobs.lease_timeout;
+    let started = Instant::now();
     // A handler that panics has failed this attempt; it must not take the
     // worker, or the process in the `all` role, down with it. The lease is
     // renewed while it runs, so a job longer than the lease is not handed
@@ -118,21 +121,33 @@ async fn run_claimed(state: &AppState, job: &Job, worker: &str) -> sqlx::Result<
         }
         _ = heartbeat(state, job.id, worker, lease) => unreachable!("the heartbeat never ends"),
     };
-    match outcome {
+    let took = started.elapsed();
+    let outcome = match outcome {
         Ok(()) => {
             super::succeed(state.pool(), job.id).await?;
-            tracing::info!("job done");
+            tracing::info!(took_ms = took.as_millis() as u64, "job done");
+            Outcome::Ok
         }
         Err(err) => {
             let mut conn = state.pool().acquire().await?;
             let error = err.to_string();
             match super::fail(&mut conn, job, &error, Timestamp::now()).await? {
-                Failure::Retry(at) => tracing::warn!(error, retry_at = %at, "job failed"),
-                Failure::Dead => tracing::error!(error, "job failed for the last time"),
-                Failure::Superseded => tracing::warn!(error, "job failed and was superseded"),
+                Failure::Retry(at) => {
+                    tracing::warn!(error, retry_at = %at, "job failed");
+                    Outcome::Retry
+                }
+                Failure::Dead => {
+                    tracing::error!(error, "job failed for the last time");
+                    Outcome::Dead
+                }
+                Failure::Superseded => {
+                    tracing::warn!(error, "job failed and was superseded");
+                    Outcome::Superseded
+                }
             }
         }
-    }
+    };
+    state.metrics().job_run(job.kind, outcome, took);
     Ok(())
 }
 

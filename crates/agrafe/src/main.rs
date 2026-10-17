@@ -214,6 +214,23 @@ async fn serve(config: Config) -> Result<(), Error> {
     }
 
     if role.runs_worker() {
+        if !role.runs_api() {
+            // No API, but still something to probe and scrape.
+            let addr = state.config().server.private_addr;
+            let private = bind("private", addr).await?;
+            tracing::info!(addr = %addr, "private interface listening (healthz and metrics only)");
+            let app = api::ops_router(state.clone());
+            let s = shutdown.clone();
+            tasks.spawn(async move {
+                axum::serve(private, app)
+                    .with_graceful_shutdown(s)
+                    .await
+                    .map_err(|source| Error::Serve {
+                        interface: "private",
+                        source,
+                    })
+            });
+        }
         let (state, s) = (state.clone(), shutdown.clone());
         tasks.spawn(async move { Ok(jobs::runner::run(state, s).await?) });
     }

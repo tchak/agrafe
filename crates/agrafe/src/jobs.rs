@@ -13,7 +13,7 @@ use std::time::Duration;
 use jiff::{SignedDuration, Timestamp};
 use jiff_sqlx::ToSqlx;
 use serde::{Deserialize, Serialize};
-use sqlx::{PgConnection, PgExecutor};
+use sqlx::{PgConnection, PgExecutor, Postgres, QueryBuilder};
 use uuid::Uuid;
 
 /// Why one attempt at a job failed. The message is what `last_error` keeps.
@@ -84,6 +84,210 @@ pub struct Job {
     pub last_error: Option<String>,
     #[sqlx(try_from = "crate::db::NullableTimestamp")]
     pub failed_at: Option<Timestamp>,
+    #[sqlx(try_from = "jiff_sqlx::Timestamp")]
+    pub created_at: Timestamp,
+}
+
+/// Where a job stands, as the claim query sees it. A lock older than the
+/// lease is no lock: the job is `due` or `scheduled` again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobState {
+    /// Unclaimed and runnable now.
+    Due,
+    /// Unclaimed, `run_at` in the future: a retry backing off or a purge
+    /// waiting for its delay.
+    Scheduled,
+    /// Held by a worker whose lease is current.
+    Running,
+    /// Out of attempts, kept for inspection.
+    Dead,
+}
+
+crate::str_enum!(JobState {
+    Due => "due",
+    Scheduled => "scheduled",
+    Running => "running",
+    Dead => "dead",
+});
+
+impl Job {
+    pub fn state(&self, lease: Duration, now: Timestamp) -> JobState {
+        if self.failed_at.is_some() {
+            return JobState::Dead;
+        }
+        let held = self.locked_at.is_some_and(|at| {
+            now.duration_since(at) < SignedDuration::try_from(lease).unwrap_or(SignedDuration::MAX)
+        });
+        if held {
+            JobState::Running
+        } else if self.run_at <= now {
+            JobState::Due
+        } else {
+            JobState::Scheduled
+        }
+    }
+}
+
+/// The SQL twin of `Job::state`, with the lease in seconds bound where
+/// `push_state` binds it.
+const STATE_SQL: (&str, &str) = (
+    "CASE WHEN failed_at IS NOT NULL THEN 'dead' \
+          WHEN locked_at IS NOT NULL AND locked_at >= now() - make_interval(secs => ",
+    ") THEN 'running' \
+          WHEN run_at <= now() THEN 'due' \
+          ELSE 'scheduled' END",
+);
+
+fn push_state(qb: &mut QueryBuilder<Postgres>, lease: Duration) {
+    qb.push(STATE_SQL.0)
+        .push_bind(lease.as_secs_f64())
+        .push(STATE_SQL.1);
+}
+
+/// One line of the queue census: how many jobs of `kind` are in `state`,
+/// and for the due ones how long the oldest has waited.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct Count {
+    #[sqlx(try_from = "String")]
+    pub kind: JobKind,
+    #[sqlx(try_from = "String")]
+    pub state: JobState,
+    pub count: i64,
+    pub oldest_seconds: Option<f64>,
+}
+
+/// Count the jobs by kind and state. Kinds and states with nothing in them
+/// have no row.
+pub async fn counts(exec: impl PgExecutor<'_>, lease: Duration) -> sqlx::Result<Vec<Count>> {
+    let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
+        "SELECT kind, state, count(*) AS count, \
+                EXTRACT(EPOCH FROM now() - min(run_at))::float8 AS oldest_seconds \
+         FROM (SELECT kind, run_at, ",
+    );
+    push_state(&mut qb, lease);
+    qb.push(" AS state FROM jobs) s GROUP BY kind, state");
+    qb.build_query_as().fetch_all(exec).await
+}
+
+pub const DEFAULT_LIMIT: usize = 50;
+pub const MAX_LIMIT: usize = 200;
+
+#[derive(Debug, Clone, Default)]
+pub struct ListParams {
+    pub kind: Option<JobKind>,
+    pub state: Option<JobState>,
+    pub blob_id: Option<Uuid>,
+    pub cursor: Option<i64>,
+    pub limit: usize,
+}
+
+#[derive(Debug)]
+pub struct Page {
+    pub items: Vec<Job>,
+    pub next_cursor: Option<i64>,
+}
+
+/// Newest first, keyset paginated on the id.
+pub async fn list(
+    exec: impl PgExecutor<'_>,
+    params: &ListParams,
+    lease: Duration,
+) -> sqlx::Result<Page> {
+    let limit = params.limit;
+    let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("SELECT * FROM jobs WHERE true");
+    if let Some(kind) = params.kind {
+        qb.push(" AND kind = ").push_bind(kind.as_str());
+    }
+    if let Some(state) = params.state {
+        qb.push(" AND ");
+        push_state(&mut qb, lease);
+        qb.push(" = ").push_bind(state.as_str());
+    }
+    if let Some(blob_id) = params.blob_id {
+        qb.push(" AND blob_id = ").push_bind(blob_id);
+    }
+    if let Some(cursor) = params.cursor {
+        qb.push(" AND id < ").push_bind(cursor);
+    }
+    qb.push(" ORDER BY id DESC LIMIT ")
+        .push_bind(limit as i64 + 1);
+    let mut items: Vec<Job> = qb.build_query_as().fetch_all(exec).await?;
+    let next_cursor = if items.len() > limit {
+        items.truncate(limit);
+        items.last().map(|j| j.id)
+    } else {
+        None
+    };
+    Ok(Page { items, next_cursor })
+}
+
+pub async fn find(exec: impl PgExecutor<'_>, id: i64) -> sqlx::Result<Option<Job>> {
+    sqlx::query_as::<_, Job>("SELECT * FROM jobs WHERE id = $1")
+        .bind(id)
+        .fetch_optional(exec)
+        .await
+}
+
+/// Outcome of an operator's action on a job.
+#[derive(Debug)]
+pub enum Action {
+    Done(Job),
+    /// Only a dead job can be acted on; this one is in another state.
+    NotDead(Job),
+    /// A pending job of the same kind already exists for the blob, so the
+    /// dead one has nothing to add.
+    Duplicate(Job),
+    Missing,
+}
+
+/// Give a dead job its attempts back and run it now. Workers are notified.
+pub async fn retry(conn: &mut PgConnection, id: i64) -> sqlx::Result<Action> {
+    let result = sqlx::query_as::<_, Job>(
+        "UPDATE jobs SET failed_at = NULL, locked_at = NULL, locked_by = NULL, \
+                         attempts = 0, run_at = now() \
+         WHERE id = $1 AND failed_at IS NOT NULL RETURNING *",
+    )
+    .bind(id)
+    .fetch_optional(&mut *conn)
+    .await;
+    match result {
+        Ok(Some(job)) => {
+            sqlx::query("SELECT pg_notify($1, $2)")
+                .bind(CHANNEL)
+                .bind(job.kind.as_str())
+                .execute(&mut *conn)
+                .await?;
+            Ok(Action::Done(job))
+        }
+        Ok(None) => Ok(match find(&mut *conn, id).await? {
+            Some(job) => Action::NotDead(job),
+            None => Action::Missing,
+        }),
+        Err(err) if is_unique_violation(&err) => Ok(match find(&mut *conn, id).await? {
+            Some(job) => Action::Duplicate(job),
+            None => Action::Missing,
+        }),
+        Err(err) => Err(err),
+    }
+}
+
+/// Remove a dead job. A live one is left alone: a pending job is the only
+/// thing that will finish its blob.
+pub async fn discard(conn: &mut PgConnection, id: i64) -> sqlx::Result<Action> {
+    let deleted = sqlx::query_as::<_, Job>(
+        "DELETE FROM jobs WHERE id = $1 AND failed_at IS NOT NULL RETURNING *",
+    )
+    .bind(id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(match deleted {
+        Some(job) => Action::Done(job),
+        None => match find(&mut *conn, id).await? {
+            Some(job) => Action::NotDead(job),
+            None => Action::Missing,
+        },
+    })
 }
 
 /// Insert a job. At most one pending job of each kind exists per blob, the

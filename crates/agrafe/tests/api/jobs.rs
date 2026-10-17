@@ -270,3 +270,200 @@ async fn job_queue_mechanics() {
         .unwrap();
     assert_eq!(purges, 0);
 }
+
+/// A dead job stays for an operator to look at, who can then give it its
+/// attempts back or throw it away; a live job is out of their reach.
+#[tokio::test]
+async fn operators_see_retry_and_discard_dead_jobs() {
+    use agrafe::jobs::{self, JobKind};
+    use axum::http::Method;
+
+    let app = setup().await;
+    let pool = app.state.pool();
+    let now = jiff::Timestamp::now();
+    let created = create(&app, raw_blob()).await;
+    let blob = parse_id(id_of(&created));
+
+    jobs::enqueue(pool, JobKind::Scan, Some(blob), json!({}), now)
+        .await
+        .unwrap();
+    jobs::enqueue(pool, JobKind::Purge, None, json!({}), now)
+        .await
+        .unwrap();
+    let dead: i64 = sqlx::query_scalar(
+        "UPDATE jobs SET failed_at = now(), locked_at = now(), locked_by = 'w', \
+                         attempts = 5, last_error = 'boom' \
+         WHERE kind = 'scan' RETURNING id",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    let pending: i64 = sqlx::query_scalar("SELECT id FROM jobs WHERE kind = 'purge'")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+
+    // Listing by state; the state is derived, not stored.
+    let (status, body) = call(&app.private, req(Method::GET, "/jobs?state=dead")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["items"].as_array().unwrap().len(), 1);
+    assert_eq!(body["items"][0]["id"], dead);
+    assert_eq!(body["items"][0]["kind"], "scan");
+    assert_eq!(body["items"][0]["state"], "dead");
+    assert_eq!(body["items"][0]["last_error"], "boom");
+    assert_eq!(body["items"][0]["blob_id"], blob.to_string());
+    assert_eq!(body["next_cursor"], serde_json::Value::Null);
+    let (_, body) = call(&app.private, req(Method::GET, "/jobs?state=due")).await;
+    assert_eq!(body["items"][0]["id"], pending);
+    assert_eq!(body["items"][0]["state"], "due");
+    let (_, body) = call(&app.private, req(Method::GET, "/jobs?kind=scan")).await;
+    assert_eq!(body["items"].as_array().unwrap().len(), 1);
+    let (_, body) = call(&app.private, req(Method::GET, "/jobs?limit=1")).await;
+    assert_eq!(body["items"][0]["id"], pending, "newest first");
+    assert_eq!(body["next_cursor"], pending);
+    let (_, body) = call(
+        &app.private,
+        req(Method::GET, &format!("/jobs?limit=1&cursor={pending}")),
+    )
+    .await;
+    assert_eq!(body["items"][0]["id"], dead);
+    let (status, body) = call(&app.private, req(Method::GET, "/jobs?state=bogus")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, _) = call(&app.private, req(Method::GET, "/jobs?limit=0")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let (status, body) = call(&app.private, req(Method::GET, &format!("/jobs/{dead}"))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["attempts"], 5);
+    let (status, _) = call(&app.private, req(Method::GET, "/jobs/999999")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // A pending job is nobody's to retry or discard.
+    let (status, body) = call(
+        &app.private,
+        req(Method::POST, &format!("/jobs/{pending}/retry")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "conflict");
+    let (status, _) = call(
+        &app.private,
+        req(Method::DELETE, &format!("/jobs/{pending}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // Retrying makes the dead job due again, with a fresh attempt budget.
+    let (status, body) = call(
+        &app.private,
+        req(Method::POST, &format!("/jobs/{dead}/retry")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], "due");
+    assert_eq!(body["attempts"], 0);
+    assert_eq!(body["failed_at"], serde_json::Value::Null);
+    assert_eq!(body["last_error"], "boom", "kept until the next attempt");
+    let claimed = jobs::claim(
+        pool,
+        &[JobKind::Scan],
+        "w1",
+        std::time::Duration::from_secs(600),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(claimed.id, dead);
+
+    // A dead job whose blob got a newer pending twin has nothing to add.
+    sqlx::query("UPDATE jobs SET failed_at = now(), locked_at = now() WHERE id = $1")
+        .bind(dead)
+        .execute(pool)
+        .await
+        .unwrap();
+    assert!(
+        jobs::enqueue(pool, JobKind::Scan, Some(blob), json!({}), now)
+            .await
+            .unwrap()
+    );
+    let (status, body) = call(
+        &app.private,
+        req(Method::POST, &format!("/jobs/{dead}/retry")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("already pending")
+    );
+
+    // Discarding is for dead jobs, once.
+    let (status, _) = call(&app.private, req(Method::DELETE, &format!("/jobs/{dead}"))).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = call(&app.private, req(Method::DELETE, &format!("/jobs/{dead}"))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = call(&app.private, req(Method::GET, &format!("/jobs/{dead}"))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// The queue gauges come from the table, the run counters from the process
+/// that ran the job; both show on the private port.
+#[tokio::test]
+async fn metrics_report_queue_depth_and_runs() {
+    use axum::http::Method;
+
+    let app = setup().await;
+    let scrape = || async {
+        let (status, body) = call(&app.private, req(Method::GET, "/metrics")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        body.as_str().unwrap().to_string()
+    };
+
+    let text = scrape().await;
+    assert!(
+        text.contains("agrafe_jobs{kind=\"scan\",state=\"due\"} 0"),
+        "{text}"
+    );
+    assert!(
+        text.contains("agrafe_job_runs_total{kind=\"scan\",outcome=\"ok\"} 0"),
+        "{text}"
+    );
+
+    // Too big for an inline scan: the scan is a due job.
+    let bytes = png_bytes(5000);
+    let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
+    let (status, body) = put_private(&app, id_of(&created), bytes).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let text = scrape().await;
+    assert!(
+        text.contains("agrafe_jobs{kind=\"scan\",state=\"due\"} 1"),
+        "{text}"
+    );
+    let oldest = text
+        .lines()
+        .find(|l| l.starts_with("agrafe_jobs_oldest_due_seconds{kind=\"scan\"}"))
+        .unwrap_or_else(|| panic!("{text}"));
+    let age: f64 = oldest.rsplit(' ').next().unwrap().parse().unwrap();
+    assert!(age >= 0.0, "{oldest}");
+
+    assert!(run_scan_job(&app).await);
+    let text = scrape().await;
+    assert!(
+        text.contains("agrafe_jobs{kind=\"scan\",state=\"due\"} 0"),
+        "{text}"
+    );
+    assert!(
+        text.contains("agrafe_jobs{kind=\"render\",state=\"due\"} 1"),
+        "{text}"
+    );
+    assert!(
+        text.contains("agrafe_job_runs_total{kind=\"scan\",outcome=\"ok\"} 1"),
+        "{text}"
+    );
+    assert!(
+        text.contains("agrafe_job_duration_seconds_count{kind=\"scan\"} 1"),
+        "{text}"
+    );
+}

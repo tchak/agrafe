@@ -3,6 +3,7 @@
 
 pub mod body;
 pub mod extract;
+pub mod jobs;
 pub mod json;
 pub mod original;
 pub mod private;
@@ -13,18 +14,22 @@ pub mod urls;
 
 use axum::Router;
 use axum::body::Body;
-use axum::http::Request;
+use axum::extract::State;
+use axum::http::{Request, header};
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use tower_http::trace::TraceLayer;
 
 use crate::app::AppState;
-use crate::error::ApiError;
+use crate::error::{ApiError, ApiResult};
 use crate::upload;
 
 pub fn private_router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
+        .route("/metrics", get(metrics))
         .merge(private::routes(upload::body_limit(&state.config().upload)))
+        .merge(jobs::routes())
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
         .layer(TraceLayer::new_for_http())
@@ -51,8 +56,37 @@ pub fn public_router(state: AppState) -> Router {
         .with_state(state)
 }
 
+/// What a process without an API serves on the private address: enough
+/// for liveness checks and scraping.
+pub fn ops_router(state: AppState) -> Router {
+    Router::new()
+        .route("/healthz", get(healthz))
+        .route("/metrics", get(metrics))
+        .fallback(not_found)
+        .method_not_allowed_fallback(method_not_allowed)
+        .layer(TraceLayer::new_for_http())
+        .with_state(state)
+}
+
 async fn healthz() -> &'static str {
     "ok"
+}
+
+async fn metrics(State(state): State<AppState>) -> ApiResult<Response> {
+    let lease = state.config().jobs.lease_timeout;
+    let body = state
+        .metrics()
+        .render(state.pool(), lease)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok((
+        [(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        body,
+    )
+        .into_response())
 }
 
 async fn not_found() -> ApiError {

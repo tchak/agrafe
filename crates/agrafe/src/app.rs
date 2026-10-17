@@ -7,6 +7,7 @@ use sqlx::PgPool;
 use crate::clamav::Clamd;
 use crate::config::{Config, ConfigError};
 use crate::encryption::Keks;
+use crate::metrics::Metrics;
 use crate::signing::Signer;
 use crate::storage::{self, Store};
 
@@ -29,6 +30,7 @@ struct Inner {
     signer: Signer,
     keks: Keks,
     clamd: Clamd,
+    metrics: Metrics,
 }
 
 impl AppState {
@@ -44,6 +46,7 @@ impl AppState {
             signer,
             keks,
             clamd,
+            metrics: Metrics::new(),
         })))
     }
 
@@ -69,5 +72,9 @@ impl AppState {
 
     pub fn clamd(&self) -> &Clamd {
         &self.0.clamd
+    }
+
+    pub fn metrics(&self) -> &Metrics {
+        &self.0.metrics
     }
 }
