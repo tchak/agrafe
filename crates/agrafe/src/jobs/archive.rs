@@ -338,7 +338,15 @@ impl<'a> Manifest<'a> {
 /// The names given out so far, compared case-insensitively since
 /// `Report.pdf` and `report.pdf` land on the same file when extracted on
 /// macOS or Windows.
-pub struct Taken(HashSet<String>);
+pub struct Taken {
+    names: HashSet<String>,
+    /// Where the counter of a path that collided stands, by the path's
+    /// lowercase form, so a manifest of ten thousand `facture.pdf` costs ten
+    /// thousand claims and not fifty million: without it each claim would
+    /// start over from 1 and the pass would be quadratic, half a minute of
+    /// CPU on the worker for twenty thousand duplicates.
+    counters: HashMap<String, u64>,
+}
 
 impl Default for Taken {
     fn default() -> Self {
@@ -348,16 +356,20 @@ impl Default for Taken {
 
 impl Taken {
     pub fn new() -> Self {
-        let mut taken = HashSet::new();
-        taken.insert(ERRORS_FILE.to_lowercase());
-        Self(taken)
+        let mut names = HashSet::new();
+        names.insert(ERRORS_FILE.to_lowercase());
+        Self {
+            names,
+            counters: HashMap::new(),
+        }
     }
 
     /// The name `path` gets: itself when free, else `stem-1.ext`,
     /// `stem-2.ext`, ... with the counter before the last extension of the
     /// last component, the first free one. The name is taken in turn.
     pub fn claim(&mut self, path: &str) -> String {
-        if self.0.insert(path.to_lowercase()) {
+        let lower = path.to_lowercase();
+        if self.names.insert(lower.clone()) {
             return path.to_string();
         }
         let (dir, file) = match path.rsplit_once('/') {
@@ -368,10 +380,16 @@ impl Taken {
             Some((stem, _)) if !stem.is_empty() => (stem, &file[stem.len()..]),
             _ => (file, ""),
         };
-        (1u64..)
-            .map(|n| format!("{dir}{stem}-{n}{ext}"))
-            .find(|candidate| self.0.insert(candidate.to_lowercase()))
-            .expect("the counter is unbounded")
+        // A name the backend sent itself may sit on the counter; each is
+        // skipped once, so the whole pass stays linear in the manifest.
+        let next = self.counters.entry(lower).or_insert(1);
+        loop {
+            let candidate = format!("{dir}{stem}-{next}{ext}");
+            *next += 1;
+            if self.names.insert(candidate.to_lowercase()) {
+                return candidate;
+            }
+        }
     }
 }
 
@@ -470,5 +488,25 @@ mod tests {
         assert_eq!(taken.claim(".bashrc"), ".bashrc");
         assert_eq!(taken.claim(".bashrc"), ".bashrc-1");
         assert_eq!(taken.claim("errors.txt"), "errors-1.txt", "reserved");
+    }
+
+    /// Every claim of a repeated path costs one candidate, so a manifest of
+    /// identical names is linear: fifty thousand of them in well under a
+    /// second, where restarting the counter each time took minutes.
+    #[test]
+    fn dedupe_is_linear_in_the_manifest() {
+        let mut taken = Taken::new();
+        let started = std::time::Instant::now();
+        for i in 0..50_000u64 {
+            let name = taken.claim("factures/facture.pdf");
+            if i > 0 {
+                assert_eq!(name, format!("factures/facture-{i}.pdf"));
+            }
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "took {:?}",
+            started.elapsed()
+        );
     }
 }
