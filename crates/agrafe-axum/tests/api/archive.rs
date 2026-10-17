@@ -677,3 +677,40 @@ async fn dropped_part_is_aborted() {
     let (status, _) = put_part(&app, id, 1, line).await;
     assert_eq!(status, StatusCode::OK);
 }
+
+/// A member larger than the look-ahead reads whole is opened when its turn
+/// comes and streamed; small ones around it are prefetched. The archive
+/// comes out the same either way.
+#[tokio::test]
+async fn large_members_are_streamed_when_reached() {
+    let app = setup_tuned(fake_clamd().await, |c| {
+        c.upload.max_size = bytesize::ByteSize::mib(10);
+    })
+    .await;
+    let big_bytes = png_bytes(9 * 1024 * 1024);
+    let big = ready_blob(&app, &big_bytes).await;
+    let small = ready_blob(&app, &png_bytes(500)).await;
+    let created = create(&app, archive_blob("mixed.zip")).await;
+    let id = id_of(&created);
+    let (status, body) = put_private(
+        &app,
+        id,
+        manifest(&[
+            ("a.png", id_of(&small)),
+            ("big.png", id_of(&big)),
+            ("c.png", id_of(&small)),
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(run_job(&app, JobKind::Archive).await);
+    let built = get_blob(&app, id).await;
+    assert_eq!(built["state"], "ready", "{built}");
+    assert_eq!(built["archive_entries"], 3);
+    let entries = unzip(&download(&app, &built).await);
+    let names: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["a.png", "big.png", "c.png"]);
+    assert_eq!(entries[0].1, png_bytes(500));
+    assert_eq!(entries[1].1, big_bytes);
+    assert_eq!(entries[2].1, png_bytes(500));
+}

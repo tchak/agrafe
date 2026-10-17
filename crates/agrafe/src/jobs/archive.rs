@@ -1,7 +1,8 @@
 //! Building an `archive` blob: the manifest parts read back in order, each
 //! member streamed into a stored ZIP entry, the ZIP encrypted and uploaded
 //! in 32 MiB parts as it is produced. Nothing touches local disk and nothing
-//! is held whole in memory. See DESIGN.md, "Build" and "Archives".
+//! larger than a small member is held whole in memory. See DESIGN.md,
+//! "Build" and "Archives".
 //!
 //! A member that was `ready` at accept time may be gone by now: it is
 //! skipped and listed in an `ERRORS.txt` at the root, and the row counts
@@ -38,10 +39,17 @@ use crate::upload::{self, PART_CONCURRENCY};
 /// 5 MiB would cap an archive at 50 GB.
 const BUILD_PART_SIZE: usize = 32 * 1024 * 1024;
 
-/// Members opened ahead of the one being copied: most entries are small,
+/// Members fetched ahead of the one being copied: most entries are small,
 /// and a serial build would wait longer for the first byte of each object
 /// than it spends copying it.
 const LOOKAHEAD: usize = 4;
+
+/// Members up to this size are read whole when fetched ahead, so the
+/// look-ahead never leaves a response open and idle while a long entry
+/// copies, which an object store cuts off after a while and which would
+/// fail the attempt. A larger member is opened when its turn comes. Memory
+/// for the look-ahead is bounded by `LOOKAHEAD` times this.
+const PREFETCH_MAX: u64 = 8 * 1024 * 1024;
 
 /// Manifest lines resolved per database query.
 const BATCH: usize = 256;
@@ -194,14 +202,24 @@ async fn assemble(state: &Agrafe, blob: &Blob, sink: &mut Sink) -> Result<(u64, 
                 Outcome::Member {
                     size,
                     uploaded_at,
-                    mut reader,
+                    body,
                 } => {
                     let name = taken.claim(&entry.path);
                     let time = DosTime::from_timestamp(uploaded_at.unwrap_or(now));
                     sink.write(&zip.begin_entry(&name, size, time)?).await?;
-                    while let Some(segment) = reader.next_segment().await? {
-                        zip.data(&segment)?;
-                        sink.write(&segment).await?;
+                    match body {
+                        Body::Loaded(segments) => {
+                            for segment in &segments {
+                                copy_segment(&mut zip, sink, segment).await?;
+                            }
+                        }
+                        Body::Deferred(member, stored) => {
+                            let mut reader =
+                                Reader::open(state, &member, &stored, 0..stored.size).await?;
+                            while let Some(segment) = reader.next_segment().await? {
+                                copy_segment(&mut zip, sink, &segment).await?;
+                            }
+                        }
                     }
                     sink.write(&zip.end_entry()?).await?;
                     entries += 1;
@@ -227,18 +245,36 @@ async fn assemble(state: &Agrafe, blob: &Blob, sink: &mut Sink) -> Result<(u64, 
     Ok((entries, skipped))
 }
 
+/// One plaintext segment of a member into the archive.
+async fn copy_segment(
+    zip: &mut ZipWriter,
+    sink: &mut Sink,
+    segment: &[u8],
+) -> Result<(), BuildError> {
+    zip.data(segment)?;
+    sink.write(segment).await
+}
+
 /// What became of a manifest entry when the build reached it.
 enum Outcome {
     Member {
         size: u64,
         uploaded_at: Option<Timestamp>,
-        reader: Box<Reader>,
+        body: Body,
     },
     /// Gone since accept; the reason code goes to `ERRORS.txt`.
     Skipped(&'static str),
 }
 
-/// Open the member of `entry`, which `member` is the current row of, if
+/// A member's bytes, by how the look-ahead left them.
+enum Body {
+    /// At most `PREFETCH_MAX` bytes, read whole ahead of their turn.
+    Loaded(Vec<Bytes>),
+    /// Larger: opened and streamed when its turn comes.
+    Deferred(Box<Blob>, Stored),
+}
+
+/// Fetch the member of `entry`, which `member` is the current row of, if
 /// any. A row in another state than `ready` is a skip, not an error: it
 /// was ready at accept, and only a delete or an expiry moves it since.
 async fn open_member(
@@ -255,13 +291,24 @@ async fn open_member(
         return Ok((entry, Outcome::Skipped(state_now.as_str())));
     }
     let stored = Stored::from_blob(&member)?;
-    let reader = Reader::open(state, &member, &stored, 0..stored.size).await?;
+    let size = stored.size;
+    let uploaded_at = member.uploaded_at;
+    let body = if size <= PREFETCH_MAX {
+        let mut reader = Reader::open(state, &member, &stored, 0..size).await?;
+        let mut segments = Vec::with_capacity(stored.layout.segment_count(size) as usize);
+        while let Some(segment) = reader.next_segment().await? {
+            segments.push(segment);
+        }
+        Body::Loaded(segments)
+    } else {
+        Body::Deferred(Box::new(member), stored)
+    };
     Ok((
         entry,
         Outcome::Member {
-            size: stored.size,
-            uploaded_at: member.uploaded_at,
-            reader: Box::new(reader),
+            size,
+            uploaded_at,
+            body,
         },
     ))
 }

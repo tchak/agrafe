@@ -604,10 +604,15 @@ which is every desktop tool, handle data descriptors; strictly sequential
 readers of stored entries may not, which is accepted.
 
 Sources are read in manifest order through the usual decrypting reader, a
-few opened ahead of the one being copied, because most entries are small
+few fetched ahead of the one being copied, because most entries are small
 and a serial build would spend longer waiting for the first byte of each
-object than copying it. Memory is bounded by the segment size times the
-look-ahead plus the parts in flight.
+object than copying it. A member up to 8 MiB, which is most of them, is
+read whole when fetched ahead; a larger one is opened when its turn comes.
+Holding a response open and idle while a long entry copies is what the
+look-ahead must not do: an object store cuts such a connection off after a
+while, and that would fail the attempt. Memory is bounded by 8 MiB times
+the look-ahead, plus a segment for the member being streamed and the parts
+in flight.
 
 A source that was `ready` at accept time can be deleted, expire or be purged
 before the build reaches it. The build does not fail for it: the entry is
