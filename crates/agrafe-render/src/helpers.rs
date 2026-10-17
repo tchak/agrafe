@@ -11,10 +11,6 @@ use agrafe_sandbox::{self as sandbox, Outcome};
 use crate::vips::Fit;
 use crate::{Config, Error};
 
-/// Bytes of a text file the `agrafe-render-text` helper is handed; more
-/// would not fit on its page.
-pub const TEXT_SAMPLE_LEN: u64 = 8 * 1024;
-
 /// How a helper run ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Helper {

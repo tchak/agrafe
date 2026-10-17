@@ -71,7 +71,6 @@ dependencies = [
  "base64 0.23.1",
  "bytes",
  "bytesize",
- "clap",
  "figment",
  "form_urlencoded",
  "futures",
@@ -93,7 +92,6 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tracing",
- "tracing-subscriber",
  "uuid",
 ]
 
@@ -171,6 +169,7 @@ name = "agrafe-render-text"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
+ "agrafe-types",
  "clap",
 ]
 

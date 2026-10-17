@@ -19,9 +19,10 @@
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use agrafe_render::helpers::{self, Helper, TEXT_SAMPLE_LEN};
+use agrafe_render::helpers::{self, Helper};
 use agrafe_render::vips::{self, Fit, Input};
 use agrafe_render::{Source, sources, text_sample};
+use agrafe_types::text::SAMPLE_LEN as TEXT_SAMPLE_LEN;
 use tokio::io::AsyncWriteExt;
 
 use super::{Job, JobError, JobKind};

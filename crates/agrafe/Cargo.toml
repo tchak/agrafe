@@ -16,7 +16,6 @@ agrafe-types = { version = "0.1.0", path = "../agrafe-types" }
 base64 = "0.23.1"
 bytes = "1"
 bytesize = { version = "2.7.0", features = ["serde"] }
-clap = { version = "4.6.7", features = ["derive", "env"] }
 figment = { version = "0.10.19", features = ["toml", "env"] }
 form_urlencoded = "1.2.2"
 futures = "0.3.34"
@@ -35,10 +34,9 @@ sha2 = "0.11.1"
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "migrate", "macros", "uuid", "json"] }
 tempfile = "3.27.0"
 thiserror = "2.0.21"
-tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "signal", "net", "io-util", "sync", "time", "process", "fs"] }
+tokio = { version = "1.53.3", features = ["rt", "macros", "net", "io-util", "sync", "time", "process", "fs"] }
 tokio-stream = "0.1.17"
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 uuid = { version = "1.28.0", features = ["v7", "serde"] }
 
 [dev-dependencies]

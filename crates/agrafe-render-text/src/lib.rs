@@ -8,11 +8,9 @@
 use std::borrow::Cow;
 
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont, point};
+use agrafe_types::text::is_bidi_control;
 
 const FONT: &[u8] = include_bytes!("../assets/fonts/DejaVuSansMono.ttf");
-
-/// Bytes of the file looked at; more would not fit on the page.
-pub const SAMPLE_LEN: u64 = 8 * 1024;
 
 /// Characters per line and lines per page.
 const COLUMNS: usize = 32;
@@ -67,13 +65,6 @@ fn windows_1252(byte: u8) -> char {
         0x80..=0x9f => C1[usize::from(byte - 0x80)],
         other => char::from(other),
     }
-}
-
-/// Bidirectional formatting characters. `char::is_control` covers only the
-/// C0 and C1 controls, and these can make `invoice\u{202E}fdp.exe` display
-/// as `invoiceexe.pdf` in a download prompt, a URL bar or a thumbnail.
-pub fn is_bidi_control(c: char) -> bool {
-    matches!(c, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
 }
 
 /// The first `ROWS` lines, tabs expanded, cut at `COLUMNS`, with control

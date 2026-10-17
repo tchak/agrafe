@@ -22,8 +22,8 @@ See "Crates" in `DESIGN.md` for the dependency graph.
   `agrafe`.
 - `crates/agrafe-crypto` — streaming AEAD and key wrapping, reviewed in
   isolation; no dependency on the server crate.
-- `crates/agrafe-types` — content types, classification, sniffing,
-  `str_enum!`. Pure; shared by every other crate.
+- `crates/agrafe-types` — content types, classification, sniffing, the
+  text-sample contract, `str_enum!`. Pure; shared by every other crate.
 - `crates/agrafe-sandbox` — subprocesses with resource limits.
 - `crates/agrafe-extract`, `crates/agrafe-render-text` — the sandboxed
   helpers, each a library plus a binary of the same name. The server does

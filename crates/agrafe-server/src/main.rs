@@ -29,12 +29,13 @@ struct Cli {
 enum Command {
     /// Run the HTTP interfaces and/or the workers.
     Serve {
-        /// Overrides server.role from the configuration.
-        #[arg(long, value_enum)]
+        /// Overrides server.role from the configuration: api, worker or
+        /// all.
+        #[arg(long)]
         role: Option<Role>,
         /// Overrides jobs.kinds: the job kinds this process runs workers
-        /// for, comma separated.
-        #[arg(long, value_enum, value_delimiter = ',')]
+        /// for, comma separated (scan, render, rows, archive, purge, reap).
+        #[arg(long, value_delimiter = ',')]
         kinds: Option<Vec<JobKind>>,
     },
     /// Apply pending database migrations.

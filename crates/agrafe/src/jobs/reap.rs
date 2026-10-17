@@ -22,15 +22,24 @@ pub async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
     let now = Timestamp::now();
     schedule(state.pool(), now + state.config().jobs.reap_interval).await?;
     let report = reap(state, now).await?;
-    tracing::info!(
-        expired = report.expired,
-        purges = report.purges,
-        reset = report.reset,
-        pruned = report.pruned,
-        "reaped"
-    );
+    if report.skipped {
+        tracing::info!("another reap is running, skipped this one");
+    } else {
+        tracing::info!(
+            expired = report.expired,
+            purges = report.purges,
+            reset = report.reset,
+            pruned = report.pruned,
+            "reaped"
+        );
+    }
     Ok(())
 }
+
+/// Advisory lock held for the length of one reap. A run longer than
+/// `jobs.reap_interval` would otherwise overlap the one it scheduled, on
+/// another process, and the two would update the same rows at once.
+const REAP_LOCK: i64 = 0x6167_7261_6665; // "agrafe"
 
 /// Enqueue a reap at `run_at`, unless one is already pending.
 pub async fn schedule(exec: impl PgExecutor<'_>, run_at: Timestamp) -> sqlx::Result<bool> {
@@ -56,12 +65,26 @@ pub struct Report {
     pub reset: usize,
     /// Dead jobs removed.
     pub pruned: u64,
+    /// Another reap was running: this one did nothing.
+    pub skipped: bool,
 }
 
-/// One pass, in one transaction, as of `now`.
+/// One pass, in one transaction, as of `now`; or nothing, when another
+/// reap holds the lock.
 pub async fn reap(state: &Agrafe, now: Timestamp) -> Result<Report, JobError> {
     let config = state.config();
     let mut tx = state.pool().begin().await?;
+
+    let held: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
+        .bind(REAP_LOCK)
+        .fetch_one(&mut *tx)
+        .await?;
+    if !held {
+        return Ok(Report {
+            skipped: true,
+            ..Report::default()
+        });
+    }
 
     let expired = repo::expire(&mut tx, now).await?;
 
@@ -103,5 +126,6 @@ pub async fn reap(state: &Agrafe, now: Timestamp) -> Result<Report, JobError> {
         purges,
         reset: reset.len(),
         pruned,
+        skipped: false,
     })
 }

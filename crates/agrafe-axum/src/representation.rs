@@ -22,7 +22,7 @@ use agrafe::Agrafe;
 use agrafe::blob::representation::Resolved;
 use agrafe::blob::urls::MAX_WAIT;
 use agrafe::blob::{Blob, Representation, RepresentationState};
-use agrafe_render::icons;
+use agrafe::icons;
 
 use super::original;
 use crate::error::{ApiError, ApiResult};

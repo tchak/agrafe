@@ -346,3 +346,59 @@ async fn a_slow_upload_is_not_a_stale_one() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["state"], "ready");
 }
+
+/// An upload the reaper gave up on, whose blob a later `PUT` took, stops
+/// at its next heartbeat instead of finishing on top of the newcomer: it
+/// answers `409`, stores nothing and leaves the row to its new owner.
+#[tokio::test]
+async fn an_upload_that_lost_its_blob_stops() {
+    let clamd = fake_clamd().await;
+    let app = setup_tuned(clamd, |c| c.upload.stale_after = Duration::from_secs(3)).await;
+    let bytes = png_bytes(3000);
+    let mut blob = blob_for(&bytes, "image/png", "raw");
+    blob["skip_virus_scan"] = json!(true);
+    let created = create(&app, blob).await;
+    let id = id_of(&created).to_string();
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(2);
+    let req = axum::http::Request::builder()
+        .method(axum::http::Method::PUT)
+        .uri(format!("/blobs/{id}"))
+        .header(axum::http::header::CONTENT_TYPE, "application/octet-stream")
+        .body(axum::body::Body::from_stream(
+            tokio_stream::wrappers::ReceiverStream::new(rx),
+        ))
+        .unwrap();
+    let router = app.private.clone();
+    let stalled = tokio::spawn(async move { call(&router, req).await });
+    tx.send(Ok(bytes::Bytes::copy_from_slice(&bytes[..1000])))
+        .await
+        .unwrap();
+    wait_for_state(&app, &id, "uploading").await;
+
+    // What the reaper does to a row it takes for abandoned, then a second
+    // upload that takes the blob and finishes.
+    sqlx::query("UPDATE blobs SET state = 'created' WHERE id = $1")
+        .bind(parse_id(&id))
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+    let (status, body) = put_private(&app, &id, bytes.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], "ready");
+
+    // The first upload notices, at its next heartbeat or at the latest
+    // before it would make its object visible, and gives up.
+    let _ = tx
+        .send(Ok(bytes::Bytes::copy_from_slice(&bytes[1000..])))
+        .await;
+    drop(tx);
+    let (status, body) = stalled.await.unwrap();
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+
+    // The newcomer's blob is untouched and its bytes are the ones stored.
+    let got = get_blob(&app, &id).await;
+    assert_eq!(got["state"], "ready");
+    assert_eq!(stored_objects(&app).await.len(), 1);
+    assert_eq!(stored_plaintext(&app, &id).await, bytes);
+}

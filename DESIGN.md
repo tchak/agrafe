@@ -38,10 +38,10 @@ into a server process. Dependencies point downwards only.
 | Crate | Contents | Depends on |
 |---|---|---|
 | `agrafe-crypto` | Streaming AEAD and key wrapping, reviewed in isolation | |
-| `agrafe-types` | Content type constants, `classify`, `sniff`, the vips loader allowlist, `str_enum!` | `infer`, `serde` |
+| `agrafe-types` | Content type constants, `classify`, `sniff`, the vips loader allowlist, the text-sample contract, `str_enum!` | `infer`, `serde` |
 | `agrafe-sandbox` | Running a subprocess with `setrlimit` bounds and a timeout; the `Limits` config | `tokio`, `libc` |
 | `agrafe-extract` | The `agrafe-extract` helper: pulls the one image out of a PDF, DOCX or ODT. Library plus binary | `agrafe-types`, `lopdf`, `zip`, `quick-xml` |
-| `agrafe-render-text` | The `agrafe-render-text` helper: rasterises a text sample. Library plus binary | `ab_glyph` |
+| `agrafe-render-text` | The `agrafe-render-text` helper: rasterises a text sample. Library plus binary | `agrafe-types`, `ab_glyph` |
 | `agrafe-render` | Which files render and from what, `vips thumbnail`, the icons, the drivers that spawn the helpers, the startup probe, the `[media]` tool config | `agrafe-types`, `agrafe-sandbox` |
 | `agrafe` | The library: config, database, blobs, upload pipeline, encryption, signing, storage, ClamAV, jobs, metrics, URL minting, and the `Agrafe` handle whose methods are the private API | `agrafe-crypto`, `agrafe-types`, `agrafe-render`, `sqlx`, `object_store` |
 | `agrafe-axum` | The two HTTP interfaces as axum routers, the extractors, `ApiError` and the mapping of the library's errors onto status codes | `agrafe`, `axum` |
@@ -293,7 +293,12 @@ rule. Stale means abandoned, not slow: the pipeline touches
 `upload_heartbeat_at` every third of `upload.stale_after` (default ten
 minutes) while it runs, so an upload of any length keeps its row as long as
 the process running it is alive, and only one that stopped mid-way gets reset
-once `stale_after` has passed without a touch.
+once `stale_after` has passed without a touch. `upload_started_at` is the
+upload's claim on the row: the touch, the completion and the reset after a
+failure all carry it. An upload that finds its row taken away, at a touch or
+at the last check before its object would become visible, stops with `409`
+and stores nothing, so one the reaper gave up on can neither finish on top
+of the `PUT` that took the blob since nor hand that upload's row back.
 
 A soft delete schedules a purge of the objects `upload.purge_delay` (default one
 hour) later, long enough for a download that started before the delete to
@@ -947,7 +952,10 @@ superseded by the one it scheduled rather than retried with backoff or left
 dead, and the error goes to the log. The runner enqueues the first one when it
 starts. The unique index on pending jobs treats a null `blob_id` as a value,
 so blob-less kinds dedupe like the rest and however many processes start, or
-restart while a reap is pending, one row is pending at a time.
+restart while a reap is pending, one row is pending at a time. A reap holds
+an advisory lock for its transaction, so a run longer than the interval and
+the one it scheduled, on another process, never update the same rows at
+once: the second finds the lock taken and does nothing.
 
 A purge refuses a blob that is not in a terminal state and fails instead,
 leaving the job in the table as evidence of the bug that enqueued it. An

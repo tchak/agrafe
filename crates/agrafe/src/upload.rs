@@ -179,7 +179,12 @@ where
 }
 
 /// Encrypt and store `body` as the original of `blob`, which is in
-/// `uploading`, then complete or abort the transition.
+/// `uploading`, then complete or abort the transition. `blob` is the row as
+/// `begin_upload` returned it: its `upload_started_at` is this upload's
+/// claim on the row, checked by every write to it from here on. An upload
+/// the reaper gave up on, whose blob a later `PUT` may own by now, stops
+/// rather than finishing on top of its successor, and leaves the row to
+/// whoever has it.
 async fn store_and_complete<S>(
     state: Agrafe,
     blob: Blob,
@@ -189,32 +194,34 @@ async fn store_and_complete<S>(
 where
     S: Stream<Item = Result<Bytes, BoxError>> + Unpin,
 {
+    let started = blob
+        .upload_started_at
+        .expect("begin_upload sets upload_started_at");
     let storage_key = object_key(blob.id);
     let envelope = state.keks().new_envelope(blob.id);
     let layout = state.keks().layout();
     let scanner = inline_scanner(&state, &blob, &declared).await;
 
-    // The row is touched while the bytes flow, so the reaper only resets
-    // an upload whose process died, never a slow one.
-    let stored = tokio::select! {
-        stored = stream_to_store(
-            &state,
-            &blob,
-            &declared,
-            &storage_key,
-            &envelope.key,
-            layout,
-            scanner,
-            body,
-        ) => stored,
-        _ = heartbeat(&state, blob.id) => unreachable!("the heartbeat never ends"),
-    };
+    let stored = stream_to_store(
+        &state,
+        &blob,
+        started,
+        &declared,
+        &storage_key,
+        &envelope.key,
+        layout,
+        scanner,
+        body,
+    )
+    .await;
     let (header, scan) = match stored {
         Ok(stored) => stored,
         Err(err) => {
+            // Hands the row back if it is still this upload's; one the
+            // reaper reset, or another upload owns by now, is left alone.
             match state.pool().acquire().await {
                 Ok(mut conn) => {
-                    if let Err(db) = repo::abort_upload(&mut conn, blob.id).await {
+                    if let Err(db) = repo::abort_upload(&mut conn, blob.id, started).await {
                         tracing::error!(blob = %blob.id, error = ?db, "could not reset blob after failed upload");
                     }
                 }
@@ -236,7 +243,7 @@ where
         size: declared.size as i64,
         scan,
     };
-    match repo::complete_upload(state.pool(), &blob, &completed).await? {
+    match repo::complete_upload(state.pool(), &blob, started, &completed).await? {
         Transition::Done(blob) => match completed.scan {
             ScanOutcome::Infected(name) => {
                 tracing::warn!(blob = %blob.id, signature = name, "inline scan found a virus");
@@ -245,9 +252,16 @@ where
             _ => Ok(blob),
         },
         Transition::Conflict(current) => {
-            // The row changed under us (reaper or delete); the object we just
-            // wrote belongs to nobody.
-            delete_quietly(&state, &storage_key).await;
+            // The row changed in the moment since the last ownership check.
+            // Reset, expired or deleted, the object just written is
+            // nobody's. Under another upload, or finished by one, the
+            // object may be its: leave it.
+            if matches!(
+                current.state,
+                BlobState::Created | BlobState::Expired | BlobState::Deleted
+            ) {
+                delete_quietly(&state, &storage_key).await;
+            }
             Err(UploadError::Conflict(current.state))
         }
         Transition::Missing => {
@@ -288,20 +302,36 @@ async fn inline_scanner(state: &Agrafe, blob: &Blob, declared: &Declared) -> Sca
 }
 
 /// Touch the row every third of `upload.stale_after`, for as long as this
-/// future is polled.
-async fn heartbeat(state: &Agrafe, id: Uuid) {
+/// future is polled, and resolve the moment the row is no longer this
+/// upload's. A touch that fails for other reasons is logged and tried
+/// again at the next tick: a database blip is not a lost row.
+async fn heartbeat(state: &Agrafe, id: Uuid, started: Timestamp) -> UploadError {
     let period = (state.config().upload.stale_after / 3).max(Duration::from_secs(1));
     let mut ticks = tokio::time::interval(period);
     ticks.tick().await; // the first tick is immediate; the transition just set it
     loop {
         ticks.tick().await;
-        match repo::touch_upload(state.pool(), id).await {
+        match repo::touch_upload(state.pool(), id, started).await {
             Ok(true) => {}
-            Ok(false) => tracing::warn!(blob = %id, "upload no longer owns its blob"),
+            Ok(false) => {
+                tracing::warn!(blob = %id, "upload lost its blob, stopping");
+                return lost(state, id).await;
+            }
             Err(err) => {
                 tracing::warn!(blob = %id, error = ?err, "could not touch the uploading blob")
             }
         }
+    }
+}
+
+/// What to answer once the row is no longer this upload's: whatever state
+/// it is in now (`deleted`, `expired`, `created` after the reaper, or
+/// `uploading` under the `PUT` that took it since), or gone.
+async fn lost(state: &Agrafe, id: Uuid) -> UploadError {
+    match repo::find(state.pool(), id).await {
+        Ok(Some(blob)) => UploadError::Conflict(blob.state),
+        Ok(None) => UploadError::NotFound,
+        Err(err) => err.into(),
     }
 }
 
@@ -312,12 +342,13 @@ async fn delete_quietly(state: &Agrafe, key: &str) {
 }
 
 /// Encrypt `body` into a new object. Returns the stream header and the scan
-/// outcome on success; on failure the multipart upload is aborted and
-/// nothing is left behind.
+/// outcome on success; on failure, or once the row is no longer this
+/// upload's, the multipart upload is aborted and nothing is left behind.
 #[allow(clippy::too_many_arguments)]
 async fn stream_to_store<S>(
     state: &Agrafe,
     blob: &Blob,
+    started: Timestamp,
     declared: &Declared,
     storage_key: &str,
     key: &Key,
@@ -333,16 +364,31 @@ where
     let mut writer = WriteMultipart::new(upload);
     let encryptor = Encryptor::new(key, storage_key.as_bytes(), layout);
     let header = encryptor.header().as_bytes().to_vec();
-    match pump(
-        &mut writer,
-        encryptor,
-        declared,
-        &blob.content_type,
-        scanner,
-        body,
-    )
-    .await
-    {
+    // The row is touched while the bytes flow, so the reaper only resets
+    // an upload whose process died, never a slow one; and an upload whose
+    // row was taken away stops here.
+    let pumped = tokio::select! {
+        scan = pump(
+            &mut writer,
+            encryptor,
+            declared,
+            &blob.content_type,
+            scanner,
+            body,
+        ) => scan,
+        lost = heartbeat(state, blob.id, started) => Err(lost),
+    };
+    // One last look before the object becomes visible: every key is the
+    // blob's, so the object must only ever be finished by the upload that
+    // holds the row.
+    let stored = match pumped {
+        Ok(scan) => match repo::touch_upload(state.pool(), blob.id, started).await? {
+            true => Ok(scan),
+            false => Err(lost(state, blob.id).await),
+        },
+        Err(err) => Err(err),
+    };
+    match stored {
         Ok(scan) => {
             writer.finish().await?;
             Ok((header, scan))

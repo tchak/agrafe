@@ -5,6 +5,7 @@
 
 pub mod classify;
 pub mod sniff;
+pub mod text;
 
 pub use classify::{Category, classify};
 

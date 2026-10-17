@@ -81,7 +81,7 @@ pub struct ServerConfig {
     pub role: Role,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, clap::ValueEnum, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
     Api,
@@ -89,6 +89,12 @@ pub enum Role {
     #[default]
     All,
 }
+
+agrafe_types::str_enum!(Role {
+    Api => "api",
+    Worker => "worker",
+    All => "all",
+});
 
 impl Role {
     pub fn runs_api(self) -> bool {

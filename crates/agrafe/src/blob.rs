@@ -247,8 +247,9 @@ pub struct Blob {
     pub skip_virus_scan: bool,
     #[sqlx(try_from = "crate::db::NullableTimestamp")]
     pub expires_at: Option<Timestamp>,
-    /// Copied onto every job enqueued for the blob.
-    #[sqlx(try_from = "String")]
+    /// Copied onto every job enqueued for the blob. Stored as its rank,
+    /// like on `jobs`.
+    #[sqlx(try_from = "i16")]
     pub priority: Priority,
 
     #[sqlx(try_from = "String")]

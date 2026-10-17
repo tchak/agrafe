@@ -12,7 +12,7 @@ use super::{
 };
 use crate::clamav::Verdict;
 use crate::classify::Category;
-use crate::jobs::{self, JobKind};
+use crate::jobs::{self, JobKind, Priority};
 
 pub async fn insert(exec: impl PgExecutor<'_>, new: &NewBlob) -> sqlx::Result<Blob> {
     let scan_state = if new.skip_virus_scan {
@@ -41,7 +41,7 @@ pub async fn insert(exec: impl PgExecutor<'_>, new: &NewBlob) -> sqlx::Result<Bl
     .bind(new.skip_virus_scan)
     .bind(new.expires_at.map(ToSqlx::to_sqlx))
     .bind(scan_state.as_str())
-    .bind(new.priority.as_str())
+    .bind(new.priority.rank())
     .fetch_one(exec)
     .await
 }
@@ -155,20 +155,51 @@ pub async fn begin_upload(conn: &mut PgConnection, blob: &Blob) -> sqlx::Result<
 }
 
 /// A failed upload hands the blob back to `created`: nothing was stored. The
-/// stale-upload reaper applies the same rule.
-pub async fn abort_upload(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Transition> {
-    transition(conn, id, &[BlobState::Uploading], BlobState::Created).await
+/// stale-upload reaper applies the same rule. `started` is the upload's
+/// `upload_started_at`, its proof of ownership: once the reaper has reset
+/// the row and another upload has taken it, this one must not touch it.
+pub async fn abort_upload(
+    conn: &mut PgConnection,
+    id: Uuid,
+    started: Timestamp,
+) -> sqlx::Result<Transition> {
+    let updated = sqlx::query_as::<_, Blob>(
+        "UPDATE blobs SET state = $2 \
+         WHERE id = $1 AND state = $3 AND upload_started_at = $4 RETURNING *",
+    )
+    .bind(id)
+    .bind(BlobState::Created.as_str())
+    .bind(BlobState::Uploading.as_str())
+    .bind(started.to_sqlx())
+    .fetch_optional(&mut *conn)
+    .await?;
+    match updated {
+        Some(blob) => Ok(Transition::Done(blob)),
+        None => match find(&mut *conn, id).await? {
+            Some(blob) => Ok(Transition::Conflict(blob)),
+            None => Ok(Transition::Missing),
+        },
+    }
 }
 
 /// Sign of life from an upload in flight. Returns whether the blob is still
-/// `uploading`: the reaper may have reset it, or a delete taken it.
-pub async fn touch_upload(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Result<bool> {
-    let result =
-        sqlx::query("UPDATE blobs SET upload_heartbeat_at = now() WHERE id = $1 AND state = $2")
-            .bind(id)
-            .bind(BlobState::Uploading.as_str())
-            .execute(exec)
-            .await?;
+/// `uploading` under this upload, `started` being its `upload_started_at`:
+/// the reaper may have reset it, a delete taken it, or another upload
+/// begun since.
+pub async fn touch_upload(
+    exec: impl PgExecutor<'_>,
+    id: Uuid,
+    started: Timestamp,
+) -> sqlx::Result<bool> {
+    let result = sqlx::query(
+        "UPDATE blobs SET upload_heartbeat_at = now() \
+         WHERE id = $1 AND state = $2 AND upload_started_at = $3",
+    )
+    .bind(id)
+    .bind(BlobState::Uploading.as_str())
+    .bind(started.to_sqlx())
+    .execute(exec)
+    .await?;
     Ok(result.rows_affected() == 1)
 }
 
@@ -188,10 +219,12 @@ pub struct Completed {
 /// `uploading` to wherever the scan outcome leads: `uploaded` when a job
 /// still has to scan, `ready` when clean or skipped, `infected` otherwise.
 /// Points the row at the object and enqueues what comes next in the same
-/// transaction.
+/// transaction. Only the upload that began it, identified by `started`,
+/// its `upload_started_at`, may complete it.
 pub async fn complete_upload(
     pool: &PgPool,
     blob: &Blob,
+    started: Timestamp,
     done: &Completed,
 ) -> sqlx::Result<Transition> {
     let (state, scan_state) = done.scan.states();
@@ -206,7 +239,7 @@ pub async fn complete_upload(
             scanned_at = CASE WHEN $11 THEN now() END,
             scan_signature = $13,
             uploaded_at = now()
-        WHERE id = $1 AND state = $12
+        WHERE id = $1 AND state = $12 AND upload_started_at = $14
         RETURNING *
         "#,
     )
@@ -223,6 +256,7 @@ pub async fn complete_upload(
     .bind(done.scan.is_scanned())
     .bind(BlobState::Uploading.as_str())
     .bind(done.scan.signature())
+    .bind(started.to_sqlx())
     .fetch_optional(&mut *tx)
     .await?;
     let Some(updated) = updated else {
@@ -439,15 +473,15 @@ pub async fn request_representation(
         .push(" AND state = ")
         .push_bind(BlobState::Ready.as_str())
         .push(" RETURNING priority");
-    let Some(priority) = qb
-        .build_query_scalar::<String>()
+    let Some(rank) = qb
+        .build_query_scalar::<i16>()
         .fetch_optional(&mut *tx)
         .await?
     else {
         tx.rollback().await?;
         return Ok(false);
     };
-    let priority = priority.parse().unwrap_or_default();
+    let priority = Priority::try_from(rank).map_err(|e| sqlx::Error::Decode(e.into()))?;
     jobs::enqueue(
         &mut *tx,
         JobKind::Render,

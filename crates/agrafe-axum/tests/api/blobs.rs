@@ -577,8 +577,18 @@ async fn state_machine_transitions() {
         Transition::Conflict(_)
     ));
 
-    // Failure hands the write back to `created`.
-    let Transition::Done(after_abort) = repo::abort_upload(&mut conn, id).await.unwrap() else {
+    // Failure hands the write back to `created`, but only the upload that
+    // began it may do so: `upload_started_at` is its claim on the row.
+    let started = uploading.upload_started_at.unwrap();
+    let stranger = started - std::time::Duration::from_secs(1);
+    assert!(matches!(
+        repo::abort_upload(&mut conn, id, stranger).await.unwrap(),
+        Transition::Conflict(_)
+    ));
+    assert!(!repo::touch_upload(&mut *conn, id, stranger).await.unwrap());
+    assert!(repo::touch_upload(&mut *conn, id, started).await.unwrap());
+    let Transition::Done(after_abort) = repo::abort_upload(&mut conn, id, started).await.unwrap()
+    else {
         panic!("abort should apply");
     };
     assert_eq!(after_abort.state, BlobState::Created);
@@ -600,7 +610,7 @@ async fn state_machine_transitions() {
         Transition::Conflict(_)
     ));
     assert!(matches!(
-        repo::abort_upload(&mut conn, id).await.unwrap(),
+        repo::abort_upload(&mut conn, id, started).await.unwrap(),
         Transition::Conflict(_)
     ));
 
