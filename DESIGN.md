@@ -386,7 +386,10 @@ crash leaves work behind, which is what the stale-upload reaper is for: the
 task touches the row while it runs, and a row untouched for
 `upload.stale_after` has no task behind it. On S3
 the bucket also needs an `AbortIncompleteMultipartUpload` lifecycle rule, since
-a crashed process cannot abort the multipart uploads it had open.
+a crashed process cannot abort the multipart uploads it had open, and
+neither an upload nor a build can abort one whose completion request
+itself failed: the parts are in the bucket, the handle to them is gone,
+and only the rule reclaims them. One day is a fine setting.
 
 Objects are keyed `<blob id>/original`. Blobs are write-once, so the key is
 written exactly once; a failed upload aborts its multipart upload and leaves
@@ -423,7 +426,11 @@ correct for the one type that happens to be small.
 The source arrives in parts. `PUT /blobs/:id/parts/:n` stores part `n`,
 numbered from one and consecutive, and `POST /blobs/:id/finish` seals the
 source and enqueues the build. `PUT /blobs/:id` remains for a source that
-fits one request: it is part one and the finish in one call.
+fits one request: it is part one and the finish in one call. The two are
+not atomic: a `PUT` that stored its part and then failed on the finish
+leaves the blob `created` with one part, where a second `PUT` answers
+`409` since part one has landed. `GET` shows `source_parts` at one, and
+`POST /blobs/:id/finish` completes it.
 
 Why parts: the expensive side of a `rows` export is the backend, which
 paginates through a million records to produce a source of several
@@ -488,8 +495,11 @@ once: a failed attempt aborts its multipart upload and the next starts over
 from the source.
 
 No scan: a generated file contains only what the service wrote, from
-scanned members or from scalar values, so a generated blob is created
-`skip_virus_scan` whatever the request said. No thumbnail or preview beyond
+members that are `ready` or from scalar values, so a generated blob is
+created `skip_virus_scan` whatever the request said. A `ready` member was
+scanned clean, or was uploaded `skip_virus_scan` by the backend, which is
+its call to make for its own content and which the archive inherits: an
+archive is no more and no less trusted than its members. No thumbnail or preview beyond
 the category icon. When the build finishes the blob moves to `ready` with
 the checksum and the final size on the row. Out of attempts, the blob is stuck in `uploaded`,
 unreadable, like a scan that never completes. No new state: `uploaded`
