@@ -149,12 +149,12 @@ async fn the_first_attach_clears_the_expiry_and_the_last_detach_restores_it() {
 async fn the_default_expiry_is_configurable() {
     let clamd = fake_clamd().await;
     let app = setup_tuned(clamd, |c| {
-        c.blobs.default_expires_in = Duration::from_secs(600);
+        c.blobs.default_expires_in = Duration::from_secs(3 * 3600);
     })
     .await;
     let created = create(&app, raw_blob()).await;
     assert!(
-        about(expires_at(&created).unwrap(), Duration::from_secs(600)),
+        about(expires_at(&created).unwrap(), Duration::from_secs(3 * 3600)),
         "{created}"
     );
     let mut own = raw_blob();

@@ -361,9 +361,11 @@ use. With attachments inside, "in use" is a query and expiry is what happens
 to a blob nothing uses.
 
 **Lifetime.** A blob is created with an expiry: `expires_at` or `expires_in`
-from the request, `blobs.default_expires_in` (default one day) otherwise,
-long enough for a direct upload to be created, sent by the browser and
-attached when the form is submitted. The first attachment clears
+from the request, `blobs.default_expires_in` (default one day, at least an
+hour) otherwise, long enough for a direct upload to be created, sent by the
+browser and attached when the form is submitted. The floor is a guard on
+the configuration: below it, a form takes longer to fill than its upload
+lives. The first attachment clears
 `expires_at`; detaching the last one sets it to the default again, counted
 from that moment. There is no way to create a blob without an expiry: a blob
 is either expiring or attached, and permanence is spelled "attached". The

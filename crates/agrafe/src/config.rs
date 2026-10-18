@@ -72,6 +72,13 @@ impl Config {
                 "jobs.kinds must name at least one kind, or be omitted for all".into(),
             ));
         }
+        if self.blobs.default_expires_in < BlobsConfig::MIN_EXPIRES_IN {
+            return Err(ConfigError::Invalid(format!(
+                "blobs.default_expires_in must be at least {}: a blob created without an \
+                 expiry has to outlive the form its upload is attached from",
+                humantime_serde::re::humantime::format_duration(BlobsConfig::MIN_EXPIRES_IN)
+            )));
+        }
         if self.archive.max_size.as_u64() > ArchiveConfig::MAX_SIZE_LIMIT {
             return Err(ConfigError::Invalid(format!(
                 "archive.max_size must be at most {} bytes: the build writes 32 MiB parts, \
@@ -309,6 +316,10 @@ pub struct BlobsConfig {
 }
 
 impl BlobsConfig {
+    /// The floor on `default_expires_in`: a direct upload is attached when
+    /// its form is submitted, and a form takes as long as its user takes.
+    pub const MIN_EXPIRES_IN: Duration = Duration::from_secs(3600);
+
     /// When a blob left without an expiry at `now` expires.
     pub fn default_expires_at(&self, now: Timestamp) -> Timestamp {
         SignedDuration::try_from(self.default_expires_in)
@@ -589,6 +600,23 @@ mod tests {
             jail.set_env("AGRAFE_SERVER__PUBLIC_BASE_URL", "https://files.example/");
             let err = load(&example()).unwrap_err().to_string();
             assert!(err.contains("must not end with a slash"), "{err}");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn the_default_expiry_has_a_floor() {
+        Jail::expect_with(|jail| {
+            jail.set_env("AGRAFE_BLOBS__DEFAULT_EXPIRES_IN", "1h");
+            assert_eq!(
+                load(&example())?.blobs.default_expires_in,
+                BlobsConfig::MIN_EXPIRES_IN
+            );
+            for below in ["0s", "59m"] {
+                jail.set_env("AGRAFE_BLOBS__DEFAULT_EXPIRES_IN", below);
+                let err = load(&example()).unwrap_err().to_string();
+                assert!(err.contains("must be at least 1h"), "{below}: {err}");
+            }
             Ok(())
         });
     }

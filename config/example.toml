@@ -76,7 +76,8 @@ source_stale_after = "1d"
 # A blob created without expires_at or expires_in expires after this, long
 # enough for a direct upload to be created, sent by the browser and attached
 # when the form is submitted. The first attachment clears the expiry; the
-# last detach sets it again, counted from that moment.
+# last detach sets it again, counted from that moment. At least an hour: a
+# form takes as long as its user takes.
 default_expires_in = "1d"
 # A terminal blob's row stays this long after its objects were purged (or
 # after it went terminal with nothing to purge), answering GET /blobs/:id
