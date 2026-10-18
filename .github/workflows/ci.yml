@@ -31,8 +31,9 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-24.04
-    # The renderer needs libvips 8.16 or newer; Ubuntu 24.04 ships 8.15.
-    container: rust:trixie
+    # The renderer passes `vips thumbnail --output-profile`, which needs
+    # libvips 8.17 or newer: Ubuntu 24.04 ships 8.15, Debian trixie 8.16.
+    container: debian:forky
     services:
       postgres:
         image: postgres:17
@@ -48,12 +49,14 @@ jobs:
     env:
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/agrafe_test
     steps:
-      - uses: actions/checkout@v5
-      - name: Install libvips
+      - name: Install libvips and a toolchain's prerequisites
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends libvips-tools
+          apt-get install -y --no-install-recommends \
+            libvips-tools build-essential ca-certificates curl git
           vips --version
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build --workspace --all-targets

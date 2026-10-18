@@ -120,11 +120,11 @@ every decision.
 
 ## Quick start
 
-You need Postgres, [libvips](https://www.libvips.org/) 8.16 or newer with
+You need Postgres, [libvips](https://www.libvips.org/) 8.17 or newer with
 its `vips` command on the `PATH`, and a reachable `clamd` for virus
-scanning. On macOS, `brew install vips clamav`. On Debian trixie and later,
-install `libvips-tools`; Ubuntu 24.04 and Debian bookworm ship versions too
-old.
+scanning. On macOS, `brew install vips clamav`. Debian trixie and Ubuntu
+24.04 ship older versions; Debian forky has a recent enough
+`libvips-tools`.
 
 ```sh
 createdb agrafe_dev
