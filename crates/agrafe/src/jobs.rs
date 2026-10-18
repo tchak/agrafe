@@ -99,6 +99,7 @@ impl JobError {
     pub fn is_permanent(&self) -> bool {
         match self {
             JobError::NoBlob(_) | JobError::Unhandled(_) => true,
+            JobError::Purge(purge::PurgeError::NotTerminal(_)) => true,
             JobError::Build(err) => err.is_permanent(),
             _ => false,
         }

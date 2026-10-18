@@ -203,15 +203,17 @@ message = METHOD "\n" expires_unix "\n" path_and_query_after_token
 | `columns` | for `rows`, or `sheets` | The columns of the one sheet, in order: a list of `{"name": "...", "type": "..."}`, `type` optional. See "Rows" |
 | `sheets` | for `rows`, or `columns` | The sheets of an XLSX or ODS workbook, in order: a list of `{"name": "...", "columns": [...]}`. See "Rows" |
 | `skip_virus_scan` | no, default `false` | Private-only, backend vouches for the source |
-| `priority` | no, default `normal` | `high`, `normal` or `low`: where the blob's jobs go in their kind's queue, see "Jobs" |
+| `priority` | no, default `normal` | `high`, `normal` or `low`: where the blob's scan, render and build jobs go in their kind's queue, see "Jobs" |
 | `expires_at` or `expires_in` | no, default `blobs.default_expires_in` | Absolute timestamp or duration such as `7d`. Cleared by the first attachment, see "Attachments" |
 | `attachment` | no | `record_type`, `record_id` and `name`: attach in the same transaction as the creation, see "Attachments" |
 
 Checksum is SHA-256 because browsers compute it cheaply with
 `crypto.subtle.digest`, and S3 understands it natively.
 
-The request body is capped at 16 MiB, enough for the widest sheet's
-`columns`: 16 384 of them with a kilobyte of name each.
+The request body is capped at 16 MiB, enough for the widest single sheet's
+`columns`: 16 384 of them with a kilobyte of name each. The cap is on the
+whole declaration, so a workbook whose sheets together go beyond it is
+refused with `413`.
 
 ### Input types
 
@@ -251,8 +253,8 @@ version, re-scanning, or regenerating representations after a swap. The
 public_upload_allowed = !skip_virus_scan && input_type in (raw, multipart)
 ```
 
-Enforced twice: when minting (the private API refuses to mint a public upload
-URL for such a blob) and in the public `PUT` handler. Returned in metadata as a
+Enforced twice: when minting (the private API leaves the public upload URL
+out for such a blob) and in the public `PUT` handler. Returned in metadata as a
 computed field.
 
 ### State machine
@@ -625,8 +627,10 @@ members that are `ready` or from scalar values, so a generated blob is
 created `skip_virus_scan` whatever the request said. A `ready` member was
 scanned clean, or was uploaded `skip_virus_scan` by the backend, which is
 its call to make for its own content and which the archive inherits: an
-archive is no more and no less trusted than its members. No thumbnail or preview beyond
-the category icon. When the build finishes the blob moves to `ready` with
+archive is no more and no less trusted than its members. Once `ready`, a
+generated blob is rendered like any other: a CSV is text and gets a text
+thumbnail, an XLSX, ODS or ZIP the category icon, and none has a preview.
+When the build finishes the blob moves to `ready` with
 the checksum and the final size on the row. A failure the next attempt
 would repeat, a source line that does not parse, a row missing its key
 material, or a stored source or member that is damaged (a broken header,
@@ -1196,8 +1200,9 @@ an advisory lock for its transaction, so a run longer than the interval and
 the one it scheduled, on another process, never update the same rows at
 once: the second finds the lock taken and does nothing.
 
-A purge refuses a blob that is not in a terminal state and fails instead,
-leaving the job in the table as evidence of the bug that enqueued it. An
+A purge refuses a blob that is not in a terminal state: the job is dead at
+once, without the backoff, and stays in the table as evidence of the bug
+that enqueued it. An
 object missing between the listing and its delete is not an error, so a purge
 that runs twice is harmless.
 
@@ -1228,8 +1233,9 @@ Isolation is by kind. Every kind has its own workers, so however many slow
 jobs of one kind are queued, the others keep flowing; that is the property
 production relies on and the reason there is no priority across kinds.
 Priority orders within a kind: `high`, `normal` or `low`, set on the blob
-at creation and copied onto every job enqueued for it, blob-less jobs
-running `normal`. It orders, it does not reserve: a kind fed `high` jobs
+at creation and copied onto its scan, render and build jobs. Purges and
+blob-less jobs run `normal` whatever the blob says: they are housekeeping
+nobody waits on. It orders, it does not reserve: a kind fed `high` jobs
 without end runs its `low` ones never, which is the point for an archive
 queue and visible on the per-priority oldest-due metric for everything
 else. Scans and renders carry it too, so an interactive upload can jump a
@@ -1282,7 +1288,7 @@ is redacted so a dumped config cannot leak them. See `config/example.toml`.
 |---|---|
 | HTTP | `axum` on `tokio`, two routers sharing state, two listeners |
 | Database | Postgres via `sqlx`, migrations in `migrations/` |
-| Object store | `object_store` (local filesystem, S3, GCS, Azure behind one trait) |
+| Object store | `object_store`, local filesystem or S3 |
 | Config | `figment` with TOML and env providers |
 | Signing | `hmac` + `sha2` |
 | Encryption | `aes-gcm` + `hkdf`, Tink streaming format, own crate (`agrafe-crypto`) |

@@ -14,7 +14,8 @@ use crate::blob::{BlobState, repo};
 use crate::storage::Store;
 
 /// Why a purge could not run. A blob that is still readable is never
-/// purged: the job stays in the table, failed, as evidence of the bug.
+/// purged: the job is dead at once and stays in the table as evidence of
+/// the bug that enqueued it.
 #[derive(Debug, thiserror::Error)]
 pub enum PurgeError {
     #[error("blob is {0}, not in a terminal state")]

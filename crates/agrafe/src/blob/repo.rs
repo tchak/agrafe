@@ -559,11 +559,13 @@ pub async fn soft_delete(pool: &PgPool, id: Uuid, purge_at: Timestamp) -> sqlx::
         && blob.holds_objects()
         && blob.purged_at.is_none()
     {
+        // Housekeeping, not something a user waits on: a purge runs at
+        // `normal` whatever the blob's priority, as the reaper's do.
         jobs::enqueue(
             &mut *tx,
             JobKind::Purge,
             Some(blob.id),
-            blob.priority,
+            Priority::Normal,
             serde_json::json!({}),
             purge_at,
         )

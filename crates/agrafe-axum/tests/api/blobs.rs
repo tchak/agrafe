@@ -529,7 +529,9 @@ async fn delete_is_soft_and_idempotent() {
 #[tokio::test]
 async fn delete_enqueues_purge_when_stored() {
     let app = setup().await;
-    let (_, created) = call(&app.private, json_req(Method::POST, "/blobs", raw_blob())).await;
+    let mut blob = raw_blob();
+    blob["priority"] = json!("high");
+    let (_, created) = call(&app.private, json_req(Method::POST, "/blobs", blob)).await;
     let id = parse_id(id_of(&created));
     sqlx::query("UPDATE blobs SET state = 'ready', storage_key = 'k/1' WHERE id = $1")
         .bind(id)
@@ -538,14 +540,18 @@ async fn delete_enqueues_purge_when_stored() {
         .unwrap();
 
     assert_eq!(delete(&app, id).await, StatusCode::NO_CONTENT);
-    let (kind, blob_id, in_secs): (String, uuid::Uuid, f64) = sqlx::query_as(
-        "SELECT kind, blob_id, EXTRACT(EPOCH FROM run_at - now())::float8 FROM jobs",
+    let (kind, blob_id, priority, in_secs): (String, uuid::Uuid, i16, f64) = sqlx::query_as(
+        "SELECT kind, blob_id, priority, EXTRACT(EPOCH FROM run_at - now())::float8 FROM jobs",
     )
     .fetch_one(app.state.pool())
     .await
     .unwrap();
     assert_eq!(kind, "purge");
     assert_eq!(blob_id, id);
+    assert_eq!(
+        priority, 0,
+        "a purge runs at normal whatever the blob's priority"
+    );
     assert!((1700.0..=1800.0).contains(&in_secs), "{in_secs}");
 }
 

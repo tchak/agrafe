@@ -117,13 +117,16 @@ async fn purge_refuses_a_readable_blob() {
     assert!(run_job(&app, JobKind::Purge).await);
     assert_eq!(stored_objects(&app).await.len(), 1);
     assert_eq!(get_blob(&app, id).await["purged_at"], json!(null));
-    let error: String =
-        sqlx::query_scalar("SELECT last_error FROM jobs WHERE kind = 'purge' AND blob_id = $1")
-            .bind(parse_id(id))
-            .fetch_one(app.state.pool())
-            .await
-            .unwrap();
+    let (error, attempts, dead): (String, i32, bool) = sqlx::query_as(
+        "SELECT last_error, attempts, failed_at IS NOT NULL FROM jobs \
+         WHERE kind = 'purge' AND blob_id = $1",
+    )
+    .bind(parse_id(id))
+    .fetch_one(app.state.pool())
+    .await
+    .unwrap();
     assert_eq!(error, "purge: blob is ready, not in a terminal state");
+    assert_eq!((attempts, dead), (1, true), "dead at once, not retried");
 }
 
 #[tokio::test]

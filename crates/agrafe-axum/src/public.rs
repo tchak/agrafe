@@ -54,7 +54,7 @@ async fn upload_blob(
     req: Request,
 ) -> ApiResult<Json<PublicBlobResponse>> {
     let blob = find_visible(&state, id).await?;
-    // Defense in depth: minting already refuses these, but a leaked key must
+    // Defense in depth: minting already leaves these out, but a leaked key must
     // not turn into a policy bypass.
     if !blob.public_upload_allowed() {
         return Err(ApiError::Forbidden(
