@@ -2,6 +2,8 @@
 //! JSON array of cell values per line, positional against them, checked
 //! as the part arrives. See DESIGN.md, "Rows".
 
+use std::borrow::Cow;
+
 use bytes::Bytes;
 use jiff::civil;
 use serde::{Deserialize, Serialize};
@@ -96,7 +98,9 @@ pub fn sheet_name(filename: &str) -> String {
     }
 }
 
-/// One cell as the source gave it: a scalar, or an empty cell.
+/// One cell as the source gave it: a scalar, or an empty cell. It borrows
+/// from the line wherever it can, so that accept checks a row without
+/// copying it and the build escapes a text straight from the source.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Cell<'a> {
     Null,
@@ -104,7 +108,9 @@ pub enum Cell<'a> {
     /// The JSON lexeme, written as given rather than parsed to a float
     /// and back, so `1.10` stays `1.10`.
     Number(&'a str),
-    Text(String),
+    /// The line's own bytes when the JSON string has no escapes, which is
+    /// nearly always; decoded into a `String` otherwise.
+    Text(Cow<'a, str>),
     Date(civil::Date),
     DateTime(civil::DateTime),
 }
@@ -169,7 +175,7 @@ fn parse_cell(raw: &str, kind: Option<ColumnType>) -> Result<Cell<'_>, String> {
     match raw.as_bytes().first() {
         Some(b'n') => Ok(Cell::Null),
         Some(b'"') => {
-            let text: String = serde_json::from_str(raw).map_err(|e| e.to_string())?;
+            let text = decode_string(raw)?;
             match kind {
                 None => Ok(Cell::Text(text)),
                 Some(ColumnType::Date) => parse_date(&text)
@@ -198,6 +204,20 @@ fn parse_cell(raw: &str, kind: Option<ColumnType>) -> Result<Cell<'_>, String> {
                 Ok(Cell::Number(raw))
             }
         },
+    }
+}
+
+/// The content of a JSON string lexeme the array parse has already
+/// validated: the slice between its quotes when it holds no escape, which
+/// serde guarantees is then the string itself, decoded otherwise.
+fn decode_string(raw: &str) -> Result<Cow<'_, str>, String> {
+    let inner = &raw[1..raw.len() - 1];
+    if inner.contains('\\') {
+        serde_json::from_str(raw)
+            .map(Cow::Owned)
+            .map_err(|e| e.to_string())
+    } else {
+        Ok(Cow::Borrowed(inner))
     }
 }
 
@@ -390,6 +410,10 @@ mod tests {
                 Cell::DateTime(civil::date(2026, 10, 17).at(8, 44, 26, 500_000_000)),
             ]
         );
+        // A string without escapes is the line's own bytes.
+        assert!(matches!(&cells[0], Cell::Text(Cow::Owned(_))));
+        let cells = parse_line(r#"["plain é", 1, true, null, null]"#.as_bytes(), &cols).unwrap();
+        assert!(matches!(&cells[0], Cell::Text(Cow::Borrowed("plain é"))));
         let cells = parse_line(br#"[null, -0.5e3, false, null, null]"#, &cols).unwrap();
         assert_eq!(cells[0], Cell::Null);
         assert_eq!(cells[1], Cell::Number("-0.5e3"));
@@ -437,9 +461,9 @@ mod tests {
     fn sheet_cells_hold_so_much_text() {
         let cols = columns(&[("a", None), ("b", None)]);
         let fits = "x".repeat(MAX_SHEET_CELL_LEN);
-        let cells = vec![Cell::Text(fits.clone()), Cell::Number("1")];
+        let cells = vec![Cell::Text(fits.as_str().into()), Cell::Number("1")];
         assert_eq!(check_sheet_cells(&cells, &cols), Ok(()));
-        let cells = vec![Cell::Null, Cell::Text(format!("{fits}x"))];
+        let cells = vec![Cell::Null, Cell::Text(format!("{fits}x").into())];
         let err = check_sheet_cells(&cells, &cols).unwrap_err();
         assert!(err.starts_with("cell 2 (b): text is longer"), "{err}");
         // Counted as Excel counts, in UTF-16 units: an emoji is two.

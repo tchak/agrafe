@@ -81,10 +81,10 @@ impl SourceRows<'_> {
 }
 
 /// The header row: every column's name as a text cell.
-fn header(sheet: &Sheet) -> Vec<Cell<'static>> {
+fn header(sheet: &Sheet) -> Vec<Cell<'_>> {
     sheet
         .columns
         .iter()
-        .map(|c| Cell::Text(c.name.clone()))
+        .map(|c| Cell::Text(c.name.as_str().into()))
         .collect()
 }
