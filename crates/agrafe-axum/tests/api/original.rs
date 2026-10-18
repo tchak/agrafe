@@ -252,6 +252,64 @@ async fn get_original_corrupt_object() {
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
 }
 
+/// A stored blob whose row lost what reading needs is a 500, whichever
+/// part is missing or mangled.
+#[tokio::test]
+async fn get_original_incomplete_row() {
+    let app = setup().await;
+    let bytes = png_bytes(1500);
+    let blob = ready_blob(&app, &bytes).await;
+    let id = id_of(&blob);
+    let uri = format!("/blobs/{id}/original/photo.png");
+
+    for (damage, repair) in [
+        (
+            "UPDATE blobs SET encryption_header = NULL WHERE id = $1",
+            "UPDATE blobs SET encryption_header = $2 WHERE id = $1",
+        ),
+        (
+            "UPDATE blobs SET encryption_header = '\\x00'::bytea WHERE id = $1",
+            "UPDATE blobs SET encryption_header = $2 WHERE id = $1",
+        ),
+    ] {
+        let header: Vec<u8> =
+            sqlx::query_scalar("SELECT encryption_header FROM blobs WHERE id = $1")
+                .bind(parse_id(id))
+                .fetch_one(app.state.pool())
+                .await
+                .unwrap();
+        sqlx::query(damage)
+            .bind(parse_id(id))
+            .execute(app.state.pool())
+            .await
+            .unwrap();
+        let (status, body) = call(&app.private, req(Method::GET, &uri)).await;
+        assert_eq!(
+            status,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "{damage}: {body}"
+        );
+        assert_eq!(body["error"]["code"], "internal");
+        sqlx::query(repair)
+            .bind(parse_id(id))
+            .bind(header)
+            .execute(app.state.pool())
+            .await
+            .unwrap();
+        let (status, _, got) = fetch(&app.private, get_with(&uri, &[])).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(got, bytes);
+    }
+
+    sqlx::query("UPDATE blobs SET chunk_size = 7 WHERE id = $1")
+        .bind(parse_id(id))
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+    let (status, body) = call(&app.private, req(Method::GET, &uri)).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+}
+
 /// The bytes exist but are not served before the scan clears them.
 #[tokio::test]
 async fn original_waits_for_the_scan() {

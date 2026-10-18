@@ -585,6 +585,53 @@ async fn permanent_rows_build_failures_die_at_once() {
     assert_eq!(get_blob(&app, id).await["state"], "uploaded");
 }
 
+/// A source part damaged in the store fails the build, whether its length
+/// fits no stream or its header does not parse; nothing is written.
+#[tokio::test]
+async fn damaged_source_parts_fail_the_build() {
+    use object_store::ObjectStoreExt;
+    use object_store::path::Path as ObjectPath;
+
+    let app = setup().await;
+    type Damage = fn(&mut Vec<u8>);
+    let damages: [(&str, Damage); 2] = [
+        ("which no stream of this layout produces", |b| b.truncate(5)),
+        ("malformed stream header", |b| b[0] ^= 1),
+    ];
+    for (want, damage) in damages {
+        let created = create(&app, rows_blob("damaged.csv", "text/csv")).await;
+        let id = id_of(&created);
+        let (status, _) = put_private(&app, id, lines(&SAMPLE)).await;
+        assert_eq!(status, StatusCode::OK);
+        let key = ObjectPath::from(agrafe::blob::Blob::source_key(parse_id(id), 1));
+        let mut stored = app
+            .state
+            .store()
+            .get(&key)
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap()
+            .to_vec();
+        damage(&mut stored);
+        app.state.store().put(&key, stored.into()).await.unwrap();
+
+        assert!(run_job(&app, JobKind::Rows).await);
+        let error = last_error(&app, id).await;
+        assert!(error.contains(want), "{error}");
+        assert_eq!(get_blob(&app, id).await["state"], "uploaded");
+        let original = format!("{id}/original");
+        assert!(
+            !stored_objects(&app)
+                .await
+                .iter()
+                .any(|m| m.location.as_ref() == original),
+            "{want}"
+        );
+    }
+}
+
 /// A source larger than one flush of the writer and one encryption
 /// segment streams through whole: every row comes out, in order.
 #[tokio::test]
