@@ -25,8 +25,9 @@
 
 use std::ops::Range;
 
-use aes_gcm::aead::{Aead, Payload};
-use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+use aes_gcm::aead::inout::InOutBuf;
+use aes_gcm::aead::{Aead, AeadInOut};
+use aes_gcm::{Aes256Gcm, KeyInit, Nonce, Tag};
 use hkdf::Hkdf;
 use sha2::Sha256;
 use zeroize::Zeroizing;
@@ -324,9 +325,11 @@ impl Decryptor {
         self.layout
     }
 
-    /// Open sealed segment `index`. `last` must say whether it is the final
-    /// segment of the stream; a mismatch fails authentication.
-    pub fn open(&self, index: u64, sealed: &[u8], last: bool) -> Result<Vec<u8>, Error> {
+    /// Open sealed segment `index` where it lies: the plaintext takes the
+    /// front of `sealed`, and its length comes back. `last` must say
+    /// whether it is the final segment of the stream; a mismatch fails
+    /// authentication, and the buffer is then not to be read.
+    pub fn open_in_place(&self, index: u64, sealed: &mut [u8], last: bool) -> Result<usize, Error> {
         let index = u32::try_from(index).map_err(|_| Error::TooManySegments)?;
         let max = if index == 0 {
             self.layout.segment_size() - HEADER_LEN
@@ -337,15 +340,21 @@ impl Decryptor {
             return Err(Error::Corrupt);
         }
         let nonce = nonce(&self.nonce_prefix, index, last);
+        let len = sealed.len() - TAG_LEN;
+        let (msg, tag) = sealed.split_at_mut(len);
+        let tag = Tag::try_from(&*tag).map_err(|_| Error::Corrupt)?;
         self.cipher
-            .decrypt(
-                &nonce,
-                Payload {
-                    msg: sealed,
-                    aad: b"",
-                },
-            )
-            .map_err(|_| Error::Corrupt)
+            .decrypt_inout_detached(&nonce, b"", InOutBuf::from(msg), &tag)
+            .map_err(|_| Error::Corrupt)?;
+        Ok(len)
+    }
+
+    /// [`Decryptor::open_in_place`] into a fresh buffer.
+    pub fn open(&self, index: u64, sealed: &[u8], last: bool) -> Result<Vec<u8>, Error> {
+        let mut buffer = sealed.to_vec();
+        let len = self.open_in_place(index, &mut buffer, last)?;
+        buffer.truncate(len);
+        Ok(buffer)
     }
 }
 
@@ -365,20 +374,24 @@ pub fn encrypt(
 }
 
 /// Decrypt a whole buffer produced by [`encrypt`] or by any Tink
-/// implementation with the same parameters.
-pub fn decrypt(
+/// implementation with the same parameters, where it lies: the plaintext
+/// takes the front of `buffer`, and its length comes back. On an error
+/// the buffer is not to be read.
+pub fn decrypt_in_place(
     key: &Key,
     associated_data: &[u8],
     layout: Layout,
-    ciphertext: &[u8],
-) -> Result<Vec<u8>, Error> {
-    if ciphertext.len() < HEADER_LEN + TAG_LEN {
+    buffer: &mut [u8],
+) -> Result<usize, Error> {
+    if buffer.len() < HEADER_LEN + TAG_LEN {
         return Err(Error::Corrupt);
     }
-    let header = Header::parse(&ciphertext[..HEADER_LEN])?;
+    let header = Header::parse(&buffer[..HEADER_LEN])?;
     let dec = Decryptor::new(key, associated_data, &header, layout);
-    let mut rest = &ciphertext[HEADER_LEN..];
-    let mut out = Vec::with_capacity(rest.len());
+    // Each segment is opened where it is, then its plaintext moved down
+    // over the header and the tags before it.
+    let mut read = HEADER_LEN;
+    let mut written = 0;
     let mut index = 0u64;
     loop {
         let full = if index == 0 {
@@ -388,15 +401,31 @@ pub fn decrypt(
         };
         // A segment is the last one when nothing follows it, which includes
         // a final segment that happens to be full.
-        let last = rest.len() <= full;
-        let take = rest.len().min(full);
-        out.extend_from_slice(&dec.open(index, &rest[..take], last)?);
-        rest = &rest[take..];
+        let rest = buffer.len() - read;
+        let last = rest <= full;
+        let take = rest.min(full);
+        let len = dec.open_in_place(index, &mut buffer[read..read + take], last)?;
+        buffer.copy_within(read..read + len, written);
+        written += len;
+        read += take;
         if last {
-            return Ok(out);
+            return Ok(written);
         }
         index += 1;
     }
+}
+
+/// [`decrypt_in_place`] into a fresh buffer.
+pub fn decrypt(
+    key: &Key,
+    associated_data: &[u8],
+    layout: Layout,
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, Error> {
+    let mut buffer = ciphertext.to_vec();
+    let len = decrypt_in_place(key, associated_data, layout, &mut buffer)?;
+    buffer.truncate(len);
+    Ok(buffer)
 }
 
 #[cfg(test)]
@@ -507,6 +536,28 @@ mod tests {
             assert_eq!(ct.len() as u64, l.ciphertext_len(len as u64), "len {len}");
             assert_eq!(decrypt(&key(), b"aad", l, &ct).unwrap(), pt, "len {len}");
         }
+    }
+
+    #[test]
+    fn in_place_compacts_the_plaintext_to_the_front() {
+        let l = layout();
+        let pt: Vec<u8> = (0..300u32).map(|i| (i % 251) as u8).collect();
+        let mut buffer = encrypt(&key(), b"aad", l, &pt).unwrap();
+        let len = decrypt_in_place(&key(), b"aad", l, &mut buffer).unwrap();
+        assert_eq!(len, pt.len());
+        assert_eq!(&buffer[..len], &pt[..]);
+        // The last segment can also be opened on its own, where it lies.
+        let mut sealed = encrypt(&key(), b"aad", l, &pt).unwrap();
+        let header = Header::parse(&sealed[..HEADER_LEN]).unwrap();
+        let dec = Decryptor::new(&key(), b"aad", &header, l);
+        let last = l.segment_count(pt.len() as u64) - 1;
+        let range = l.ciphertext_range(last, pt.len() as u64);
+        let range = range.start as usize..range.end as usize;
+        let len = dec
+            .open_in_place(last, &mut sealed[range.clone()], true)
+            .unwrap();
+        let start = l.plaintext_start(last) as usize;
+        assert_eq!(&sealed[range.start..range.start + len], &pt[start..]);
     }
 
     #[test]

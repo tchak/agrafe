@@ -3,8 +3,9 @@
 //! A range of plaintext maps to a range of whole segments, fetched from the
 //! object store in one read, opened one by one and trimmed at both ends. The
 //! header cached on the row provides the salt and nonce prefix, so no second
-//! read is needed. Each byte is copied once on the way in (store chunks are
-//! gathered into a segment) and once on the way out (the decryption).
+//! read is needed. Each byte is copied once, when the store's chunks are
+//! gathered into a segment; the segment is opened where it lies and handed
+//! on as a view of that same buffer.
 
 use std::ops::Range;
 
@@ -187,7 +188,7 @@ impl Reader {
             // `ciphertext_span` has no segment to point at.
             return Ok(Self {
                 source: futures::stream::empty().boxed(),
-                buffer: BytesMut::new(),
+                buffer: BytesMut::with_capacity(stored.layout.segment_size()),
                 decryptor,
                 layout: stored.layout,
                 size: stored.size,
@@ -211,7 +212,7 @@ impl Reader {
             .boxed();
         Ok(Self {
             source,
-            buffer: BytesMut::new(),
+            buffer: BytesMut::with_capacity(stored.layout.segment_size()),
             decryptor,
             layout: stored.layout,
             size: stored.size,
@@ -252,7 +253,7 @@ impl Reader {
             len,
         })?;
         let mut source = got.into_stream().boxed();
-        let mut buffer = BytesMut::new();
+        let mut buffer = BytesMut::with_capacity(layout.segment_size());
         while buffer.len() < HEADER_LEN {
             match source.next().await {
                 Some(chunk) => buffer.extend_from_slice(&chunk?),
@@ -286,27 +287,31 @@ impl Reader {
             let range = self.layout.ciphertext_range(self.segment, self.size);
             (range.end - range.start) as usize
         };
+        // The previous segment is still held downstream, so this is one
+        // allocation per segment, rather than one per chunk gathered.
+        self.buffer.reserve(need);
         while self.buffer.len() < need {
             match self.source.next().await {
                 Some(chunk) => self.buffer.extend_from_slice(&chunk?),
                 None => return Err(ReadError::Truncated(self.segment)),
             }
         }
-        let sealed = self.buffer.split_to(need);
+        let mut sealed = self.buffer.split_to(need);
         let last = self.layout.is_last(self.segment, self.size);
-        let plain = self
+        let len = self
             .decryptor
-            .open(self.segment, &sealed, last)
+            .open_in_place(self.segment, &mut sealed, last)
             .map_err(|source| ReadError::Segment {
                 segment: self.segment,
                 source,
             })?;
-        let skip = std::mem::take(&mut self.skip).min(plain.len());
-        let take = ((plain.len() - skip) as u64).min(self.remaining) as usize;
+        sealed.truncate(len);
+        let skip = std::mem::take(&mut self.skip).min(len);
+        let take = ((len - skip) as u64).min(self.remaining) as usize;
         self.remaining -= take as u64;
         self.segment += 1;
-        // Both conversions are free: the Vec becomes the backing buffer and
-        // the slice is a view into it.
-        Ok(Some(Bytes::from(plain).slice(skip..skip + take)))
+        // Neither step copies: the buffer is frozen and the slice is a view
+        // into it.
+        Ok(Some(sealed.freeze().slice(skip..skip + take)))
     }
 }

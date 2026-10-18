@@ -7,6 +7,7 @@
 //! the original, and the stream header travels in the object itself.
 
 use agrafe_crypto::streaming;
+use bytes::{Bytes, BytesMut};
 use jiff::Timestamp;
 use object_store::ObjectStoreExt;
 use object_store::path::Path as ObjectPath;
@@ -70,7 +71,7 @@ impl Agrafe {
         &self,
         blob: &BlobHead,
         kind: Representation,
-    ) -> Result<Option<Vec<u8>>, Error> {
+    ) -> Result<Option<Bytes>, Error> {
         match load(self, &Stored::from_head(blob)?, kind).await? {
             Some(bytes) => Ok(Some(bytes)),
             None => {
@@ -148,7 +149,7 @@ pub async fn load(
     state: &Agrafe,
     stored: &Stored,
     kind: Representation,
-) -> Result<Option<Vec<u8>>, Error> {
+) -> Result<Option<Bytes>, Error> {
     let blob_id = stored.blob_id;
     let object_key = kind.object_key(blob_id);
     let sealed = match state
@@ -164,12 +165,17 @@ pub async fn load(
         .keks()
         .unwrap(blob_id, &stored.kek_id, &stored.wrapped_key)
         .map_err(ReadError::from)?;
-    let plain = streaming::decrypt(&key, object_key.as_bytes(), stored.layout, &sealed).map_err(
-        |source| Error::Corrupt {
+    // Opened where it was fetched; the store hands the buffer over whole,
+    // and a shared one is copied first.
+    let mut buffer = sealed
+        .try_into_mut()
+        .unwrap_or_else(|shared| BytesMut::from(&shared[..]));
+    let len = streaming::decrypt_in_place(&key, object_key.as_bytes(), stored.layout, &mut buffer)
+        .map_err(|source| Error::Corrupt {
             kind,
             blob_id,
             source,
-        },
-    )?;
-    Ok(Some(plain))
+        })?;
+    buffer.truncate(len);
+    Ok(Some(buffer.freeze()))
 }
