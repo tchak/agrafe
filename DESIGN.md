@@ -614,8 +614,10 @@ written row by row, the header first:
   `office:boolean-value` or `office:date-value` and the displayed text
   alongside, the ISO string for a date so a viewer without a data style
   still shows something sensible. A text's line breaks become paragraphs
-  and its tabs and runs of spaces the markup ODF needs to keep them, since
-  it collapses whitespace in a paragraph otherwise.
+  and its tabs and spaces the markup ODF needs to keep them, as
+  LibreOffice writes it: a single space between two characters is the
+  only one left as it is, since a leading, trailing or repeated one is
+  collapsed otherwise.
 
 A boolean cell is rendered by the viewer in its locale, `VRAI` and `FAUX`
 in a French Excel: that is what a typed cell is for.

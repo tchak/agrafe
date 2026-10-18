@@ -95,8 +95,10 @@ fn push_date(out: &mut Vec<u8>, iso: &str) {
     .expect("vec");
 }
 
-/// `text` as paragraphs: one per line, with tabs and runs of spaces
-/// marked up, since ODF collapses whitespace in a paragraph otherwise.
+/// `text` as paragraphs: one per line, with tabs and spaces marked up
+/// wherever ODF would collapse them otherwise: a single space between two
+/// characters is the only one kept as it is. This is what LibreOffice
+/// writes.
 fn push_paragraphs(out: &mut Vec<u8>, text: &str) {
     for line in text.split('\n') {
         out.extend_from_slice(b"<text:p>");
@@ -120,22 +122,27 @@ fn push_paragraphs(out: &mut Vec<u8>, text: &str) {
                     after_space = true;
                 }
                 ' ' => {
-                    if after_space {
-                        let mut count = 1;
-                        while chars.peek() == Some(&' ') {
-                            chars.next();
-                            count += 1;
-                        }
+                    let mut count = 1;
+                    while chars.peek() == Some(&' ') {
+                        chars.next();
+                        count += 1;
+                    }
+                    // The first space of a run between two characters is a
+                    // literal; a leading or trailing run, one after a tab
+                    // and the rest of a longer one are elements.
+                    if !after_space && chars.peek().is_some() {
+                        run.push(' ');
+                        count -= 1;
+                    }
+                    if count > 0 {
                         flush(out, &mut run);
                         if count == 1 {
                             out.extend_from_slice(b"<text:s/>");
                         } else {
                             write!(out, "<text:s text:c=\"{count}\"/>").expect("vec");
                         }
-                    } else {
-                        run.push(' ');
-                        after_space = true;
                     }
+                    after_space = true;
                 }
                 c => {
                     run.push(c);
@@ -206,7 +213,14 @@ mod tests {
         );
         assert_eq!(text(" x"), "<text:p><text:s/>x</text:p>");
         assert_eq!(text("a\tb"), "<text:p>a<text:tab/>b</text:p>");
-        assert_eq!(text("trail "), "<text:p>trail </text:p>");
+        assert_eq!(text("a \tb"), "<text:p>a <text:tab/>b</text:p>");
+        assert_eq!(text("a\t b"), "<text:p>a<text:tab/><text:s/>b</text:p>");
+        assert_eq!(text("trail "), "<text:p>trail<text:s/></text:p>");
+        assert_eq!(
+            text("trail   "),
+            r#"<text:p>trail<text:s text:c="3"/></text:p>"#
+        );
+        assert_eq!(text(" "), "<text:p><text:s/></text:p>");
         assert_eq!(text(""), "<text:p></text:p>");
     }
 }
