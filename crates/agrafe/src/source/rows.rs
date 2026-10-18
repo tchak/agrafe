@@ -422,8 +422,15 @@ pub struct Accept {
 }
 
 impl Accept {
-    pub fn new(state: &Agrafe, blob: &Blob) -> Result<Self, UploadError> {
-        let sheets = blob.sheets().ok_or(UploadError::NoColumns)?.to_vec();
+    /// Takes the sheets off `blob`, which the part has no other use for,
+    /// rather than copying a declaration that may run to megabytes.
+    pub fn new(state: &Agrafe, blob: &mut Blob) -> Result<Self, UploadError> {
+        let sheets = blob
+            .source_columns
+            .take()
+            .map(|sheets| sheets.0)
+            .filter(|sheets| !sheets.is_empty())
+            .ok_or(UploadError::NoColumns)?;
         let sheet = is_sheet(&blob.content_type);
         let current = usize::try_from(blob.source_sheet).unwrap_or(0);
         if current >= sheets.len() {

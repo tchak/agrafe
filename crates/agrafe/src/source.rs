@@ -159,7 +159,7 @@ fn finish_refusal(blob: &Blob, now: Timestamp) -> Result<(), UploadError> {
 /// `upload_started_at` is this upload's claim on it, as for a file.
 async fn store_part(
     state: Agrafe,
-    blob: Blob,
+    mut blob: Blob,
     n: u32,
     key: Key,
     layout: Layout,
@@ -171,7 +171,7 @@ async fn store_part(
     let storage_key = Blob::source_key(blob.id, n);
     let tap = match blob.input_type {
         InputType::Archive => SourceTap::Archive(archive::Accept::new(state.clone(), &blob)),
-        InputType::Rows => SourceTap::Rows(rows::Accept::new(&state, &blob)?),
+        InputType::Rows => SourceTap::Rows(rows::Accept::new(&state, &mut blob)?),
         InputType::Raw | InputType::Multipart => {
             unreachable!("prepare_part admits generated blobs only")
         }

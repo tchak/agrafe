@@ -41,6 +41,9 @@ pub async fn write(
         )
         .expect("vec");
         push_row(buf, &header(sheet));
+        // A sheet with no rows flushes nothing below, so a run of them
+        // would gather here.
+        package.flush(false).await?;
         while rows
             .next_row(|cells| push_row(package.buf(), cells))
             .await?
