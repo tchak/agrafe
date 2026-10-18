@@ -183,6 +183,15 @@ message = METHOD "\n" expires_unix "\n" path_and_query_after_token
   or ask for a permanent URL.
 - HMAC compared in constant time. Bad signature is `403`, expired is `410`, a
   valid signature on a missing blob is `404`.
+- The scheme is pinned by `fixtures/signing-vectors.json`: tokens, expiries,
+  path segments and query strings computed by the server from fixed inputs,
+  checked by a test here and by any minter elsewhere, a backend holding the
+  signing key included. Query parameters are serialised as
+  `application/x-www-form-urlencoded` (a space is `+`), sorted by name.
+  `fixtures/envelope-vectors.json` pins the envelope encoding the same way,
+  since backends store envelopes; a format change bumps the version and
+  must keep decoding them. `cargo test -p agrafe -- --ignored
+  write_vectors` regenerates both files.
 - Because everything after the token is signed, query parameters are a safe
   way for the minter to control behaviour: `disposition=attachment`, a
   filename override, `wait=<ms>` for pending representations. They are

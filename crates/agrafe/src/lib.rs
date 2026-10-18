@@ -22,3 +22,6 @@ pub mod upload;
 pub use agrafe_render::icons;
 pub use agrafe_types::{ParseEnumError, classify, sniff, text};
 pub use app::Agrafe;
+
+#[cfg(test)]
+mod vectors;
