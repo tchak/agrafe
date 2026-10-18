@@ -61,6 +61,40 @@ async fn workers_wake_on_notify_and_stop_on_shutdown() {
         "left for a render worker"
     );
 
+    // The listener's connection dies: it comes back, and the next enqueue
+    // still wakes a worker an hour before the poll would.
+    let killed: Vec<bool> = sqlx::query_scalar(
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
+         WHERE datname = current_database() AND query LIKE 'LISTEN%'",
+    )
+    .fetch_all(app.state.pool())
+    .await
+    .unwrap();
+    assert_eq!(killed, [true]);
+    let bytes = png_bytes(5001);
+    let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
+    let again = id_of(&created);
+    // Enqueued only once the listener is back, or the notify is lost.
+    let mut back = false;
+    for _ in 0..200 {
+        let n: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity \
+             WHERE datname = current_database() AND query LIKE 'LISTEN%'",
+        )
+        .fetch_one(app.state.pool())
+        .await
+        .unwrap();
+        if n > 0 {
+            back = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(back, "the job listener never came back");
+    let (status, body) = put_private(&app, again, bytes).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    wait_for_state(&app, again, "ready").await;
+
     stop.send(()).unwrap();
     tokio::time::timeout(Duration::from_secs(5), workers)
         .await
@@ -591,4 +625,68 @@ async fn priority_orders_a_kind_and_comes_from_the_blob() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     let (_, created) = call(&app.private, json_req(Method::POST, "/blobs", raw_blob())).await;
     assert_eq!(created["priority"], "normal", "the default");
+}
+
+/// A handler that panics fails the attempt, not the worker: the job is
+/// retried with the panic as its error, and the next attempt runs to the
+/// end.
+#[tokio::test]
+async fn a_panicking_handler_fails_the_attempt() {
+    let app = setup_with(closed_port().await).await;
+    let bytes = png_bytes(5000);
+    let mut blob = blob_for(&bytes, "image/png", "raw");
+    blob["skip_virus_scan"] = json!(true);
+    let created = create(&app, blob).await;
+    let id = id_of(&created);
+    let (status, body) = put_private(&app, id, bytes).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(jobs_for(&app, id).await, ["render"]);
+
+    app.gate.panic(At::Get, &format!("{id}/original"));
+    assert!(run_job(&app, agrafe::jobs::JobKind::Render).await);
+    let (attempts, dead, error): (i32, bool, String) = sqlx::query_as(
+        "SELECT attempts, failed_at IS NOT NULL, last_error FROM jobs WHERE blob_id = $1",
+    )
+    .bind(parse_id(id))
+    .fetch_one(app.state.pool())
+    .await
+    .unwrap();
+    assert_eq!((attempts, dead), (1, false), "{error}");
+    assert!(
+        error.contains("handler panicked: the gate panics on"),
+        "{error}"
+    );
+
+    sqlx::query("UPDATE jobs SET run_at = now() WHERE blob_id = $1")
+        .bind(parse_id(id))
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+    assert!(run_job(&app, agrafe::jobs::JobKind::Render).await);
+    assert!(jobs_for(&app, id).await.is_empty(), "the job is done");
+    let got = get_blob(&app, id).await;
+    // The bytes are not a picture: a verdict all the same.
+    assert_eq!(got["thumbnail_state"], "failed", "{got}");
+}
+
+/// Workers that render do not start on a renderer that fails its probe.
+#[tokio::test]
+async fn workers_refuse_a_broken_renderer() {
+    let app = setup_tuned(fake_clamd().await, |c| {
+        c.jobs.kinds = Some(vec![agrafe::jobs::JobKind::Render]);
+        c.media.render.vips_command = "/nonexistent/vips".into();
+    })
+    .await;
+    let err = tokio::time::timeout(
+        Duration::from_secs(5),
+        agrafe::jobs::runner::run(app.state.clone(), std::future::pending::<()>()),
+    )
+    .await
+    .expect("the workers give up at once")
+    .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("the renderer failed its startup probe"),
+        "{err}"
+    );
 }

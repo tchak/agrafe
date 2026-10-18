@@ -1,6 +1,7 @@
 //! A store that can be held at one operation on one object, for the tests
 //! that change the row in the moment between an ownership check and the
-//! write that relies on it.
+//! write that relies on it; or made to panic there, for the tests of what
+//! a bug costs.
 
 use std::fmt;
 use std::ops::Range;
@@ -45,9 +46,15 @@ impl Hold {
     }
 }
 
-/// Where the next hold is set; shared by the test and its store.
+/// What happens to the operation caught.
+enum Action {
+    Hold(Hold),
+    Panic,
+}
+
+/// Where the next catch is set; shared by the test and its store.
 #[derive(Clone, Default)]
-pub struct Gate(Arc<Mutex<Option<(At, Path, Hold)>>>);
+pub struct Gate(Arc<Mutex<Option<(At, Path, Action)>>>);
 
 impl fmt::Debug for Gate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -59,21 +66,34 @@ impl Gate {
     /// Hold the next `at` on `key`, once.
     pub fn hold(&self, at: At, key: &str) -> Hold {
         let hold = Hold::default();
-        *self.0.lock().unwrap() = Some((at, Path::from(key), hold.clone()));
+        self.set(at, key, Action::Hold(hold.clone()));
         hold
     }
 
+    /// Panic in the next `at` on `key`, once: a bug in whatever called it.
+    pub fn panic(&self, at: At, key: &str) {
+        self.set(at, key, Action::Panic);
+    }
+
+    fn set(&self, at: At, key: &str, action: Action) {
+        *self.0.lock().unwrap() = Some((at, Path::from(key), action));
+    }
+
     async fn pass(&self, at: At, location: &Path) {
-        let hold = {
+        let action = {
             let mut slot = self.0.lock().unwrap();
             match &*slot {
                 Some((a, p, _)) if *a == at && p == location => slot.take().map(|(_, _, h)| h),
                 _ => None,
             }
         };
-        if let Some(hold) = hold {
-            hold.reached.notify_one();
-            hold.release.notified().await;
+        match action {
+            Some(Action::Hold(hold)) => {
+                hold.reached.notify_one();
+                hold.release.notified().await;
+            }
+            Some(Action::Panic) => panic!("the gate panics on {location}"),
+            None => {}
         }
     }
 }
