@@ -541,7 +541,8 @@ pub fn fixture(name: &str) -> Vec<u8> {
 /// A helper binary of this workspace, next to this test executable's
 /// directory (`target/<profile>/deps/api-*` sits below the binaries).
 /// `cargo test` at the workspace root builds them; `cargo test -p agrafe`
-/// does not, so they are built here when missing.
+/// and `cargo llvm-cov` do not, so they are built here when missing, into
+/// the target directory this test runs from.
 pub fn helper(name: &str) -> String {
     static BUILT: std::sync::Once = std::sync::Once::new();
     let exe = std::env::current_exe().unwrap();
@@ -551,6 +552,8 @@ pub fn helper(name: &str) -> String {
         BUILT.call_once(|| {
             let status = std::process::Command::new(env!("CARGO"))
                 .args(["build", "-p", "agrafe-extract", "-p", "agrafe-render-text"])
+                .arg("--target-dir")
+                .arg(dir.parent().unwrap())
                 .status()
                 .expect("run cargo build for the helpers");
             assert!(status.success(), "building the helpers failed");
