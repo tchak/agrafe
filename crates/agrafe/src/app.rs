@@ -1,7 +1,8 @@
 //! The handle everything hangs off: configuration, pool, store, keys,
 //! signer, clamd client and metrics behind one `Arc`. The private API is a
 //! set of methods on it, spread over the modules that implement them
-//! (`blob`, `blob::create`, `blob::urls`, `upload`, `jobs`).
+//! (`blob`, `blob::create`, `blob::urls`, `blob::representation`,
+//! `upload`, `source`, `attachment`, `jobs`).
 
 use std::sync::Arc;
 

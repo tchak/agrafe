@@ -101,7 +101,7 @@ No signature. Reachable only from trusted networks.
 | `GET` | `/blobs/:id/original/:filename` | Original bytes, supports `Range` |
 | `GET` | `/blobs/:id/preview/:filename` | WebP preview or 404 |
 | `GET` | `/blobs/:id/thumbnail/:filename` | WebP thumbnail, always 200 |
-| `GET` | `/jobs` | List jobs, cursor paginated, filterable by `kind`, `state`, `blob_id` |
+| `GET` | `/jobs` | List jobs, cursor paginated, filterable by `kind`, `state`, `priority`, `blob_id` |
 | `GET` | `/jobs/:id` | One job, with its last error |
 | `POST` | `/jobs/:id/retry` | Give a dead job its attempts back and run it now |
 | `DELETE` | `/jobs/:id` | Discard a dead job |
@@ -117,7 +117,7 @@ handlers are shared.
 | Method | Path | Purpose |
 |---|---|---|
 | `PUT` | `/blobs/:token/:id` | Upload bytes, only `raw` and `multipart` |
-| `GET` | `/blobs/:token/:id` | Reduced metadata: state, scan state, representation states, content type, size. `404` once the blob is `expired`, `infected` or `deleted` |
+| `GET` | `/blobs/:token/:id` | Reduced metadata: id, state, scan state, representation states, content type, category, size. `404` once the blob is `expired`, `infected` or `deleted` |
 | `GET` | `/blobs/:token/:id/original/:filename` | Original bytes, supports `Range` |
 | `GET` | `/blobs/:token/:id/preview/:filename` | WebP preview or 404 |
 | `GET` | `/blobs/:token/:id/thumbnail/:filename` | WebP thumbnail, always 200 |
@@ -147,7 +147,7 @@ Every error response, on both ports, is JSON with one shape:
 `code` is stable and machine readable; `message` is for humans and may change.
 This includes failures axum would otherwise answer in plain text: malformed
 JSON, unknown query values, a non-UUID path segment, unknown routes (`404`)
-and wrong methods (`405`). Handlers use wrapper extractors in `api/extract.rs`
+and wrong methods (`405`). Handlers use wrapper extractors in `extract.rs`
 that convert those rejections. Internal errors are logged in full and reported
 as `internal` with no detail.
 
@@ -177,7 +177,10 @@ message = METHOD "\n" expires_unix "\n" path_and_query_after_token
   separator.
 - Minted expiries are rounded: `expires = ceil(now / window) * window + ttl`.
   All URLs minted for the same blob inside one window are identical, so
-  browsers and CDNs can cache them. Window and TTL are per operation in config.
+  browsers and CDNs can cache them. The window is one setting,
+  `signing.window`; the TTL is per operation (`signing.ttl.upload`,
+  `metadata`, `read`), and `POST /blobs/:id/urls` may override the read TTL
+  or ask for a permanent URL.
 - HMAC compared in constant time. Bad signature is `403`, expired is `410`, a
   valid signature on a missing blob is `404`.
 - Because everything after the token is signed, query parameters are a safe
@@ -195,7 +198,7 @@ message = METHOD "\n" expires_unix "\n" path_and_query_after_token
 
 | Field | Required | Notes |
 |---|---|---|
-| `filename` | yes | Stored as given, used in URLs and `Content-Disposition`. No path separators, control characters or bidirectional formatting characters (which can disguise an extension) |
+| `filename` | yes | Trimmed, then stored and used in URLs and `Content-Disposition`. At most 255 bytes, not `.` or `..`, no path separators, control characters or bidirectional formatting characters (which can disguise an extension) |
 | `content_type` | yes | Normalised to `type/subtype`, classified into a category |
 | `input_type` | yes | `raw`, `multipart`, `rows`, `archive` |
 | `checksum` | for `raw`, `multipart` | SHA-256 of the bytes, base64 |
@@ -204,7 +207,7 @@ message = METHOD "\n" expires_unix "\n" path_and_query_after_token
 | `sheets` | for `rows`, or `columns` | The sheets of an XLSX or ODS workbook, in order: a list of `{"name": "...", "columns": [...]}`. See "Rows" |
 | `skip_virus_scan` | no, default `false` | Private-only, backend vouches for the source |
 | `priority` | no, default `normal` | `high`, `normal` or `low`: where the blob's scan, render and build jobs go in their kind's queue, see "Jobs" |
-| `expires_at` or `expires_in` | no, default `blobs.default_expires_in` | Absolute timestamp or duration such as `7d`. Cleared by the first attachment, see "Attachments" |
+| `expires_at` or `expires_in` | no, default `blobs.default_expires_in` | Absolute timestamp or duration such as `7d`, in the future. Refused together with `attachment`, and cleared by the first attachment, see "Attachments" |
 | `attachment` | no | `record_type`, `record_id` and `name`: attach in the same transaction as the creation, see "Attachments" |
 
 Checksum is SHA-256 because browsers compute it cheaply with
@@ -236,16 +239,16 @@ A blob receives bytes exactly once. `PUT` is accepted from `created` only; a
 failed upload goes back to `created`, a successful one never does. There is no
 re-upload, no per-blob switch, and no object version: the original lives at
 `<blob id>/original`. A backend that needs different bytes creates a new blob,
-points its own record at it and deletes the old one, the way Active Storage
-treats blobs as immutable and attachments as the thing that changes.
+attaches it and detaches the old one, which then expires on its own: the way
+Active Storage treats blobs as immutable and attachments as the thing that
+changes.
 
 Why: a public `PUT` URL is reusable until it expires, and will leak into
 browser histories and proxy logs. Write-once means a leaked URL can only earn
 a `409` after the first successful upload. It also means a signed URL for the
 original is truthful for its whole lifetime, so originals can be served
 `immutable`, and the server never has to reason about readers of a previous
-version, re-scanning, or regenerating representations after a swap. The
-`purge_delay` grace period exists only for deletes.
+version, re-scanning, or regenerating representations after a swap.
 
 ### Public upload rule
 
@@ -266,6 +269,9 @@ created ──► uploading ──► uploaded ──► ready
    (failed upload,  └──► ready | infected   (scanned inline, or skipped)
     nothing stored)
 
+generated:  created ──► uploading ──► created   (a part stored, or refused)
+            created ──► uploaded ──► ready      (the finish, then the build)
+
 any non-terminal ──► expired
 any unattached ──► deleted
 ```
@@ -275,7 +281,7 @@ any unattached ──► deleted
 | `created` | Row exists, no original. `PUT` allowed. A generated blob holds its source parts here between requests. |
 | `uploading` | A `PUT` is in flight. Concurrent `PUT` gets `409`. Rows left behind by a crashed process are reset by the reaper (see below). |
 | `uploaded` | What the client sent is in the bucket, encrypted. A job finishes the blob: the scan, or the build of a generated blob. Not readable. |
-| `ready` | Scan passed or skipped. Readable. |
+| `ready` | Scan passed or skipped, or the build done. Readable. |
 | `infected` | Scan failed. Never readable. Objects kept for forensics until the blob is deleted or passes its `expires_at`. |
 | `expired` | Past `expires_at`. Not readable. Objects purged. |
 | `deleted` | Soft deleted. Objects purged. |
@@ -338,7 +344,7 @@ Separate from the blob state, each blob tracks `scan_state`
 (`pending`, `clean`, `infected`, `skipped`), `scan_signature` (what clamd
 found, for `infected`, whichever path scanned the file; private metadata
 only) and a state per derived representation (`pending`, `ready`, `failed`,
-`unsupported`).
+`unavailable`).
 
 ### Attachments
 
@@ -395,8 +401,8 @@ carry attachments are the two the backend did not cause: a source left
 unfinished past `upload.source_stale_after`, which the reaper expires
 whatever its attachments, and `infected`. Both keep their attachments so
 the backend can find out from the record's side, and the listing carries the
-blob's `state` so that the answer does not cost a second request. The
-tombstone prune takes the attachments with the row.
+blob's state, `blob_state`, so that the answer does not cost a second
+request. The tombstone prune takes the attachments with the row.
 
 **Concurrency.** Attach and detach lock the blob row (`SELECT ... FOR
 UPDATE`) for their transaction, then change the attachments and
@@ -434,11 +440,12 @@ last-detach check.
 
 `GET /attachments` is cursor paginated on the attachment id like `/blobs`,
 with filters `record_type`, `record_id` (with `record_type`), `name` and
-`blob_id`; each row carries the blob's `state`. `GET /blobs/:id` inlines the
-blob's attachments, and `GET /blobs` takes `attached`. The three strings are
-validated like `filename`: not blank, at most 255 bytes, no control
-characters; unlike `filename` they are not trimmed, since an identifier is
-the backend's to write.
+`blob_id`; each row carries the blob's state as `blob_state`. `GET
+/blobs/:id` inlines the blob's attachments, and `GET /blobs` takes
+`attached`. The three strings are validated like `filename`: not blank, at
+most 255 bytes, no control or bidirectional formatting characters; unlike
+`filename` they are not trimmed, since an identifier is the backend's to
+write.
 
 The public port never sees attachments. They are the backend's statements
 about its own records, and nothing a browser is told.
@@ -450,6 +457,10 @@ sort by creation time. Filters: `content_type`, `category`, `state`,
 `scan_state`, `attached` (`true` or `false`: whether any attachment exists,
 which for a non-terminal blob is whether `expires_at` is null, see
 "Attachments"). Response carries `next_cursor` or null.
+
+The three listings, `/blobs`, `/attachments` and `/jobs`, take a `limit`,
+default 50, at most 200. A limit out of that range, an unknown filter value
+or a `record_id` without `record_type` answers `400`.
 
 ### Classification
 
@@ -477,7 +488,7 @@ Bytes flow once through a chain of consumers:
    counter normally reaches first. A `raw` body whose `Content-Length`
    disagrees with the declared size is refused before it is read.
 2. SHA-256 hasher, compared against the declared checksum at the end.
-3. Magic-byte sniffer on the first chunk, compared against the declared
+3. Magic-byte sniffer on the first 8 KiB, compared against the declared
    content type.
 4. ClamAV `INSTREAM` when the blob is not `skip_virus_scan` and the declared
    size is at or below `upload.inline_scan_max_size`. Above that, or when
@@ -490,8 +501,8 @@ A failed check aborts the multipart upload, hands the blob back to the state
 it came from and returns `422` (checksum, size, type) or `409` (state). On
 success the blob moves to `uploaded`, or straight to `ready` when the scan was
 inline or skipped, and the next jobs are enqueued in the same transaction: a
-`scan` for a blob waiting in `uploaded`, `thumbnail` and `preview` for one
-that is `ready`. The scan job enqueues the representations once the file is
+`scan` for a blob waiting in `uploaded`, a `render` for one that is
+`ready`. The scan job enqueues the representations once the file is
 clean, so nothing renders a file that has not been scanned.
 
 An infected verdict from the inline scan is not a failed check. The object is
@@ -633,11 +644,12 @@ thumbnail, an XLSX, ODS or ZIP the category icon, and none has a preview.
 When the build finishes the blob moves to `ready` with
 the checksum and the final size on the row. A failure the next attempt
 would repeat, a source line that does not parse, a row missing its key
-material, or a stored source or member that is damaged (a broken header,
-a length no stream produces, a segment that fails authentication), kills
-the job at once rather than through the backoff; a bucket or database
-error, or an object cut short in transit, is retried. Out of attempts, the blob is stuck in `uploaded`,
-unreadable, like a scan that never completes. No new state: `uploaded`
+material, a key that does not unwrap, a stored source or member that is
+damaged (a broken header, a length no stream produces, a segment that fails
+authentication), or a package the ZIP writer refuses, kills the job at once
+rather than through the backoff; a bucket or database error, or an object
+cut short in transit, is retried. Out of attempts, the blob is stuck in
+`uploaded`, unreadable, like a scan that never completes. No new state: `uploaded`
 already means that what the client sent is in the bucket and a job has to
 finish the blob. The source is purged with the rest of the prefix.
 
@@ -773,8 +785,9 @@ these limits. A `rows` blob with no lines produces a header only.
 
 ### Archives
 
-One `{"path": "...", "blob_id": "..."}` per line, the manifest. At accept,
-per line:
+An `archive` blob is declared `application/zip`; anything else is refused
+at creation. Its source is one `{"path": "...", "blob_id": "..."}` per line,
+the manifest. At accept, per line:
 
 - The path is normalised to NFC, with `/` as the separator, then refused
   if it is empty, absolute, has an empty, `.` or `..` component (so no
@@ -807,7 +820,8 @@ Entries are stored, not compressed: the members are PDFs, images and office
 files, already compressed, and deflate would cost an hour of CPU per hundred
 gigabytes for nothing. With stored entries and every member's size on its
 row, the archive's size is known at the finish, the sum of the members plus
-a fixed overhead per entry, accumulated part by part on the row's `size`,
+each entry's headers, a fixed part and its path twice, accumulated part by
+part on the row's `size`,
 which is therefore an estimate while the blob is `created` or `uploaded`
 and exact once it is `ready`. It is checked against `archive.max_size`, a
 limit of its own since `upload.max_size` is sized for one request, at most
@@ -868,8 +882,10 @@ sync-only seek make range requests awkward.
   with a key-encryption key (KEK) from config: AES-256-GCM with a random
   nonce and the blob id as associated data, so a wrapped key moved to another
   row does not unwrap. The wrapped key and the `kek_id` are stored on the blob
-  row. Rotating a KEK is a database update that rewraps keys, with zero bucket
-  traffic.
+  row. Several KEKs live in config: `encryption.current_kek` wraps new keys
+  and the row's `kek_id` picks the one that unwraps, so a new KEK is a
+  config change. Retiring an old one means rewrapping the keys it wraps, a
+  database update with zero bucket traffic, for which agrafe has no command.
 - The stream's associated data is the object key, so a ciphertext copied to
   another key does not decrypt.
 - Payload follows **Tink's AES-GCM-HKDF-STREAMING** wire format. It is a
@@ -882,7 +898,8 @@ sync-only seek make range requests awkward.
   migrating objects.
 - Per-chunk nonce is `nonce_prefix || counter || last_flag`, which prevents
   reordering, truncation and chunk swapping between blobs.
-- Random access is arithmetic. The 40-byte header (salt and nonce prefix)
+- Random access is arithmetic. The 40-byte header (a length byte, a 32-byte
+  salt and a 7-byte nonce prefix)
   shares the first chunk with the plaintext, so chunk `0` holds
   `chunk - 16 - 40` plaintext bytes and every later chunk `chunk - 16`; chunk
   `i > 0` starts at ciphertext offset `i * chunk`. The header is also cached
@@ -994,8 +1011,8 @@ The allowlist above is by declared type, and the upload sniffer lets
 through anything `infer` does not recognise. vips, though, picks its loader
 by magic and tries ImageMagick last, so a file declared `image/png` holding
 an XPM would reach it. Every file handed to vips is therefore sniffed again
-right before the call (`media::loader_for`) against the same list, plus PNM
-for the pages the helpers write; anything else is `failed` without vips
+right before the call (`agrafe_types::sniff::loader_for`) against the same
+list, plus PNM for the pages the helpers write; anything else is `failed` without vips
 ever seeing it. The embedded image extractor applies the same check to the
 bytes it pulls out of a PDF, since a `DCTDecode` stream holds whatever its
 author put there. `VIPS_BLOCK_UNTRUSTED` would not do: it also blocks the
@@ -1013,12 +1030,12 @@ version, or whose object is gone, is rendered again first. The thumbnail
 thus appears after the preview rather than alongside it, a few seconds
 for a large PDF, which the icon placeholder and `wait` cover.
 
-A file the renderer rejects, or that runs past the sandbox timeout, leaves
-the representation `failed` and the job done: the same bytes would fail the
-same way tomorrow. A helper that crashes or runs out of time counts the
-same way; one that declines (no embedded image to pull out, a sample that
-is not text) hands over to the next source, or leaves the representation
-`unavailable` when there is none. Only failures of ours (object store,
+A source that vips rejects or that runs past the sandbox timeout, or a
+helper that crashes or runs out of time, hands over to the next source, as
+does a helper that declines (no embedded image to pull out, a sample that is
+not text). When no source renders, the representation is `failed` if one of
+them rejected the file and `unavailable` if all declined, and the job is
+done either way: the same bytes would fail the same way tomorrow. Only failures of ours (object store,
 database, the renderer missing) fail the job, which retries with backoff
 and leaves the representation `pending` meanwhile.
 
@@ -1039,10 +1056,12 @@ They are small and served whole, with a strong `ETag` of the content and
 `Cache-Control: private, max-age=86400`: not `immutable`, since a version
 bump changes them under the same URL.
 
-Every representation response carries `X-Representation-State`, so a
-client can tell a placeholder from the final answer, and `wait=<ms>` in the
-signed query (at most 30 s) holds the request until the representation
-is no longer pending, for the "upload then show it" flow.
+Every picture or placeholder a representation route serves carries
+`X-Representation-State`, so a client can tell a placeholder from the final
+answer; a refusal (`409`, or `404` for a filename that does not match) has
+none. `wait=<ms>` in the signed query (at most 30 s) holds the request while
+the representation is pending, or the blob itself is not yet `ready`, for
+the "upload then show it" flow.
 
 ### Original
 
@@ -1140,7 +1159,7 @@ in a subprocess, never in the API process: `vips` for rendering, the
 `agrafe-extract` and `agrafe-render-text` binaries for container parsing
 and text rasterising, each its own crate so that the server links none of
 their parsers (see "Crates"). Each child gets a clean environment (`PATH` and `HOME`
-only, no secrets; vips also gets `TMPDIR` and `VIPS_CONCURRENCY`, and a coverage
+only, no secrets; vips also gets `TMPDIR`, `VIPS_CONCURRENCY` and `VIPS_WARNING=0`, and a coverage
 build alone passes `LLVM_PROFILE_FILE` through), `setrlimit` bounds on
 address space and data (`media.sandbox.memory`, default 1 GiB), CPU time and
 output file size (`max_output_size`), no core dumps, and is killed at the
@@ -1177,17 +1196,17 @@ Job kinds: `scan`, `render` (thumbnail and preview, whichever is pending),
 `rows` and `archive` (generate a blob of that input type from its stored
 source, see "Generated blobs"), `purge`
 (delete the objects under a blob's prefix) and `reap`, the periodic
-housekeeping. One reap, in one transaction: record `expired` on every
-non-terminal blob past its `expires_at`; prune dead jobs that failed more
-than `jobs.keep_failed` (default seven days) ago, long enough to have been
-looked at; enqueue a purge, `upload.purge_delay` out, for every terminal
-blob still holding objects that no purge job is going to take care of (the
-ones just expired, infected ones past their expiry, and any whose purge was
-lost, a pruned dead one included); hand `uploading` rows older than
-`upload.stale_after` back to `created`; expire `created` blobs holding
-source parts untouched for `upload.source_stale_after`; prune tombstones
-purged more than `blobs.keep_purged` ago, their attachments and jobs with
-them. Expiry itself never waits for the reaper, see "State machine".
+housekeeping. One reap, in one transaction, in this order: record
+`expired` on every non-terminal blob past its `expires_at`; expire `created`
+blobs holding source parts untouched for `upload.source_stale_after`; prune
+dead jobs that failed more than `jobs.keep_failed` (default seven days) ago,
+long enough to have been looked at; enqueue a purge, `upload.purge_delay`
+out, for every terminal blob still holding objects that no purge job is
+going to take care of (the ones just expired or abandoned, infected ones
+past their expiry, and any whose purge was lost, a pruned dead one
+included); hand `uploading` rows older than `upload.stale_after` back to
+`created`; prune tombstones purged more than `blobs.keep_purged` ago, their
+attachments and jobs with them. Expiry itself never waits for the reaper, see "State machine".
 
 The reaper keeps its own clock: each run enqueues the next, `jobs.reap_interval`
 (default one minute) later, before doing its work, so a failing run is
@@ -1206,18 +1225,23 @@ that enqueued it. An
 object missing between the listing and its delete is not an error, so a purge
 that runs twice is harmless.
 
-Each row: `kind`, `blob_id`, `priority`, `payload`, `run_at`, `attempts`,
-`max_attempts`, `locked_at`, `locked_by`, `last_error`, `failed_at`. A
+Each row: `id` (a sequence, the listing cursor), `kind`, `blob_id`,
+`priority`, `payload`, `run_at`, `attempts`, `max_attempts`, `locked_at`,
+`locked_by`, `last_error`, `failed_at`, `created_at`. A
 worker claims the highest-priority, then oldest, due job of its kind with
 `UPDATE ... WHERE id = (SELECT ... FOR UPDATE SKIP LOCKED)`, which locks it
 and counts the attempt. A locked job is
 claimable again once `jobs.lease_timeout` has passed, which is how a crashed
 worker's job gets picked up. A live worker renews its lease every third of
 it while the handler runs, so a scan longer than the lease is not handed to
-a second worker; only a dead one lets the lease lapse. Success deletes the row. Failure, a handler
-panic included, unlocks it with exponential backoff (30 s, doubling, capped at an hour) until `max_attempts`
-(5), then sets `failed_at` and leaves it locked: never run again, not holding
-the one pending slot per kind and blob, and still there to read. A failing
+a second worker; only a dead one lets the lease lapse. Success deletes the
+row. Failure, a handler panic included, unlocks it with exponential backoff
+(30 s, doubling, capped at an hour) until `max_attempts` (5), then sets
+`failed_at` and leaves it locked: never run again, not holding the one
+pending slot per kind and blob, and still there to read. A failure another
+attempt would repeat (a job without its blob, a purge of a live blob, a
+build's permanent errors, see "Build") is dead at once, without the
+backoff. A failing
 job whose twin was enqueued while it was locked is dropped in favour of the
 newer one.
 
@@ -1242,9 +1266,9 @@ else. Scans and renders carry it too, so an interactive upload can jump a
 bulk import of the same kind, but the default, `normal` everywhere, is a
 FIFO per kind.
 
-The binary takes `--role api|worker|all` so workers can move to separate
-machines without code changes, and `jobs.kinds` (or `--kinds`, comma
-separated) names the kinds a process runs workers for, every kind when
+`server.role` (or `serve --role`), `api`, `worker` or `all`, lets workers
+move to separate machines without code changes, and `jobs.kinds` (or
+`serve --kinds`, comma separated) names the kinds a process runs workers for, every kind when
 omitted. That is how the archive builders get machines of their own, or
 the renderers more of them. A kind no process handles only piles up, which
 the oldest-due metric shows; a process not handling `render` skips the
