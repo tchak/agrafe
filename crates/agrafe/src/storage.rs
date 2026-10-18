@@ -50,3 +50,59 @@ pub fn build(config: &StorageConfig) -> Result<Store, Error> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(value: serde_json::Value) -> StorageConfig {
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn s3_store_from_every_setting() {
+        // Building connects to nothing; the settings are only checked.
+        let store = build(&config(serde_json::json!({
+            "backend": "s3",
+            "s3": {
+                "bucket": "agrafe-test",
+                "region": "fr-par",
+                "endpoint": "https://s3.fr-par.scw.cloud",
+                "access_key_id": "key",
+                "secret_access_key": "secret",
+            },
+        })))
+        .unwrap();
+        assert!(store.to_string().contains("agrafe-test"), "{store}");
+
+        let store = build(&config(serde_json::json!({
+            "backend": "s3",
+            "s3": { "bucket": "agrafe-test" },
+        })))
+        .unwrap();
+        assert!(store.to_string().contains("agrafe-test"), "{store}");
+    }
+
+    #[test]
+    fn local_store_creates_its_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("objects/nested");
+        build(&config(serde_json::json!({
+            "backend": "local",
+            "local": { "path": path },
+        })))
+        .unwrap();
+        assert!(path.is_dir());
+
+        // Under a file, there is no directory to make.
+        let file = dir.path().join("file");
+        std::fs::write(&file, b"").unwrap();
+        let err = build(&config(serde_json::json!({
+            "backend": "local",
+            "local": { "path": file.join("objects") },
+        })))
+        .err()
+        .unwrap();
+        assert!(matches!(err, Error::CreateDir { .. }), "{err}");
+    }
+}
