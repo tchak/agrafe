@@ -1,7 +1,8 @@
 -- Jobs: the Postgres-backed queue. See DESIGN.md, "Jobs".
 CREATE TABLE jobs (
     id           bigserial PRIMARY KEY,
-    kind         text NOT NULL,
+    kind         text NOT NULL
+                 CHECK (kind IN ('scan', 'render', 'rows', 'archive', 'purge', 'reap')),
     blob_id      uuid REFERENCES blobs (id) ON DELETE CASCADE,
     -- Orders a kind's own queue (1 high, 0 normal, -1 low); kinds stay the
     -- isolation between job types. Copied from the blob, 0 without one.

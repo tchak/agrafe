@@ -16,4 +16,5 @@ mod reaper;
 mod representations;
 mod rows;
 mod scan;
+mod schema;
 mod upload;

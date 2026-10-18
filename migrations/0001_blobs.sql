@@ -5,7 +5,8 @@ CREATE TABLE blobs (
                       CHECK (state IN ('created', 'uploading', 'uploaded', 'ready', 'infected', 'expired', 'deleted')),
     filename          text NOT NULL,
     content_type      text NOT NULL,
-    category          text NOT NULL,
+    category          text NOT NULL
+                      CHECK (category IN ('image', 'document', 'spreadsheet', 'presentation', 'archive', 'audio', 'video', 'text', 'other')),
     input_type        text NOT NULL
                       CHECK (input_type IN ('raw', 'multipart', 'rows', 'archive')),
     checksum_sha256   bytea CHECK (checksum_sha256 IS NULL OR octet_length(checksum_sha256) = 32),
@@ -70,7 +71,8 @@ CREATE TABLE blobs (
                       CHECK (thumbnail_state IN ('pending', 'ready', 'failed', 'unavailable', 'disabled')),
     preview_state     text NOT NULL DEFAULT 'pending'
                       CHECK (preview_state IN ('pending', 'ready', 'failed', 'unavailable', 'disabled')),
-    preview_source    text,
+    preview_source    text
+                      CHECK (preview_source IN ('image', 'embedded_image')),
     thumbnail_variant_version integer,
     preview_variant_version   integer,
 
