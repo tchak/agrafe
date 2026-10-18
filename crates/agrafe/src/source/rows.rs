@@ -20,6 +20,11 @@ pub const MAX_SHEET_ROWS: u64 = 1_048_576;
 /// Columns an XLSX or ODS sheet holds at most.
 pub const MAX_SHEET_COLUMNS: usize = 16_384;
 
+/// Characters a sheet cell holds at most, counted as Excel counts them, in
+/// UTF-16 units. Excel repairs a workbook with a longer text, truncating
+/// the cell; a header is a cell too.
+pub const MAX_SHEET_CELL_LEN: usize = 32_767;
+
 /// Longest name an XLSX sheet may have.
 pub const MAX_SHEET_NAME_LEN: usize = 31;
 
@@ -126,6 +131,30 @@ pub fn parse_line<'a>(line: &'a [u8], columns: &[Column]) -> Result<Vec<Cell<'a>
                 .map_err(|reason| format!("cell {} ({}): {reason}", i + 1, column.name))
         })
         .collect()
+}
+
+/// Whether `text` fits a sheet cell.
+pub fn fits_sheet_cell(text: &str) -> bool {
+    // Every UTF-16 unit is at least one byte of UTF-8, so a short text
+    // needs no counting.
+    text.len() <= MAX_SHEET_CELL_LEN || text.encode_utf16().count() <= MAX_SHEET_CELL_LEN
+}
+
+/// The check a sheet format adds to a parsed row: no text longer than a
+/// cell holds. The message names the cell, as `parse_line`'s do.
+pub fn check_sheet_cells(cells: &[Cell<'_>], columns: &[Column]) -> Result<(), String> {
+    for (i, (cell, column)) in cells.iter().zip(columns).enumerate() {
+        if let Cell::Text(text) = cell
+            && !fits_sheet_cell(text)
+        {
+            return Err(format!(
+                "cell {} ({}): text is longer than the {MAX_SHEET_CELL_LEN} characters a sheet cell holds",
+                i + 1,
+                column.name
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn parse_cell(raw: &str, kind: Option<ColumnType>) -> Result<Cell<'_>, String> {
@@ -242,11 +271,13 @@ fn digits(b: &[u8]) -> Option<u32> {
 }
 
 /// The accept pass over one part of rows: lines parsed as they arrive,
-/// against the blob's columns, within the sheet's row limit.
+/// against the blob's columns, within the sheet's limits.
 pub struct Accept {
     columns: Vec<Column>,
     /// `upload.max_size`, the bound on one part.
     max_part: u64,
+    /// Whether the output is a sheet, with its cell length limit.
+    sheet: bool,
     /// Data rows the sheet holds at most, when the format has a limit.
     row_limit: Option<u64>,
     /// Lines across the parts before this one.
@@ -259,11 +290,13 @@ pub struct Accept {
 impl Accept {
     pub fn new(state: &Agrafe, blob: &Blob) -> Result<Self, UploadError> {
         let columns = blob.columns().ok_or(UploadError::NoColumns)?.to_vec();
+        let sheet = is_sheet(&blob.content_type);
         Ok(Self {
             columns,
             max_part: state.config().upload.max_size.as_u64(),
+            sheet,
             // The header takes one row of the sheet.
-            row_limit: is_sheet(&blob.content_type).then_some(MAX_SHEET_ROWS - 1),
+            row_limit: sheet.then_some(MAX_SHEET_ROWS - 1),
             rows_before: blob.source_rows.max(0) as u64,
             lines: Lines::new(),
             rows: 0,
@@ -282,7 +315,12 @@ impl Tap for Accept {
         }
         self.lines.push(chunk);
         while let Some((line, bytes)) = self.lines.next_line()? {
-            parse_line(&bytes, &self.columns).map_err(|reason| LineError { line, reason })?;
+            let cells =
+                parse_line(&bytes, &self.columns).map_err(|reason| LineError { line, reason })?;
+            if self.sheet {
+                check_sheet_cells(&cells, &self.columns)
+                    .map_err(|reason| LineError { line, reason })?;
+            }
             self.rows += 1;
             if let Some(limit) = self.row_limit
                 && self.rows_before + self.rows > limit
@@ -387,6 +425,20 @@ mod tests {
             let err = parse_line(bad, &cols).unwrap_err();
             assert!(err.contains(says), "{bad:?}: {err}");
         }
+    }
+
+    #[test]
+    fn sheet_cells_hold_so_much_text() {
+        let cols = columns(&[("a", None), ("b", None)]);
+        let fits = "x".repeat(MAX_SHEET_CELL_LEN);
+        let cells = vec![Cell::Text(fits.clone()), Cell::Number("1")];
+        assert_eq!(check_sheet_cells(&cells, &cols), Ok(()));
+        let cells = vec![Cell::Null, Cell::Text(format!("{fits}x"))];
+        let err = check_sheet_cells(&cells, &cols).unwrap_err();
+        assert!(err.starts_with("cell 2 (b): text is longer"), "{err}");
+        // Counted as Excel counts, in UTF-16 units: an emoji is two.
+        assert!(fits_sheet_cell(&"é".repeat(MAX_SHEET_CELL_LEN)));
+        assert!(!fits_sheet_cell(&"😀".repeat(MAX_SHEET_CELL_LEN / 2 + 1)));
     }
 
     #[test]

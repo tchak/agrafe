@@ -222,12 +222,14 @@ pub(crate) fn validate_size(size: i64, upload: &UploadConfig) -> Result<i64, Cre
 }
 
 /// The columns of a `rows` blob: at least one, each with a header, no more
-/// than a sheet holds when the output is one.
+/// than a sheet holds when the output is one, and no header longer than a
+/// sheet cell holds.
 fn validate_columns(columns: Vec<Column>, content_type: &str) -> Result<Vec<Column>, CreateError> {
     if columns.is_empty() {
         return Err(unprocessable("columns must name at least one column"));
     }
-    if rows::is_sheet(content_type) && columns.len() > rows::MAX_SHEET_COLUMNS {
+    let sheet = rows::is_sheet(content_type);
+    if sheet && columns.len() > rows::MAX_SHEET_COLUMNS {
         return Err(unprocessable(format!(
             "a sheet holds at most {} columns",
             rows::MAX_SHEET_COLUMNS
@@ -235,6 +237,13 @@ fn validate_columns(columns: Vec<Column>, content_type: &str) -> Result<Vec<Colu
     }
     if let Some(i) = columns.iter().position(|c| c.name.is_empty()) {
         return Err(unprocessable(format!("column {} has an empty name", i + 1)));
+    }
+    if sheet && let Some(i) = columns.iter().position(|c| !rows::fits_sheet_cell(&c.name)) {
+        return Err(unprocessable(format!(
+            "column {} has a name longer than the {} characters a sheet cell holds",
+            i + 1,
+            rows::MAX_SHEET_CELL_LEN
+        )));
     }
     Ok(columns)
 }
@@ -410,6 +419,17 @@ mod tests {
         assert!(validate(r, &cfg(), now).is_err(), "a sheet's limit");
         let mut r = req(InputType::Rows, classify::CSV);
         r.columns = Some(many);
+        assert!(validate(r, &cfg(), now).is_ok(), "CSV has no such limit");
+
+        let long = vec![Column {
+            name: "n".repeat(rows::MAX_SHEET_CELL_LEN + 1),
+            kind: None,
+        }];
+        let mut r = req(InputType::Rows, classify::XLSX);
+        r.columns = Some(long.clone());
+        assert!(validate(r, &cfg(), now).is_err(), "a cell's limit");
+        let mut r = req(InputType::Rows, classify::CSV);
+        r.columns = Some(long);
         assert!(validate(r, &cfg(), now).is_ok(), "CSV has no such limit");
     }
 

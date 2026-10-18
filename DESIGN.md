@@ -619,11 +619,14 @@ written row by row, the header first:
 A boolean cell is rendered by the viewer in its locale, `VRAI` and `FAUX`
 in a French Excel: that is what a typed cell is for.
 
-XLSX and ODS sheets hold at most 1 048 576 rows and 16 384 columns; a
-`columns` list beyond the latter is refused at creation and a source beyond
-the former at accept with the line that crossed the limit, whichever part
-it is in. CSV has no such limit. A `rows` blob with no lines produces a
-header only.
+XLSX and ODS sheets hold at most 1 048 576 rows and 16 384 columns, and a
+cell at most 32 767 characters, counted as Excel counts them, in UTF-16
+units. A `columns` list beyond the column limit, or a column name beyond
+the cell limit, is refused at creation; a source beyond the row limit, or
+a text beyond the cell limit, at accept with the line that crossed it,
+whichever part it is in. Excel repairs a workbook with a longer text,
+truncating the cell, and says so on opening. CSV has none of these
+limits. A `rows` blob with no lines produces a header only.
 
 Multi-sheet workbooks are not supported yet, but the design leaves them
 an additive extension. `source_columns` is stored as a list of sheets from

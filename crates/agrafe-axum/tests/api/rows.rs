@@ -348,6 +348,11 @@ async fn creation_checks_the_columns() {
             json!({"filename": "e.pdf", "content_type": "application/pdf", "input_type": "rows", "columns": [{"name": "a"}]}),
             "cannot be produced",
         ),
+        (
+            "name longer than a cell",
+            json!({"filename": "e.xlsx", "content_type": XLSX, "input_type": "rows", "columns": [{"name": "n".repeat(32_768)}]}),
+            "column 1 has a name longer than the 32767 characters",
+        ),
     ];
     for (name, body, says) in cases {
         let (status, res) = post(body).await;
@@ -466,6 +471,32 @@ async fn row_rejections() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["source_rows"], 2);
+}
+
+/// A sheet cell holds 32 767 characters; a longer text is refused at
+/// accept for a sheet format and taken for CSV.
+#[tokio::test]
+async fn sheet_cell_limit() {
+    let app = setup_tuned(fake_clamd().await, |c| {
+        c.upload.max_size = bytesize::ByteSize::kib(256);
+    })
+    .await;
+    let long = format!("[\"{}\", 1, true, null, null]\n", "x".repeat(32_768)).into_bytes();
+    for (filename, content_type, limited) in [("c.xlsx", XLSX, true), ("c.csv", "text/csv", false)]
+    {
+        let created = create(&app, rows_blob(filename, content_type)).await;
+        let (status, body) = put_part(&app, id_of(&created), 1, long.clone()).await;
+        if limited {
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+            let message = body["error"]["message"].as_str().unwrap();
+            assert!(
+                message.contains("cell 1 (Nom): text is longer than the 32767 characters"),
+                "{body}"
+            );
+        } else {
+            assert_eq!(status, StatusCode::OK, "{body}");
+        }
+    }
 }
 
 /// A sheet holds 1 048 576 rows, the header included; the source is
