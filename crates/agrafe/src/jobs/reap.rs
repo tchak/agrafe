@@ -78,6 +78,12 @@ pub struct Report {
 
 /// One pass, in one transaction, as of `now`; or nothing, when another
 /// reap holds the lock.
+/// Tombstones pruned per reap. The prune runs in the reap's transaction,
+/// cascading to attachments and jobs, so a backlog (the first run on an
+/// old table, or after an outage) drains at this rate rather than in one
+/// transaction: ten thousand a minute is over fourteen million a day.
+pub const TOMBSTONE_BATCH: i64 = 10_000;
+
 pub async fn reap(state: &Agrafe, now: Timestamp) -> Result<Report, JobError> {
     let config = state.config();
     let mut tx = state.pool().begin().await?;
@@ -138,7 +144,7 @@ pub async fn reap(state: &Agrafe, now: Timestamp) -> Result<Report, JobError> {
     let tombstone_before = now
         .checked_sub(config.blobs.keep_purged)
         .unwrap_or(Timestamp::MIN);
-    let tombstones = repo::prune_tombstones(&mut tx, tombstone_before).await?;
+    let tombstones = repo::prune_tombstones(&mut tx, tombstone_before, TOMBSTONE_BATCH).await?;
 
     tx.commit().await?;
     Ok(Report {

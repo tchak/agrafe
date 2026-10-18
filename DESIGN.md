@@ -327,7 +327,9 @@ it deleted from an id that never existed, while the public port says `404`
 either way. The reaper prunes tombstones `blobs.keep_purged` (default ninety
 days) after `purged_at`, long enough for the question to have been asked;
 the attachments and jobs that reference the row go with it, and the id is
-then unknown like any other. A terminal row that never had anything to
+then unknown like any other. Each reap prunes at most ten thousand, so a
+backlog drains over successive runs instead of one transaction holding
+every row and its cascades. A terminal row that never had anything to
 purge, a blob created and never uploaded, has no `purged_at` and is pruned
 the same time after it went terminal (its `updated_at`). Why a bound: every
 blob carries an expiry until it is attached, so every direct upload a user

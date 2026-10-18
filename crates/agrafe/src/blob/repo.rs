@@ -650,17 +650,27 @@ pub async fn mark_purged(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Result<()
 /// `before`, or that went terminal before `before` with nothing to purge
 /// (a blob created and never uploaded). Their attachments and jobs go with
 /// them, and the id is then unknown like any other. An `infected` blob is
-/// only ever pruned through its purge, which needs its expiry. The states
-/// are spelled into the SQL so that `blobs_empty_tombstone_idx` applies,
-/// see `state_literals`.
-pub async fn prune_tombstones(conn: &mut PgConnection, before: Timestamp) -> sqlx::Result<u64> {
+/// only ever pruned through its purge, which needs its expiry. At most
+/// `limit` rows go per call, so a backlog drains over successive reaps
+/// rather than in one transaction holding every row and its cascades. The
+/// states are spelled into the SQL so that `blobs_empty_tombstone_idx`
+/// applies, see `state_literals`.
+pub async fn prune_tombstones(
+    conn: &mut PgConnection,
+    before: Timestamp,
+    limit: i64,
+) -> sqlx::Result<u64> {
     let before = before.to_sqlx();
-    let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("DELETE FROM blobs WHERE purged_at <= ");
+    let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
+        "DELETE FROM blobs WHERE id IN (SELECT id FROM blobs WHERE purged_at <= ",
+    );
     qb.push_bind(before)
         .push(" OR (state IN (")
         .push(state_literals([BlobState::Expired, BlobState::Deleted]))
         .push(") AND purged_at IS NULL AND storage_key IS NULL AND source_parts = 0 AND updated_at <= ")
         .push_bind(before)
+        .push(") LIMIT ")
+        .push_bind(limit)
         .push(")");
     let result = qb.build().execute(&mut *conn).await?;
     Ok(result.rows_affected())
