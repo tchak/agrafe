@@ -605,23 +605,36 @@ pub async fn expire_stale_sources(
 /// `deleted` ones, and `infected` ones once past their `expires_at`, since
 /// an infected file is kept for forensics but not forever. Objects means
 /// the original or the source parts a generated blob held, see
-/// `Blob::holds_objects`.
+/// `Blob::holds_objects`. The states are spelled into the SQL so that
+/// `blobs_unpurged_idx` applies, see `state_literals`.
 pub async fn awaiting_purge(conn: &mut PgConnection, now: Timestamp) -> sqlx::Result<Vec<Uuid>> {
-    sqlx::query_scalar(
+    let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
         "SELECT id FROM blobs \
          WHERE (storage_key IS NOT NULL OR source_parts > 0) AND purged_at IS NULL \
-           AND (state = ANY($1) OR (state = $2 AND expires_at <= $3)) \
-           AND NOT EXISTS (\
-               SELECT 1 FROM jobs WHERE jobs.kind = $4 AND jobs.blob_id = blobs.id\
-           ) \
-         ORDER BY id",
-    )
-    .bind([BlobState::Expired.as_str(), BlobState::Deleted.as_str()])
-    .bind(BlobState::Infected.as_str())
-    .bind(now.to_sqlx())
-    .bind(JobKind::Purge.as_str())
-    .fetch_all(&mut *conn)
-    .await
+           AND (state IN (",
+    );
+    qb.push(state_literals([BlobState::Expired, BlobState::Deleted]))
+        .push(") OR (state = ")
+        .push(state_literals([BlobState::Infected]))
+        .push(" AND expires_at <= ")
+        .push_bind(now.to_sqlx())
+        .push(")) AND NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.kind = ")
+        .push_bind(JobKind::Purge.as_str())
+        .push(" AND jobs.blob_id = blobs.id) ORDER BY id");
+    qb.build_query_scalar().fetch_all(&mut *conn).await
+}
+
+/// States as a list of SQL literals, `'expired', 'deleted'`, for a predicate
+/// that has to match a partial index: the planner only uses one when it can
+/// prove the query implies the index predicate, and it cannot prove
+/// anything about a bound parameter. The names are the enum's own, so
+/// nothing user-written reaches the SQL.
+fn state_literals(states: impl IntoIterator<Item = BlobState>) -> String {
+    states
+        .into_iter()
+        .map(|s| format!("'{}'", s.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The purge is done: nothing of the blob is left in the bucket.
@@ -637,18 +650,19 @@ pub async fn mark_purged(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Result<()
 /// `before`, or that went terminal before `before` with nothing to purge
 /// (a blob created and never uploaded). Their attachments and jobs go with
 /// them, and the id is then unknown like any other. An `infected` blob is
-/// only ever pruned through its purge, which needs its expiry.
+/// only ever pruned through its purge, which needs its expiry. The states
+/// are spelled into the SQL so that `blobs_empty_tombstone_idx` applies,
+/// see `state_literals`.
 pub async fn prune_tombstones(conn: &mut PgConnection, before: Timestamp) -> sqlx::Result<u64> {
-    let result = sqlx::query(
-        "DELETE FROM blobs \
-         WHERE purged_at <= $1 \
-            OR (state = ANY($2) AND purged_at IS NULL \
-                AND storage_key IS NULL AND source_parts = 0 AND updated_at <= $1)",
-    )
-    .bind(before.to_sqlx())
-    .bind([BlobState::Expired.as_str(), BlobState::Deleted.as_str()])
-    .execute(&mut *conn)
-    .await?;
+    let before = before.to_sqlx();
+    let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("DELETE FROM blobs WHERE purged_at <= ");
+    qb.push_bind(before)
+        .push(" OR (state IN (")
+        .push(state_literals([BlobState::Expired, BlobState::Deleted]))
+        .push(") AND purged_at IS NULL AND storage_key IS NULL AND source_parts = 0 AND updated_at <= ")
+        .push_bind(before)
+        .push(")");
+    let result = qb.build().execute(&mut *conn).await?;
     Ok(result.rows_affected())
 }
 
