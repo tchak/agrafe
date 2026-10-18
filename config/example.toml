@@ -85,6 +85,15 @@ default_expires_in = "1d"
 # after it went terminal with nothing to purge), answering GET /blobs/:id
 # with its state, before the reaper removes it with its attachments.
 keep_purged = "90d"
+# The read routes keep a row they served for this long, when nothing is
+# under way on it (the blob is ready or terminal, no render is pending), so
+# a blob read many times costs one query per process per period. A delete
+# or an expiry recorded meanwhile is seen late by at most this much on other
+# processes; the objects are gone only once the purge ran anyway. "0s" keeps
+# nothing.
+read_cache_ttl = "30s"
+# Rows kept at most, per process. A row is a few hundred bytes.
+read_cache_entries = 100000
 
 [archive]
 # Upper bound on a generated archive, checked against the members' sizes as

@@ -77,6 +77,7 @@ impl Agrafe {
             None => {
                 tracing::warn!(blob = %blob.id, kind = %kind, "object is missing, regenerating");
                 repo::request_representation(self.pool(), blob.id, kind).await?;
+                self.heads().invalidate(blob.id);
                 Ok(None)
             }
         }
@@ -97,6 +98,7 @@ async fn resolve(state: &Agrafe, blob: &BlobHead, kind: Representation) -> Resul
     {
         tracing::info!(blob = %blob.id, kind = %kind, "built with another variant version, regenerating");
         repo::request_representation(state.pool(), blob.id, kind).await?;
+        state.heads().invalidate(blob.id);
         return Ok(Resolved::Placeholder(RepresentationState::Pending));
     }
     match rep_state {
@@ -105,6 +107,7 @@ async fn resolve(state: &Agrafe, blob: &BlobHead, kind: Representation) -> Resul
             None => {
                 tracing::warn!(blob = %blob.id, kind = %kind, "ready without a digest, regenerating");
                 repo::request_representation(state.pool(), blob.id, kind).await?;
+                state.heads().invalidate(blob.id);
                 Ok(Resolved::Placeholder(RepresentationState::Pending))
             }
         },

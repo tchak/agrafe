@@ -190,6 +190,8 @@ pub async fn setup_tuned(clamd: SocketAddr, tune: impl FnOnce(&mut Config)) -> T
         max_inline_scans = 1
         [jobs]
         lease_timeout = "10m"
+        [blobs]
+        read_cache_ttl = "0s"
         [signing]
         current_key = "k1"
         window = "1h"

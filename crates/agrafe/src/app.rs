@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use sqlx::PgPool;
 
+use crate::blob::cache::HeadCache;
 use crate::clamav::Clamd;
 use crate::config::{Config, ConfigError};
 use crate::encryption::Keks;
@@ -35,6 +36,7 @@ struct Inner {
     signer: Signer,
     keks: Keks,
     clamd: Clamd,
+    heads: HeadCache,
     metrics: Metrics,
 }
 
@@ -49,6 +51,7 @@ impl Agrafe {
         let signer = Signer::from_config(&config.signing)?;
         let keks = Keks::from_config(&config.encryption)?;
         let clamd = Clamd::from_config(&config.clamav);
+        let heads = HeadCache::from_config(&config.blobs);
         Ok(Self(Arc::new(Inner {
             config,
             pool,
@@ -56,6 +59,7 @@ impl Agrafe {
             signer,
             keks,
             clamd,
+            heads,
             metrics: Metrics::new(),
         })))
     }
@@ -82,6 +86,11 @@ impl Agrafe {
 
     pub fn clamd(&self) -> &Clamd {
         &self.0.clamd
+    }
+
+    /// The rows the read routes served lately.
+    pub fn heads(&self) -> &HeadCache {
+        &self.0.heads
     }
 
     pub fn metrics(&self) -> &Metrics {

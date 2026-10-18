@@ -1,5 +1,6 @@
 //! Blob model and state machine.
 
+pub mod cache;
 pub mod create;
 pub mod read;
 pub mod repo;
@@ -46,9 +47,19 @@ impl Agrafe {
     }
 
     /// What serving a blob needs of its row, in any state. The read routes
-    /// are the hot path, and this is the one query on it.
+    /// are the hot path, and this is the one query on it, answered from
+    /// the cache for a settled row served lately; see `blob::cache`.
     pub async fn find_blob_head(&self, id: Uuid) -> sqlx::Result<Option<BlobHead>> {
-        repo::find_head(self.pool(), id).await
+        if let Some(entry) = self.heads().get(id) {
+            self.metrics().head_cache(true);
+            return Ok(entry);
+        }
+        let entry = repo::find_head(self.pool(), id).await?;
+        if self.heads().enabled() {
+            self.metrics().head_cache(false);
+            self.heads().insert(id, &entry);
+        }
+        Ok(entry)
     }
 
     /// List blobs, newest first. `content_type` is normalised here, and
@@ -70,7 +81,12 @@ impl Agrafe {
     pub async fn delete_blob(&self, id: Uuid) -> Result<bool, DeleteError> {
         let purge_at = self.config().upload.purge_at(Timestamp::now());
         match repo::soft_delete(self.pool(), id, purge_at).await? {
-            repo::Delete::Done => Ok(true),
+            repo::Delete::Done => {
+                // This process stops serving it at once; another does
+                // within the cache TTL.
+                self.heads().invalidate(id);
+                Ok(true)
+            }
             repo::Delete::Attached => Err(DeleteError::Attached),
             repo::Delete::Missing => Ok(false),
         }

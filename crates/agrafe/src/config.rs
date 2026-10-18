@@ -313,6 +313,14 @@ pub struct BlobsConfig {
     /// removes it after, with its attachments and jobs.
     #[serde(with = "humantime_serde", default = "default_keep_purged")]
     pub keep_purged: Duration,
+    /// How long the read routes keep a settled row they served, so a blob
+    /// read many times costs one query per process per period; zero keeps
+    /// nothing. See `blob::cache`.
+    #[serde(with = "humantime_serde", default = "default_read_cache_ttl")]
+    pub read_cache_ttl: Duration,
+    /// Rows kept at most.
+    #[serde(default = "default_read_cache_entries")]
+    pub read_cache_entries: u64,
 }
 
 impl BlobsConfig {
@@ -335,12 +343,20 @@ fn default_expires_in() -> Duration {
 fn default_keep_purged() -> Duration {
     Duration::from_secs(90 * 24 * 3600)
 }
+fn default_read_cache_ttl() -> Duration {
+    Duration::from_secs(30)
+}
+fn default_read_cache_entries() -> u64 {
+    100_000
+}
 
 impl Default for BlobsConfig {
     fn default() -> Self {
         Self {
             default_expires_in: default_expires_in(),
             keep_purged: default_keep_purged(),
+            read_cache_ttl: default_read_cache_ttl(),
+            read_cache_entries: default_read_cache_entries(),
         }
     }
 }

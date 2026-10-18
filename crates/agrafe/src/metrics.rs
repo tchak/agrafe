@@ -53,6 +53,7 @@ pub struct Metrics {
     workers: IntGaugeVec,
     jobs: IntGaugeVec,
     oldest_due: GaugeVec,
+    head_cache: IntCounterVec,
 }
 
 impl Default for Metrics {
@@ -102,12 +103,21 @@ impl Metrics {
             &["kind", "priority"],
         )
         .expect("valid metric");
-        let collectors: [Box<dyn prometheus::core::Collector>; 5] = [
+        let head_cache = IntCounterVec::new(
+            Opts::new(
+                "agrafe_blob_head_cache_total",
+                "Row lookups by the read routes, by whether the cache had the row",
+            ),
+            &["result"],
+        )
+        .expect("valid metric");
+        let collectors: [Box<dyn prometheus::core::Collector>; 6] = [
             Box::new(job_runs.clone()),
             Box::new(job_duration.clone()),
             Box::new(workers.clone()),
             Box::new(jobs.clone()),
             Box::new(oldest_due.clone()),
+            Box::new(head_cache.clone()),
         ];
         for c in collectors {
             registry.register(c).expect("metric names are unique");
@@ -124,6 +134,9 @@ impl Metrics {
                 job_runs.with_label_values(&[kind.as_str(), outcome.as_str()]);
             }
         }
+        for result in ["hit", "miss"] {
+            head_cache.with_label_values(&[result]);
+        }
         Self {
             registry,
             job_runs,
@@ -131,7 +144,15 @@ impl Metrics {
             workers,
             jobs,
             oldest_due,
+            head_cache,
         }
+    }
+
+    /// A read route looked a row up, and the cache had it or not.
+    pub fn head_cache(&self, hit: bool) {
+        self.head_cache
+            .with_label_values(&[if hit { "hit" } else { "miss" }])
+            .inc();
     }
 
     /// An attempt at a job of `kind` finished with `outcome` after `took`.

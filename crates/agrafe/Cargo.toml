@@ -28,6 +28,7 @@ jiff = { version = "0.2.38", features = ["serde"] }
 jiff-sqlx = { version = "0.2.0", features = ["postgres"] }
 memchr = "2.8.3"
 mime = "0.3.17"
+moka = { version = "0.12.16", features = ["sync"] }
 object_store = { version = "0.14.2", features = ["aws"] }
 percent-encoding = "2.3.2"
 prometheus = { version = "0.14.0", default-features = false }

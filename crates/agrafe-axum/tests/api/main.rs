@@ -9,6 +9,7 @@ mod support;
 mod archive;
 mod attachments;
 mod blobs;
+mod cache;
 mod jobs;
 mod original;
 mod races;
