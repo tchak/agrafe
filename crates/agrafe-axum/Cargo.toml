@@ -32,6 +32,7 @@ uuid = { version = "1.28.0", features = ["v7", "serde"] }
 [dev-dependencies]
 agrafe-crypto = { version = "0.1.0", path = "../agrafe-crypto" }
 agrafe-render = { version = "0.1.0", path = "../agrafe-render" }
+async-trait = "0.1.89"
 bytesize = "2.7.0"
 figment = { version = "0.10.19", features = ["toml", "test"] }
 jiff-sqlx = { version = "0.2.0", features = ["postgres"] }

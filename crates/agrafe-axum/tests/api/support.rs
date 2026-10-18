@@ -1,6 +1,10 @@
 //! What every test builds on: the app under test, a fake clamd, request
 //! builders and peeks at the database and the object store.
 
+mod gate;
+
+pub use gate::{At, Gate};
+
 use agrafe::Agrafe;
 use agrafe::config::Config;
 use agrafe::db;
@@ -34,6 +38,8 @@ pub struct TestApp {
     pub private: Router,
     pub public: Router,
     pub state: Agrafe,
+    /// Holds an operation of the store in its tracks.
+    pub gate: Gate,
     storage: PathBuf,
     _guard: MutexGuard<'static, ()>,
 }
@@ -222,11 +228,15 @@ pub async fn setup_tuned(clamd: SocketAddr, tune: impl FnOnce(&mut Config)) -> T
         .await
         .unwrap();
 
-    let state = Agrafe::new(config, pool).unwrap();
+    let gate = Gate::default();
+    let store = agrafe::storage::build(&config.storage).unwrap();
+    let store = Arc::new(gate::GatedStore::new(store, gate.clone()));
+    let state = Agrafe::with_store(config, pool, store).unwrap();
     TestApp {
         private: api::private_router(state.clone()),
         public: api::public_router(state.clone()),
         state,
+        gate,
         storage,
         _guard: guard,
     }

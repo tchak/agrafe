@@ -10,6 +10,7 @@ mod archive;
 mod blobs;
 mod jobs;
 mod original;
+mod races;
 mod reaper;
 mod representations;
 mod rows;

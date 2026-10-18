@@ -40,6 +40,11 @@ struct Inner {
 impl Agrafe {
     pub fn new(config: Config, pool: PgPool) -> Result<Self, InitError> {
         let store = storage::build(&config.storage)?;
+        Self::with_store(config, pool, store)
+    }
+
+    /// `new` over a store built elsewhere; `config.storage` goes unused.
+    pub fn with_store(config: Config, pool: PgPool, store: Store) -> Result<Self, InitError> {
         let signer = Signer::from_config(&config.signing)?;
         let keks = Keks::from_config(&config.encryption)?;
         let clamd = Clamd::from_config(&config.clamav);
