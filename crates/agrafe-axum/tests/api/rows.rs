@@ -349,6 +349,11 @@ async fn creation_checks_the_columns() {
             "cannot be produced",
         ),
         (
+            "control character in a name",
+            json!({"filename": "e.csv", "content_type": "text/csv", "input_type": "rows", "columns": [{"name": "a\u{202E}b"}]}),
+            "column 1 has a name with control characters",
+        ),
+        (
             "name longer than a cell",
             json!({"filename": "e.xlsx", "content_type": XLSX, "input_type": "rows", "columns": [{"name": "n".repeat(32_768)}]}),
             "column 1 has a name longer than the 32767 characters",

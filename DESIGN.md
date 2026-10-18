@@ -523,7 +523,8 @@ user is waiting on, created `high`, goes before a nightly batch created
 
 The columns are declared at creation: `columns` is a list of one object
 per column, in sheet order, with a `name` (the header text, any non-empty
-string, duplicates allowed) and an optional `type`. The list is required
+string without control or bidirectional formatting characters, the
+filename's rule, duplicates allowed) and an optional `type`. The list is required
 for a `rows` blob, refused on any other input type, and stored on the row
 as `source_columns`, from which accept and build read it. Each line of the
 source is a JSON array with exactly one value per column, in that order; a

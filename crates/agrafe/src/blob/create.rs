@@ -221,9 +221,9 @@ pub(crate) fn validate_size(size: i64, upload: &UploadConfig) -> Result<i64, Cre
     Ok(size)
 }
 
-/// The columns of a `rows` blob: at least one, each with a header, no more
-/// than a sheet holds when the output is one, and no header longer than a
-/// sheet cell holds.
+/// The columns of a `rows` blob: at least one, each with a header free of
+/// control characters, as the filename is, no more than a sheet holds when
+/// the output is one, and no header longer than a sheet cell holds.
 fn validate_columns(columns: Vec<Column>, content_type: &str) -> Result<Vec<Column>, CreateError> {
     if columns.is_empty() {
         return Err(unprocessable("columns must name at least one column"));
@@ -237,6 +237,16 @@ fn validate_columns(columns: Vec<Column>, content_type: &str) -> Result<Vec<Colu
     }
     if let Some(i) = columns.iter().position(|c| c.name.is_empty()) {
         return Err(unprocessable(format!("column {} has an empty name", i + 1)));
+    }
+    if let Some(i) = columns.iter().position(|c| {
+        c.name
+            .chars()
+            .any(|ch| ch.is_control() || is_bidi_control(ch))
+    }) {
+        return Err(unprocessable(format!(
+            "column {} has a name with control characters",
+            i + 1
+        )));
     }
     if sheet && let Some(i) = columns.iter().position(|c| !rows::fits_sheet_cell(&c.name)) {
         return Err(unprocessable(format!(
@@ -420,6 +430,21 @@ mod tests {
         let mut r = req(InputType::Rows, classify::CSV);
         r.columns = Some(many);
         assert!(validate(r, &cfg(), now).is_ok(), "CSV has no such limit");
+
+        for bad in ["a\nb", "x\u{0}y", "total\u{202E}", "a\u{2066}b", "\t"] {
+            let mut r = req(InputType::Rows, classify::CSV);
+            r.columns = Some(vec![Column {
+                name: bad.into(),
+                kind: None,
+            }]);
+            assert!(validate(r, &cfg(), now).is_err(), "{bad:?}");
+        }
+        let mut r = req(InputType::Rows, classify::CSV);
+        r.columns = Some(vec![Column {
+            name: "Nom / Prénom: été".into(),
+            kind: None,
+        }]);
+        assert!(validate(r, &cfg(), now).is_ok(), "separators are fine");
 
         let long = vec![Column {
             name: "n".repeat(rows::MAX_SHEET_CELL_LEN + 1),
