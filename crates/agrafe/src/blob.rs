@@ -239,13 +239,11 @@ impl Representation {
 pub enum PreviewSource {
     Image,
     EmbeddedImage,
-    FirstPage,
 }
 
 agrafe_types::str_enum!(PreviewSource {
     Image => "image",
     EmbeddedImage => "embedded_image",
-    FirstPage => "first_page",
 });
 
 #[derive(Debug, Clone, sqlx::FromRow)]

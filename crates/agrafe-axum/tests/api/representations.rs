@@ -186,32 +186,44 @@ async fn vector_images_fill_the_box() {
 }
 
 #[tokio::test]
-async fn pdf_previews_come_from_the_embedded_image_or_the_page() {
+async fn pdf_previews_come_from_the_embedded_image_only() {
     let app = setup().await;
     // One JPEG covering a page a tenth of its size: the image itself is the
     // preview, at its own 600x300 fitted into 400.
     let wrapped = ready_file(&app, "scan.pdf", "application/pdf", &fixture("image.pdf")).await;
-    // The same image with a paragraph beside it: the page is rendered, and
-    // being vector it fills the box whatever its nominal size.
+    let id = id_of(&wrapped);
+    // The same image with a paragraph beside it, and a page of text: real
+    // documents, with no preview, and the first page as their thumbnail.
+    // Being vector, the page fills the box whatever its nominal size.
     let mixed = ready_file(&app, "mixed.pdf", "application/pdf", &fixture("mixed.pdf")).await;
     let text = ready_file(&app, "text.pdf", "application/pdf", &fixture("text.pdf")).await;
     render_all(&app).await;
 
-    for (blob, source, preview_size, thumbnail_size) in [
-        (&wrapped, "embedded_image", (400, 200), (256, 128)),
-        (&mixed, "first_page", (400, 200), (256, 128)),
-        (&text, "first_page", (400, 200), (256, 128)),
-    ] {
+    let blob = get_blob(&app, id).await;
+    assert_eq!(blob["preview_state"], "ready");
+    assert_eq!(blob["preview_source"], "embedded_image");
+    assert_eq!(blob["thumbnail_state"], "ready");
+    let (_, size) = rendered(&app, &format!("/blobs/{id}/preview/scan.pdf")).await;
+    assert_eq!(size, (400, 200));
+    let (_, size) = rendered(&app, &format!("/blobs/{id}/thumbnail/scan.pdf")).await;
+    assert_eq!(size, (256, 128));
+
+    for blob in [&mixed, &text] {
         let id = id_of(blob);
         let name = blob["filename"].as_str().unwrap();
         let blob = get_blob(&app, id).await;
-        assert_eq!(blob["preview_state"], "ready", "{name}");
-        assert_eq!(blob["preview_source"], source, "{name}");
+        assert_eq!(blob["preview_state"], "unavailable", "{name}");
+        assert_eq!(blob["preview_source"], Value::Null, "{name}");
         assert_eq!(blob["thumbnail_state"], "ready", "{name}");
-        let (_, size) = rendered(&app, &format!("/blobs/{id}/preview/{name}")).await;
-        assert_eq!(size, preview_size, "{name}");
+        no_preview(
+            &app,
+            &format!("/blobs/{id}/preview/{name}"),
+            "unavailable",
+            "no preview for this file",
+        )
+        .await;
         let (_, size) = rendered(&app, &format!("/blobs/{id}/thumbnail/{name}")).await;
-        assert_eq!(size, thumbnail_size, "{name}");
+        assert_eq!(size, (256, 128), "{name}");
     }
 }
 
@@ -349,12 +361,13 @@ async fn a_crashing_helper_fails_the_file_not_the_job() {
         assert_eq!(blob["thumbnail_state"], "failed", "{name}");
         assert_eq!(jobs_for(&app, id).await, Vec::<String>::new(), "{name}");
     }
-    // A PDF still has the page render to fall back on.
+    // A PDF has no other preview source, and a failed preview is not
+    // replaced by the first-page thumbnail: the file is at fault.
     let scan = ready_file(&app, "scan.pdf", "application/pdf", &fixture("image.pdf")).await;
     render_all(&app).await;
     let blob = get_blob(&app, id_of(&scan)).await;
-    assert_eq!(blob["preview_state"], "ready");
-    assert_eq!(blob["preview_source"], "first_page");
+    assert_eq!(blob["preview_state"], "failed");
+    assert_eq!(blob["thumbnail_state"], "failed");
 }
 
 #[tokio::test]
@@ -405,6 +418,8 @@ async fn oversized_originals_get_no_representations() {
     // the first few KiB, however long the file.
     let long: Vec<u8> = b"line\n".repeat(400);
     let text = ready_file(&app, "long.txt", "text/plain", &long).await;
+    // A PDF over the limit does not: its first page would decode the file.
+    let pdf = ready_file(&app, "text.pdf", "application/pdf", &fixture("mixed.pdf")).await;
     render_all(&app).await;
     let blob = get_blob(&app, id).await;
     assert_eq!(blob["thumbnail_state"], "unavailable");
@@ -412,6 +427,9 @@ async fn oversized_originals_get_no_representations() {
     let text = get_blob(&app, id_of(&text)).await;
     assert_eq!(text["thumbnail_state"], "ready");
     assert_eq!(text["preview_state"], "unavailable");
+    let pdf = get_blob(&app, id_of(&pdf)).await;
+    assert_eq!(pdf["thumbnail_state"], "unavailable");
+    assert_eq!(pdf["preview_state"], "unavailable");
 }
 
 #[tokio::test]

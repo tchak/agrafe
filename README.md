@@ -98,11 +98,12 @@ every decision.
 ### Previews and thumbnails
 
 - **WebP preview and thumbnail** for images (JPEG, PNG, GIF, WebP, TIFF,
-  HEIF/AVIF, SVG, BMP, JPEG 2000) and PDFs, and for DOCX and ODT files that
+  HEIF/AVIF, SVG, BMP, JPEG 2000), and for PDF, DOCX and ODT files that
   wrap a single image.
 - **Embedded image extraction**: a scan wrapped in a PDF, a Word or an ODT
   file gets the picture as its preview, not a page with a picture on it.
-  Office files have no page render otherwise.
+- **First-page thumbnails** for other PDFs, which have no preview: a
+  document needs a viewer, not a picture. Office files have no page render.
 - **Text thumbnails** showing the first lines of text, CSV and TSV files.
 - **Category icons** for everything else. The thumbnail URL answers `200`
   for as long as the blob exists, so it can go straight into an `<img>`

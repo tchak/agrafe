@@ -1002,7 +1002,8 @@ Only files with a known source are attempted:
 - image types libvips loads natively: JPEG, PNG, GIF, WebP, TIFF, HEIF/AVIF,
   SVG, BMP, JPEG 2000. Everything else under `image/*` would go through
   ImageMagick, more attack surface than it is worth, and gets the icon;
-- PDF, DOCX and ODT, through the sources below;
+- PDF, DOCX and ODT, through the sources below; a PDF that is not one gets
+  a thumbnail of its first page, and no preview;
 - text files (the `text` category plus CSV and TSV), thumbnails only;
 - originals at most `media.max_source_size` (default 512 MiB), except for
   the text thumbnail, which reads the first 8 KiB whatever the size.
@@ -1025,10 +1026,11 @@ decoded once, the two pictures agree, and a thumbnail regenerated on its
 own (its object gone) is made from the stored preview without touching the
 original. A preview verdict from the current variant version stands: a
 `failed` preview gives a `failed` thumbnail, an `unavailable` one leaves
-the thumbnail to the text sample or the icon; a preview from another
-version, or whose object is gone, is rendered again first. The thumbnail
-thus appears after the preview rather than alongside it, a few seconds
-for a large PDF, which the icon placeholder and `wait` cover.
+the thumbnail to its fallback (the text sample, the first page of a PDF)
+or the icon; a preview from another version, or whose object is gone, is
+rendered again first. The thumbnail thus appears after the preview rather
+than alongside it, a few seconds for a large image, which the icon
+placeholder and `wait` cover.
 
 A source that vips rejects or that runs past the sandbox timeout, or a
 helper that crashes or runs out of time, hands over to the next source, as
@@ -1115,6 +1117,17 @@ Cyrillic as the notdef box. The helper writes a PGM at twice the box, and
 vips downsizes it into the WebP like any other raster. There is no text
 preview: a preview that cannot be read is not worth rendering.
 
+A PDF that is not an embedded image (see "Preview") gets its first page as
+its thumbnail, through libvips's PDF loader, and no preview for the same
+reason: a page of a document fitted into a preview box is not readable
+either, and a multi-page document needs a viewer, not a picture. libvips
+builds against either poppler or pdfium; production images should use
+pdfium, the most hardened renderer available, rather than linking
+`pdfium-render`, a second native dependency for what vips already does.
+The thumbnail is subject to `media.max_source_size` like a preview, since
+the loader reads the whole file. Office files have no page render: without
+an embedded image they get the icon.
+
 ### Preview
 
 WebP, not JPEG: smaller, lossless-capable, alpha, universally supported, and it
@@ -1140,12 +1153,8 @@ on "has preview", never on category. Sources, in order:
    containing a screenshot. The parsing runs in the `agrafe-extract`
    helper, its own binary executed in the sandbox, never in a server
    process.
-3. **First-page render** (`preview_source = first_page`): PDF through
-   libvips's PDF loader. libvips builds against either poppler or pdfium;
-   production images should use pdfium, the most hardened renderer
-   available, rather than linking `pdfium-render`, a second native
-   dependency for what vips already does. Office files have no page
-   render: without an embedded image they have no preview.
+A document that is not one of these has no preview, whether PDF or office:
+the first page of a PDF is its thumbnail (see "Thumbnail"), not a preview.
 
 Files with no source answer `404` from the preview endpoint, with
 `preview_state = unavailable`; so do `pending` and `failed` ones, each with

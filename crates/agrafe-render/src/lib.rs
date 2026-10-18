@@ -165,34 +165,48 @@ pub enum Source {
     /// A document that wraps one image with next to no text: pull the image
     /// out at full resolution.
     EmbeddedImage,
-    /// Render the first page.
-    FirstPage,
 }
 
 /// The preview sources for a content type, in order; the thumbnail is
-/// derived from the preview. Empty when the file cannot be rendered, in
-/// which case there is no preview and the thumbnail is a text sample or an
-/// icon. Image types are an allowlist of what libvips loads natively:
-/// everything else would go through ImageMagick, which is more attack
-/// surface than it is worth.
+/// derived from the preview. Empty when the file cannot be rendered as a
+/// whole, in which case there is no preview and the thumbnail comes from
+/// [`thumbnail_fallback`] or is an icon. Image types are an allowlist of
+/// what libvips loads natively: everything else would go through
+/// ImageMagick, which is more attack surface than it is worth.
 pub fn sources(content_type: &str) -> &'static [Source] {
     match sniff::canonical(content_type) {
         "image/jpeg" | "image/png" | "image/gif" | "image/webp" | "image/tiff" | "image/heif"
         | "image/avif" | "image/svg+xml" | "image/bmp" | "image/jp2" => &[Source::Image],
-        classify::PDF => &[Source::EmbeddedImage, Source::FirstPage],
-        DOCX | ODT => &[Source::EmbeddedImage],
+        classify::PDF | DOCX | ODT => &[Source::EmbeddedImage],
         _ => &[],
     }
 }
 
-/// Whether a file with no preview gets a thumbnail of its first lines set
-/// in a monospace font: the `text` category, plus CSV and TSV, which
-/// classify as spreadsheets. A hint of what the file is, not a way to read
-/// it, which is why there is no text preview.
-pub fn text_sample(content_type: &str) -> bool {
+/// Where a thumbnail comes from for a file that has no preview: a hint of
+/// what the file is, not a way to read it, which is why neither is a
+/// preview.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fallback {
+    /// The first lines of the file set in a monospace font.
+    TextSample,
+    /// The first page rendered.
+    FirstPage,
+}
+
+/// The thumbnail fallback for a content type: a text sample for the `text`
+/// category plus CSV and TSV, which classify as spreadsheets; the first
+/// page for PDF.
+pub fn thumbnail_fallback(content_type: &str) -> Option<Fallback> {
     let canonical = sniff::canonical(content_type);
-    matches!(canonical, classify::CSV | "text/tab-separated-values")
+    if matches!(canonical, classify::CSV | "text/tab-separated-values")
         || classify::classify(canonical) == Category::Text
+    {
+        Some(Fallback::TextSample)
+    } else if canonical == classify::PDF {
+        Some(Fallback::FirstPage)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -203,10 +217,7 @@ mod tests {
     fn sources_by_type() {
         assert_eq!(sources("image/jpg"), &[Source::Image]);
         assert_eq!(sources("image/heic"), &[Source::Image]);
-        assert_eq!(
-            sources(classify::PDF),
-            &[Source::EmbeddedImage, Source::FirstPage]
-        );
+        assert_eq!(sources(classify::PDF), &[Source::EmbeddedImage]);
         assert_eq!(sources(DOCX), &[Source::EmbeddedImage]);
         assert!(sources("image/vnd.adobe.photoshop").is_empty());
         assert!(sources("text/plain").is_empty());
@@ -217,15 +228,20 @@ mod tests {
             classify::CSV,
             "text/tab-separated-values",
         ] {
-            assert!(text_sample(text), "{text}");
+            assert_eq!(
+                thumbnail_fallback(text),
+                Some(Fallback::TextSample),
+                "{text}"
+            );
         }
+        assert_eq!(thumbnail_fallback(classify::PDF), Some(Fallback::FirstPage));
         for other in [
             classify::XLSX,
-            classify::PDF,
+            DOCX,
             "image/png",
             "application/octet-stream",
         ] {
-            assert!(!text_sample(other), "{other}");
+            assert_eq!(thumbnail_fallback(other), None, "{other}");
         }
     }
 }

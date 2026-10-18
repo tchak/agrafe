@@ -7,7 +7,8 @@
 //! original is decoded once, the two pictures agree, and a thumbnail
 //! regenerated on its own is made from the stored preview without touching
 //! the original. Files with no preview get a thumbnail of their own when
-//! they are text.
+//! there is a fallback for them: a text sample, or the first page of a
+//! PDF.
 //!
 //! A file the renderer rejects, or that crashes a helper, leaves the
 //! representation `failed` and the job done: trying the same bytes again
@@ -21,7 +22,7 @@ use std::path::{Path, PathBuf};
 
 use agrafe_render::helpers::{self, Helper};
 use agrafe_render::vips::{self, Fit, Input};
-use agrafe_render::{Source, sources, text_sample};
+use agrafe_render::{Fallback, Source, sources, thumbnail_fallback};
 use agrafe_types::text::SAMPLE_LEN as TEXT_SAMPLE_LEN;
 use tokio::io::AsyncWriteExt;
 
@@ -75,9 +76,9 @@ pub async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
 
     if pending(Representation::Thumbnail) {
         let verdict = match &preview {
-            Preview::Ready(path) => render.thumbnail_webp(path).await?,
+            Preview::Ready(path) => render.thumbnail_webp(path, Input::Raster).await?,
             Preview::Failed => Verdict::Rejected,
-            Preview::Unavailable => render.text_sample().await?,
+            Preview::Unavailable => render.thumbnail_fallback().await?,
         };
         render
             .finish(
@@ -168,10 +169,7 @@ impl<'a> Render<'a> {
     async fn render_preview(&mut self) -> Result<Verdict<(Vec<u8>, PreviewSource)>, JobError> {
         let media = self.media();
         let content_type = &self.blob.content_type;
-        let too_large = self
-            .blob
-            .size
-            .is_some_and(|size| size as u64 > media.max_source_size.as_u64());
+        let too_large = self.too_large();
         let sources = sources(content_type);
         if too_large || sources.is_empty() {
             tracing::info!(%content_type, too_large, "nothing to render a preview from");
@@ -186,11 +184,6 @@ impl<'a> Render<'a> {
                     self.whole_original().await?,
                     Input::for_image(content_type),
                     PreviewSource::Image,
-                ),
-                Source::FirstPage => (
-                    self.whole_original().await?,
-                    Input::Page,
-                    PreviewSource::FirstPage,
                 ),
                 Source::EmbeddedImage => {
                     let whole = self.whole_original().await?;
@@ -236,20 +229,24 @@ impl<'a> Render<'a> {
         Ok(Some(path))
     }
 
-    /// `input` fitted into the thumbnail box, never enlarged.
-    async fn thumbnail_webp(&self, input: &Path) -> Result<Verdict<Vec<u8>>, JobError> {
+    /// Whether the original is over `media.max_source_size`, in which case
+    /// nothing decodes it.
+    fn too_large(&self) -> bool {
+        self.blob
+            .size
+            .is_some_and(|size| size as u64 > self.media().max_source_size.as_u64())
+    }
+
+    /// `input` fitted into the thumbnail box.
+    async fn thumbnail_webp(
+        &self,
+        input: &Path,
+        kind: Input,
+    ) -> Result<Verdict<Vec<u8>>, JobError> {
         let media = self.media();
         let output = self.path("thumbnail.webp");
         let render = &media.render;
-        match vips::to_webp(
-            render,
-            input,
-            Input::Raster,
-            &output,
-            Fit::thumbnail(render),
-        )
-        .await
-        {
+        match vips::to_webp(render, input, kind, &output, Fit::thumbnail(render)).await {
             Ok(bytes) => Ok(Verdict::Rendered(bytes)),
             Err(err) if err.is_input_fault() => {
                 tracing::warn!(error = %err, "thumbnail rendering failed");
@@ -259,12 +256,23 @@ impl<'a> Render<'a> {
         }
     }
 
-    /// A thumbnail for a file with no preview: the first lines of a text
-    /// file set on a page. Anything else declines, and gets the icon.
-    async fn text_sample(&self) -> Result<Verdict<Vec<u8>>, JobError> {
-        if !text_sample(&self.blob.content_type) {
-            return Ok(Verdict::Declined);
+    /// A thumbnail for a file with no preview, rendered from the original:
+    /// the first lines of a text file set on a page, or the first page of a
+    /// PDF. Anything else declines, and gets the icon.
+    async fn thumbnail_fallback(&mut self) -> Result<Verdict<Vec<u8>>, JobError> {
+        match thumbnail_fallback(&self.blob.content_type) {
+            Some(Fallback::TextSample) => self.text_sample().await,
+            Some(Fallback::FirstPage) if !self.too_large() => {
+                let original = self.whole_original().await?;
+                self.thumbnail_webp(&original, Input::Page).await
+            }
+            _ => Ok(Verdict::Declined),
         }
+    }
+
+    /// The first lines of a text file set on a page, from a sample of the
+    /// file however large it is.
+    async fn text_sample(&self) -> Result<Verdict<Vec<u8>>, JobError> {
         let media = self.media();
         let sample = self.path("sample");
         self.download(&sample, 0..self.stored.size.min(TEXT_SAMPLE_LEN))
@@ -272,7 +280,7 @@ impl<'a> Render<'a> {
         let page = self.path("page.pgm");
         let render = &media.render;
         match helpers::render_text(render, &sample, &page, Fit::thumbnail(render)).await? {
-            Helper::Produced => self.thumbnail_webp(&page).await,
+            Helper::Produced => self.thumbnail_webp(&page, Input::Raster).await,
             Helper::Declined => Ok(Verdict::Declined),
             Helper::Failed => Ok(Verdict::Rejected),
         }
