@@ -61,7 +61,7 @@ pub fn routes(body_limit: usize) -> Router<Agrafe> {
 
 /// The full metadata of `blob`: its attachments and ready-made URLs.
 async fn respond(agrafe: &Agrafe, blob: &Blob) -> ApiResult<BlobResponse> {
-    let attachments = agrafe.attachments_of(blob.id).await?;
+    let attachments = agrafe.attachments_for(&[blob.id]).await?;
     Ok(BlobResponse::new(blob, &attachments, agrafe.urls(blob)))
 }
 

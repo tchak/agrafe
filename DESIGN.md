@@ -100,6 +100,7 @@ No signature. Reachable only from trusted networks.
 | `DELETE` | `/blobs/:id` | Soft delete of an unattached blob, bucket objects purged asynchronously |
 | `POST` | `/blobs/:id/attachments` | Attach the blob to a record, idempotent (see "Attachments") |
 | `GET` | `/attachments` | List attachments, cursor paginated, filterable by record and blob |
+| `GET` | `/attachments/:id` | One attachment |
 | `DELETE` | `/attachments/:id` | Detach; the last detach gives the blob back its default expiry |
 | `POST` | `/blobs/:id/urls` | Mint signed public URLs with a chosen TTL and query parameters |
 | `GET` | `/blobs/:id/original/:filename` | Original bytes, supports `Range` |
@@ -440,8 +441,9 @@ last-detach check.
 with filters `record_type`, `record_id` (with `record_type`), `name` and
 `blob_id`; each row carries the blob's `state`. `GET /blobs/:id` inlines the
 blob's attachments, and `GET /blobs` takes `attached`. The three strings are
-validated like `filename`: non-empty, at most 255 bytes, no control
-characters.
+validated like `filename`: not blank, at most 255 bytes, no control
+characters; unlike `filename` they are not trimmed, since an identifier is
+the backend's to write.
 
 The public port never sees attachments. They are the backend's statements
 about its own records, and nothing a browser is told.

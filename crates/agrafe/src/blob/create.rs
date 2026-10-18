@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use super::{Blob, InputType, repo};
 use crate::app::Agrafe;
-use crate::attachment::{self, AttachError, AttachmentRequest, NewAttachment};
+use crate::attachment::{self, AttachmentRequest, NewAttachment};
 use crate::classify::{self, Category};
 use crate::config::{BlobsConfig, UploadConfig};
 use crate::jobs::Priority;
@@ -165,11 +165,10 @@ pub fn validate(
                 "expires_at and expires_in do not apply to a blob created attached",
             ));
         }
-        Some(attachment) => Some(attachment::validate(attachment).map_err(|e| match e {
-            AttachError::Invalid(msg) => unprocessable(format!("attachment: {msg}")),
-            // `validate` only ever reports an invalid request.
-            other => unprocessable(format!("attachment: {other}")),
-        })?),
+        Some(attachment) => Some(
+            attachment::validate(attachment)
+                .map_err(|msg| unprocessable(format!("attachment: {msg}")))?,
+        ),
         None => None,
     };
     let expires_at = match (&attachment, expires_at) {

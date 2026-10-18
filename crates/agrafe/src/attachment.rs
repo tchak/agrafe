@@ -54,7 +54,7 @@ impl Agrafe {
         blob_id: Uuid,
         req: AttachmentRequest,
     ) -> Result<Attached, AttachError> {
-        let new = validate(req)?;
+        let new = validate(req).map_err(AttachError::Invalid)?;
         let mut tx = self.pool().begin().await?;
         let blob = lock_blob(&mut tx, blob_id)
             .await?
@@ -88,7 +88,7 @@ impl Agrafe {
             // Another detach took it between `find` and the lock.
             return Ok(false);
         }
-        if count_for_blob(&mut *tx, attachment.blob_id).await? == 0 {
+        if !exists_for_blob(&mut *tx, attachment.blob_id).await? {
             let expires_at = self.config().blobs.default_expires_at(Timestamp::now());
             set_expiry(&mut tx, attachment.blob_id, expires_at).await?;
         }
@@ -98,11 +98,6 @@ impl Agrafe {
 
     pub async fn find_attachment(&self, id: Uuid) -> sqlx::Result<Option<Attachment>> {
         find(self.pool(), id).await
-    }
-
-    /// A blob's attachments, oldest first.
-    pub async fn attachments_of(&self, blob_id: Uuid) -> sqlx::Result<Vec<Attachment>> {
-        for_blobs(self.pool(), &[blob_id]).await
     }
 
     /// The attachments of every blob among `ids`, oldest first.
@@ -200,10 +195,12 @@ pub struct Page {
 }
 
 /// The three strings have the rules of a filename, short of its path
-/// separators: an identifier is the backend's to write.
+/// separators: an identifier is the backend's to write, kept as written,
+/// so nothing is trimmed, but blank is not an identifier.
 pub const MAX_FIELD_LEN: usize = 255;
 
-pub fn validate(req: AttachmentRequest) -> Result<NewAttachment, AttachError> {
+/// The error is the message; the callers wrap it in their own error.
+pub fn validate(req: AttachmentRequest) -> Result<NewAttachment, String> {
     validate_field("record_type", &req.record_type)?;
     validate_field("record_id", &req.record_id)?;
     validate_field("name", &req.name)?;
@@ -214,19 +211,17 @@ pub fn validate(req: AttachmentRequest) -> Result<NewAttachment, AttachError> {
     })
 }
 
-fn validate_field(field: &str, value: &str) -> Result<(), AttachError> {
-    if value.is_empty() {
-        return Err(AttachError::Invalid(format!("{field} must not be empty")));
+fn validate_field(field: &str, value: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        return Err(format!("{field} must not be empty"));
     }
     if value.len() > MAX_FIELD_LEN {
-        return Err(AttachError::Invalid(format!(
+        return Err(format!(
             "{field} is too long ({MAX_FIELD_LEN} bytes at most)"
-        )));
+        ));
     }
     if value.chars().any(|c| c.is_control() || is_bidi_control(c)) {
-        return Err(AttachError::Invalid(format!(
-            "{field} must not contain control characters"
-        )));
+        return Err(format!("{field} must not contain control characters"));
     }
     Ok(())
 }
@@ -327,13 +322,6 @@ async fn delete(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Result<bool> {
     Ok(result.rows_affected() == 1)
 }
 
-pub async fn count_for_blob(exec: impl PgExecutor<'_>, blob_id: Uuid) -> sqlx::Result<i64> {
-    sqlx::query_scalar("SELECT count(*) FROM attachments WHERE blob_id = $1")
-        .bind(blob_id)
-        .fetch_one(exec)
-        .await
-}
-
 /// The attachments of every blob among `ids`, oldest first.
 pub async fn for_blobs(exec: impl PgExecutor<'_>, ids: &[Uuid]) -> sqlx::Result<Vec<Attachment>> {
     sqlx::query_as::<_, Attachment>("SELECT * FROM attachments WHERE blob_id = ANY($1) ORDER BY id")
@@ -378,8 +366,9 @@ pub async fn list(exec: impl PgExecutor<'_>, params: &ListParams) -> sqlx::Resul
     Ok(Page { items, next_cursor })
 }
 
-/// Whether any attachment references `blob_id`. The caller holds the blob
-/// row lock when the answer decides something.
+/// Whether any attachment references `blob_id`: the last-detach check and
+/// delete's refusal. The caller holds the blob row lock when the answer
+/// decides something.
 pub async fn exists_for_blob(exec: impl PgExecutor<'_>, blob_id: Uuid) -> sqlx::Result<bool> {
     sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM attachments WHERE blob_id = $1)")
         .bind(blob_id)
@@ -411,13 +400,13 @@ mod tests {
             ("", "1", "x"),
             ("T", "", "x"),
             ("T", "1", ""),
+            ("T", "  ", "x"),
             ("T\n", "1", "x"),
             ("T", "1\u{0}", "x"),
             ("T", "1", "x\u{202E}"),
             ("T", "1", "\t"),
         ] {
-            let err = validate(req(t, i, n)).unwrap_err();
-            assert!(matches!(err, AttachError::Invalid(_)), "{t:?} {i:?} {n:?}");
+            assert!(validate(req(t, i, n)).is_err(), "{t:?} {i:?} {n:?}");
         }
         let long = "x".repeat(MAX_FIELD_LEN);
         assert!(validate(req(&long, &long, &long)).is_ok());
