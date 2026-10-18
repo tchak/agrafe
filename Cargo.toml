@@ -17,5 +17,9 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.94"
 
+[workspace.lints.rust]
+# Set by cargo-llvm-cov.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage)"] }
+
 [workspace.lints.clippy]
 all = "warn"

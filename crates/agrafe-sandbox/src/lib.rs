@@ -79,12 +79,22 @@ pub enum Outcome {
     TimedOut,
 }
 
+/// Variables the child inherits. A coverage build adds where the
+/// instrumented helpers write their profiles, which would otherwise land
+/// in the working directory and out of the report.
+const INHERITED: &[&str] = &[
+    "PATH",
+    "HOME",
+    #[cfg(coverage)]
+    "LLVM_PROFILE_FILE",
+];
+
 /// A command with a clean environment: the child sees `PATH` and `HOME` and
 /// nothing else, in particular no secrets from this process.
 pub fn command(program: impl AsRef<OsStr>) -> Command {
     let mut command = Command::new(program);
     command.env_clear();
-    for name in ["PATH", "HOME"] {
+    for &name in INHERITED {
         if let Some(value) = std::env::var_os(name) {
             command.env(name, value);
         }

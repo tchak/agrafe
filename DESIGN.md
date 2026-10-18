@@ -1046,7 +1046,8 @@ in a subprocess, never in the API process: `vips` for rendering, the
 `agrafe-extract` and `agrafe-render-text` binaries for container parsing
 and text rasterising, each its own crate so that the server links none of
 their parsers (see "Crates"). Each child gets a clean environment (`PATH` and `HOME`
-only, no secrets; vips also gets `TMPDIR` and `VIPS_CONCURRENCY`), `setrlimit` bounds on
+only, no secrets; vips also gets `TMPDIR` and `VIPS_CONCURRENCY`, and a coverage
+build alone passes `LLVM_PROFILE_FILE` through), `setrlimit` bounds on
 address space and data (`media.sandbox.memory`, default 1 GiB), CPU time and
 output file size (`max_output_size`), no core dumps, and is killed at the
 wall-clock limit (`media.sandbox.timeout`, default 60 s). The address space
