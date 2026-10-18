@@ -456,7 +456,7 @@ fn default_variant_version() -> i32 {
     1
 }
 fn default_max_source_size() -> ByteSize {
-    ByteSize::mib(512)
+    ByteSize::mib(64)
 }
 
 impl Default for MediaConfig {

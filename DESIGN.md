@@ -1017,8 +1017,11 @@ Only files with a known source are attempted:
 - PDF, DOCX and ODT, through the sources below; a PDF that is not one gets
   a thumbnail of its first page, and no preview;
 - text files (the `text` category plus CSV and TSV), thumbnails only;
-- originals at most `media.max_source_size` (default 512 MiB), except for
-  the text thumbnail, which reads the first 8 KiB whatever the size.
+- originals at most `media.max_source_size` (default 64 MiB), except for
+  the text thumbnail, which reads the first 8 KiB whatever the size. The
+  default is low on purpose: the pictures and scans people want to see
+  are a few MiB, and a larger file is one where the icon will do rather
+  than a render that may run to the sandbox timeout on every attempt.
 
 The allowlist above is by declared type, and the upload sniffer lets
 through anything `infer` does not recognise. vips, though, picks its loader

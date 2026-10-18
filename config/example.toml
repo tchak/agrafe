@@ -137,8 +137,10 @@ vips_command = "vips"
 # extract_command = "/usr/local/bin/agrafe-extract"
 # render_text_command = "/usr/local/bin/agrafe-render-text"
 # Originals above this size get an icon and no preview; text files still get
-# their thumbnail, which reads only the first few KiB.
-max_source_size = "512 MiB"
+# their thumbnail, which reads only the first few KiB. Pictures and scans
+# people want to see are a few MiB; above this a file is one where the icon
+# will do, and every sandbox timeout it would burn is spared.
+max_source_size = "64 MiB"
 # Where originals are unpacked while rendering, and where vips spills its
 # intermediates; the system temporary directory by default.
 # tmp_dir = "/var/tmp/agrafe"
