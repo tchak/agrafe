@@ -597,9 +597,12 @@ written row by row, the header first:
   package through the archive's own ZIP writer, which for this grew
   deflated entries of unknown size, compressed as the XML is produced
   (`flate2`). Such an entry's header goes out before its size is known,
-  without zip64 fields, so an entry reaching 4 GiB fails the build; a
-  sheet that large is beyond what any spreadsheet opens anyway. A
-  character XML 1.0 cannot carry, a control character other than tab and
+  so it always carries zip64 fields, which the format allows at any size,
+  and the descriptor holds the real sizes: a sheet near the row limit with
+  a few dozen text columns is more than 4 GiB of XML, and without this
+  the build would die on it after the backend had streamed the whole
+  source, with nothing on the blob to say why. A character XML 1.0
+  cannot carry, a control character other than tab and
   line breaks, becomes U+FFFD in either package; it could not show in a
   cell either way.
 - ODS the same way: `mimetype` first and stored as the format requires,
@@ -706,9 +709,10 @@ header, the bytes, then a data descriptor with the CRC and sizes, and the
 central directory comes last, so the writer never seeks. Sizes are known
 up front, so the local header carries them too and only the CRC waits for
 the descriptor. Zip64 is decided per entry from its size before its header
-goes out, since a streamed header cannot be rewritten; the central
-directory switches to zip64 on its own for the entry count and the
-offsets. Entries are made on Unix with mode `0644` and the member's
+goes out, since a streamed header cannot be rewritten, and a deflated
+entry of unknown size, which only a spreadsheet package has, always takes
+it; the central directory switches to zip64 on its own for the entry
+count and the offsets. Entries are made on Unix with mode `0644` and the member's
 `uploaded_at` as their time. Readers that go by the central directory,
 which is every desktop tool, handle data descriptors; strictly sequential
 readers of stored entries may not, which is accepted.

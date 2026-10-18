@@ -15,7 +15,11 @@
 //! produced, whose compressed bytes the caller reports with
 //! [`ZipWriter::compressed`]), and a whole stored one given at once
 //! ([`ZipWriter::whole_entry`]), which carries its CRC in the local header
-//! and needs no descriptor: what an ODS `mimetype` entry has to be.
+//! and needs no descriptor: what an ODS `mimetype` entry has to be. A
+//! deflated entry's size is not known when its header goes out, so it
+//! always takes zip64 fields, which the format allows at any size: the
+//! header announces `0xFFFFFFFF` and a zip64 extra of zeros, and the
+//! descriptor carries the real sizes as 64-bit values.
 
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
@@ -53,10 +57,6 @@ pub enum ZipError {
         declared: u64,
         written: u64,
     },
-    /// A deflated entry's header went out without zip64 fields, its size
-    /// being unknown then, so neither of its sizes may reach 4 GiB.
-    #[error("deflated entry `{0}` reached 4 GiB")]
-    EntryTooLarge(String),
     #[error("an entry is still open")]
     EntryOpen,
     #[error("no entry is open")]
@@ -177,11 +177,12 @@ impl ZipWriter {
     }
 
     /// Open a deflated entry of a size not known yet: the local header to
-    /// emit. The caller compresses the bytes itself, reporting the plain
-    /// ones through [`Self::data`] and the compressed ones it emits through
-    /// [`Self::compressed`]. Such an entry stays under 4 GiB either way.
+    /// emit, with zip64 fields since the size may turn out to need them.
+    /// The caller compresses the bytes itself, reporting the plain ones
+    /// through [`Self::data`] and the compressed ones it emits through
+    /// [`Self::compressed`].
     pub fn begin_deflated(&mut self, name: &str, time: DosTime) -> Result<Vec<u8>, ZipError> {
-        self.open_entry(name, time, Method::Deflated, None, false, None)
+        self.open_entry(name, time, Method::Deflated, None, true, None)
     }
 
     /// A stored entry given whole: the local header, carrying the CRC, and
@@ -241,7 +242,7 @@ impl ZipWriter {
         // A stored entry's sizes are known up front, so they go in the
         // header too for readers that walk the entries without the
         // directory; the descriptor repeats them with the CRC. A deflated
-        // entry's are zero until its descriptor.
+        // entry's are zero until its descriptor, in the zip64 extra too.
         let size = declared.unwrap_or(0);
         let field = if zip64 { FIELD_LIMIT_32 } else { size } as u32;
         put_u32(&mut out, field);
@@ -276,17 +277,11 @@ impl ZipWriter {
         let open = self.open.as_mut().ok_or(ZipError::NoEntry)?;
         open.crc.update(bytes);
         open.written += bytes.len() as u64;
-        match open.method {
-            Method::Stored => {
-                open.compressed += bytes.len() as u64;
-                self.offset += bytes.len() as u64;
-                Ok(())
-            }
-            Method::Deflated if open.written >= FIELD_LIMIT_32 => Err(ZipError::EntryTooLarge(
-                String::from_utf8_lossy(&open.name).into_owned(),
-            )),
-            Method::Deflated => Ok(()),
+        if open.method == Method::Stored {
+            open.compressed += bytes.len() as u64;
+            self.offset += bytes.len() as u64;
         }
+        Ok(())
     }
 
     /// `n` compressed bytes of the open deflated entry the caller has
@@ -298,11 +293,6 @@ impl ZipWriter {
         }
         open.compressed += n;
         self.offset += n;
-        if open.compressed >= FIELD_LIMIT_32 {
-            return Err(ZipError::EntryTooLarge(
-                String::from_utf8_lossy(&open.name).into_owned(),
-            ));
-        }
         Ok(())
     }
 
@@ -612,7 +602,8 @@ mod tests {
 
     /// Deflated entries compressed by the caller in pieces, a whole stored
     /// one first as an ODS has it: every entry reads back, the whole one
-    /// with its CRC in the local header and no descriptor flag.
+    /// with its CRC in the local header and no descriptor flag, the
+    /// deflated one with zip64 fields in its header and descriptor.
     #[test]
     fn deflated_and_whole_entries() {
         let t = DosTime::from_timestamp(at());
@@ -628,7 +619,15 @@ mod tests {
         let text: Vec<u8> = (0..20_000u32)
             .flat_map(|i| format!("<row r=\"{i}\"/>").into_bytes())
             .collect();
-        out.extend(zip.begin_deflated("content.xml", t).unwrap());
+        let header = zip.begin_deflated("content.xml", t).unwrap();
+        // Version 45 at 4, sizes 0xFFFFFFFF at 18 and 22, the name, then
+        // the zip64 extra: id 1, 16 bytes, two zero sizes.
+        assert_eq!(&header[4..6], &VERSION_ZIP64.to_le_bytes());
+        assert_eq!(&header[18..26], &[0xFF; 8]);
+        assert_eq!(&header[30..41], b"content.xml");
+        assert_eq!(&header[41..45], &[1, 0, 16, 0]);
+        assert_eq!(&header[45..], &[0; 16]);
+        out.extend(header);
         let mut encoder =
             flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
         for piece in text.chunks(7000) {
@@ -641,7 +640,10 @@ mod tests {
         let compressed = encoder.finish().unwrap();
         zip.compressed(compressed.len() as u64).unwrap();
         out.extend(compressed);
-        out.extend(zip.end_entry().unwrap());
+        let descriptor = zip.end_entry().unwrap();
+        assert_eq!(descriptor.len(), 24, "64-bit sizes");
+        assert_eq!(&descriptor[16..24], &(text.len() as u64).to_le_bytes());
+        out.extend(descriptor);
         out.extend(zip.finish().unwrap());
         assert!(out.len() < text.len() / 4, "{} bytes", out.len());
 
@@ -683,12 +685,10 @@ mod tests {
             ZipWriter::new().begin_entry(&long, 0, t),
             Err(ZipError::NameTooLong(_))
         ));
+        // A deflated entry has no size ceiling of its own.
         let mut zip = ZipWriter::new();
         zip.begin_deflated("d", t).unwrap();
-        assert!(matches!(
-            zip.compressed(FIELD_LIMIT_32),
-            Err(ZipError::EntryTooLarge(_))
-        ));
+        assert_eq!(zip.compressed(FIELD_LIMIT_32 + 1), Ok(()));
     }
 
     #[test]
