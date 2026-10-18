@@ -74,8 +74,8 @@ every decision.
   backend acting for one record cannot know the others are done with it.
   Detach is the only operation on behalf of one record.
 - **Tombstones**: a deleted or expired blob keeps answering with its state
-  for ninety days after its objects are purged, so the backend can tell a
-  blob it deleted from an id that never existed.
+  for ninety days (by default) after its objects are purged, so the backend
+  can tell a blob it deleted from an id that never existed.
 
 ### Security
 
@@ -98,12 +98,15 @@ every decision.
 ### Previews and thumbnails
 
 - **WebP preview and thumbnail** for images (JPEG, PNG, GIF, WebP, TIFF,
-  HEIF/AVIF, SVG, BMP, JPEG 2000), PDFs, and DOCX and ODT files.
-- **Embedded image extraction**: a scan wrapped in a PDF or a Word file
-  gets the picture as its preview, not a page with a picture on it.
+  HEIF/AVIF, SVG, BMP, JPEG 2000) and PDFs, and for DOCX and ODT files that
+  wrap a single image.
+- **Embedded image extraction**: a scan wrapped in a PDF, a Word or an ODT
+  file gets the picture as its preview, not a page with a picture on it.
+  Office files have no page render otherwise.
 - **Text thumbnails** showing the first lines of text, CSV and TSV files.
-- **Category icons** for everything else. The thumbnail URL always answers
-  `200`, so it can go straight into an `<img>` tag.
+- **Category icons** for everything else. The thumbnail URL answers `200`
+  for as long as the blob exists, so it can go straight into an `<img>`
+  tag.
 - **Eager rendering** by workers right after the scan, with lazy repair and
   regeneration on a `variant_version` bump.
 - **EXIF orientation applied and all metadata stripped** from every image
@@ -115,7 +118,9 @@ every decision.
   CSV, XLSX or ODS back, with typed `date` and `datetime` columns and, for
   XLSX and ODS, several sheets per workbook.
 - **ZIP archives**: send a manifest of paths and blob ids and get a ZIP of
-  those blobs, with path normalisation and collision-safe deduplication.
+  those blobs, with path normalisation and collision-safe deduplication. A
+  member deleted before the build reaches it is skipped and listed in an
+  `ERRORS.txt` at the archive's root.
 - **Sent in parts**: large sources arrive as many short requests, so a
   dropped connection or a deploy costs one part, not the whole export.
 - **Built by jobs**, streamed into the bucket without touching local disk,
@@ -126,13 +131,18 @@ every decision.
 - **Postgres job queue** with `SKIP LOCKED` and `LISTEN/NOTIFY`, enqueued
   in the same transaction as the state change it follows.
 - **Per-kind worker pools** for scan, render, rows, archive, purge and reap,
-  with per-blob priorities, retries with backoff and dead-job inspection.
+  so a slow kind never holds up another, with retries with backoff and
+  dead-job inspection.
+- **Per-blob priorities** (`high`, `normal`, `low`) ordering the blob's
+  scan, render and build jobs within their kind.
 - **Split roles**: run `api`, `worker` or `all` per process, and pick which
   job kinds a worker runs, without code changes.
-- **Prometheus metrics** for queue depth and the age of the oldest due job.
+- **Prometheus metrics** for queue depth and the age of the oldest due job,
+  per kind and priority, plus job runs, durations and workers per process.
 - **Jobs API** to list, retry or discard failed jobs.
 - **Reaper** for expiry, stale uploads, abandoned exports, delayed purges
-  of deleted objects and the pruning of old tombstones.
+  of deleted and expired objects, and the pruning of old dead jobs and
+  tombstones.
 - **Storage backends**: local filesystem or any S3-compatible store.
 - **One TOML file**, every key overridable by `AGRAFE_` environment
   variables, secrets redacted from debug output.
@@ -350,10 +360,10 @@ and every configuration key is documented in
 | Crate | Contents |
 |---|---|
 | `agrafe` | The library: domain, jobs, config, and the `Agrafe` handle |
-| `agrafe-axum` | The two HTTP interfaces as axum routers |
+| `agrafe-axum` | The two HTTP interfaces as axum routers, and the mapping of errors onto status codes |
 | `agrafe-server` | The `agrafe` binary: `serve` and `migrate` |
 | `agrafe-crypto` | Streaming AEAD and key wrapping |
-| `agrafe-types` | Content types, classification, sniffing |
+| `agrafe-types` | Content types, classification, sniffing, the text-sample contract |
 | `agrafe-sandbox` | Subprocesses with resource limits |
 | `agrafe-render` | What renders and how: `vips`, the helper drivers, the icons |
 | `agrafe-extract` | Sandboxed helper that pulls the image out of a PDF, DOCX or ODT |
@@ -372,9 +382,10 @@ cargo fmt
 ```
 
 Tests connect as the current OS user to `agrafe_test`; set `DATABASE_URL`
-to override. They need `vips` on the `PATH` as well, and run the helper
-binaries from `target/`, building them if a `cargo test -p agrafe-axum` has
-not. ClamAV is faked in tests.
+to override. They need `vips` on the `PATH` as well. The integration tests,
+in `agrafe-axum`, run the helper binaries from `target/`: a plain `cargo
+test` builds them, and `cargo test -p agrafe-axum` builds them on demand.
+ClamAV is faked in tests.
 
 The files under `fixtures/` and the renderer probe files under
 `crates/agrafe-render/assets/probe` are built by `fixtures/make.py` (needs
