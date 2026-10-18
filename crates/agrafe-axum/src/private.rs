@@ -23,12 +23,22 @@ use super::original::{self, OriginalQuery};
 use super::representation::{self, Port, RepresentationQuery};
 use crate::error::{ApiError, ApiResult};
 
+/// Request body limit of `POST /blobs`. The widest sheet, 16 384 columns
+/// with a kilobyte of name each, fits; axum's default of 2 MiB would not
+/// hold it.
+const CREATE_BODY_LIMIT: usize = 16 * 1024 * 1024;
+
 /// `body_limit` caps the request body of the upload route. It is a backstop:
 /// the pipeline stops at the declared size, which is at most
 /// `upload.max_size`; the limit only matters for multipart framing around it.
 pub fn routes(body_limit: usize) -> Router<Agrafe> {
     Router::new()
-        .route("/blobs", post(create_blob).get(list_blobs))
+        .route(
+            "/blobs",
+            post(create_blob)
+                .get(list_blobs)
+                .layer(DefaultBodyLimit::max(CREATE_BODY_LIMIT)),
+        )
         .route(
             "/blobs/{id}",
             get(get_blob)

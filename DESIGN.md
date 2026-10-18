@@ -209,6 +209,10 @@ message = METHOD "\n" expires_unix "\n" path_and_query_after_token
 Checksum is SHA-256 because browsers compute it cheaply with
 `crypto.subtle.digest`, and S3 understands it natively.
 
+The request body is capped at 16 MiB: the widest sheet's `columns`, 16 384
+of them with a kilobyte of name each, fit, where axum's default of 2 MiB
+would refuse them.
+
 ### Input types
 
 The name describes the shape of the `PUT` body.

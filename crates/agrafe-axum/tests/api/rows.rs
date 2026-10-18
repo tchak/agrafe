@@ -382,6 +382,24 @@ async fn creation_checks_the_columns() {
         .collect();
     let (status, res) = post(json!({"filename": "e.csv", "content_type": "text/csv", "input_type": "rows", "columns": many})).await;
     assert_eq!(status, StatusCode::CREATED, "{res}");
+
+    // The request body has a limit of its own, above axum's default.
+    let wide: Vec<Value> = (0..16_384)
+        .map(|i| json!({"name": format!("{i:0>600}")}))
+        .collect();
+    let (status, res) = post(
+        json!({"filename": "e.xlsx", "content_type": XLSX, "input_type": "rows", "columns": wide}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{res}");
+    let huge: Vec<Value> = (0..16_384)
+        .map(|i| json!({"name": format!("{i:0>1100}")}))
+        .collect();
+    let (status, res) = post(
+        json!({"filename": "e.xlsx", "content_type": XLSX, "input_type": "rows", "columns": huge}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{res}");
 }
 
 /// Every bad line answers 422 naming it and the cell; the part is
