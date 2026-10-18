@@ -559,6 +559,62 @@ async fn blob_state_governs_the_representations() {
 }
 
 #[tokio::test]
+async fn conditional_and_head_requests_are_answered_from_the_row() {
+    let app = setup().await;
+    let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
+    let id = id_of(&blob);
+    render_all(&app).await;
+    let thumbnail = format!("/blobs/{id}/thumbnail/photo.jpg");
+    let (headers, _) = rendered(&app, &thumbnail).await;
+    let etag = headers["etag"].to_str().unwrap().to_string();
+    let length = headers["content-length"].clone();
+
+    // The ETag is the digest the row records: the one the bytes have.
+    let (digest, size): (Vec<u8>, i32) =
+        sqlx::query_as("SELECT thumbnail_sha256, thumbnail_size FROM blobs WHERE id = $1")
+            .bind(parse_id(id))
+            .fetch_one(app.state.pool())
+            .await
+            .unwrap();
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(etag, format!("\"{hex}\""));
+    assert_eq!(length.to_str().unwrap(), size.to_string());
+
+    // With the object gone, a conditional request and a HEAD still answer
+    // from the row, and queue nothing: the object was never read. The GET
+    // that needs the bytes is the one that finds it missing.
+    app.state
+        .store()
+        .delete(&object_store::path::Path::from(format!("{id}/thumbnail")))
+        .await
+        .unwrap();
+    let (status, headers, body) = fetch(
+        &app.private,
+        get_with(&thumbnail, &[("if-none-match", &etag)]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_MODIFIED);
+    assert_eq!(headers["etag"], etag.as_str());
+    assert!(body.is_empty());
+    let head = Request::builder()
+        .method(Method::HEAD)
+        .uri(&thumbnail)
+        .body(Body::empty())
+        .unwrap();
+    let (status, headers, body) = fetch(&app.private, head).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["etag"], etag.as_str());
+    assert_eq!(headers["content-length"], length);
+    assert!(body.is_empty());
+    assert!(
+        jobs_for(&app, id).await.is_empty(),
+        "nothing read the object"
+    );
+    icon(&app, &thumbnail, "pending").await;
+    assert_eq!(jobs_for(&app, id).await, ["render"]);
+}
+
+#[tokio::test]
 async fn representations_regenerate_when_missing_or_stale() {
     let app = setup().await;
     let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;

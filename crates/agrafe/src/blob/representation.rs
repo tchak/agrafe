@@ -10,10 +10,11 @@ use agrafe_crypto::streaming;
 use jiff::Timestamp;
 use object_store::ObjectStoreExt;
 use object_store::path::Path as ObjectPath;
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::read::{ReadError, Stored};
-use super::{BlobHead, BlobState, Representation, RepresentationState, repo};
+use super::{BlobHead, BlobState, Rendered, Representation, RepresentationState, repo};
 use crate::app::Agrafe;
 
 #[derive(Debug, thiserror::Error)]
@@ -41,8 +42,10 @@ pub enum Error {
 /// What a request for a representation resolves to.
 #[derive(Debug)]
 pub enum Resolved {
-    /// The rendered WebP.
-    Bytes(Vec<u8>),
+    /// Rendered. The digest and size the row records answer a conditional
+    /// or `HEAD` request on their own; the bytes are an
+    /// `Agrafe::load_representation` away.
+    Ready(Rendered),
     /// Not there, in this state: the caller shows an icon or a `404`.
     Placeholder(RepresentationState),
     /// The blob itself is not readable (yet, or ever).
@@ -58,6 +61,24 @@ impl Agrafe {
         kind: Representation,
     ) -> Result<Resolved, Error> {
         resolve(self, blob, kind).await
+    }
+
+    /// The bytes of a `kind` that resolved `Ready`, or `None` when the
+    /// object is gone: the representation is then set back to `pending`
+    /// and queued again, and the caller serves the placeholder.
+    pub async fn load_representation(
+        &self,
+        blob: &BlobHead,
+        kind: Representation,
+    ) -> Result<Option<Vec<u8>>, Error> {
+        match load(self, &Stored::from_head(blob)?, kind).await? {
+            Some(bytes) => Ok(Some(bytes)),
+            None => {
+                tracing::warn!(blob = %blob.id, kind = %kind, "object is missing, regenerating");
+                repo::request_representation(self.pool(), blob.id, kind).await?;
+                Ok(None)
+            }
+        }
     }
 }
 
@@ -78,10 +99,10 @@ async fn resolve(state: &Agrafe, blob: &BlobHead, kind: Representation) -> Resul
         return Ok(Resolved::Placeholder(RepresentationState::Pending));
     }
     match rep_state {
-        RepresentationState::Ready => match load(state, &Stored::from_head(blob)?, kind).await? {
-            Some(bytes) => Ok(Resolved::Bytes(bytes)),
+        RepresentationState::Ready => match blob.rendered(kind) {
+            Some(rendered) => Ok(Resolved::Ready(rendered)),
             None => {
-                tracing::warn!(blob = %blob.id, kind = %kind, "object is missing, regenerating");
+                tracing::warn!(blob = %blob.id, kind = %kind, "ready without a digest, regenerating");
                 repo::request_representation(state.pool(), blob.id, kind).await?;
                 Ok(Resolved::Placeholder(RepresentationState::Pending))
             }
@@ -91,13 +112,14 @@ async fn resolve(state: &Agrafe, blob: &BlobHead, kind: Representation) -> Resul
 }
 
 /// Encrypt `plaintext` and write it as the `kind` of the blob `stored`
-/// describes, replacing any previous version.
+/// describes, replacing any previous version. What the row should record
+/// of it comes back.
 pub async fn store(
     state: &Agrafe,
     stored: &Stored,
     kind: Representation,
     plaintext: &[u8],
-) -> Result<(), Error> {
+) -> Result<Rendered, Error> {
     let blob_id = stored.blob_id;
     let key = state
         .keks()
@@ -114,7 +136,10 @@ pub async fn store(
         .store()
         .put(&ObjectPath::from(object_key), sealed.into())
         .await?;
-    Ok(())
+    Ok(Rendered {
+        sha256: Sha256::digest(plaintext).into(),
+        size: plaintext.len() as u64,
+    })
 }
 
 /// Read and decrypt the `kind` of the blob `stored` describes, or `None`

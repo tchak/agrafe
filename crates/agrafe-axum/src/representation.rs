@@ -15,13 +15,12 @@ use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use jiff::Timestamp;
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use agrafe::Agrafe;
 use agrafe::blob::representation::Resolved;
 use agrafe::blob::urls::MAX_WAIT;
-use agrafe::blob::{BlobHead, Representation, RepresentationState};
+use agrafe::blob::{BlobHead, Rendered, Representation, RepresentationState};
 use agrafe::icons;
 
 use super::original;
@@ -89,7 +88,9 @@ pub async fn serve(
     let name = webp_name(query.filename.as_deref().unwrap_or(&blob.filename));
     let disposition = original::content_disposition(query.disposition.as_deref(), &name)?;
     match served {
-        Resolved::Bytes(bytes) => Ok(image(bytes, disposition, method, headers)),
+        Resolved::Ready(rendered) => {
+            image(state, &blob, kind, rendered, disposition, method, headers).await
+        }
         Resolved::Placeholder(rep_state) => {
             placeholder(kind, &blob, rep_state, disposition, method)
         }
@@ -118,36 +119,44 @@ async fn refetch(state: &Agrafe, id: Uuid, port: Port) -> ApiResult<BlobHead> {
 }
 
 /// The rendered representation, with the conditional request handling a
-/// cacheable image deserves.
-fn image(
-    bytes: Vec<u8>,
+/// cacheable image deserves. The `ETag` and the length come from the row,
+/// so a `304` and a `HEAD` never read the object; only a `GET` with a body
+/// to send does.
+async fn image(
+    state: &Agrafe,
+    blob: &BlobHead,
+    kind: Representation,
+    rendered: Rendered,
     disposition: HeaderValue,
     method: &Method,
     headers: &HeaderMap,
-) -> Response {
-    let digest: String = Sha256::digest(&bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    let etag = format!("\"{digest}\"");
+) -> ApiResult<Response> {
+    let etag = original::etag(&rendered.sha256);
     let mut response = Response::new(Body::empty());
     let h = response.headers_mut();
     h.insert(header::ETAG, HeaderValue::from_str(&etag).expect("ascii"));
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static(CACHE_READY));
     h.insert(STATE_HEADER, state_value(RepresentationState::Ready));
-    if headers
-        .get(header::IF_NONE_MATCH)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v == "*" || v.split(',').any(|t| t.trim() == etag))
-    {
+    if original::none_match(headers, &etag) {
         *response.status_mut() = StatusCode::NOT_MODIFIED;
-        return response;
+        return Ok(response);
     }
-    webp_headers(response.headers_mut(), bytes.len(), disposition);
-    if method != Method::HEAD {
-        *response.body_mut() = Body::from(bytes);
+    if method == Method::HEAD {
+        webp_headers(response.headers_mut(), rendered.size, disposition);
+        return Ok(response);
     }
-    response
+    let Some(bytes) = state.load_representation(blob, kind).await? else {
+        return placeholder(
+            kind,
+            blob,
+            RepresentationState::Pending,
+            disposition,
+            method,
+        );
+    };
+    webp_headers(response.headers_mut(), bytes.len() as u64, disposition);
+    *response.body_mut() = Body::from(bytes);
+    Ok(response)
 }
 
 /// What stands in for a representation that is not there: the icon for a
@@ -169,7 +178,7 @@ fn placeholder(
         Representation::Thumbnail => {
             let icon = icons::icon_for(blob.category, &blob.content_type);
             let mut response = Response::new(Body::empty());
-            webp_headers(response.headers_mut(), icon.len(), disposition);
+            webp_headers(response.headers_mut(), icon.len() as u64, disposition);
             if method != Method::HEAD {
                 *response.body_mut() = Body::from(icon);
             }
@@ -190,7 +199,7 @@ fn placeholder(
     Ok(response)
 }
 
-fn webp_headers(h: &mut HeaderMap, len: usize, disposition: HeaderValue) {
+fn webp_headers(h: &mut HeaderMap, len: u64, disposition: HeaderValue) {
     h.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/webp"));
     h.insert(header::CONTENT_LENGTH, HeaderValue::from(len));
     h.insert(header::CONTENT_DISPOSITION, disposition);

@@ -1071,7 +1071,11 @@ subkey per stream from a random salt, so one key safely covers the three
 objects, and the object key is the associated data as for the original.
 They are small and served whole, with a strong `ETag` of the content and
 `Cache-Control: private, max-age=86400`: not `immutable`, since a version
-bump changes them under the same URL.
+bump changes them under the same URL. The row records the SHA-256 and the
+size of each rendered WebP (`thumbnail_sha256`, `thumbnail_size`, and the
+same for the preview), set with `ready` and cleared with any other state,
+so a conditional request answered `304` and a `HEAD` never read the
+object; only a `GET` with a body to send does.
 
 Every picture or placeholder a representation route serves carries
 `X-Representation-State`, so a client can tell a placeholder from the final

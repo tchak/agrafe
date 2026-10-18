@@ -316,14 +316,15 @@ impl<'a> Render<'a> {
         kind: Representation,
         verdict: Verdict<(Vec<u8>, Option<PreviewSource>)>,
     ) -> Result<(), JobError> {
-        let (rep_state, source) = match verdict {
+        let (rep_state, source, rendered) = match verdict {
             Verdict::Rendered((bytes, source)) => {
-                representation::store(self.state, &self.stored, kind, &bytes).await?;
+                let rendered =
+                    representation::store(self.state, &self.stored, kind, &bytes).await?;
                 tracing::info!(source = ?source, bytes = bytes.len(), "{kind} rendered");
-                (RepresentationState::Ready, source)
+                (RepresentationState::Ready, source, Some(rendered))
             }
-            Verdict::Rejected => (RepresentationState::Failed, None),
-            Verdict::Declined => (RepresentationState::Unavailable, None),
+            Verdict::Rejected => (RepresentationState::Failed, None, None),
+            Verdict::Declined => (RepresentationState::Unavailable, None, None),
         };
         repo::finish_representation(
             self.state.pool(),
@@ -332,6 +333,7 @@ impl<'a> Render<'a> {
             rep_state,
             source,
             self.media().variant_version,
+            rendered,
         )
         .await?;
         Ok(())

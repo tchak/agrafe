@@ -241,6 +241,37 @@ impl Representation {
             Representation::Preview => "preview_variant_version",
         }
     }
+
+    pub fn digest_column(self) -> &'static str {
+        match self {
+            Representation::Thumbnail => "thumbnail_sha256",
+            Representation::Preview => "preview_sha256",
+        }
+    }
+
+    pub fn size_column(self) -> &'static str {
+        match self {
+            Representation::Thumbnail => "thumbnail_size",
+            Representation::Preview => "preview_size",
+        }
+    }
+}
+
+/// What the row records of a rendered representation: enough to answer a
+/// conditional or `HEAD` request without reading the object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rendered {
+    pub sha256: [u8; 32],
+    pub size: u64,
+}
+
+impl Rendered {
+    fn from_columns(sha256: Option<&[u8]>, size: Option<i32>) -> Option<Self> {
+        Some(Self {
+            sha256: sha256?.try_into().ok()?,
+            size: u64::try_from(size?).ok()?,
+        })
+    }
 }
 
 /// What a preview was rendered from.
@@ -323,6 +354,11 @@ pub struct Blob {
     pub preview_source: Option<String>,
     pub thumbnail_variant_version: Option<i32>,
     pub preview_variant_version: Option<i32>,
+    /// The SHA-256 and size of each rendered WebP; see [`Rendered`].
+    pub thumbnail_sha256: Option<Vec<u8>>,
+    pub thumbnail_size: Option<i32>,
+    pub preview_sha256: Option<Vec<u8>>,
+    pub preview_size: Option<i32>,
 
     #[sqlx(try_from = "jiff_sqlx::Timestamp")]
     pub created_at: Timestamp,
@@ -416,6 +452,10 @@ impl Blob {
             preview_state: self.preview_state,
             thumbnail_variant_version: self.thumbnail_variant_version,
             preview_variant_version: self.preview_variant_version,
+            thumbnail_sha256: self.thumbnail_sha256.clone(),
+            thumbnail_size: self.thumbnail_size,
+            preview_sha256: self.preview_sha256.clone(),
+            preview_size: self.preview_size,
             uploaded_at: self.uploaded_at,
         }
     }
@@ -477,11 +517,28 @@ pub struct BlobHead {
     pub preview_state: RepresentationState,
     pub thumbnail_variant_version: Option<i32>,
     pub preview_variant_version: Option<i32>,
+    pub thumbnail_sha256: Option<Vec<u8>>,
+    pub thumbnail_size: Option<i32>,
+    pub preview_sha256: Option<Vec<u8>>,
+    pub preview_size: Option<i32>,
     #[sqlx(try_from = "crate::db::NullableTimestamp")]
     pub uploaded_at: Option<Timestamp>,
 }
 
 impl BlobHead {
+    /// What the row records of the rendered `kind`, when it records both
+    /// the digest and the size.
+    pub fn rendered(&self, kind: Representation) -> Option<Rendered> {
+        match kind {
+            Representation::Thumbnail => {
+                Rendered::from_columns(self.thumbnail_sha256.as_deref(), self.thumbnail_size)
+            }
+            Representation::Preview => {
+                Rendered::from_columns(self.preview_sha256.as_deref(), self.preview_size)
+            }
+        }
+    }
+
     /// See [`Blob::state_at`].
     pub fn state_at(&self, now: Timestamp) -> BlobState {
         state_at(self.state, self.expires_at, now)

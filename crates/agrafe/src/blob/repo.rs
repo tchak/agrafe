@@ -8,8 +8,8 @@ use uuid::Uuid;
 
 use super::create::NewBlob;
 use super::{
-    Blob, BlobHead, BlobState, InputType, PreviewSource, Representation, RepresentationState,
-    ScanOutcome, ScanState,
+    Blob, BlobHead, BlobState, InputType, PreviewSource, Rendered, Representation,
+    RepresentationState, ScanOutcome, ScanState,
 };
 use crate::attachment;
 use crate::clamav::Verdict;
@@ -74,7 +74,8 @@ pub async fn find_head(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Result<Opti
         "SELECT id, state, filename, content_type, category, checksum_sha256, size, \
          expires_at, scan_state, storage_key, kek_id, wrapped_key, encryption_header, \
          chunk_size, thumbnail_state, preview_state, thumbnail_variant_version, \
-         preview_variant_version, uploaded_at \
+         preview_variant_version, thumbnail_sha256, thumbnail_size, preview_sha256, \
+         preview_size, uploaded_at \
          FROM blobs WHERE id = $1",
     )
     .bind(id)
@@ -747,9 +748,9 @@ pub async fn reset_stale_uploads(
 }
 
 /// Record the outcome of rendering `kind` for `id`, along with the variant
-/// version it was built with. Blob state is untouched: the representation
-/// is written even if the blob was deleted meanwhile, and the purge takes
-/// it with the rest of the prefix.
+/// version it was built with and, for `ready`, what was rendered. Blob
+/// state is untouched: the representation is written even if the blob was
+/// deleted meanwhile, and the purge takes it with the rest of the prefix.
 pub async fn finish_representation(
     exec: impl PgExecutor<'_>,
     id: Uuid,
@@ -757,7 +758,12 @@ pub async fn finish_representation(
     state: RepresentationState,
     source: Option<PreviewSource>,
     version: i32,
+    rendered: Option<Rendered>,
 ) -> sqlx::Result<()> {
+    let size = rendered
+        .map(|r| i32::try_from(r.size))
+        .transpose()
+        .map_err(|e| sqlx::Error::Encode(e.into()))?;
     let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("UPDATE blobs SET ");
     qb.push(kind.state_column())
         .push(" = ")
@@ -765,7 +771,15 @@ pub async fn finish_representation(
         .push(", ")
         .push(kind.version_column())
         .push(" = ")
-        .push_bind(version);
+        .push_bind(version)
+        .push(", ")
+        .push(kind.digest_column())
+        .push(" = ")
+        .push_bind(rendered.map(|r| r.sha256.to_vec()))
+        .push(", ")
+        .push(kind.size_column())
+        .push(" = ")
+        .push_bind(size);
     if kind == Representation::Preview {
         qb.push(", preview_source = ")
             .push_bind(source.map(PreviewSource::as_str));

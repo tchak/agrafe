@@ -66,11 +66,7 @@ pub async fn serve(
         h.insert(header::LAST_MODIFIED, http_date(at));
     }
 
-    if headers
-        .get(header::IF_NONE_MATCH)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v == "*" || v.split(',').any(|t| t.trim() == etag))
-    {
+    if none_match(headers, &etag) {
         *response.status_mut() = StatusCode::NOT_MODIFIED;
         return Ok(response);
     }
@@ -236,9 +232,24 @@ fn parse_range(value: &str, size: u64) -> RangeOutcome {
     RangeOutcome::Satisfiable(start..end)
 }
 
-fn etag(checksum: &[u8]) -> String {
-    let hex: String = checksum.iter().map(|b| format!("{b:02x}")).collect();
-    format!("\"{hex}\"")
+/// A strong `ETag` from a content digest.
+pub(crate) fn etag(digest: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut tag = String::with_capacity(digest.len() * 2 + 2);
+    tag.push('"');
+    for b in digest {
+        write!(tag, "{b:02x}").expect("writing to a string");
+    }
+    tag.push('"');
+    tag
+}
+
+/// Whether `If-None-Match` names `etag`, so the client's copy is current.
+pub(crate) fn none_match(headers: &HeaderMap, etag: &str) -> bool {
+    headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v == "*" || v.split(',').any(|t| t.trim() == etag))
 }
 
 fn http_date(at: Timestamp) -> HeaderValue {

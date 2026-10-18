@@ -75,6 +75,13 @@ CREATE TABLE blobs (
                       CHECK (preview_source IN ('image', 'embedded_image')),
     thumbnail_variant_version integer,
     preview_variant_version   integer,
+    -- What was rendered: the SHA-256 and the size of the WebP, recorded
+    -- with `ready` and cleared with any other state, so a conditional or
+    -- HEAD request is answered from the row without a bucket read.
+    thumbnail_sha256  bytea CHECK (thumbnail_sha256 IS NULL OR octet_length(thumbnail_sha256) = 32),
+    thumbnail_size    integer CHECK (thumbnail_size IS NULL OR thumbnail_size >= 0),
+    preview_sha256    bytea CHECK (preview_sha256 IS NULL OR octet_length(preview_sha256) = 32),
+    preview_size      integer CHECK (preview_size IS NULL OR preview_size >= 0),
 
     -- timestamps. An upload in flight touches upload_heartbeat_at while it
     -- runs, so the reaper can tell a slow upload from one a crashed process
