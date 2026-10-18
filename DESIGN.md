@@ -1082,6 +1082,12 @@ the "upload then show it" flow.
 
 ### Original
 
+The read routes are the hot path, and the row lookup is the one query on
+it. They fetch a `BlobHead`, the columns serving needs (identity, state,
+the envelope, the representation states), never the whole row: a `rows`
+blob keeps its column declaration on the row as JSON, up to megabytes a
+download has no use for.
+
 Served only from `ready`; any other state answers `409` on both ports (the
 public port already answers `404` for terminal states). Single-range `Range`
 requests are honoured with `206`; multiple ranges, and a `Range` whose

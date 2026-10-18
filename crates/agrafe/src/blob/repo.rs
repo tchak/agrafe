@@ -8,8 +8,8 @@ use uuid::Uuid;
 
 use super::create::NewBlob;
 use super::{
-    Blob, BlobState, InputType, PreviewSource, Representation, RepresentationState, ScanOutcome,
-    ScanState,
+    Blob, BlobHead, BlobState, InputType, PreviewSource, Representation, RepresentationState,
+    ScanOutcome, ScanState,
 };
 use crate::attachment;
 use crate::clamav::Verdict;
@@ -65,6 +65,21 @@ pub async fn find(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Result<Option<Bl
         .bind(id)
         .fetch_optional(exec)
         .await
+}
+
+/// The one query on the read path: the columns of a [`BlobHead`], listed
+/// so a download never ships `source_columns` or the rest of the row.
+pub async fn find_head(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Result<Option<BlobHead>> {
+    sqlx::query_as::<_, BlobHead>(
+        "SELECT id, state, filename, content_type, category, checksum_sha256, size, \
+         expires_at, scan_state, storage_key, kek_id, wrapped_key, encryption_header, \
+         chunk_size, thumbnail_state, preview_state, thumbnail_variant_version, \
+         preview_variant_version, uploaded_at \
+         FROM blobs WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(exec)
+    .await
 }
 
 /// The blobs among `ids` that exist, in no particular order.

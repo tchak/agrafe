@@ -23,7 +23,7 @@ pub async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
     // clamd first: while it is down, every retry would otherwise open a
     // read on the object store for nothing.
     let mut session = state.clamd().begin().await?;
-    let mut reader = Reader::open(state, &blob, &stored, 0..stored.size).await?;
+    let mut reader = Reader::open(state, &stored, 0..stored.size).await?;
     while let Some(plain) = reader.next_segment().await? {
         // clamd hangs up at its stream limit, or when it dies; fetching and
         // decrypting the rest would be for nothing.

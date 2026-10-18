@@ -14,7 +14,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use agrafe::Agrafe;
-use agrafe::blob::Blob;
+use agrafe::blob::BlobHead;
 use agrafe::blob::read::{ReadError, Reader, Stored};
 use agrafe::blob::urls::disposition_kind;
 
@@ -33,7 +33,7 @@ pub struct OriginalQuery {
 /// the blob's filename so a URL cannot pretend to serve another file.
 pub async fn serve(
     state: &Agrafe,
-    blob: Blob,
+    blob: BlobHead,
     filename: &str,
     query: OriginalQuery,
     method: &Method,
@@ -49,7 +49,7 @@ pub async fn serve(
             blob.state_at(now)
         )));
     }
-    let stored = Stored::from_blob(&blob).map_err(ApiError::internal)?;
+    let stored = Stored::from_head(&blob).map_err(ApiError::internal)?;
     let etag = etag(&stored.checksum);
 
     let mut response = Response::new(Body::empty());
@@ -146,7 +146,7 @@ pub async fn serve(
         return Ok(response);
     }
 
-    let mut reader = Reader::open(state, &blob, &stored, span)
+    let mut reader = Reader::open(state, &stored, span)
         .await
         .map_err(|e| ApiError::internal(format!("blob {}: opening the original: {e}", blob.id)))?;
     // Open the first segment before the response starts: a wrong key, a

@@ -15,7 +15,7 @@ use super::original::{self, OriginalQuery};
 use super::representation::{self, Port, RepresentationQuery};
 use super::signed::Signed;
 use agrafe::Agrafe;
-use agrafe::blob::{Blob, Representation};
+use agrafe::blob::{BlobHead, Representation};
 
 use crate::error::{ApiError, ApiResult};
 
@@ -53,7 +53,13 @@ async fn upload_blob(
     Path((_token, id)): Path<(String, Uuid)>,
     req: Request,
 ) -> ApiResult<Json<PublicBlobResponse>> {
-    let blob = find_visible(&state, id).await?;
+    // The upload needs the whole row; the terminal states are hidden as
+    // for every other public route.
+    let blob = state
+        .find_blob(id)
+        .await?
+        .filter(|blob| blob.visible_on_public(Timestamp::now()))
+        .ok_or(ApiError::NotFound)?;
     // Defense in depth: minting already leaves these out, but a leaked key must
     // not turn into a policy bypass.
     if !blob.public_upload_allowed() {
@@ -69,7 +75,7 @@ async fn upload_blob(
             ApiError::Infected(_) => ApiError::Infected(None),
             other => other,
         })?;
-    Ok(Json(PublicBlobResponse::new(&blob)))
+    Ok(Json(PublicBlobResponse::new(&blob.head())))
 }
 
 async fn get_original(
@@ -85,9 +91,9 @@ async fn get_original(
 }
 
 /// Look a blob up as the public port sees it: terminal states are `404`.
-async fn find_visible(state: &Agrafe, id: Uuid) -> ApiResult<Blob> {
+async fn find_visible(state: &Agrafe, id: Uuid) -> ApiResult<BlobHead> {
     state
-        .find_blob(id)
+        .find_blob_head(id)
         .await?
         .filter(|blob| blob.visible_on_public(Timestamp::now()))
         .ok_or(ApiError::NotFound)

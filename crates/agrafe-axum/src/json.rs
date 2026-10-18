@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use agrafe::attachment::Attachment;
 use agrafe::blob::urls::BlobUrls;
-use agrafe::blob::{Blob, BlobState, InputType, RepresentationState, ScanState};
+use agrafe::blob::{Blob, BlobHead, BlobState, InputType, RepresentationState, ScanState};
 use agrafe::classify::Category;
 use agrafe::jobs::Priority;
 
@@ -128,7 +128,7 @@ pub struct PublicBlobResponse {
 }
 
 impl PublicBlobResponse {
-    pub fn new(blob: &Blob) -> Self {
+    pub fn new(blob: &BlobHead) -> Self {
         Self {
             id: blob.id,
             state: blob.state,

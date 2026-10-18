@@ -21,7 +21,7 @@ use uuid::Uuid;
 use agrafe::Agrafe;
 use agrafe::blob::representation::Resolved;
 use agrafe::blob::urls::MAX_WAIT;
-use agrafe::blob::{Blob, Representation, RepresentationState};
+use agrafe::blob::{BlobHead, Representation, RepresentationState};
 use agrafe::icons;
 
 use super::original;
@@ -54,7 +54,7 @@ pub enum Port {
 #[allow(clippy::too_many_arguments)]
 pub async fn serve(
     state: &Agrafe,
-    blob: Blob,
+    blob: BlobHead,
     kind: Representation,
     filename: &str,
     query: RepresentationQuery,
@@ -109,9 +109,9 @@ pub async fn serve(
     }
 }
 
-async fn refetch(state: &Agrafe, id: Uuid, port: Port) -> ApiResult<Blob> {
+async fn refetch(state: &Agrafe, id: Uuid, port: Port) -> ApiResult<BlobHead> {
     state
-        .find_blob(id)
+        .find_blob_head(id)
         .await?
         .filter(|blob| port == Port::Private || blob.visible_on_public(Timestamp::now()))
         .ok_or(ApiError::NotFound)
@@ -155,7 +155,7 @@ fn image(
 /// client is expected back.
 fn placeholder(
     kind: Representation,
-    blob: &Blob,
+    blob: &BlobHead,
     rep_state: RepresentationState,
     disposition: HeaderValue,
     method: &Method,

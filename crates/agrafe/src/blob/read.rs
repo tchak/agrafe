@@ -16,7 +16,7 @@ use object_store::path::Path as ObjectPath;
 use object_store::{GetOptions, GetRange, ObjectStoreExt};
 use uuid::Uuid;
 
-use super::Blob;
+use super::{Blob, BlobHead};
 use crate::app::Agrafe;
 use crate::encryption::UnwrapError;
 
@@ -63,6 +63,7 @@ impl ReadError {
 
 /// Everything the row must carry once an object is stored.
 pub struct Stored {
+    pub blob_id: Uuid,
     pub storage_key: String,
     pub kek_id: String,
     pub wrapped_key: Vec<u8>,
@@ -72,43 +73,77 @@ pub struct Stored {
     pub size: u64,
 }
 
+/// The nullable columns `Stored` is assembled from, as either row carries
+/// them.
+struct Columns<'a> {
+    blob_id: Uuid,
+    storage_key: Option<&'a str>,
+    kek_id: Option<&'a str>,
+    wrapped_key: Option<&'a [u8]>,
+    encryption_header: Option<&'a [u8]>,
+    chunk_size: Option<i32>,
+    checksum_sha256: Option<&'a [u8]>,
+    size: Option<i64>,
+}
+
 impl Stored {
     pub fn from_blob(blob: &Blob) -> Result<Self, ReadError> {
-        let missing = |what| ReadError::Incomplete {
+        Self::from_columns(Columns {
             blob_id: blob.id,
-            what,
-        };
+            storage_key: blob.storage_key.as_deref(),
+            kek_id: blob.kek_id.as_deref(),
+            wrapped_key: blob.wrapped_key.as_deref(),
+            encryption_header: blob.encryption_header.as_deref(),
+            chunk_size: blob.chunk_size,
+            checksum_sha256: blob.checksum_sha256.as_deref(),
+            size: blob.size,
+        })
+    }
+
+    pub fn from_head(blob: &BlobHead) -> Result<Self, ReadError> {
+        Self::from_columns(Columns {
+            blob_id: blob.id,
+            storage_key: blob.storage_key.as_deref(),
+            kek_id: blob.kek_id.as_deref(),
+            wrapped_key: blob.wrapped_key.as_deref(),
+            encryption_header: blob.encryption_header.as_deref(),
+            chunk_size: blob.chunk_size,
+            checksum_sha256: blob.checksum_sha256.as_deref(),
+            size: blob.size,
+        })
+    }
+
+    fn from_columns(c: Columns<'_>) -> Result<Self, ReadError> {
+        let blob_id = c.blob_id;
+        let missing = |what| ReadError::Incomplete { blob_id, what };
         let header = Header::parse(
-            blob.encryption_header
-                .as_deref()
+            c.encryption_header
                 .ok_or_else(|| missing("encryption header"))?,
         )
-        .map_err(|source| ReadError::Header {
-            blob_id: blob.id,
-            source,
-        })?;
-        let chunk_size = blob.chunk_size.ok_or_else(|| missing("chunk size"))?;
+        .map_err(|source| ReadError::Header { blob_id, source })?;
+        let chunk_size = c.chunk_size.ok_or_else(|| missing("chunk size"))?;
         let layout = usize::try_from(chunk_size)
             .ok()
             .and_then(|s| Layout::new(s).ok())
             .ok_or_else(|| missing("valid chunk size"))?;
         Ok(Self {
-            storage_key: blob
+            blob_id,
+            storage_key: c
                 .storage_key
-                .clone()
-                .ok_or_else(|| missing("storage key"))?,
-            kek_id: blob.kek_id.clone().ok_or_else(|| missing("KEK id"))?,
-            wrapped_key: blob
+                .ok_or_else(|| missing("storage key"))?
+                .to_owned(),
+            kek_id: c.kek_id.ok_or_else(|| missing("KEK id"))?.to_owned(),
+            wrapped_key: c
                 .wrapped_key
-                .clone()
-                .ok_or_else(|| missing("wrapped key"))?,
+                .ok_or_else(|| missing("wrapped key"))?
+                .to_owned(),
             header,
             layout,
-            checksum: blob
+            checksum: c
                 .checksum_sha256
-                .clone()
-                .ok_or_else(|| missing("checksum"))?,
-            size: blob.size.ok_or_else(|| missing("size"))? as u64,
+                .ok_or_else(|| missing("checksum"))?
+                .to_owned(),
+            size: c.size.ok_or_else(|| missing("size"))? as u64,
         })
     }
 }
@@ -130,18 +165,17 @@ pub struct Reader {
 }
 
 impl Reader {
-    /// Start reading the plaintext `span` of `blob`'s original. Nothing is
-    /// decrypted yet; the first `next_segment` is where a wrong key or a
-    /// tampered object shows up.
+    /// Start reading the plaintext `span` of the original `stored`
+    /// describes. Nothing is decrypted yet; the first `next_segment` is
+    /// where a wrong key or a tampered object shows up.
     pub async fn open(
         state: &Agrafe,
-        blob: &Blob,
         stored: &Stored,
         span: Range<u64>,
     ) -> Result<Self, ReadError> {
         let key = state
             .keks()
-            .unwrap(blob.id, &stored.kek_id, &stored.wrapped_key)?;
+            .unwrap(stored.blob_id, &stored.kek_id, &stored.wrapped_key)?;
         let decryptor = Decryptor::new(
             &key,
             stored.storage_key.as_bytes(),

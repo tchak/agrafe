@@ -230,7 +230,8 @@ impl<'a> Render<'a> {
     /// The stored preview, decrypted into the work directory; `None` when
     /// the object is gone.
     async fn stored_preview(&self) -> Result<Option<PathBuf>, JobError> {
-        let loaded = representation::load(self.state, self.blob, Representation::Preview).await?;
+        let loaded =
+            representation::load(self.state, &self.stored, Representation::Preview).await?;
         let Some(bytes) = loaded else {
             tracing::warn!("the stored preview is missing, rendering it again");
             return Ok(None);
@@ -317,7 +318,7 @@ impl<'a> Render<'a> {
     ) -> Result<(), JobError> {
         let (rep_state, source) = match verdict {
             Verdict::Rendered((bytes, source)) => {
-                representation::store(self.state, self.blob, kind, &bytes).await?;
+                representation::store(self.state, &self.stored, kind, &bytes).await?;
                 tracing::info!(source = ?source, bytes = bytes.len(), "{kind} rendered");
                 (RepresentationState::Ready, source)
             }
@@ -349,7 +350,7 @@ impl<'a> Render<'a> {
 
     /// Decrypt the plaintext `span` of the original into `path`.
     async fn download(&self, path: &Path, span: Range<u64>) -> Result<(), JobError> {
-        let mut reader = Reader::open(self.state, self.blob, &self.stored, span).await?;
+        let mut reader = Reader::open(self.state, &self.stored, span).await?;
         let mut file = tokio::fs::File::create(path).await?;
         while let Some(plain) = reader.next_segment().await? {
             file.write_all(&plain).await?;

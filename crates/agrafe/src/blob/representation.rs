@@ -13,7 +13,7 @@ use object_store::path::Path as ObjectPath;
 use uuid::Uuid;
 
 use super::read::{ReadError, Stored};
-use super::{Blob, BlobState, Representation, RepresentationState, repo};
+use super::{BlobHead, BlobState, Representation, RepresentationState, repo};
 use crate::app::Agrafe;
 
 #[derive(Debug, thiserror::Error)]
@@ -54,14 +54,14 @@ impl Agrafe {
     /// there is missing or was built with another variant version.
     pub async fn representation(
         &self,
-        blob: &Blob,
+        blob: &BlobHead,
         kind: Representation,
     ) -> Result<Resolved, Error> {
         resolve(self, blob, kind).await
     }
 }
 
-async fn resolve(state: &Agrafe, blob: &Blob, kind: Representation) -> Result<Resolved, Error> {
+async fn resolve(state: &Agrafe, blob: &BlobHead, kind: Representation) -> Result<Resolved, Error> {
     let now = Timestamp::now();
     if !blob.is_readable(now) {
         return Ok(Resolved::NotReady(blob.state_at(now)));
@@ -78,7 +78,7 @@ async fn resolve(state: &Agrafe, blob: &Blob, kind: Representation) -> Result<Re
         return Ok(Resolved::Placeholder(RepresentationState::Pending));
     }
     match rep_state {
-        RepresentationState::Ready => match load(state, blob, kind).await? {
+        RepresentationState::Ready => match load(state, &Stored::from_head(blob)?, kind).await? {
             Some(bytes) => Ok(Resolved::Bytes(bytes)),
             None => {
                 tracing::warn!(blob = %blob.id, kind = %kind, "object is missing, regenerating");
@@ -90,24 +90,24 @@ async fn resolve(state: &Agrafe, blob: &Blob, kind: Representation) -> Result<Re
     }
 }
 
-/// Encrypt `plaintext` and write it as `blob`'s `kind`, replacing any
-/// previous version.
+/// Encrypt `plaintext` and write it as the `kind` of the blob `stored`
+/// describes, replacing any previous version.
 pub async fn store(
     state: &Agrafe,
-    blob: &Blob,
+    stored: &Stored,
     kind: Representation,
     plaintext: &[u8],
 ) -> Result<(), Error> {
-    let stored = Stored::from_blob(blob)?;
+    let blob_id = stored.blob_id;
     let key = state
         .keks()
-        .unwrap(blob.id, &stored.kek_id, &stored.wrapped_key)
+        .unwrap(blob_id, &stored.kek_id, &stored.wrapped_key)
         .map_err(ReadError::from)?;
-    let object_key = kind.object_key(blob.id);
+    let object_key = kind.object_key(blob_id);
     let sealed = streaming::encrypt(&key, object_key.as_bytes(), stored.layout, plaintext)
         .map_err(|source| Error::Seal {
             kind,
-            blob_id: blob.id,
+            blob_id,
             source,
         })?;
     state
@@ -117,14 +117,15 @@ pub async fn store(
     Ok(())
 }
 
-/// Read and decrypt `blob`'s `kind`, or `None` when the object is not there.
+/// Read and decrypt the `kind` of the blob `stored` describes, or `None`
+/// when the object is not there.
 pub async fn load(
     state: &Agrafe,
-    blob: &Blob,
+    stored: &Stored,
     kind: Representation,
 ) -> Result<Option<Vec<u8>>, Error> {
-    let stored = Stored::from_blob(blob)?;
-    let object_key = kind.object_key(blob.id);
+    let blob_id = stored.blob_id;
+    let object_key = kind.object_key(blob_id);
     let sealed = match state
         .store()
         .get(&ObjectPath::from(object_key.as_str()))
@@ -136,12 +137,12 @@ pub async fn load(
     };
     let key = state
         .keks()
-        .unwrap(blob.id, &stored.kek_id, &stored.wrapped_key)
+        .unwrap(blob_id, &stored.kek_id, &stored.wrapped_key)
         .map_err(ReadError::from)?;
     let plain = streaming::decrypt(&key, object_key.as_bytes(), stored.layout, &sealed).map_err(
         |source| Error::Corrupt {
             kind,
-            blob_id: blob.id,
+            blob_id,
             source,
         },
     )?;

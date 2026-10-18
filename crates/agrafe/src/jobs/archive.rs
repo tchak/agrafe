@@ -107,9 +107,8 @@ async fn assemble(state: &Agrafe, blob: &Blob, sink: &mut Sink) -> Result<(u64, 
                                 copy_segment(&mut zip, sink, segment).await?;
                             }
                         }
-                        Body::Deferred(member, stored) => {
-                            let mut reader =
-                                Reader::open(state, &member, &stored, 0..stored.size).await?;
+                        Body::Deferred(stored) => {
+                            let mut reader = Reader::open(state, &stored, 0..stored.size).await?;
                             while let Some(segment) = reader.next_segment().await? {
                                 copy_segment(&mut zip, sink, &segment).await?;
                             }
@@ -165,7 +164,7 @@ enum Body {
     /// At most `PREFETCH_MAX` bytes, read whole ahead of their turn.
     Loaded(Vec<Bytes>),
     /// Larger: opened and streamed when its turn comes.
-    Deferred(Box<Blob>, Stored),
+    Deferred(Stored),
 }
 
 /// Fetch the member of `entry`, which `member` is the current row of, if
@@ -188,14 +187,14 @@ async fn open_member(
     let size = stored.size;
     let uploaded_at = member.uploaded_at;
     let body = if size <= PREFETCH_MAX {
-        let mut reader = Reader::open(state, &member, &stored, 0..size).await?;
+        let mut reader = Reader::open(state, &stored, 0..size).await?;
         let mut segments = Vec::with_capacity(stored.layout.segment_count(size) as usize);
         while let Some(segment) = reader.next_segment().await? {
             segments.push(segment);
         }
         Body::Loaded(segments)
     } else {
-        Body::Deferred(Box::new(member), stored)
+        Body::Deferred(stored)
     };
     Ok((
         entry,

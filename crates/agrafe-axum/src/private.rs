@@ -182,7 +182,7 @@ async fn get_original(
     method: Method,
     headers: HeaderMap,
 ) -> ApiResult<Response> {
-    let blob = agrafe.find_blob(id).await?.ok_or(ApiError::NotFound)?;
+    let blob = agrafe.find_blob_head(id).await?.ok_or(ApiError::NotFound)?;
     original::serve(&agrafe, blob, &filename, query, &method, &headers).await
 }
 
@@ -233,7 +233,7 @@ async fn get_representation(
     method: Method,
     headers: HeaderMap,
 ) -> ApiResult<Response> {
-    let blob = state.find_blob(id).await?.ok_or(ApiError::NotFound)?;
+    let blob = state.find_blob_head(id).await?.ok_or(ApiError::NotFound)?;
     representation::serve(
         &state,
         blob,

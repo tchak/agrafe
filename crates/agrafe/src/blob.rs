@@ -45,6 +45,12 @@ impl Agrafe {
         repo::find(self.pool(), id).await
     }
 
+    /// What serving a blob needs of its row, in any state. The read routes
+    /// are the hot path, and this is the one query on it.
+    pub async fn find_blob_head(&self, id: Uuid) -> sqlx::Result<Option<BlobHead>> {
+        repo::find_head(self.pool(), id).await
+    }
+
     /// List blobs, newest first. `content_type` is normalised here, and
     /// `limit` must lie in `1..=repo::MAX_LIMIT`.
     pub async fn list_blobs(&self, mut params: ListParams) -> Result<Page, ListError> {
@@ -347,10 +353,7 @@ impl Blob {
     /// `expired` from that instant, whether or not the reaper has recorded it
     /// yet, so expiry never waits on the reaper's schedule.
     pub fn state_at(&self, now: Timestamp) -> BlobState {
-        match self.expires_at {
-            Some(at) if at <= now && !self.state.is_terminal() => BlobState::Expired,
-            _ => self.state,
-        }
+        state_at(self.state, self.expires_at, now)
     }
 
     /// The public port answers `404` for blobs in a terminal state, so a leaked
@@ -391,6 +394,32 @@ impl Blob {
         self.storage_key.is_some() || self.source_parts > 0
     }
 
+    /// The row as the read routes see it, for a handler that holds the
+    /// whole blob and answers as the public port does.
+    pub fn head(&self) -> BlobHead {
+        BlobHead {
+            id: self.id,
+            state: self.state,
+            filename: self.filename.clone(),
+            content_type: self.content_type.clone(),
+            category: self.category,
+            checksum_sha256: self.checksum_sha256.clone(),
+            size: self.size,
+            expires_at: self.expires_at,
+            scan_state: self.scan_state,
+            storage_key: self.storage_key.clone(),
+            kek_id: self.kek_id.clone(),
+            wrapped_key: self.wrapped_key.clone(),
+            encryption_header: self.encryption_header.clone(),
+            chunk_size: self.chunk_size,
+            thumbnail_state: self.thumbnail_state,
+            preview_state: self.preview_state,
+            thumbnail_variant_version: self.thumbnail_variant_version,
+            preview_variant_version: self.preview_variant_version,
+            uploaded_at: self.uploaded_at,
+        }
+    }
+
     /// Object key of source part `n` of a generated blob.
     pub fn source_key(id: Uuid, n: u32) -> String {
         format!("{id}/source/{n}")
@@ -407,6 +436,80 @@ impl Blob {
 
 pub fn public_upload_allowed(skip_virus_scan: bool, input_type: InputType) -> bool {
     !skip_virus_scan && input_type.is_direct()
+}
+
+/// See [`Blob::state_at`].
+fn state_at(state: BlobState, expires_at: Option<Timestamp>, now: Timestamp) -> BlobState {
+    match expires_at {
+        Some(at) if at <= now && !state.is_terminal() => BlobState::Expired,
+        _ => state,
+    }
+}
+
+/// What serving a blob needs of its row: identity, state, the envelope and
+/// the representation states. `Blob` carries the upload, scan and source
+/// bookkeeping besides, including a `rows` blob's column declaration, which
+/// is up to megabytes of JSON a download has no use for. The read routes
+/// fetch this and nothing more; see `repo::find_head`.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct BlobHead {
+    pub id: Uuid,
+    #[sqlx(try_from = "String")]
+    pub state: BlobState,
+    pub filename: String,
+    pub content_type: String,
+    #[sqlx(try_from = "String")]
+    pub category: Category,
+    pub checksum_sha256: Option<Vec<u8>>,
+    pub size: Option<i64>,
+    #[sqlx(try_from = "crate::db::NullableTimestamp")]
+    pub expires_at: Option<Timestamp>,
+    #[sqlx(try_from = "String")]
+    pub scan_state: ScanState,
+    pub storage_key: Option<String>,
+    pub kek_id: Option<String>,
+    pub wrapped_key: Option<Vec<u8>>,
+    pub encryption_header: Option<Vec<u8>>,
+    pub chunk_size: Option<i32>,
+    #[sqlx(try_from = "String")]
+    pub thumbnail_state: RepresentationState,
+    #[sqlx(try_from = "String")]
+    pub preview_state: RepresentationState,
+    pub thumbnail_variant_version: Option<i32>,
+    pub preview_variant_version: Option<i32>,
+    #[sqlx(try_from = "crate::db::NullableTimestamp")]
+    pub uploaded_at: Option<Timestamp>,
+}
+
+impl BlobHead {
+    /// See [`Blob::state_at`].
+    pub fn state_at(&self, now: Timestamp) -> BlobState {
+        state_at(self.state, self.expires_at, now)
+    }
+
+    /// See [`Blob::visible_on_public`].
+    pub fn visible_on_public(&self, now: Timestamp) -> bool {
+        !self.state_at(now).is_terminal()
+    }
+
+    /// See [`Blob::is_readable`].
+    pub fn is_readable(&self, now: Timestamp) -> bool {
+        self.state_at(now) == BlobState::Ready
+    }
+
+    pub fn representation_state(&self, kind: Representation) -> RepresentationState {
+        match kind {
+            Representation::Thumbnail => self.thumbnail_state,
+            Representation::Preview => self.preview_state,
+        }
+    }
+
+    pub fn representation_version(&self, kind: Representation) -> Option<i32> {
+        match kind {
+            Representation::Thumbnail => self.thumbnail_variant_version,
+            Representation::Preview => self.preview_variant_version,
+        }
+    }
 }
 
 #[cfg(test)]
