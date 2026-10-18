@@ -858,6 +858,11 @@ async fn creation_checks_the_sheets() {
             "sheets apply to rows input only",
         ),
         (
+            "too many",
+            json!({"filename": "e.xlsx", "content_type": XLSX, "input_type": "rows", "sheets": (0..1001).map(|i| json!({"name": format!("s{i}"), "columns": cols})).collect::<Vec<_>>()}),
+            "at most 1000 sheets",
+        ),
+        (
             "forbidden character",
             json!({"filename": "e.xlsx", "content_type": XLSX, "input_type": "rows", "sheets": [{"name": "a/b", "columns": cols}]}),
             "sheet 1 has a name that must not contain any of [ ] : * ? / \\",

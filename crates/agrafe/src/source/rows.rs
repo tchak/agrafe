@@ -33,6 +33,11 @@ pub const MAX_SHEET_CELL_LEN: usize = 32_767;
 /// Longest name an XLSX sheet may have.
 pub const MAX_SHEET_NAME_LEN: usize = 31;
 
+/// Sheets a workbook holds at most. Excel has no limit and LibreOffice
+/// allows ten thousand; the cap keeps the declaration, which every part
+/// reads back, and the package small.
+pub const MAX_SHEETS: usize = 1_000;
+
 /// The name a sheet gets when nothing of the filename is usable.
 pub const DEFAULT_SHEET_NAME: &str = "Sheet1";
 

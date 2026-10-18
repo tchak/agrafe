@@ -1,5 +1,6 @@
 //! Creating a blob: validation of the request, then the insert.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use base64::Engine;
@@ -305,9 +306,10 @@ fn validate_columns(columns: Vec<Column>, content_type: &str) -> Result<Vec<Colu
     Ok(columns)
 }
 
-/// The sheets of a workbook: at least one, each named as Excel accepts,
-/// no two alike ignoring case, each with columns as `validate_columns`
-/// wants them. Not for CSV, which holds one sheet.
+/// The sheets of a workbook: at least one and no more than `MAX_SHEETS`,
+/// each named as Excel accepts, no two alike ignoring case, each with
+/// columns as `validate_columns` wants them. Not for CSV, which holds one
+/// sheet.
 fn validate_sheets(sheets: Vec<Sheet>, content_type: &str) -> Result<Vec<Sheet>, CreateError> {
     if !rows::is_sheet(content_type) {
         return Err(unprocessable(
@@ -317,7 +319,14 @@ fn validate_sheets(sheets: Vec<Sheet>, content_type: &str) -> Result<Vec<Sheet>,
     if sheets.is_empty() {
         return Err(unprocessable("sheets must declare at least one sheet"));
     }
-    let mut seen: Vec<String> = Vec::with_capacity(sheets.len());
+    if sheets.len() > rows::MAX_SHEETS {
+        return Err(unprocessable(format!(
+            "a workbook holds at most {} sheets",
+            rows::MAX_SHEETS
+        )));
+    }
+    // The folded name of every sheet so far, with its number.
+    let mut seen: HashMap<String, usize> = HashMap::with_capacity(sheets.len());
     sheets
         .into_iter()
         .enumerate()
@@ -325,14 +334,11 @@ fn validate_sheets(sheets: Vec<Sheet>, content_type: &str) -> Result<Vec<Sheet>,
             let n = i + 1;
             rows::check_sheet_name(&sheet.name)
                 .map_err(|why| unprocessable(format!("sheet {n} has a name that {why}")))?;
-            let folded = sheet.name.to_lowercase();
-            if let Some(j) = seen.iter().position(|s| *s == folded) {
+            if let Some(j) = seen.insert(sheet.name.to_lowercase(), n) {
                 return Err(unprocessable(format!(
-                    "sheet {n} has the same name as sheet {}, ignoring case",
-                    j + 1
+                    "sheet {n} has the same name as sheet {j}, ignoring case"
                 )));
             }
-            seen.push(folded);
             let columns = validate_columns(sheet.columns, content_type)
                 .map_err(|e| unprocessable(format!("sheet {n}: {e}")))?;
             Ok(Sheet {
@@ -635,6 +641,16 @@ mod tests {
                 "none",
                 workbook(classify::XLSX, vec![]),
                 "at least one sheet",
+            ),
+            (
+                "too many",
+                workbook(
+                    classify::XLSX,
+                    (0..=rows::MAX_SHEETS)
+                        .map(|i| sheet(&format!("s{i}"), &["a"]))
+                        .collect(),
+                ),
+                "at most 1000 sheets",
             ),
             (
                 "both",

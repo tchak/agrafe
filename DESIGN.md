@@ -785,8 +785,10 @@ once per sheet.
 
 - Create takes `sheets`, a list of `{"name": "...", "columns": [...]}` in
   workbook order, mutually exclusive with `columns`, refused for
-  `text/csv`, which holds one sheet. A list of one is a workbook whose
-  sheet has a chosen name. Each sheet's `columns` follow the rules above,
+  `text/csv`, which holds one sheet, and capped at 1 000 sheets: Excel
+  has no limit and LibreOffice allows ten thousand, but the declaration
+  is read back on every part and nothing legitimate needs more. A list
+  of one is a workbook whose sheet has a chosen name. Each sheet's `columns` follow the rules above,
   and its name is validated as Excel wants it, since Excel refuses to
   open a workbook that breaks them: at most 31 characters, none of
   `[ ] : * ? / \`, no control characters, not blank, not starting or
