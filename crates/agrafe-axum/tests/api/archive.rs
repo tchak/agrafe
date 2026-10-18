@@ -10,6 +10,7 @@ use axum::http::{Method, StatusCode};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use jiff::Timestamp;
+use md5::Md5;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -187,6 +188,7 @@ async fn archive_is_built_from_a_manifest_in_parts() {
         STANDARD.encode(Sha256::digest(&bytes)),
         "the checksum is of the archive"
     );
+    assert_eq!(built["checksum_md5"], STANDARD.encode(Md5::digest(&bytes)));
     assert_eq!(
         storage_key(&app, id).await,
         format!("{id}/original"),

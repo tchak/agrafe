@@ -48,7 +48,8 @@ every decision.
 - **Streaming pipeline**: size check, SHA-256, magic-byte sniffing, ClamAV
   and encryption run in one pass straight into a multipart upload.
 - **Declared checksum and size**, enforced on the way in. A mismatch stores
-  nothing.
+  nothing. The metadata also reports the MD5 in Active Storage's `checksum`
+  form, for backends migrating from it.
 - **Content sniffing**: the declared type is checked against the bytes,
   with sensible leniency for aliases and containers.
 - **Write-once blobs**: a blob receives bytes exactly once, so a leaked

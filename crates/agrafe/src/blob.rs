@@ -316,6 +316,10 @@ pub struct Blob {
     #[sqlx(try_from = "String")]
     pub input_type: InputType,
     pub checksum_sha256: Option<Vec<u8>>,
+    /// MD5 of the same bytes, computed by the upload or the build; the
+    /// checksum Active Storage would hold for the file. Reported, never
+    /// checked.
+    pub checksum_md5: Option<Vec<u8>>,
     pub size: Option<i64>,
     pub skip_virus_scan: bool,
     #[sqlx(try_from = "crate::db::NullableTimestamp")]

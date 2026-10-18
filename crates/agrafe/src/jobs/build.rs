@@ -15,6 +15,7 @@ pub mod zip;
 use agrafe_crypto::Key;
 use agrafe_crypto::streaming::{Encryptor, Layout};
 use bytes::Bytes;
+use md5::Md5;
 use object_store::path::Path as ObjectPath;
 use object_store::{ObjectStoreExt, WriteMultipart};
 use sha2::{Digest, Sha256};
@@ -194,11 +195,12 @@ async fn build<A: Assemble>(state: &Agrafe, blob: &Blob) -> Result<Option<Built>
         sink.abort().await;
         return Ok(None);
     }
-    let (encryption_header, checksum_sha256, size) = sink.finish().await?;
+    let (encryption_header, checksum_sha256, checksum_md5, size) = sink.finish().await?;
     Ok(Some(Built {
         storage_key,
         encryption_header,
         checksum_sha256,
+        checksum_md5,
         size: size as i64,
         archive: counts
             .archive
@@ -213,6 +215,7 @@ pub(crate) struct Sink {
     encryptor: Option<Encryptor>,
     header: Vec<u8>,
     hasher: Sha256,
+    md5: Md5,
     size: u64,
     out: Vec<u8>,
     storage_key: String,
@@ -238,6 +241,7 @@ impl Sink {
             encryptor: Some(encryptor),
             header,
             hasher: Sha256::new(),
+            md5: Md5::new(),
             size: 0,
             out: Vec::new(),
             storage_key: storage_key.to_string(),
@@ -246,6 +250,7 @@ impl Sink {
 
     pub(crate) async fn write(&mut self, bytes: &[u8]) -> Result<(), BuildError> {
         self.hasher.update(bytes);
+        self.md5.update(bytes);
         self.size += bytes.len() as u64;
         self.encryptor
             .as_mut()
@@ -262,16 +267,21 @@ impl Sink {
         Ok(())
     }
 
-    /// Seal the stream and complete the upload: the header, the SHA-256 of
-    /// the plaintext and its length.
-    async fn finish(mut self) -> Result<(Vec<u8>, Vec<u8>, u64), BuildError> {
+    /// Seal the stream and complete the upload: the header, the SHA-256 and
+    /// MD5 of the plaintext and its length.
+    async fn finish(mut self) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>, u64), BuildError> {
         self.encryptor
             .take()
             .expect("open until finish")
             .finish(&mut self.out)?;
         self.flush().await?;
         self.writer.finish().await?;
-        Ok((self.header, self.hasher.finalize().to_vec(), self.size))
+        Ok((
+            self.header,
+            self.hasher.finalize().to_vec(),
+            self.md5.finalize().to_vec(),
+            self.size,
+        ))
     }
 
     async fn abort(self) {

@@ -23,6 +23,11 @@ pub struct BlobResponse {
     pub category: Category,
     pub input_type: InputType,
     pub checksum: Option<String>,
+    /// MD5 of the bytes, base64: the `checksum` of an Active Storage blob,
+    /// for a backend keeping records in both systems. Set once the bytes
+    /// are in, computed by the service, never checked. See DESIGN.md,
+    /// "Creation".
+    pub checksum_md5: Option<String>,
     pub size: Option<i64>,
     pub skip_virus_scan: bool,
     pub public_upload_allowed: bool,
@@ -68,6 +73,7 @@ impl BlobResponse {
             category: blob.category,
             input_type: blob.input_type,
             checksum: blob.checksum_sha256.as_deref().map(|c| STANDARD.encode(c)),
+            checksum_md5: blob.checksum_md5.as_deref().map(|c| STANDARD.encode(c)),
             size: blob.size,
             skip_virus_scan: blob.skip_virus_scan,
             public_upload_allowed: blob.public_upload_allowed(),

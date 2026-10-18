@@ -293,6 +293,7 @@ pub struct Completed {
     pub encryption_header: Vec<u8>,
     pub chunk_size: i32,
     pub checksum_sha256: Vec<u8>,
+    pub checksum_md5: Vec<u8>,
     pub size: i64,
     pub scan: ScanOutcome,
 }
@@ -319,7 +320,8 @@ pub async fn complete_upload(
             scan_state = $10,
             scanned_at = CASE WHEN $11 THEN now() END,
             scan_signature = $13,
-            uploaded_at = now()
+            uploaded_at = now(),
+            checksum_md5 = $15
         WHERE id = $1 AND state = $12 AND upload_started_at = $14
         RETURNING *
         "#,
@@ -338,6 +340,7 @@ pub async fn complete_upload(
     .bind(BlobState::Uploading.as_str())
     .bind(done.scan.signature())
     .bind(started.to_sqlx())
+    .bind(&done.checksum_md5)
     .fetch_optional(&mut *tx)
     .await?;
     let Some(updated) = updated else {
@@ -452,6 +455,7 @@ pub struct Built {
     pub storage_key: String,
     pub encryption_header: Vec<u8>,
     pub checksum_sha256: Vec<u8>,
+    pub checksum_md5: Vec<u8>,
     pub size: i64,
     /// Members written and members skipped, for an archive.
     pub archive: Option<(i64, i64)>,
@@ -465,7 +469,7 @@ pub async fn complete_build(pool: &PgPool, id: Uuid, built: &Built) -> sqlx::Res
     let updated = sqlx::query_as::<_, Blob>(
         "UPDATE blobs \
          SET state = $2, storage_key = $4, encryption_header = $5, checksum_sha256 = $6, \
-             size = $7, archive_entries = $8, archive_errors = $9 \
+             size = $7, archive_entries = $8, archive_errors = $9, checksum_md5 = $10 \
          WHERE id = $1 AND state = $3 RETURNING *",
     )
     .bind(id)
@@ -477,6 +481,7 @@ pub async fn complete_build(pool: &PgPool, id: Uuid, built: &Built) -> sqlx::Res
     .bind(built.size)
     .bind(built.archive.map(|(entries, _)| entries))
     .bind(built.archive.map(|(_, errors)| errors))
+    .bind(&built.checksum_md5)
     .fetch_optional(&mut *tx)
     .await?;
     let Some(updated) = updated else {

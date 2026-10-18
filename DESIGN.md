@@ -263,6 +263,14 @@ the row up as before.
 Checksum is SHA-256 because browsers compute it cheaply with
 `crypto.subtle.digest`, and S3 understands it natively.
 
+The metadata also carries `checksum_md5`, the base64 MD5 of the same bytes,
+once they are in: the `checksum` an Active Storage blob record holds. It is
+there for a backend that keeps records in both systems while it migrates,
+so it can fill in or reconcile the legacy column without reading the file
+back. The service computes it in the upload pipeline and in the build, next
+to the SHA-256; nothing declares it, nothing checks it, and nothing in the
+service depends on it.
+
 The request body is capped at 16 MiB, enough for the widest single sheet's
 `columns`: 16 384 of them with a kilobyte of name each. The cap is on the
 whole declaration, so a workbook whose sheets together go beyond it is
@@ -537,7 +545,8 @@ Bytes flow once through a chain of consumers:
    is `max_size` plus slack for multipart framing, a backstop that the
    counter normally reaches first. A `raw` body whose `Content-Length`
    disagrees with the declared size is refused before it is read.
-2. SHA-256 hasher, compared against the declared checksum at the end.
+2. SHA-256 hasher, compared against the declared checksum at the end, and
+   an MD5 hasher whose result is only recorded (see "Creation").
 3. Magic-byte sniffer on the first 8 KiB, compared against the declared
    content type.
 4. ClamAV `INSTREAM` when the blob is not `skip_virus_scan` and the declared

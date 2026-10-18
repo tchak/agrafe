@@ -10,6 +10,9 @@ CREATE TABLE blobs (
     input_type        text NOT NULL
                       CHECK (input_type IN ('raw', 'multipart', 'rows', 'archive')),
     checksum_sha256   bytea CHECK (checksum_sha256 IS NULL OR octet_length(checksum_sha256) = 32),
+    -- MD5 of the same bytes, computed on the way in and only reported, in the
+    -- form Active Storage keeps as `checksum`. Never checked against anything.
+    checksum_md5      bytea CHECK (checksum_md5 IS NULL OR octet_length(checksum_md5) = 16),
     size              bigint CHECK (size IS NULL OR size >= 0),
     skip_virus_scan   boolean NOT NULL DEFAULT false,
     expires_at        timestamptz,

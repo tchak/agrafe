@@ -20,6 +20,7 @@ use agrafe_crypto::Key;
 use agrafe_crypto::streaming::{Encryptor, Layout};
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
+use md5::Md5;
 use object_store::ObjectStoreExt;
 use object_store::WriteMultipart;
 use object_store::path::Path as ObjectPath;
@@ -257,7 +258,7 @@ async fn store_and_complete(
         body,
     )
     .await;
-    let (header, scan) = match stored {
+    let (header, checked) = match stored {
         Ok(stored) => stored,
         Err(err) => {
             hand_back(&state, blob.id, started).await;
@@ -272,8 +273,9 @@ async fn store_and_complete(
         encryption_header: header,
         chunk_size: layout.segment_size() as i32,
         checksum_sha256: declared.checksum,
+        checksum_md5: checked.md5,
         size: declared.size as i64,
-        scan,
+        scan: checked.scan,
     };
     match repo::complete_upload(state.pool(), &blob, started, &completed).await? {
         Transition::Done(blob) => match completed.scan {
@@ -490,10 +492,12 @@ where
 
 /// The checks on a file: size against the declaration, SHA-256 against the
 /// checksum, magic bytes against the content type, and the inline scan.
+/// Along the way, the MD5 of the bytes, which is only ever reported.
 struct Checks {
     declared: Declared,
     content_type: String,
     hasher: Sha256,
+    md5: Md5,
     received: u64,
     head: Vec<u8>,
     sniffed: bool,
@@ -506,6 +510,7 @@ impl Checks {
             declared: declared.clone(),
             content_type: content_type.to_string(),
             hasher: Sha256::new(),
+            md5: Md5::new(),
             received: 0,
             head: Vec::with_capacity(sniff::SNIFF_LEN),
             sniffed: false,
@@ -514,8 +519,14 @@ impl Checks {
     }
 }
 
+/// What the checks hand over once the whole body passed them.
+struct Checked {
+    scan: ScanOutcome,
+    md5: Vec<u8>,
+}
+
 impl Tap for Checks {
-    type Output = ScanOutcome;
+    type Output = Checked;
 
     async fn chunk(&mut self, chunk: &Bytes) -> Result<(), UploadError> {
         self.received += chunk.len() as u64;
@@ -523,6 +534,7 @@ impl Tap for Checks {
             return Err(UploadError::SizeMismatch);
         }
         self.hasher.update(chunk);
+        self.md5.update(chunk);
         if let Scanner::Inline(session) = &mut self.scanner {
             // A write failure is remembered by the session and surfaces
             // from `finish`, where it defers the scan; the upload itself
@@ -542,7 +554,7 @@ impl Tap for Checks {
 
     /// The scan verdict is read last, after the cheap checks have passed: a
     /// mismatched checksum is a `422` whatever clamd would have said.
-    async fn end(self) -> Result<ScanOutcome, UploadError> {
+    async fn end(self) -> Result<Checked, UploadError> {
         if self.received != self.declared.size {
             return Err(UploadError::SizeMismatch);
         }
@@ -552,7 +564,7 @@ impl Tap for Checks {
         if self.hasher.finalize().as_slice() != self.declared.checksum.as_slice() {
             return Err(UploadError::ChecksumMismatch);
         }
-        Ok(match self.scanner {
+        let scan = match self.scanner {
             Scanner::Skipped => ScanOutcome::Skipped,
             Scanner::Deferred => ScanOutcome::Deferred,
             Scanner::Inline(session) => match session.finish().await {
@@ -563,6 +575,10 @@ impl Tap for Checks {
                     ScanOutcome::Deferred
                 }
             },
+        };
+        Ok(Checked {
+            scan,
+            md5: self.md5.finalize().to_vec(),
         })
     }
 }

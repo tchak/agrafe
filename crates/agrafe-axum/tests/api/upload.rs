@@ -3,7 +3,11 @@
 
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use futures::StreamExt as _;
+use md5::{Digest, Md5};
+use serde_json::Value;
 
 use std::time::Duration;
 use tokio_stream::wrappers::ReceiverStream;
@@ -27,6 +31,16 @@ async fn raw_upload_private() {
     assert!(body["uploaded_at"].is_string());
     assert_eq!(jobs_for(&app, id).await, vec!["scan"]);
     assert_eq!(stored_plaintext(&app, id).await, bytes);
+    assert_eq!(
+        created["checksum_md5"],
+        Value::Null,
+        "the MD5 is the service's to compute"
+    );
+    assert_eq!(
+        body["checksum_md5"],
+        STANDARD.encode(Md5::digest(&bytes)),
+        "Active Storage's checksum of the bytes"
+    );
 
     // Write-once: a second upload is refused.
     let (status, _) = put_private(&app, id, bytes).await;
