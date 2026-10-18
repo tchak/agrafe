@@ -31,6 +31,8 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-24.04
+    # The renderer needs libvips 8.16 or newer; Ubuntu 24.04 ships 8.15.
+    container: rust:trixie
     services:
       postgres:
         image: postgres:17
@@ -38,23 +40,20 @@ jobs:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: agrafe_test
-        ports:
-          - 5432:5432
         options: >-
           --health-cmd pg_isready
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
     env:
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432/agrafe_test
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/agrafe_test
     steps:
       - uses: actions/checkout@v5
       - name: Install libvips
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libvips-tools
+          apt-get update
+          apt-get install -y --no-install-recommends libvips-tools
           vips --version
-      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build --workspace --all-targets
