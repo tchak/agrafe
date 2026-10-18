@@ -10,8 +10,9 @@ use uuid::Uuid;
 
 use super::{Blob, InputType, repo};
 use crate::app::Agrafe;
+use crate::attachment::{self, AttachError, AttachmentRequest, NewAttachment};
 use crate::classify::{self, Category};
-use crate::config::UploadConfig;
+use crate::config::{BlobsConfig, UploadConfig};
 use crate::jobs::Priority;
 use crate::source::rows::{self, Column, Sheet};
 use crate::text::is_bidi_control;
@@ -27,10 +28,19 @@ pub enum CreateError {
 }
 
 impl Agrafe {
-    /// Create a blob: metadata only, no bytes yet.
+    /// Create a blob: metadata only, no bytes yet. With an `attachment`,
+    /// the blob is attached in the same transaction and carries no expiry.
     pub async fn create_blob(&self, req: CreateBlobRequest) -> Result<Blob, CreateError> {
-        let new = validate(req, &self.config().upload, Timestamp::now())?;
-        Ok(repo::insert(self.pool(), &new).await?)
+        let config = self.config();
+        let new = validate(req, &config.upload, &config.blobs, Timestamp::now())?;
+        let Some(attachment) = &new.attachment else {
+            return Ok(repo::insert(self.pool(), &new).await?);
+        };
+        let mut tx = self.pool().begin().await?;
+        let blob = repo::insert(&mut *tx, &new).await?;
+        attachment::insert_with_blob(&mut tx, blob.id, attachment).await?;
+        tx.commit().await?;
+        Ok(blob)
     }
 }
 
@@ -54,6 +64,9 @@ pub struct CreateBlobRequest {
     /// Where the blob's jobs go in their kind's queue.
     #[serde(default)]
     pub priority: Priority,
+    /// Attach the blob to a record as it is created. The blob then has no
+    /// expiry, so `expires_at` and `expires_in` must be omitted.
+    pub attachment: Option<AttachmentRequest>,
 }
 
 /// A validated blob, ready to insert.
@@ -69,8 +82,10 @@ pub struct NewBlob {
     /// The sheets of a `rows` blob.
     pub source_columns: Option<Vec<Sheet>>,
     pub skip_virus_scan: bool,
+    /// `None` only for a blob created attached.
     pub expires_at: Option<Timestamp>,
     pub priority: Priority,
+    pub attachment: Option<NewAttachment>,
 }
 
 pub const MAX_FILENAME_LEN: usize = 255;
@@ -78,6 +93,7 @@ pub const MAX_FILENAME_LEN: usize = 255;
 pub fn validate(
     req: CreateBlobRequest,
     upload: &UploadConfig,
+    blobs: &BlobsConfig,
     now: Timestamp,
 ) -> Result<NewBlob, CreateError> {
     let filename = validate_filename(&req.filename)?;
@@ -141,6 +157,26 @@ pub fn validate(
     {
         return Err(unprocessable("expiration must be in the future"));
     }
+    // A blob is either expiring or attached: created attached, it has no
+    // expiry, and one asked for would be cleared on the spot.
+    let attachment = match req.attachment {
+        Some(_) if expires_at.is_some() => {
+            return Err(unprocessable(
+                "expires_at and expires_in do not apply to a blob created attached",
+            ));
+        }
+        Some(attachment) => Some(attachment::validate(attachment).map_err(|e| match e {
+            AttachError::Invalid(msg) => unprocessable(format!("attachment: {msg}")),
+            // `validate` only ever reports an invalid request.
+            other => unprocessable(format!("attachment: {other}")),
+        })?),
+        None => None,
+    };
+    let expires_at = match (&attachment, expires_at) {
+        (Some(_), _) => None,
+        (None, Some(at)) => Some(at),
+        (None, None) => Some(blobs.default_expires_at(now)),
+    };
 
     Ok(NewBlob {
         id: Uuid::now_v7(),
@@ -156,6 +192,7 @@ pub fn validate(
         skip_virus_scan: req.skip_virus_scan || !req.input_type.is_direct(),
         expires_at,
         priority: req.priority,
+        attachment,
     })
 }
 
@@ -312,6 +349,7 @@ mod tests {
             expires_at: None,
             expires_in: None,
             priority: Priority::Normal,
+            attachment: None,
         }
     }
 
@@ -319,11 +357,16 @@ mod tests {
         UploadConfig::default()
     }
 
+    fn blobs() -> BlobsConfig {
+        BlobsConfig::default()
+    }
+
     #[test]
     fn raw_ok() {
         let b = validate(
             req(InputType::Raw, "image/jpeg; charset=binary"),
             &cfg(),
+            &blobs(),
             Timestamp::now(),
         )
         .unwrap();
@@ -337,20 +380,21 @@ mod tests {
     fn direct_requires_checksum_and_size() {
         let mut r = req(InputType::Raw, "image/jpeg");
         r.checksum = None;
-        assert!(validate(r, &cfg(), Timestamp::now()).is_err());
+        assert!(validate(r, &cfg(), &blobs(), Timestamp::now()).is_err());
         let mut r = req(InputType::Multipart, "image/jpeg");
         r.size = None;
-        assert!(validate(r, &cfg(), Timestamp::now()).is_err());
+        assert!(validate(r, &cfg(), &blobs(), Timestamp::now()).is_err());
     }
 
     #[test]
     fn generated_rejects_checksum_and_checks_type() {
         let mut r = req(InputType::Rows, classify::CSV);
         r.checksum = Some(STANDARD.encode([0u8; 32]));
-        assert!(validate(r, &cfg(), Timestamp::now()).is_err());
+        assert!(validate(r, &cfg(), &blobs(), Timestamp::now()).is_err());
         let b = validate(
             req(InputType::Rows, classify::CSV),
             &cfg(),
+            &blobs(),
             Timestamp::now(),
         )
         .unwrap();
@@ -359,15 +403,25 @@ mod tests {
             validate(
                 req(InputType::Rows, classify::XLSX),
                 &cfg(),
+                &blobs(),
                 Timestamp::now()
             )
             .is_ok()
         );
-        assert!(validate(req(InputType::Rows, "image/png"), &cfg(), Timestamp::now()).is_err());
+        assert!(
+            validate(
+                req(InputType::Rows, "image/png"),
+                &cfg(),
+                &blobs(),
+                Timestamp::now()
+            )
+            .is_err()
+        );
         assert!(
             validate(
                 req(InputType::Archive, classify::ZIP),
                 &cfg(),
+                &blobs(),
                 Timestamp::now()
             )
             .is_ok()
@@ -376,6 +430,7 @@ mod tests {
             validate(
                 req(InputType::Archive, classify::CSV),
                 &cfg(),
+                &blobs(),
                 Timestamp::now()
             )
             .is_err()
@@ -387,13 +442,13 @@ mod tests {
         let now = Timestamp::now();
         let mut r = req(InputType::Rows, classify::XLSX);
         r.filename = "export: 2026.xlsx".into();
-        let b = validate(r, &cfg(), now).unwrap();
+        let b = validate(r, &cfg(), &blobs(), now).unwrap();
         let sheets = b.source_columns.unwrap();
         assert_eq!(sheets.len(), 1);
         assert_eq!(sheets[0].name, "export_ 2026");
         assert_eq!(sheets[0].columns.len(), 1);
         assert!(
-            validate(req(InputType::Raw, "image/jpeg"), &cfg(), now)
+            validate(req(InputType::Raw, "image/jpeg"), &cfg(), &blobs(), now)
                 .unwrap()
                 .source_columns
                 .is_none()
@@ -401,22 +456,22 @@ mod tests {
 
         let mut r = req(InputType::Rows, classify::CSV);
         r.columns = None;
-        assert!(validate(r, &cfg(), now).is_err(), "required");
+        assert!(validate(r, &cfg(), &blobs(), now).is_err(), "required");
         let mut r = req(InputType::Rows, classify::CSV);
         r.columns = Some(vec![]);
-        assert!(validate(r, &cfg(), now).is_err(), "at least one");
+        assert!(validate(r, &cfg(), &blobs(), now).is_err(), "at least one");
         let mut r = req(InputType::Rows, classify::CSV);
         r.columns = Some(vec![Column {
             name: "".into(),
             kind: None,
         }]);
-        assert!(validate(r, &cfg(), now).is_err(), "named");
+        assert!(validate(r, &cfg(), &blobs(), now).is_err(), "named");
         let mut r = req(InputType::Archive, classify::ZIP);
         r.columns = Some(vec![Column {
             name: "a".into(),
             kind: None,
         }]);
-        assert!(validate(r, &cfg(), now).is_err(), "rows only");
+        assert!(validate(r, &cfg(), &blobs(), now).is_err(), "rows only");
 
         let many: Vec<Column> = (0..=rows::MAX_SHEET_COLUMNS)
             .map(|i| Column {
@@ -426,10 +481,16 @@ mod tests {
             .collect();
         let mut r = req(InputType::Rows, classify::ODS);
         r.columns = Some(many.clone());
-        assert!(validate(r, &cfg(), now).is_err(), "a sheet's limit");
+        assert!(
+            validate(r, &cfg(), &blobs(), now).is_err(),
+            "a sheet's limit"
+        );
         let mut r = req(InputType::Rows, classify::CSV);
         r.columns = Some(many);
-        assert!(validate(r, &cfg(), now).is_ok(), "CSV has no such limit");
+        assert!(
+            validate(r, &cfg(), &blobs(), now).is_ok(),
+            "CSV has no such limit"
+        );
 
         for bad in ["a\nb", "x\u{0}y", "total\u{202E}", "a\u{2066}b", "\t"] {
             let mut r = req(InputType::Rows, classify::CSV);
@@ -437,14 +498,17 @@ mod tests {
                 name: bad.into(),
                 kind: None,
             }]);
-            assert!(validate(r, &cfg(), now).is_err(), "{bad:?}");
+            assert!(validate(r, &cfg(), &blobs(), now).is_err(), "{bad:?}");
         }
         let mut r = req(InputType::Rows, classify::CSV);
         r.columns = Some(vec![Column {
             name: "Nom / Prénom: été".into(),
             kind: None,
         }]);
-        assert!(validate(r, &cfg(), now).is_ok(), "separators are fine");
+        assert!(
+            validate(r, &cfg(), &blobs(), now).is_ok(),
+            "separators are fine"
+        );
 
         let long = vec![Column {
             name: "n".repeat(rows::MAX_SHEET_CELL_LEN + 1),
@@ -452,10 +516,16 @@ mod tests {
         }];
         let mut r = req(InputType::Rows, classify::XLSX);
         r.columns = Some(long.clone());
-        assert!(validate(r, &cfg(), now).is_err(), "a cell's limit");
+        assert!(
+            validate(r, &cfg(), &blobs(), now).is_err(),
+            "a cell's limit"
+        );
         let mut r = req(InputType::Rows, classify::CSV);
         r.columns = Some(long);
-        assert!(validate(r, &cfg(), now).is_ok(), "CSV has no such limit");
+        assert!(
+            validate(r, &cfg(), &blobs(), now).is_ok(),
+            "CSV has no such limit"
+        );
     }
 
     #[test]
@@ -473,12 +543,15 @@ mod tests {
         ] {
             let mut r = req(InputType::Raw, "image/jpeg");
             r.filename = bad.into();
-            assert!(validate(r, &cfg(), Timestamp::now()).is_err(), "{bad:?}");
+            assert!(
+                validate(r, &cfg(), &blobs(), Timestamp::now()).is_err(),
+                "{bad:?}"
+            );
         }
         // Scripts written right to left are fine; only the controls are not.
         let mut r = req(InputType::Raw, "image/jpeg");
         r.filename = "صورة.jpg".into();
-        assert!(validate(r, &cfg(), Timestamp::now()).is_ok());
+        assert!(validate(r, &cfg(), &blobs(), Timestamp::now()).is_ok());
     }
 
     #[test]
@@ -486,33 +559,71 @@ mod tests {
         let now = Timestamp::now();
         let mut r = req(InputType::Raw, "image/jpeg");
         r.expires_in = Some(Duration::from_secs(3600));
-        let b = validate(r, &cfg(), now).unwrap();
+        let b = validate(r, &cfg(), &blobs(), now).unwrap();
         assert_eq!(b.expires_at, Some(now + SignedDuration::from_secs(3600)));
+
+        // Left out, the default applies: a blob is never without an expiry
+        // unless it is attached.
+        let b = validate(req(InputType::Raw, "image/jpeg"), &cfg(), &blobs(), now).unwrap();
+        assert_eq!(
+            b.expires_at,
+            Some(now + SignedDuration::from_secs(24 * 3600))
+        );
+        let mut r = req(InputType::Raw, "image/jpeg");
+        r.attachment = Some(AttachmentRequest {
+            record_type: "Dossier".into(),
+            record_id: "1".into(),
+            name: "piece".into(),
+        });
+        let b = validate(r, &cfg(), &blobs(), now).unwrap();
+        assert_eq!(b.expires_at, None);
+        assert_eq!(b.attachment.as_ref().unwrap().record_id, "1");
+        let mut r = req(InputType::Raw, "image/jpeg");
+        r.attachment = Some(AttachmentRequest {
+            record_type: "Dossier".into(),
+            record_id: "1".into(),
+            name: "piece".into(),
+        });
+        r.expires_in = Some(Duration::from_secs(3600));
+        assert!(
+            validate(r, &cfg(), &blobs(), now).is_err(),
+            "attached blobs do not expire"
+        );
+        let mut r = req(InputType::Raw, "image/jpeg");
+        r.attachment = Some(AttachmentRequest {
+            record_type: "".into(),
+            record_id: "1".into(),
+            name: "piece".into(),
+        });
+        assert!(
+            validate(r, &cfg(), &blobs(), now).is_err(),
+            "validated like filenames"
+        );
 
         let mut r = req(InputType::Raw, "image/jpeg");
         r.expires_at = Some(now - SignedDuration::from_secs(1));
-        assert!(validate(r, &cfg(), now).is_err());
+        assert!(validate(r, &cfg(), &blobs(), now).is_err());
 
         let mut r = req(InputType::Raw, "image/jpeg");
         r.expires_at = Some(now + SignedDuration::from_secs(10));
         r.expires_in = Some(Duration::from_secs(10));
-        assert!(validate(r, &cfg(), now).is_err());
+        assert!(validate(r, &cfg(), &blobs(), now).is_err());
     }
 
     #[test]
     fn huge_expires_in_is_rejected_not_panicking() {
         let mut r = req(InputType::Raw, "image/jpeg");
         r.expires_in = Some(Duration::from_secs(100_000_000 * 365 * 86_400));
-        assert!(validate(r, &cfg(), Timestamp::now()).is_err());
+        assert!(validate(r, &cfg(), &blobs(), Timestamp::now()).is_err());
     }
 
     #[test]
     fn size_limit() {
         let mut r = req(InputType::Raw, "image/jpeg");
         r.size = Some(i64::MAX);
-        assert!(validate(r, &cfg(), Timestamp::now()).is_err());
+        assert!(validate(r, &cfg(), &blobs(), Timestamp::now()).is_err());
         let mut r = req(InputType::Raw, "image/jpeg");
         r.size = Some(-1);
-        assert!(validate(r, &cfg(), Timestamp::now()).is_err());
+        assert!(validate(r, &cfg(), &blobs(), Timestamp::now()).is_err());
     }
 }

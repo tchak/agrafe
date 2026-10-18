@@ -93,11 +93,14 @@ No signature. Reachable only from trusted networks.
 |---|---|---|
 | `POST` | `/blobs` | Create a blob (metadata only, no bytes yet) |
 | `GET` | `/blobs` | List blobs, cursor paginated, filterable |
-| `GET` | `/blobs/:id` | Full metadata plus ready-made signed public URLs |
+| `GET` | `/blobs/:id` | Full metadata, attachments and ready-made signed public URLs |
 | `PUT` | `/blobs/:id` | Upload bytes (all input types), once |
 | `PUT` | `/blobs/:id/parts/:n` | Append part `n` of a `rows` or `archive` source |
 | `POST` | `/blobs/:id/finish` | Seal a source sent in parts and enqueue its build |
-| `DELETE` | `/blobs/:id` | Soft delete, bucket objects purged asynchronously |
+| `DELETE` | `/blobs/:id` | Soft delete of an unattached blob, bucket objects purged asynchronously |
+| `POST` | `/blobs/:id/attachments` | Attach the blob to a record, idempotent (see "Attachments") |
+| `GET` | `/attachments` | List attachments, cursor paginated, filterable by record and blob |
+| `DELETE` | `/attachments/:id` | Detach; the last detach gives the blob back its default expiry |
 | `POST` | `/blobs/:id/urls` | Mint signed public URLs with a chosen TTL and query parameters |
 | `GET` | `/blobs/:id/original/:filename` | Original bytes, supports `Range` |
 | `GET` | `/blobs/:id/preview/:filename` | WebP preview or 404 |
@@ -204,7 +207,8 @@ message = METHOD "\n" expires_unix "\n" path_and_query_after_token
 | `columns` | for `rows` | The columns of the sheet, in order: a list of `{"name": "...", "type": "..."}`, `type` optional. See "Rows" |
 | `skip_virus_scan` | no, default `false` | Private-only, backend vouches for the source |
 | `priority` | no, default `normal` | `high`, `normal` or `low`: where the blob's jobs go in their kind's queue, see "Jobs" |
-| `expires_at` or `expires_in` | no | Absolute timestamp or duration such as `7d` |
+| `expires_at` or `expires_in` | no, default `blobs.default_expires_in` | Absolute timestamp or duration such as `7d`. Cleared by the first attachment, see "Attachments" |
+| `attachment` | no | `record_type`, `record_id` and `name`: attach in the same transaction as the creation, see "Attachments" |
 
 Checksum is SHA-256 because browsers compute it cheaply with
 `crypto.subtle.digest`, and S3 understands it natively.
@@ -265,7 +269,7 @@ created ──► uploading ──► uploaded ──► ready
     nothing stored)
 
 any non-terminal ──► expired
-any ──► deleted
+any unattached ──► deleted
 ```
 
 | State | Meaning |
@@ -307,14 +311,29 @@ at the last check before its object would become visible, stops with `409`
 and stores nothing, so one the reaper gave up on can neither finish on top
 of the `PUT` that took the blob since nor hand that upload's row back.
 
-A soft delete schedules a purge of the objects `upload.purge_delay` (default one
+A soft delete is refused for an attached blob (see "Attachments"); for any
+other it schedules a purge of the objects `upload.purge_delay` (default one
 hour) later, long enough for a download that started before the delete to
 finish. Expiry gets the same grace period from the moment the reaper records
 it. The purge deletes everything under the blob's `<id>/` prefix and stamps
-`purged_at` on the row, which private metadata reports; the row itself is
-never removed. An infected blob is terminal and never becomes `expired`, but
-its objects are not kept forever either: once it is past `expires_at` the
-reaper purges them and leaves the state alone.
+`purged_at` on the row, which private metadata reports. An infected blob is
+terminal and never becomes `expired`, but its objects are not kept forever
+either: once it is past `expires_at` the reaper purges them and leaves the
+state alone.
+
+The row outlives the purge as a tombstone: `GET /blobs/:id` keeps answering
+with the state, `deleted_at` and `purged_at`, so the backend can tell a blob
+it deleted from an id that never existed, while the public port says `404`
+either way. The reaper prunes tombstones `blobs.keep_purged` (default ninety
+days) after `purged_at`, long enough for the question to have been asked;
+the attachments and jobs that reference the row go with it, and the id is
+then unknown like any other. A terminal row that never had anything to
+purge, a blob created and never uploaded, has no `purged_at` and is pruned
+the same time after it went terminal (its `updated_at`). Why a bound: every
+blob carries an expiry until it is attached, so every direct upload a user
+walked away from ends as a terminal row, and a table that only grows pays
+for it in every index. An `infected` blob is pruned only through its purge,
+which needs its expiry: one the backend holds on to stays.
 
 Separate from the blob state, each blob tracks `scan_state`
 (`pending`, `clean`, `infected`, `skipped`), `scan_signature` (what clamd
@@ -322,11 +341,110 @@ found, for `infected`, whichever path scanned the file; private metadata
 only) and a state per derived representation (`pending`, `ready`, `failed`,
 `unsupported`).
 
+### Attachments
+
+An attachment records that a record of the backend uses a blob: three
+strings, `record_type`, `record_id` and `name`, the triple Active Storage
+uses. `record_type` is the kind of record, `record_id` its identifier as the
+backend writes it, `name` the role the blob plays for it
+(`piece_justificative`, `avatar`). A blob can be attached any number of
+times, from records that need not know about each other, and a record can
+attach several blobs under one name: agrafe does not know whether a name is
+one-to-one or one-to-many, that is the backend's rule.
+
+Why in agrafe rather than in the backend: a blob row says nothing about
+whether anything uses it, so the backend was the only place that could tell
+a live file from a forgotten one, and a blob's lifetime could not follow its
+use. With attachments inside, "in use" is a query and expiry is what happens
+to a blob nothing uses.
+
+**Lifetime.** A blob is created with an expiry: `expires_at` or `expires_in`
+from the request, `blobs.default_expires_in` (default one day) otherwise,
+long enough for a direct upload to be created, sent by the browser and
+attached when the form is submitted. The first attachment clears
+`expires_at`; detaching the last one sets it to the default again, counted
+from that moment. There is no way to create a blob without an expiry: a blob
+is either expiring or attached, and permanence is spelled "attached". The
+invariant, for a non-terminal blob: `expires_at IS NULL` ⇔ attached. (An
+unattached infected blob is therefore purged within the default expiry; the
+forensic window for one the backend holds on to lasts until it lets go.)
+
+**Attach.** `POST /blobs/:id/attachments` with the three fields. Idempotent:
+a triple already attached returns the existing attachment. Refused for a
+blob in a terminal state, or past its `expires_at` whether or not the reaper
+has recorded it (`410` for an expired or deleted blob, `409` for an infected
+one). A blob may be attached in `created`, before its bytes: a backend
+creating a `rows` or `archive` blob knows its record at creation, and
+`POST /blobs` takes an optional `attachment` to do both in one transaction.
+
+**Detach.** `DELETE /attachments/:id`. Works on a blob in any state; the last
+detach re-arms the expiry even on a terminal blob, which is what gives an
+infected blob its purge clock once the backend lets go of it.
+
+**Delete.** `DELETE /blobs/:id` refuses an attached blob with `409`. Why:
+blobs are shared across attachments that do not know of each other, so a
+backend acting for one record cannot know that the blob is free. Detach is
+the only safe operation on behalf of one record; a blob nobody uses expires
+on its own, and a backend in a hurry detaches, then deletes. This is the
+Active Storage footgun not reproduced: `purge` there destroys a blob other
+records may still reference.
+
+No blob state transition touches attachments. Delete cannot happen while
+attached and ordinary expiry cannot either, so the terminal blobs that still
+carry attachments are the two the backend did not cause: a source left
+unfinished past `upload.source_stale_after`, which the reaper expires
+whatever its attachments, and `infected`. Both keep their attachments so
+the backend can find out from the record's side, and the listing carries the
+blob's `state` so that the answer does not cost a second request. The
+tombstone prune takes the attachments with the row.
+
+**Concurrency.** Attach and detach lock the blob row (`SELECT ... FOR
+UPDATE`) for their transaction, then change the attachments and
+`expires_at` together. The reaper's expiry update waits on the same lock and
+re-evaluates its predicate after, so an attach racing an expiry lands on one
+side or the other, never both.
+
+**Schema and listing.**
+
+```
+attachments (
+  id          uuid        PRIMARY KEY  -- v7, the listing cursor
+  blob_id     uuid        NOT NULL REFERENCES blobs ON DELETE CASCADE
+  record_type text        NOT NULL
+  record_id   text        NOT NULL
+  name        text        NOT NULL
+  created_at  timestamptz NOT NULL
+)
+UNIQUE (record_type, record_id, name, blob_id)
+INDEX  (blob_id)
+INDEX  (record_type, name, id)
+```
+
+`record_type` and `name` have a handful of values each; `record_id` has as
+many as the backend has records. The unique index makes attach idempotent
+and serves every lookup by record, which is why `record_id` is only accepted
+together with `record_type`: an id means nothing without its type, and there
+is no index on it alone. `(record_type, name, id)` serves the low-cardinality
+scans with the cursor, `record_type` alone through its prefix. `(blob_id)`
+serves a blob's own attachments and the last-detach check.
+
+`GET /attachments` is cursor paginated on the attachment id like `/blobs`,
+with filters `record_type`, `record_id` (with `record_type`), `name` and
+`blob_id`; each row carries the blob's `state`. `GET /blobs/:id` inlines the
+blob's attachments, and `GET /blobs` takes `attached`. The three strings are
+validated like `filename`: non-empty, at most 255 bytes, no control
+characters.
+
+The public port never sees attachments. They are the backend's statements
+about its own records, and nothing a browser is told.
+
 ### Listing
 
 `GET /blobs` is cursor paginated on the blob id, which is a UUID v7 so ids
 sort by creation time. Filters: `content_type`, `category`, `state`,
-`scan_state`. Response carries `next_cursor` or null.
+`scan_state`, `attached` (`true` or `false`: whether any attachment exists,
+which for a non-terminal blob is whether `expires_at` is null, see
+"Attachments"). Response carries `next_cursor` or null.
 
 ### Classification
 
@@ -1097,8 +1215,9 @@ blob still holding objects that no purge job is going to take care of (the
 ones just expired, infected ones past their expiry, and any whose purge was
 lost, a pruned dead one included); hand `uploading` rows older than
 `upload.stale_after` back to `created`; expire `created` blobs holding
-source parts untouched for `upload.source_stale_after`. Expiry itself never
-waits for the reaper, see "State machine".
+source parts untouched for `upload.source_stale_after`; prune tombstones
+purged more than `blobs.keep_purged` ago, their attachments and jobs with
+them. Expiry itself never waits for the reaper, see "State machine".
 
 The reaper keeps its own clock: each run enqueues the next, `jobs.reap_interval`
 (default one minute) later, before doing its work, so a failing run is
@@ -1228,3 +1347,6 @@ is redacted so a dumped config cannot leak them. See `config/example.toml`.
 8. `archive` to ZIP: source parts and finish, the build job, the streaming
    ZIP writer, abandoned sources.
 9. `rows` to CSV/XLSX/ODS on the same parts and finish.
+10. Attachments: the table, attach and detach, the default expiry and its
+    hand-off to the first attachment, delete refusing attached blobs, the
+    tombstone prune.

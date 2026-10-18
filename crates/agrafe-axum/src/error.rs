@@ -1,6 +1,7 @@
 //! API error type: every handler failure becomes a JSON body with a stable
 //! code. The library's own error types map onto it here, and nowhere else.
 
+use agrafe::attachment::{self, AttachError};
 use agrafe::blob::create::CreateError;
 use agrafe::blob::urls::MintError;
 use agrafe::blob::{self, representation};
@@ -116,6 +117,40 @@ impl From<blob::ListError> for ApiError {
                 ApiError::BadRequest(err.to_string())
             }
             blob::ListError::Db(e) => ApiError::internal(e),
+        }
+    }
+}
+
+impl From<blob::DeleteError> for ApiError {
+    fn from(err: blob::DeleteError) -> Self {
+        match err {
+            blob::DeleteError::Attached => ApiError::Conflict(err.to_string()),
+            blob::DeleteError::Db(e) => ApiError::internal(e),
+        }
+    }
+}
+
+impl From<AttachError> for ApiError {
+    fn from(err: AttachError) -> Self {
+        match err {
+            AttachError::NotFound => ApiError::NotFound,
+            AttachError::Invalid(msg) => ApiError::Unprocessable(msg),
+            // An infected blob is still there, and the backend may want to
+            // know; an expired or deleted one is gone for good.
+            AttachError::Terminal(blob::BlobState::Infected) => ApiError::Conflict(err.to_string()),
+            AttachError::Terminal(_) => ApiError::Gone(err.to_string()),
+            AttachError::Db(e) => ApiError::internal(e),
+        }
+    }
+}
+
+impl From<attachment::ListError> for ApiError {
+    fn from(err: attachment::ListError) -> Self {
+        match err {
+            attachment::ListError::Limit(_) | attachment::ListError::RecordIdAlone => {
+                ApiError::BadRequest(err.to_string())
+            }
+            attachment::ListError::Db(e) => ApiError::internal(e),
         }
     }
 }

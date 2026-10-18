@@ -14,7 +14,19 @@ use crate::app::Agrafe;
 use crate::classify::Category;
 use crate::jobs::Priority;
 use crate::source::rows::{Column, Sheet};
-use repo::{ListParams, Page, Transition};
+use repo::{ListParams, Page};
+
+/// Why a blob could not be deleted.
+#[derive(Debug, thiserror::Error)]
+pub enum DeleteError {
+    /// Blobs are shared across attachments that do not know of each other,
+    /// so a backend acting for one record cannot know the blob is free:
+    /// detach instead, and a blob nobody uses expires on its own.
+    #[error("blob is attached and cannot be deleted; detach it first")]
+    Attached,
+    #[error("database: {0}")]
+    Db(#[from] sqlx::Error),
+}
 
 /// Why a listing was refused.
 #[derive(Debug, thiserror::Error)]
@@ -46,12 +58,16 @@ impl Agrafe {
         Ok(repo::list(self.pool(), &params).await?)
     }
 
-    /// Soft delete: the objects are purged asynchronously. `false` when
-    /// there is no such blob; deleting twice is not an error.
-    pub async fn delete_blob(&self, id: Uuid) -> sqlx::Result<bool> {
+    /// Soft delete of an unattached blob: the objects are purged
+    /// asynchronously. `false` when there is no such blob; deleting twice
+    /// is not an error.
+    pub async fn delete_blob(&self, id: Uuid) -> Result<bool, DeleteError> {
         let purge_at = self.config().upload.purge_at(Timestamp::now());
-        let transition = repo::soft_delete(self.pool(), id, purge_at).await?;
-        Ok(!matches!(transition, Transition::Missing))
+        match repo::soft_delete(self.pool(), id, purge_at).await? {
+            repo::Delete::Done => Ok(true),
+            repo::Delete::Attached => Err(DeleteError::Attached),
+            repo::Delete::Missing => Ok(false),
+        }
     }
 }
 

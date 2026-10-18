@@ -40,6 +40,8 @@ pub struct Config {
     pub jobs: JobsConfig,
     #[serde(default)]
     pub archive: ArchiveConfig,
+    #[serde(default)]
+    pub blobs: BlobsConfig,
 }
 
 impl Config {
@@ -285,6 +287,49 @@ impl Default for UploadConfig {
             stale_after: default_stale_after(),
             purge_delay: default_purge_delay(),
             source_stale_after: default_source_stale_after(),
+        }
+    }
+}
+
+/// The lifetime of blobs and of their tombstones. See DESIGN.md,
+/// "Attachments" and "State machine".
+#[derive(Debug, Clone, Deserialize)]
+pub struct BlobsConfig {
+    /// Expiry of a blob created without one, and of a blob whose last
+    /// attachment was removed, counted from that moment. A blob is either
+    /// expiring or attached; there is no way to create one that is neither.
+    #[serde(with = "humantime_serde", default = "default_expires_in")]
+    pub default_expires_in: Duration,
+    /// How long a terminal blob's row stays after its objects were purged,
+    /// or after it went terminal with nothing to purge, so that the backend
+    /// can tell a blob it deleted from an id that never existed. The reaper
+    /// removes it after, with its attachments and jobs.
+    #[serde(with = "humantime_serde", default = "default_keep_purged")]
+    pub keep_purged: Duration,
+}
+
+impl BlobsConfig {
+    /// When a blob left without an expiry at `now` expires.
+    pub fn default_expires_at(&self, now: Timestamp) -> Timestamp {
+        SignedDuration::try_from(self.default_expires_in)
+            .ok()
+            .and_then(|d| now.checked_add(d).ok())
+            .unwrap_or(Timestamp::MAX)
+    }
+}
+
+fn default_expires_in() -> Duration {
+    Duration::from_secs(24 * 3600)
+}
+fn default_keep_purged() -> Duration {
+    Duration::from_secs(90 * 24 * 3600)
+}
+
+impl Default for BlobsConfig {
+    fn default() -> Self {
+        Self {
+            default_expires_in: default_expires_in(),
+            keep_purged: default_keep_purged(),
         }
     }
 }

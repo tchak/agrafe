@@ -1,6 +1,6 @@
 //! The periodic housekeeping job: record expiries, expire abandoned
-//! sources, schedule the purges that are due, reset stale uploads and
-//! prune dead jobs.
+//! sources, schedule the purges that are due, reset stale uploads, prune
+//! dead jobs and the tombstones of purged blobs.
 //!
 //! One `reap` row lives in the table at a time. Each run schedules the
 //! next one `jobs.reap_interval` later before doing its work, so a failing
@@ -32,6 +32,7 @@ pub async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
             purges = report.purges,
             reset = report.reset,
             pruned = report.pruned,
+            tombstones = report.tombstones,
             "reaped"
         );
     }
@@ -69,6 +70,8 @@ pub struct Report {
     pub reset: usize,
     /// Dead jobs removed.
     pub pruned: u64,
+    /// Rows of purged blobs removed, their attachments and jobs with them.
+    pub tombstones: u64,
     /// Another reap was running: this one did nothing.
     pub skipped: bool,
 }
@@ -131,6 +134,12 @@ pub async fn reap(state: &Agrafe, now: Timestamp) -> Result<Report, JobError> {
         .unwrap_or(Timestamp::MIN);
     let reset = repo::reset_stale_uploads(&mut tx, stale_before).await?;
 
+    // Tombstones that have answered `GET /blobs/:id` long enough.
+    let tombstone_before = now
+        .checked_sub(config.blobs.keep_purged)
+        .unwrap_or(Timestamp::MIN);
+    let tombstones = repo::prune_tombstones(&mut tx, tombstone_before).await?;
+
     tx.commit().await?;
     Ok(Report {
         expired: expired.len(),
@@ -138,6 +147,7 @@ pub async fn reap(state: &Agrafe, now: Timestamp) -> Result<Report, JobError> {
         purges,
         reset: reset.len(),
         pruned,
+        tombstones,
         skipped: false,
     })
 }

@@ -7,6 +7,7 @@
 mod support;
 
 mod archive;
+mod attachments;
 mod blobs;
 mod jobs;
 mod original;

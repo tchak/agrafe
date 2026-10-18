@@ -10,6 +10,8 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use agrafe::Agrafe;
+use agrafe::attachment::Attachment;
+use agrafe::blob::Blob;
 use agrafe::blob::create::CreateBlobRequest;
 use agrafe::blob::repo::{self, ListParams};
 use agrafe::blob::urls::{BlobUrls, MintOptions};
@@ -57,13 +59,35 @@ pub fn routes(body_limit: usize) -> Router<Agrafe> {
         .route("/blobs/{id}/thumbnail/{filename}", get(get_thumbnail))
 }
 
+/// The full metadata of `blob`: its attachments and ready-made URLs.
+async fn respond(agrafe: &Agrafe, blob: &Blob) -> ApiResult<BlobResponse> {
+    let attachments = agrafe.attachments_of(blob.id).await?;
+    Ok(BlobResponse::new(blob, &attachments, agrafe.urls(blob)))
+}
+
+/// `respond` for a page of blobs, with one query for their attachments.
+async fn respond_many(agrafe: &Agrafe, blobs: &[Blob]) -> ApiResult<Vec<BlobResponse>> {
+    let ids: Vec<Uuid> = blobs.iter().map(|b| b.id).collect();
+    let attachments = agrafe.attachments_for(&ids).await?;
+    Ok(blobs
+        .iter()
+        .map(|blob| {
+            let own: Vec<Attachment> = attachments
+                .iter()
+                .filter(|a| a.blob_id == blob.id)
+                .cloned()
+                .collect();
+            BlobResponse::new(blob, &own, agrafe.urls(blob))
+        })
+        .collect())
+}
+
 async fn create_blob(
     State(agrafe): State<Agrafe>,
     Json(req): Json<CreateBlobRequest>,
 ) -> ApiResult<impl IntoResponse> {
     let blob = agrafe.create_blob(req).await?;
-    let urls = agrafe.urls(&blob);
-    Ok((StatusCode::CREATED, Json(BlobResponse::new(&blob, urls))))
+    Ok((StatusCode::CREATED, Json(respond(&agrafe, &blob).await?)))
 }
 
 #[derive(Debug, Deserialize)]
@@ -72,6 +96,7 @@ pub struct ListQuery {
     pub category: Option<Category>,
     pub state: Option<BlobState>,
     pub scan_state: Option<ScanState>,
+    pub attached: Option<bool>,
     pub cursor: Option<Uuid>,
     pub limit: Option<usize>,
 }
@@ -85,15 +110,12 @@ async fn list_blobs(
         category: q.category,
         state: q.state,
         scan_state: q.scan_state,
+        attached: q.attached,
         cursor: q.cursor,
         limit: q.limit.unwrap_or(repo::DEFAULT_LIMIT),
     };
     let page = agrafe.list_blobs(params).await?;
-    let items = page
-        .items
-        .iter()
-        .map(|b| BlobResponse::new(b, agrafe.urls(b)))
-        .collect();
+    let items = respond_many(&agrafe, &page.items).await?;
     Ok(Json(ListResponse {
         items,
         next_cursor: page.next_cursor,
@@ -105,8 +127,7 @@ async fn get_blob(
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<BlobResponse>> {
     let blob = agrafe.find_blob(id).await?.ok_or(ApiError::NotFound)?;
-    let urls = agrafe.urls(&blob);
-    Ok(Json(BlobResponse::new(&blob, urls)))
+    Ok(Json(respond(&agrafe, &blob).await?))
 }
 
 async fn upload_blob(
@@ -116,8 +137,7 @@ async fn upload_blob(
 ) -> ApiResult<Json<BlobResponse>> {
     let blob = agrafe.find_blob(id).await?.ok_or(ApiError::NotFound)?;
     let blob = body::upload(&agrafe, blob, req).await?;
-    let urls = agrafe.urls(&blob);
-    Ok(Json(BlobResponse::new(&blob, urls)))
+    Ok(Json(respond(&agrafe, &blob).await?))
 }
 
 async fn upload_part(
@@ -127,8 +147,7 @@ async fn upload_part(
 ) -> ApiResult<Json<BlobResponse>> {
     let blob = agrafe.find_blob(id).await?.ok_or(ApiError::NotFound)?;
     let blob = body::upload_part(&agrafe, blob, n, req).await?;
-    let urls = agrafe.urls(&blob);
-    Ok(Json(BlobResponse::new(&blob, urls)))
+    Ok(Json(respond(&agrafe, &blob).await?))
 }
 
 async fn finish_source(
@@ -136,8 +155,7 @@ async fn finish_source(
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<BlobResponse>> {
     let blob = agrafe.finish_source(id).await?;
-    let urls = agrafe.urls(&blob);
-    Ok(Json(BlobResponse::new(&blob, urls)))
+    Ok(Json(respond(&agrafe, &blob).await?))
 }
 
 async fn delete_blob(State(agrafe): State<Agrafe>, Path(id): Path<Uuid>) -> ApiResult<StatusCode> {

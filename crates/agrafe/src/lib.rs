@@ -6,6 +6,7 @@
 //! the same handle into the two routers, and `agrafe-server` is the binary.
 
 pub mod app;
+pub mod attachment;
 pub mod blob;
 pub mod clamav;
 pub mod config;

@@ -223,7 +223,7 @@ pub async fn setup_tuned(clamd: SocketAddr, tune: impl FnOnce(&mut Config)) -> T
         db::migrate(&pool).await.unwrap();
         MIGRATED.store(true, Ordering::Relaxed);
     }
-    sqlx::query("TRUNCATE jobs, blobs")
+    sqlx::query("TRUNCATE jobs, attachments, blobs")
         .execute(&pool)
         .await
         .unwrap();

@@ -1,10 +1,10 @@
 //! Expiry, the reaper and the purge: expiries recorded, objects removed
-//! once nothing may read them, stale uploads reset, dead jobs pruned, and
-//! the reaper keeping its own clock.
+//! once nothing may read them, stale uploads reset, dead jobs and
+//! tombstones pruned, and the reaper keeping its own clock.
 
 use agrafe::jobs::reap::{self, Report};
 use agrafe::jobs::{self, JobKind};
-use axum::http::StatusCode;
+use axum::http::{Method, StatusCode};
 use jiff::Timestamp;
 use serde_json::json;
 use std::time::Duration;
@@ -401,4 +401,86 @@ async fn an_upload_that_lost_its_blob_stops() {
     assert_eq!(got["state"], "ready");
     assert_eq!(stored_objects(&app).await.len(), 1);
     assert_eq!(stored_plaintext(&app, &id).await, bytes);
+}
+
+/// A terminal row outlives its purge as a tombstone, so the backend can
+/// tell a blob it deleted from an id that never existed, and goes after
+/// `blobs.keep_purged`, with its attachments. A terminal row with nothing
+/// to purge, the direct upload a user walked away from, goes the same way.
+#[tokio::test]
+async fn tombstones_are_pruned_after_keep_purged_with_their_attachments() {
+    let clamd = fake_clamd().await;
+    let app = setup_tuned(clamd, |c| {
+        c.blobs.keep_purged = Duration::ZERO;
+    })
+    .await;
+    let pool = app.state.pool();
+
+    // Purged after a delete.
+    let purged = ready_blob(&app, &png_bytes(100)).await;
+    assert_eq!(delete(&app, id_of(&purged)).await, StatusCode::NO_CONTENT);
+    assert_eq!(purge_all(&app).await, 1);
+    assert!(get_blob(&app, id_of(&purged)).await["purged_at"].is_string());
+    // Expired with nothing stored, as the reaper left it.
+    let empty = create(&app, raw_blob()).await;
+    // Expired while attached: an abandoned source. Its attachment stays
+    // until the row goes.
+    let mut blob = raw_blob();
+    blob["attachment"] = json!({"record_type": "Dossier", "record_id": "1", "name": "export"});
+    let abandoned = create(&app, blob).await;
+    for id in [id_of(&empty), id_of(&abandoned)] {
+        sqlx::query("UPDATE blobs SET state = 'expired' WHERE id = $1")
+            .bind(parse_id(id))
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+    // Still in use: attached and ready.
+    let live = ready_blob(&app, &png_bytes(100)).await;
+    let (status, _) = call(
+        &app.private,
+        json_req(
+            Method::POST,
+            &format!("/blobs/{}/attachments", id_of(&live)),
+            json!({"record_type": "Dossier", "record_id": "1", "name": "piece"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    // Infected and not yet purged: kept for forensics, until its purge.
+    let infected = create(&app, raw_blob()).await;
+    sqlx::query("UPDATE blobs SET state = 'infected', storage_key = 'k/1' WHERE id = $1")
+        .bind(parse_id(id_of(&infected)))
+        .execute(pool)
+        .await
+        .unwrap();
+
+    // Not yet: as of an hour ago, none of them had been around long enough.
+    let report = reap::reap(&app.state, Timestamp::now() - Duration::from_secs(3600))
+        .await
+        .unwrap();
+    assert_eq!(report.tombstones, 0);
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM blobs")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, 5);
+
+    let report = reap_now(&app).await;
+    assert_eq!(report.tombstones, 3, "{report:?}");
+    for gone in [&purged, &empty, &abandoned] {
+        let (status, _) = call(
+            &app.private,
+            req(Method::GET, &format!("/blobs/{}", id_of(gone))),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+    assert_eq!(get_blob(&app, id_of(&live)).await["state"], "ready");
+    assert_eq!(get_blob(&app, id_of(&infected)).await["state"], "infected");
+    let (_, attachments) = call(&app.private, req(Method::GET, "/attachments")).await;
+    let items = attachments["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{attachments}");
+    assert_eq!(items[0]["blob_id"], id_of(&live));
+    assert_eq!(reap_now(&app).await.tombstones, 0);
 }

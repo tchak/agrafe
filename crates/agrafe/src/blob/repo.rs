@@ -11,6 +11,7 @@ use super::{
     Blob, BlobState, InputType, PreviewSource, Representation, RepresentationState, ScanOutcome,
     ScanState,
 };
+use crate::attachment;
 use crate::clamav::Verdict;
 use crate::classify::Category;
 use crate::encryption::Envelope;
@@ -71,6 +72,8 @@ pub struct ListParams {
     pub category: Option<Category>,
     pub state: Option<BlobState>,
     pub scan_state: Option<ScanState>,
+    /// Whether any attachment exists for the blob.
+    pub attached: Option<bool>,
     pub cursor: Option<Uuid>,
     /// Already validated to lie in `1..=MAX_LIMIT`.
     pub limit: usize,
@@ -99,6 +102,10 @@ pub async fn list(exec: impl PgExecutor<'_>, params: &ListParams) -> sqlx::Resul
     }
     if let Some(scan_state) = params.scan_state {
         qb.push(" AND scan_state = ").push_bind(scan_state.as_str());
+    }
+    if let Some(attached) = params.attached {
+        qb.push(if attached { " AND " } else { " AND NOT " })
+            .push("EXISTS (SELECT 1 FROM attachments WHERE attachments.blob_id = blobs.id)");
     }
     if let Some(cursor) = params.cursor {
         qb.push(" AND id < ").push_bind(cursor);
@@ -499,10 +506,32 @@ async fn enqueue_next(conn: &mut PgConnection, blob: &Blob) -> sqlx::Result<()> 
     Ok(())
 }
 
-/// Soft delete from any state, and enqueue a purge of the stored objects at
-/// `purge_at`.
-pub async fn soft_delete(pool: &PgPool, id: Uuid, purge_at: Timestamp) -> sqlx::Result<Transition> {
+/// Outcome of a soft delete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delete {
+    /// Deleted, or deleted already.
+    Done,
+    /// The blob has attachments, and was left alone.
+    Attached,
+    Missing,
+}
+
+/// Soft delete from any state but attached, and enqueue a purge of the
+/// stored objects at `purge_at`. The row is locked before the attachments
+/// are counted, so an attach cannot slip in between the check and the
+/// transition.
+pub async fn soft_delete(pool: &PgPool, id: Uuid, purge_at: Timestamp) -> sqlx::Result<Delete> {
     let mut tx = pool.begin().await?;
+    let locked: Option<Uuid> = sqlx::query_scalar("SELECT id FROM blobs WHERE id = $1 FOR UPDATE")
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    if locked.is_none() {
+        return Ok(Delete::Missing);
+    }
+    if attachment::exists_for_blob(&mut *tx, id).await? {
+        return Ok(Delete::Attached);
+    }
     let from: Vec<BlobState> = BlobState::ALL
         .iter()
         .copied()
@@ -524,7 +553,12 @@ pub async fn soft_delete(pool: &PgPool, id: Uuid, purge_at: Timestamp) -> sqlx::
         .await?;
     }
     tx.commit().await?;
-    Ok(result)
+    Ok(match result {
+        Transition::Missing => Delete::Missing,
+        // `from` is every state but `deleted`, so a conflict is a blob
+        // deleted already, which is not an error.
+        Transition::Done(_) | Transition::Conflict(_) => Delete::Done,
+    })
 }
 
 /// Record as `expired` every non-terminal blob past its `expires_at` at
@@ -597,6 +631,25 @@ pub async fn mark_purged(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Result<()
         .execute(exec)
         .await?;
     Ok(())
+}
+
+/// Remove the tombstones: terminal rows whose objects were purged before
+/// `before`, or that went terminal before `before` with nothing to purge
+/// (a blob created and never uploaded). Their attachments and jobs go with
+/// them, and the id is then unknown like any other. An `infected` blob is
+/// only ever pruned through its purge, which needs its expiry.
+pub async fn prune_tombstones(conn: &mut PgConnection, before: Timestamp) -> sqlx::Result<u64> {
+    let result = sqlx::query(
+        "DELETE FROM blobs \
+         WHERE purged_at <= $1 \
+            OR (state = ANY($2) AND purged_at IS NULL \
+                AND storage_key IS NULL AND source_parts = 0 AND updated_at <= $1)",
+    )
+    .bind(before.to_sqlx())
+    .bind([BlobState::Expired.as_str(), BlobState::Deleted.as_str()])
+    .execute(&mut *conn)
+    .await?;
+    Ok(result.rows_affected())
 }
 
 /// Hand every upload without a sign of life since `before` back to

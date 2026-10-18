@@ -28,7 +28,8 @@ every decision.
 ### Two interfaces
 
 - **Private port** for the backend that owns the files, on a trusted
-  network: create, list, upload, delete, mint URLs, inspect jobs, metrics.
+  network: create, list, upload, attach, delete, mint URLs, inspect jobs,
+  metrics.
 - **Public port** for browsers, where every URL carries an HMAC signature
   bound to the method, the path and the query string.
 - **Signed URLs** with key rotation, rounded expiries so URLs minted in the
@@ -55,9 +56,26 @@ every decision.
   served `immutable`.
 - **Raw or multipart** bodies, from a backend or straight from a browser.
 - **Expiry** by timestamp or duration, enforced on every read rather than
-  whenever the reaper runs.
+  whenever the reaper runs. Every blob starts with one, a day by default,
+  long enough for a direct upload to be attached when the form is
+  submitted.
 - **Crash safety**: an interrupted upload stores nothing and hands the blob
   back; a heartbeat lets the reaper reset only uploads whose process died.
+
+### Attachments
+
+- **Records, not reference counts**: attach a blob to a record with the
+  Active Storage triple (`record_type`, `record_id`, `name`), as many times
+  as there are records using it, and list by record or by blob.
+- **Lifetime follows use**: the first attachment clears the blob's expiry,
+  the last detach sets it again. A blob nobody uses expires on its own, and
+  "permanent" is spelled "attached".
+- **No purge footgun**: deleting an attached blob is refused, since a
+  backend acting for one record cannot know the others are done with it.
+  Detach is the only operation on behalf of one record.
+- **Tombstones**: a deleted or expired blob keeps answering with its state
+  for ninety days after its objects are purged, so the backend can tell a
+  blob it deleted from an id that never existed.
 
 ### Security
 
@@ -112,8 +130,8 @@ every decision.
   job kinds a worker runs, without code changes.
 - **Prometheus metrics** for queue depth and the age of the oldest due job.
 - **Jobs API** to list, retry or discard failed jobs.
-- **Reaper** for expiry, stale uploads, abandoned exports and delayed
-  purges of deleted objects.
+- **Reaper** for expiry, stale uploads, abandoned exports, delayed purges
+  of deleted objects and the pruning of old tombstones.
 - **Storage backends**: local filesystem or any S3-compatible store.
 - **One TOML file**, every key overridable by `AGRAFE_` environment
   variables, secrets redacted from debug output.
@@ -206,6 +224,38 @@ await fetch(urls.upload, { method: "PUT", body: file });
 The browser can poll `urls.metadata` for `state`, `scan_state` and the
 representation states.
 
+### Attach it to a record
+
+A blob expires a day after its creation unless something uses it. Attach it
+when the form is submitted, and it stays as long as the attachment does.
+
+```sh
+curl -s "localhost:8080/blobs/$ID/attachments" \
+  -H 'content-type: application/json' \
+  -d '{"record_type": "Dossier", "record_id": "42", "name": "piece_justificative"}'
+```
+
+Attaching the same triple twice returns the existing attachment. A blob can
+be attached to several records, and a record can attach several blobs under
+one name. To release it, detach; the last detach gives the blob back its
+default expiry, and deleting an attached blob is refused.
+
+```sh
+curl -s 'localhost:8080/attachments?record_type=Dossier&record_id=42' | jq '.items[]'
+curl -s -X DELETE "localhost:8080/attachments/$ATTACHMENT_ID"
+```
+
+A blob the backend knows the record of at creation can be created attached,
+with no expiry at all:
+
+```sh
+curl -s localhost:8080/blobs \
+  -H 'content-type: application/json' \
+  -d '{"filename": "export.zip", "content_type": "application/zip",
+       "input_type": "archive",
+       "attachment": {"record_type": "Procedure", "record_id": "7", "name": "export"}}'
+```
+
 ### Mint download URLs
 
 Choose the lifetime and the signed query parameters per call.
@@ -261,6 +311,7 @@ printf '{"path": "pieces/%s", "blob_id": "%s"}\n' report.pdf "$ID" \
 
 ```sh
 curl -s 'localhost:8080/blobs?category=image&state=ready&limit=50' | jq '.items[].filename'
+curl -s 'localhost:8080/blobs?attached=false' | jq '.items[].id'
 curl -s -X DELETE "localhost:8080/blobs/$ID"
 
 curl -s 'localhost:8080/jobs?state=dead' | jq

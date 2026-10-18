@@ -3,6 +3,7 @@
 //! the database. Each router carries its state, so a host application can
 //! nest one under a prefix and keep the private API in Rust.
 
+pub mod attachments;
 pub mod body;
 pub mod error;
 pub mod extract;
@@ -32,6 +33,7 @@ pub fn private_router(state: Agrafe) -> Router {
         .route("/healthz", get(healthz))
         .route("/metrics", get(metrics))
         .merge(private::routes(upload::body_limit(&state.config().upload)))
+        .merge(attachments::routes())
         .merge(jobs::routes())
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)

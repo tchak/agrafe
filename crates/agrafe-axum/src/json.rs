@@ -6,6 +6,7 @@ use jiff::Timestamp;
 use serde::Serialize;
 use uuid::Uuid;
 
+use agrafe::attachment::Attachment;
 use agrafe::blob::urls::BlobUrls;
 use agrafe::blob::{Blob, BlobState, InputType, RepresentationState, ScanState};
 use agrafe::classify::Category;
@@ -45,11 +46,14 @@ pub struct BlobResponse {
     pub uploaded_at: Option<Timestamp>,
     pub deleted_at: Option<Timestamp>,
     pub purged_at: Option<Timestamp>,
+    /// The records using the blob, oldest first. A blob with any has no
+    /// `expires_at`.
+    pub attachments: Vec<AttachmentResponse>,
     pub urls: BlobUrls,
 }
 
 impl BlobResponse {
-    pub fn new(blob: &Blob, urls: BlobUrls) -> Self {
+    pub fn new(blob: &Blob, attachments: &[Attachment], urls: BlobUrls) -> Self {
         let generated = !blob.input_type.is_direct();
         Self {
             id: blob.id,
@@ -80,7 +84,32 @@ impl BlobResponse {
             uploaded_at: blob.uploaded_at,
             deleted_at: blob.deleted_at,
             purged_at: blob.purged_at,
+            attachments: attachments.iter().map(AttachmentResponse::new).collect(),
             urls,
+        }
+    }
+}
+
+/// An attachment, private port.
+#[derive(Debug, Serialize)]
+pub struct AttachmentResponse {
+    pub id: Uuid,
+    pub blob_id: Uuid,
+    pub record_type: String,
+    pub record_id: String,
+    pub name: String,
+    pub created_at: Timestamp,
+}
+
+impl AttachmentResponse {
+    pub fn new(attachment: &Attachment) -> Self {
+        Self {
+            id: attachment.id,
+            blob_id: attachment.blob_id,
+            record_type: attachment.record_type.clone(),
+            record_id: attachment.record_id.clone(),
+            name: attachment.name.clone(),
+            created_at: attachment.created_at,
         }
     }
 }

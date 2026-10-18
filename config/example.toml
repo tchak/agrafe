@@ -72,6 +72,17 @@ purge_delay = "1h"
 # is an abandoned export: the reaper expires the blob and purges the parts.
 source_stale_after = "1d"
 
+[blobs]
+# A blob created without expires_at or expires_in expires after this, long
+# enough for a direct upload to be created, sent by the browser and attached
+# when the form is submitted. The first attachment clears the expiry; the
+# last detach sets it again, counted from that moment.
+default_expires_in = "1d"
+# A terminal blob's row stays this long after its objects were purged (or
+# after it went terminal with nothing to purge), answering GET /blobs/:id
+# with its state, before the reaper removes it with its attachments.
+keep_purged = "90d"
+
 [archive]
 # Upper bound on a generated archive, checked against the members' sizes as
 # the manifest is accepted. At most 309 GiB: the build writes 32 MiB parts,
