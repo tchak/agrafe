@@ -20,14 +20,9 @@ CREATE UNIQUE INDEX attachments_record_idx
     ON attachments (record_type, record_id, name, blob_id);
 -- A blob's own attachments, and the last-detach check.
 CREATE INDEX attachments_blob_idx ON attachments (blob_id);
--- The low-cardinality scans with the cursor; `record_type` alone through
--- the prefix.
+-- The low-cardinality scans with the cursor.
 CREATE INDEX attachments_type_name_idx ON attachments (record_type, name, id);
-
--- Reaper: tombstones to prune, `blobs.keep_purged` after the purge, or
--- after the row went terminal when there was nothing to purge.
-CREATE INDEX blobs_purged_at_idx ON blobs (purged_at)
-    WHERE purged_at IS NOT NULL;
-CREATE INDEX blobs_empty_tombstone_idx ON blobs (updated_at)
-    WHERE state IN ('expired', 'deleted')
-      AND storage_key IS NULL AND source_parts = 0 AND purged_at IS NULL;
+-- The listing by `record_type` alone, with the cursor. The prefix of
+-- (record_type, name, id) finds the rows but loses the id order after
+-- `name`, so each page would sort every attachment of the type.
+CREATE INDEX attachments_type_idx ON attachments (record_type, id);

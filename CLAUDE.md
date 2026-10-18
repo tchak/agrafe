@@ -31,7 +31,11 @@ See "Crates" in `DESIGN.md` for the dependency graph.
 - `crates/agrafe-render` — what renders and how: `vips`, the helper
   drivers, the icons, the probe, the `[media]` tool config.
 - `fixtures/` — sample files for tests, with the `make.py` that builds them.
-- `migrations/` — sqlx migrations, plain SQL, forward only.
+- `migrations/` — sqlx migrations, plain SQL, one file per table. Nothing
+  is deployed yet, so a schema change edits the table's file; no `ALTER`
+  migrations and no backfills until the first deployment. A changed file
+  needs a fresh database (`DROP SCHEMA public CASCADE; CREATE SCHEMA
+  public;`), since sqlx checksums applied migrations.
 - `config/example.toml` — documented configuration reference.
 
 ## Local development

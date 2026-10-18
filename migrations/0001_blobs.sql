@@ -38,10 +38,17 @@ CREATE TABLE blobs (
     source_size       bigint  NOT NULL DEFAULT 0 CHECK (source_size >= 0),
     -- When the last part landed; the reaper expires a source left here.
     source_updated_at timestamptz,
-    -- The sheets of a `rows` blob, one for now, each with its columns in
-    -- order: [{"name": ..., "columns": [{"name": ..., "type": ...}, ...]}].
-    -- Written at creation, read by accept and build.
+    -- The sheets of a `rows` blob, each with its columns in order:
+    -- [{"name": ..., "columns": [{"name": ..., "type": ...}, ...]}].
+    -- Written at creation, read by accept and build. The source switches
+    -- between sheets with `{"sheet": "..."}` lines, and the row limit is
+    -- per sheet, so accept carries where it is across parts. See
+    -- DESIGN.md, "Rows".
     source_columns    jsonb,
+    -- Index, from zero, of the sheet the source is currently filling.
+    source_sheet      integer NOT NULL DEFAULT 0 CHECK (source_sheet >= 0),
+    -- Lines accepted into that sheet so far; `source_rows` stays the total.
+    source_sheet_rows bigint  NOT NULL DEFAULT 0 CHECK (source_sheet_rows >= 0),
     -- Set by the archive build: members written, and members skipped
     -- because they were gone by then (listed in the archive's ERRORS.txt).
     archive_entries   bigint CHECK (archive_entries IS NULL OR archive_entries >= 0),
@@ -56,11 +63,13 @@ CREATE TABLE blobs (
     chunk_size        integer,
 
     -- derived representations, each with the variant version it was built
-    -- with, so a bump can regenerate one without touching the other
+    -- with, so a bump can regenerate one without touching the other. A
+    -- representation turned off at creation is `disabled` for good: never
+    -- pending, so the render job and the lazy repair path leave it alone.
     thumbnail_state   text NOT NULL DEFAULT 'pending'
-                      CHECK (thumbnail_state IN ('pending', 'ready', 'failed', 'unavailable')),
+                      CHECK (thumbnail_state IN ('pending', 'ready', 'failed', 'unavailable', 'disabled')),
     preview_state     text NOT NULL DEFAULT 'pending'
-                      CHECK (preview_state IN ('pending', 'ready', 'failed', 'unavailable')),
+                      CHECK (preview_state IN ('pending', 'ready', 'failed', 'unavailable', 'disabled')),
     preview_source    text,
     thumbnail_variant_version integer,
     preview_variant_version   integer,
@@ -110,3 +119,10 @@ CREATE INDEX blobs_stale_source_idx ON blobs (source_updated_at)
 CREATE INDEX blobs_unpurged_idx     ON blobs (id)
     WHERE (storage_key IS NOT NULL OR source_parts > 0) AND purged_at IS NULL
       AND state IN ('infected', 'expired', 'deleted');
+-- Reaper: tombstones to prune, `blobs.keep_purged` after the purge, or
+-- after the row went terminal when there was nothing to purge.
+CREATE INDEX blobs_purged_at_idx ON blobs (purged_at)
+    WHERE purged_at IS NOT NULL;
+CREATE INDEX blobs_empty_tombstone_idx ON blobs (updated_at)
+    WHERE state IN ('expired', 'deleted')
+      AND storage_key IS NULL AND source_parts = 0 AND purged_at IS NULL;
