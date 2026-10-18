@@ -5,8 +5,8 @@ bytes. Two HTTP interfaces on two ports: a **private** one for the backend that
 owns the files, and a **public** one exposed to the internet where every URL
 carries a signature.
 
-This document records the decisions taken so far and the reasoning behind them.
-It is the reference when code and intuition disagree.
+This document records the decisions and the reasoning behind them. It is the
+reference when code and intuition disagree.
 
 ## Goals
 
@@ -21,7 +21,7 @@ It is the reference when code and intuition disagree.
 - Generate tabular files (CSV, XLSX, ODS) and ZIP archives server side from a
   streamed description.
 
-## Non-goals (for now)
+## Non-goals
 
 - Multi-tenancy or per-client authentication on the private port. The private
   port is reachable only from trusted networks.
@@ -52,13 +52,10 @@ the server links none of their parsers: `lopdf`, `zip`, `quick-xml` and
 `ab_glyph` exist only in processes the sandbox bounds. They are found on
 `PATH` by default (`media.extract_command`, `media.render_text_command`),
 read no configuration and write no logs. A deployment ships the three
-binaries together. Each future renderer with a dependency tree of its own
-(LibreOffice, HTML, Typst) follows the same pattern: a crate implementing
-one producer in `agrafe-render`, "turn this file into a raster or a page in
-the work directory", after which vips fits the result into the box as it
-does today. The `Source` enum and the ordered match in the render job are
-the seam that becomes a list of producers when the second one arrives;
-the trait is not written against a single implementation.
+binaries together. A renderer with a dependency tree of its own gets a
+helper crate the same way, turning the file into a raster that vips then
+fits into the box; the `Source` enum and the ordered match in the render
+job are where it plugs in.
 
 The library knows nothing of HTTP. Its operations are methods on the
 `Agrafe` handle (`create_blob`, `list_blobs`, `find_blob`, `delete_blob`,
@@ -79,9 +76,7 @@ application that builds an `Agrafe` from a configuration and a pool, nests
 `agrafe_axum::public_router` under a prefix, runs `jobs::runner::run` as a
 task and calls the private API in Rust; and one that also nests
 `private_router` on an internal listener. The routers come with their
-state applied, so nesting needs no state plumbing in the host. Embedding
-into a host's own database (a schema name for `blobs` and `jobs`) is an
-open decision, not a blocker.
+state applied, so nesting needs no state plumbing in the host.
 
 ## Interfaces
 
@@ -215,9 +210,8 @@ message = METHOD "\n" expires_unix "\n" path_and_query_after_token
 Checksum is SHA-256 because browsers compute it cheaply with
 `crypto.subtle.digest`, and S3 understands it natively.
 
-The request body is capped at 16 MiB: the widest sheet's `columns`, 16 384
-of them with a kilobyte of name each, fit, where axum's default of 2 MiB
-would refuse them.
+The request body is capped at 16 MiB, enough for the widest sheet's
+`columns`: 16 384 of them with a kilobyte of name each.
 
 ### Input types
 
@@ -294,8 +288,7 @@ stored state alongside the past `expires_at`.
 Transitions are conditional updates (`UPDATE ... WHERE state = $from`) so two
 concurrent requests cannot both win. Write-once is enforced by refusing `PUT`
 from any state other than `created`. The upload's checksum and size are the
-ones the blob was created with; `PUT` carries no override headers on either
-port.
+ones the blob was created with.
 
 A failed or stale upload leaves `uploading` for `created`: nothing of it was
 stored, so there is nothing to keep (the parts a generated blob already
@@ -356,11 +349,10 @@ times, from records that need not know about each other, and a record can
 attach several blobs under one name: agrafe does not know whether a name is
 one-to-one or one-to-many, that is the backend's rule.
 
-Why in agrafe rather than in the backend: a blob row says nothing about
-whether anything uses it, so the backend was the only place that could tell
-a live file from a forgotten one, and a blob's lifetime could not follow its
-use. With attachments inside, "in use" is a query and expiry is what happens
-to a blob nothing uses.
+Why in agrafe rather than in the backend: a blob's lifetime should follow
+its use, and a blob row alone cannot say whether anything uses it. With the
+attachments here, "in use" is a query and expiry is what happens to a blob
+nothing uses.
 
 **Lifetime.** A blob is created with an expiry: `expires_at` or `expires_in`
 from the request, `blobs.default_expires_in` (default one day, at least an
@@ -523,12 +515,12 @@ the bucket also needs an `AbortIncompleteMultipartUpload` lifecycle rule, since
 a crashed process cannot abort the multipart uploads it had open, and
 neither an upload nor a build can abort one whose completion request
 itself failed: the parts are in the bucket, the handle to them is gone,
-and only the rule reclaims them. One day is a fine setting.
+and only the rule reclaims them.
 
 Objects are keyed `<blob id>/original`. Blobs are write-once, so the key is
 written exactly once; a failed upload aborts its multipart upload and leaves
-no object behind. Representations will live under the same `<blob id>/`
-prefix, which is what a purge deletes.
+no object behind. Representations and the parts of a generated blob live
+under the same `<blob id>/` prefix, which is what a purge deletes.
 
 ## Generated blobs
 
@@ -598,13 +590,10 @@ blob. The finish moves the blob to `uploaded` with its build job, `rows` or
 `archive` after the input type, enqueued in the same transaction,
 unreadable until the job is done.
 
-This is the one place a blob holds objects before it is `uploaded`.
-Everywhere else `created` has meant an empty prefix: the failed-upload rule
-says nothing was stored, the reaper resets stale uploads on that basis, and
-a purge runs on terminal states only. All of it still holds for the
-original, but anything that infers the state of the prefix from the state
-of the row, in the code or in an operator's head, has to read `created` as
-"no original, maybe parts" from now on. Watch for it when implementing.
+This is the one place a blob holds objects before it is `uploaded`, so
+`created` means "no original, maybe parts", not an empty prefix. The
+failed-upload rule, the stale-upload reset and the purge on terminal states
+are about the original; the parts go with the purge of the prefix.
 
 What the accept pass has to carry across parts stays small and sits on the
 row: `source_parts`, `source_size` (bytes of source), `source_rows`
@@ -661,14 +650,22 @@ user is waiting on, created `high`, goes before a nightly batch created
 
 ### Rows
 
-The columns are declared at creation: `columns` is a list of one object
-per column, in sheet order, with a `name` (the header text, any non-empty
-string without control or bidirectional formatting characters, the
-filename's rule, duplicates allowed) and an optional `type`. The list is required
-for a `rows` blob, refused on any other input type, and stored on the row
-as `source_columns`, from which accept and build read it. Each line of the
-source is a JSON array with exactly one value per column, in that order; a
-line that is not an array, or has the wrong length, is refused. A value is
+The sheets are declared at creation, in one of two forms. `columns`, a list
+of columns, declares one sheet, named after the filename's stem. `sheets`, a
+list of `{"name": "...", "columns": [...]}` in workbook order, declares a
+workbook; a list of one is a single sheet with a chosen name. `sheets` is
+refused for `text/csv`, which holds one sheet, and capped at 1 000 sheets:
+Excel has no limit and LibreOffice allows ten thousand, but the declaration
+is read back on every part and nothing legitimate needs more. One of the two
+is required for a `rows` blob and both are refused on any other input type.
+Either is stored on the row as `source_columns`, a list of sheets, from which
+accept and build read it.
+
+A column is an object with a `name` (the header text, any non-empty string
+without control or bidirectional formatting characters, the filename's rule,
+duplicates allowed) and an optional `type`. Each line of the source is a JSON
+array with exactly one value per column of the current sheet, in that order;
+a line that is not an array, or has the wrong length, is refused. A value is
 a scalar: a string, a number, a boolean or `null`, which is an empty cell.
 An object or an array as a value is refused.
 
@@ -694,7 +691,7 @@ in the zone its users read, and what it sends is what shows. Dates are
 never inferred from the shape of a string: a free-text value that happens
 to look like a date must stay text, the backend knows which columns are
 dates, and a wrong guess is the classic spreadsheet corruption of
-user-entered data. No other types for now: durations, currencies and
+user-entered data. There are no other types: durations, currencies and
 percentages are display formats, and a backend that wants `Oui` rather
 than `VRAI` sends the string.
 
@@ -703,123 +700,72 @@ so `1.10` stays `1.10`; one that does not fit a double, `1e999`, is refused
 at accept, since no cell can hold it. Excel keeps fifteen significant
 digits, so a backend exporting 64-bit identifiers sends them as strings.
 
-A blob declared with `columns` has one sheet, named after the filename's
-stem, made acceptable to Excel: its forbidden characters `[ ] : * ? / \`
-replaced, at most 31 characters as Excel counts them, in UTF-16 units,
-`Sheet1` when nothing is left or when the stem is `History`, which Excel reserves for its change tracking and
-refuses on opening. A workbook of several sheets is declared with `sheets`
-instead, see "Workbooks" below.
+**Sheet names.** A declared name is validated as Excel wants it, since
+Excel refuses to open a workbook that breaks the rules: not blank, at most
+31 characters in UTF-16 units, none of `[ ] : * ? / \`, no control
+characters, not starting or ending with an apostrophe, not `History`, which
+Excel reserves for its change tracking, and unique among the sheets
+ignoring case. LibreOffice forbids the same characters. The name taken from
+the filename's stem is made to fit the same rules, and is `Sheet1` when
+nothing is left or when the stem is `History`.
 
-The output format is the blob's `content_type`: `text/csv`, the XLSX type
-or the ODS type; anything else is refused at creation. All three are
-written row by row, the header first:
+**Switching sheets.** In the source, an object line `{"sheet": "..."}`
+switches the current sheet; rows are arrays, so the shape is unambiguous.
+Lines before any switch belong to the first sheet, so a single-sheet source
+never carries one. The switch must name a declared sheet after the current
+one, which keeps the source grouped by sheet in workbook order: an XLSX
+sheet is one zip entry written whole before the next, an ODS `content.xml`
+holds its tables in sequence, and without grouping the build would need one
+pass over the source per sheet. A switch to the current sheet, to an earlier
+one or to an undeclared name fails the part at its line, like any bad line,
+and so does an object line that is anything but `{"sheet": "..."}`. A sheet
+no switch points at gets a header only. A switch is valid in any part, so
+parts stay uniform and resuming stays `source_parts` alone; switch lines are
+not counted in `source_rows`. Parts per sheet were rejected because they
+break that one-counter resume rule, and a sheet field on every line because
+it doubles the bytes per line for a value that changes a handful of times
+per export.
 
-- CSV per RFC 4180, comma separated, CRLF, every field quoted when it needs
-  to be, UTF-8 with a byte order mark so Excel reads the accents. A value
-  starting with `=`, `+`, `-`, `@`, a tab or a carriage return is prefixed
-  with a single quote: a CSV opened in a spreadsheet evaluates such cells as
-  formulas, and a backend exporting user-entered text must not be able to
-  ship `=HYPERLINK(...)` to an agent's desktop. Numbers are written bare,
-  booleans as `true` and `false`, dates and datetimes as their ISO string.
-  CSV has no types, so all of it is text to the reader; and a French Excel
-  splits on `;` and reads `3.14` as text, so the CSV is the format for
-  machines and the XLSX is what an agent opens.
-- XLSX as a streamed package: one worksheet entry per sheet, inline
-  strings rather than a shared string table, which would need a second
-  pass over the data.
-  Numbers are numeric cells, booleans `t="b"` cells holding `1` or `0`,
-  strings text cells, which Excel never evaluates. Dates and datetimes are
-  serial numbers (days since 1899-12-30, the time as the fraction) with a
-  cell style pointing at the built-in number formats 14 and 22, so Excel
-  shows them in the user's locale; the small static `styles.xml` this needs
-  is part of the package anyway. The spec also allows ISO 8601 `t="d"`
-  cells, but older Excel does not read them. Excel takes 1900 for a leap
-  year, so a date before 1900-03-01 has no serial it shows right and is
-  written as its ISO string in a text cell, which is what Excel does when
-  one is typed. A text that happens to contain Excel's own `_x0041_`
-  escape is escaped in turn, so it shows as sent. No spreadsheet library,
-  since the ones available build the workbook in memory: the XML is
-  written by hand, there being nothing to it but escaping, and the
-  package through the archive's own ZIP writer, which for this grew
-  deflated entries of unknown size, compressed as the XML is produced
-  (`flate2`). Such an entry's header goes out before its size is known,
-  so it always carries zip64 fields, which the format allows at any size,
-  and the descriptor holds the real sizes: a sheet near the row limit with
-  a few dozen text columns is more than 4 GiB of XML, and without this
-  the build would die on it after the backend had streamed the whole
-  source, with nothing on the blob to say why. A character XML 1.0
-  cannot carry, a control character other than tab and
-  line breaks, becomes U+FFFD in either package; it could not show in a
-  cell either way.
-- ODS the same way: `mimetype` first and stored as the format requires,
-  with its CRC in the header and no data descriptor, so the media type sits
-  at the fixed offset detection reads it from; then the manifest and a
-  streamed `content.xml`, with typed cells: `office:value-type` `float`,
-  `boolean`, `string`, `date`, the typed value in `office:value`,
-  `office:boolean-value` or `office:date-value` and the displayed text
-  alongside, the ISO string for a date so a viewer without a data style
-  still shows something sensible. A text's line breaks become paragraphs
-  and its tabs and spaces the markup ODF needs to keep them, as
-  LibreOffice writes it: a single space between two characters is the
-  only one left as it is, since a leading, trailing or repeated one is
-  collapsed otherwise.
+**Formats.** The output format is the blob's `content_type`: `text/csv`,
+the XLSX type or the ODS type; anything else is refused at creation. All
+three are streamed row by row, the header first:
 
-A boolean cell is rendered by the viewer in its locale, `VRAI` and `FAUX`
-in a French Excel: that is what a typed cell is for.
+- CSV per RFC 4180, UTF-8 with a byte order mark so Excel reads the
+  accents. Numbers are written bare, booleans as `true` and `false`, dates
+  and datetimes as their ISO string. A value starting with `=`, `+`, `-`,
+  `@`, a tab or a carriage return is prefixed with a single quote: a CSV
+  opened in a spreadsheet evaluates such cells as formulas, and a backend
+  exporting user-entered text must not be able to ship `=HYPERLINK(...)` to
+  an agent's desktop. CSV has no types, and a French Excel splits on `;`
+  and reads `3.14` as text, so the CSV is the format for machines and the
+  XLSX is what an agent opens.
+- XLSX with typed cells and inline strings rather than a shared string
+  table, which would need a second pass over the data. Text cells are never
+  evaluated. Dates and datetimes are serial numbers styled with the
+  built-in number formats 14 and 22, so Excel shows them in the user's
+  locale; `t="d"` cells exist but older Excel does not read them.
+- ODS with typed cells, the typed value in its attribute and the displayed
+  text alongside, so a viewer without a data style still shows something
+  sensible.
 
-XLSX and ODS sheets hold at most 1 048 576 rows and 16 384 columns, and a
-cell at most 32 767 characters, counted as Excel counts them, in UTF-16
-units. A `columns` list beyond the column limit, or a column name beyond
-the cell limit, is refused at creation; a source beyond the row limit, or
-a text beyond the cell limit, at accept with the line that crossed it,
-whichever part it is in. Excel repairs a workbook with a longer text,
-truncating the cell, and says so on opening. CSV has none of these
-limits. A `rows` blob with no lines produces a header only.
+No spreadsheet library: the ones available build the workbook in memory.
+The XML is written by hand and deflated as it is produced, and the package
+goes through the archive's own ZIP writer (see "Archives"). A deflated
+entry's header goes out before its size is known, so it always carries
+zip64 fields: a sheet near the row limit with a few dozen text columns is
+more than 4 GiB of XML, and without them the build would die on it after
+the backend had streamed the whole source. The format details, escaping,
+the characters XML cannot carry, Excel's 1900 leap year and the whitespace
+ODF collapses, are documented on the writers in `jobs::rows`.
 
-#### Workbooks
-
-An XLSX or ODS blob may hold several sheets. `source_columns` is a list
-of sheets either way, the one sheet of `columns` named after the filename
-stem, and the build emits a sheet from a column list and a row iterator,
-once per sheet.
-
-- Create takes `sheets`, a list of `{"name": "...", "columns": [...]}` in
-  workbook order, mutually exclusive with `columns`, refused for
-  `text/csv`, which holds one sheet, and capped at 1 000 sheets: Excel
-  has no limit and LibreOffice allows ten thousand, but the declaration
-  is read back on every part and nothing legitimate needs more. A list
-  of one is a workbook whose sheet has a chosen name. Each sheet's `columns` follow the rules above,
-  and its name is validated as Excel wants it, since Excel refuses to
-  open a workbook that breaks them: at most 31 characters in UTF-16
-  units, none of `[ ] : * ? / \`, no control characters, not blank, not starting or
-  ending with an apostrophe, not `History`, and unique among the sheets
-  ignoring case. LibreOffice forbids the same characters.
-- In the source, an object line `{"sheet": "..."}` switches the current
-  sheet; rows are arrays, so the shape is unambiguous. Lines before any
-  switch belong to the first sheet, so a single-sheet source never carries
-  one. The switch must name a declared sheet after the current one, which
-  keeps the source grouped by sheet in workbook order: an XLSX sheet is one
-  zip entry written whole before the next, an ODS `content.xml` holds its
-  tables in sequence, and without grouping the build would need one pass
-  over the source per sheet. A switch to the current sheet, to an earlier
-  one or to an undeclared name fails the part at its line, like any bad
-  line, and so does an object line that is anything but `{"sheet": "..."}`.
-  A sheet no switch points at gets a header only. Switch lines are not
-  counted in `source_rows`.
-- Accept carries two more fields on the row, the current sheet index and
-  the row count within it, since the row limit is per sheet; `source_rows`
-  stays the total. The switch line is valid in any part, so parts stay
-  uniform and resuming stays `source_parts` alone. Neither field is
-  reported by `GET`: the backend knows where it is from what it sent.
-- The build loops over the sheets, consuming the source up to the next
-  switch line, which it holds until it reaches the sheet named; the
-  workbook relationships and content types, one entry per sheet, and the
-  ODS table list are the only extra output.
-
-Rejected: parts per sheet (`PUT /blobs/:id/sheets/:s/parts/:n`), which
-breaks the one-counter resume rule for a backend that produces the sheets
-sequentially anyway; and a sheet field on every line, which doubles the
-bytes per line to carry a value that changes a handful of times per export.
+XLSX and ODS sheets hold at most 1 048 576 rows, the header included, and
+16 384 columns, and a cell at most 32 767 characters, counted as Excel
+counts them, in UTF-16 units. A sheet beyond the column limit, or a column
+name beyond the cell limit, is refused at creation; a source beyond a
+sheet's row limit, or a text beyond the cell limit, at accept with the line
+that crossed it, whichever part it is in. Excel repairs a workbook with a
+longer text, truncating the cell, and says so on opening. CSV has none of
+these limits. A `rows` blob with no lines produces a header only.
 
 ### Archives
 
@@ -909,19 +855,17 @@ error of ours.
 
 ## Encryption at rest
 
-age was considered and rejected. Its recipient header exists for file exchange
-between humans and buys nothing when the service is the only reader; its key
-rotation would require rewriting every object header; and its fixed 64 KiB
-chunks and sync-only seek make range requests awkward.
-
-Instead: **envelope encryption with a chunked streaming AEAD.**
+**Envelope encryption with a chunked streaming AEAD.** Not age: its
+recipient header buys nothing when the service is the only reader, its key
+rotation rewrites every object header, and its fixed 64 KiB chunks and
+sync-only seek make range requests awkward.
 
 - Each blob gets a random 256-bit data key when its upload starts, wrapped
   with a key-encryption key (KEK) from config: AES-256-GCM with a random
   nonce and the blob id as associated data, so a wrapped key moved to another
   row does not unwrap. The wrapped key and the `kek_id` are stored on the blob
   row. Rotating a KEK is a database update that rewraps keys, with zero bucket
-  traffic. Moving KEKs to a KMS later changes nothing in the object format.
+  traffic.
 - The stream's associated data is the object key, so a ciphertext copied to
   another key does not decrypt.
 - Payload follows **Tink's AES-GCM-HKDF-STREAMING** wire format. It is a
@@ -950,8 +894,7 @@ The crypto code is small (a few hundred lines on RustCrypto `aes-gcm` and
 `hkdf`) and owned by us, in the `agrafe-crypto` crate so it can be reviewed in
 isolation. Key material is wiped on drop. It has tamper and truncation tests,
 and a known-answer test against a ciphertext produced by Tink's Python
-implementation (the reverse direction, Tink decrypting ours, was checked by
-hand when the vector was made).
+implementation.
 
 Server-side encryption on the bucket is deliberately not relied on: the
 requirement is that the provider cannot read the data, which SSE does not give.
@@ -1051,8 +994,8 @@ right before the call (`media::loader_for`) against the same list, plus PNM
 for the pages the helpers write; anything else is `failed` without vips
 ever seeing it. The embedded image extractor applies the same check to the
 bytes it pulls out of a PDF, since a `DCTDecode` stream holds whatever its
-author put there. `VIPS_BLOCK_UNTRUSTED` was considered and rejected: it
-also blocks the PDF, SVG, JPEG 2000 and PNM loaders.
+author put there. `VIPS_BLOCK_UNTRUSTED` would not do: it also blocks the
+PDF, SVG, JPEG 2000 and PNM loaders.
 
 One `render` job produces both representations, whatever is `pending` on
 the row. The preview is rendered first; the thumbnail is the preview fitted
@@ -1064,9 +1007,7 @@ original. A preview verdict from the current variant version stands: a
 the thumbnail to the text sample or the icon; a preview from another
 version, or whose object is gone, is rendered again first. The thumbnail
 thus appears after the preview rather than alongside it, a few seconds
-for a large PDF, which the icon placeholder and `wait` cover. Two jobs
-decrypting and decoding the original twice was the first design, and
-rendering cost in practice is what changed it.
+for a large PDF, which the icon placeholder and `wait` cover.
 
 A file the renderer rejects, or that runs past the sandbox timeout, leaves
 the representation `failed` and the job done: the same bytes would fail the
@@ -1179,11 +1120,9 @@ on "has preview", never on category. Sources, in order:
 3. **First-page render** (`preview_source = first_page`): PDF through
    libvips's PDF loader. libvips builds against either poppler or pdfium;
    production images should use pdfium, the most hardened renderer
-   available. Linking `pdfium-render` directly was considered and dropped:
-   it would add a second native dependency and a second sandboxed
-   pipeline for what the one tool already does. Office formats would need
-   LibreOffice headless, which is deferred until real need; until then
-   they fall back to the icon.
+   available, rather than linking `pdfium-render`, a second native
+   dependency for what vips already does. Office files have no page
+   render: without an embedded image they have no preview.
 
 Files with no source answer `404` from the preview endpoint, with
 `preview_state = unavailable`; so do `pending` and `failed` ones, each with
@@ -1215,11 +1154,10 @@ Why: a handful of job kinds at modest volume, every job already touches the
 blob row, and enqueueing in the same transaction as the state change removes
 the dual-write failure where a crash between commit and publish loses the job.
 
-Revisited in October 2026 against apalis (1.0, Postgres and Redis backends,
-a board UI), with a Redis queue in production in mind, and kept. What the
-table gives is the transaction: a state change and the job it implies commit
-together, dedupe is a unique index, the reaper schedules itself with a row. A
-broker loses that and needs an outbox, which is this table plus a relay. Nor
+A broker, Redis or a queue library such as apalis, was weighed and is not
+used. What the table gives is the transaction: a state change and the job it
+implies commit together, dedupe is a unique index, the reaper schedules
+itself with a row. A broker loses that and needs an outbox, which is this table plus a relay. Nor
 is the queue where the load goes: a billion blobs is a big `blobs` table, the
 `jobs` table holds only the backlog, the claim is one indexed `SKIP LOCKED`
 update, and the slow part is the workers, vips, clamd and zip. What a broker
@@ -1357,24 +1295,3 @@ is redacted so a dumped config cannot leak them. See `config/example.toml`.
 | Text thumbnails | `ab_glyph` with an embedded DejaVu Sans Mono, in the sandboxed `agrafe-render-text` helper |
 | Ids | UUID v7 |
 | Time | `jiff`. `Timestamp` throughout the model; `jiff-sqlx` wrappers only at the SQL boundary |
-
-## Build order
-
-1. Config, two listeners, schema, blob state machine, `POST/GET/DELETE /blobs`,
-   listing, signed URL minting and verification.
-2. `raw` and `multipart` upload with hashing, size enforcement, sniffing,
-   encryption, bucket write. Streaming `GET /original` with ranges.
-3. Job runner. ClamAV scanning inline and deferred.
-4. Thumbnail and preview workers, icon fallback, autorotate, PDF render,
-   embedded image extraction.
-5. Expiration, reaper, purge.
-6. Crate split, first stage: types, sandbox, the two helpers and the
-   renderer out of the server crate.
-7. Crate split, second stage: `agrafe-axum` and `agrafe-server` off the
-   library; domain error types; the private API as a Rust handle.
-8. `archive` to ZIP: source parts and finish, the build job, the streaming
-   ZIP writer, abandoned sources.
-9. `rows` to CSV/XLSX/ODS on the same parts and finish.
-10. Attachments: the table, attach and detach, the default expiry and its
-    hand-off to the first attachment, delete refusing attached blobs, the
-    tombstone prune.

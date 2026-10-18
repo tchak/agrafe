@@ -27,6 +27,8 @@ backend = "local"
 [storage.local]
 path = "./data"
 
+# The bucket needs an AbortIncompleteMultipartUpload lifecycle rule (one day
+# is fine): a crashed process cannot abort the multipart uploads it had open.
 # [storage.s3]
 # bucket = "agrafe"
 # region = "fr-par"
