@@ -108,6 +108,8 @@ every decision.
 - **Category icons** for everything else. The thumbnail URL answers `200`
   for as long as the blob exists, so it can go straight into an `<img>`
   tag.
+- **Opt out per blob** with `representations` at creation, for files
+  nobody will look at through the service.
 - **Eager rendering** by workers right after the scan, with lazy repair and
   regeneration on a `variant_version` bump.
 - **EXIF orientation applied and all metadata stripped** from every image

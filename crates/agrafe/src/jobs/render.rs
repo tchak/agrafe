@@ -71,6 +71,7 @@ pub async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
         },
         (false, RepresentationState::Failed, true) => Preview::Failed,
         (false, RepresentationState::Unavailable, true) => Preview::Unavailable,
+        (false, RepresentationState::Disabled, _) => Preview::Disabled,
         _ => render.preview().await?,
     };
 
@@ -79,6 +80,7 @@ pub async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
             Preview::Ready(path) => render.thumbnail_webp(path, Input::Raster).await?,
             Preview::Failed => Verdict::Rejected,
             Preview::Unavailable => render.thumbnail_fallback().await?,
+            Preview::Disabled => render.thumbnail_alone().await?,
         };
         render
             .finish(
@@ -97,6 +99,8 @@ enum Preview {
     Ready(PathBuf),
     Failed,
     Unavailable,
+    /// Turned off at creation: the thumbnail is rendered on its own.
+    Disabled,
 }
 
 /// How an attempt at a representation ended.
@@ -152,7 +156,9 @@ impl<'a> Render<'a> {
     /// Render the preview from the first source that can, record the
     /// outcome, and leave the WebP in the work directory.
     async fn preview(&mut self) -> Result<Preview, JobError> {
-        let verdict = self.render_preview().await?;
+        let verdict = self
+            .render_preview(Fit::preview(&self.media().render))
+            .await?;
         let preview = match &verdict {
             Verdict::Rendered(_) => Preview::Ready(self.path(PREVIEW)),
             Verdict::Rejected => Preview::Failed,
@@ -166,7 +172,13 @@ impl<'a> Render<'a> {
         Ok(preview)
     }
 
-    async fn render_preview(&mut self) -> Result<Verdict<(Vec<u8>, PreviewSource)>, JobError> {
+    /// The preview sources tried in order, into `fit`: the preview box, or
+    /// the thumbnail box when the preview is disabled and the thumbnail is
+    /// rendered on its own.
+    async fn render_preview(
+        &mut self,
+        fit: Fit,
+    ) -> Result<Verdict<(Vec<u8>, PreviewSource)>, JobError> {
         let media = self.media();
         let content_type = &self.blob.content_type;
         let too_large = self.too_large();
@@ -175,7 +187,6 @@ impl<'a> Render<'a> {
             tracing::info!(%content_type, too_large, "nothing to render a preview from");
             return Ok(Verdict::Declined);
         }
-        let fit = Fit::preview(&media.render);
         let output = self.path(PREVIEW);
         let mut rejected = false;
         for source in sources {
@@ -253,6 +264,17 @@ impl<'a> Render<'a> {
                 Ok(Verdict::Rejected)
             }
             Err(err) => Err(err.into()),
+        }
+    }
+
+    /// A thumbnail for a blob whose preview is disabled: the preview
+    /// sources rendered straight into the thumbnail box, then the fallback.
+    async fn thumbnail_alone(&mut self) -> Result<Verdict<Vec<u8>>, JobError> {
+        let fit = Fit::thumbnail(&self.media().render);
+        match self.render_preview(fit).await? {
+            Verdict::Rendered((bytes, _)) => Ok(Verdict::Rendered(bytes)),
+            Verdict::Rejected => Ok(Verdict::Rejected),
+            Verdict::Declined => self.thumbnail_fallback().await,
         }
     }
 

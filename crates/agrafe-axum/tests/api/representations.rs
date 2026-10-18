@@ -612,6 +612,79 @@ async fn representations_regenerate_when_missing_or_stale() {
     assert_eq!(jobs_for(&app, id).await, ["render"]);
 }
 
+#[tokio::test]
+async fn representations_disabled_at_creation_are_never_rendered() {
+    let app = setup().await;
+    let bytes = fixture("rotated.jpg");
+    let mut neither = blob_for(&bytes, "image/jpeg", "raw");
+    neither["filename"] = json!("neither.jpg");
+    neither["skip_virus_scan"] = json!(true);
+    neither["representations"] = json!([]);
+    let mut thumbnail_only = neither.clone();
+    thumbnail_only["filename"] = json!("thumb.jpg");
+    thumbnail_only["representations"] = json!(["thumbnail"]);
+    let unknown = {
+        let mut blob = neither.clone();
+        blob["representations"] = json!(["icon"]);
+        blob
+    };
+    let (status, body) = call(&app.private, json_req(Method::POST, "/blobs", unknown)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+
+    let neither = create(&app, neither).await;
+    let thumbnail_only = create(&app, thumbnail_only).await;
+    for blob in [&neither, &thumbnail_only] {
+        let id = id_of(blob);
+        let (status, body) = put_private(&app, id, bytes.clone()).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    // Nothing to render: no job, and the icon and 404 are final.
+    let id = id_of(&neither);
+    let blob = get_blob(&app, id).await;
+    assert_eq!(blob["state"], "ready");
+    assert_eq!(blob["thumbnail_state"], "disabled");
+    assert_eq!(blob["preview_state"], "disabled");
+    assert_eq!(jobs_for(&app, id).await, Vec::<String>::new());
+    let thumbnail = format!("/blobs/{id}/thumbnail/neither.jpg");
+    let preview = format!("/blobs/{id}/preview/neither.jpg");
+    icon(&app, &thumbnail, "disabled").await;
+    no_preview(&app, &preview, "disabled", "preview disabled for this blob").await;
+    // The lazy repair path leaves a disabled representation alone, even
+    // with the variant version it never had.
+    assert_eq!(jobs_for(&app, id).await, Vec::<String>::new());
+
+    // The thumbnail alone is rendered, from the original.
+    let id = id_of(&thumbnail_only);
+    assert_eq!(jobs_for(&app, id).await, ["render"]);
+    render_all(&app).await;
+    let blob = get_blob(&app, id).await;
+    assert_eq!(blob["thumbnail_state"], "ready");
+    assert_eq!(blob["preview_state"], "disabled");
+    assert_eq!(blob["preview_source"], Value::Null);
+    let (_, size) = rendered(&app, &format!("/blobs/{id}/thumbnail/thumb.jpg")).await;
+    assert_eq!(size, (128, 256));
+    no_preview(
+        &app,
+        &format!("/blobs/{id}/preview/thumb.jpg"),
+        "disabled",
+        "preview disabled for this blob",
+    )
+    .await;
+    assert_eq!(jobs_for(&app, id).await, Vec::<String>::new());
+    let mut objects: Vec<String> = stored_objects(&app)
+        .await
+        .into_iter()
+        .map(|o| o.location.to_string())
+        .filter(|key| key.starts_with(id))
+        .collect();
+    objects.sort();
+    assert_eq!(
+        objects,
+        [format!("{id}/original"), format!("{id}/thumbnail")]
+    );
+}
+
 /// A thumbnail regenerated on its own is made from the stored preview: the
 /// original is never read, which deleting it proves.
 #[tokio::test]

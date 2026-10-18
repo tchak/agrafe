@@ -68,8 +68,10 @@ async fn resolve(state: &Agrafe, blob: &Blob, kind: Representation) -> Result<Re
     }
     let version = state.config().media.variant_version;
     let rep_state = blob.representation_state(kind);
-    if rep_state != RepresentationState::Pending
-        && blob.representation_version(kind) != Some(version)
+    if !matches!(
+        rep_state,
+        RepresentationState::Pending | RepresentationState::Disabled
+    ) && blob.representation_version(kind) != Some(version)
     {
         tracing::info!(blob = %blob.id, kind = %kind, "built with another variant version, regenerating");
         repo::request_representation(state.pool(), blob.id, kind).await?;

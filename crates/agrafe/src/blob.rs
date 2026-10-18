@@ -188,6 +188,9 @@ pub enum RepresentationState {
     Ready,
     Failed,
     Unavailable,
+    /// Turned off when the blob was created; never rendered, never
+    /// regenerated.
+    Disabled,
 }
 
 agrafe_types::str_enum!(RepresentationState {
@@ -195,6 +198,7 @@ agrafe_types::str_enum!(RepresentationState {
     Ready => "ready",
     Failed => "failed",
     Unavailable => "unavailable",
+    Disabled => "disabled",
 });
 
 /// The two derived representations of a blob.

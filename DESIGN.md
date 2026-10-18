@@ -207,6 +207,7 @@ message = METHOD "\n" expires_unix "\n" path_and_query_after_token
 | `sheets` | for `rows`, or `columns` | The sheets of an XLSX or ODS workbook, in order: a list of `{"name": "...", "columns": [...]}`. See "Rows" |
 | `skip_virus_scan` | no, default `false` | Private-only, backend vouches for the source |
 | `priority` | no, default `normal` | `high`, `normal` or `low`: where the blob's scan, render and build jobs go in their kind's queue, see "Jobs" |
+| `representations` | no, default both | The representations to render, among `thumbnail` and `preview`. `[]` renders nothing, for files nobody will look at through the service. The others are `disabled` for good, see "Derived representations" |
 | `expires_at` or `expires_in` | no, default `blobs.default_expires_in` | Absolute timestamp or duration such as `7d`, in the future. Refused together with `attachment`, and cleared by the first attachment, see "Attachments" |
 | `attachment` | no | `record_type`, `record_id` and `name`: attach in the same transaction as the creation, see "Attachments" |
 
@@ -344,7 +345,7 @@ Separate from the blob state, each blob tracks `scan_state`
 (`pending`, `clean`, `infected`, `skipped`), `scan_signature` (what clamd
 found, for `infected`, whichever path scanned the file; private metadata
 only) and a state per derived representation (`pending`, `ready`, `failed`,
-`unavailable`).
+`unavailable`, `disabled`).
 
 ### Attachments
 
@@ -983,6 +984,17 @@ config therefore regenerates everything on demand, `failed` and
 representation records the version it was built with
 (`thumbnail_variant_version`, `preview_variant_version`).
 
+A representation left out of `representations` at creation is `disabled`:
+set once, never `pending`, so neither the eager render nor the lazy repair
+touches it, and a blob with both disabled gets no render job at all. The
+thumbnail endpoint serves the icon for it and the preview endpoint `404`,
+each with `disabled` in the header, so a client can tell a choice from an
+inability. A thumbnail whose preview is disabled is rendered on its own,
+through the preview sources straight into the thumbnail box: the same
+picture, only the larger object spared. The choice is final, as the blob
+is write-once; turning rendering on later would take an endpoint of its
+own, which does not exist.
+
 ### Rendering
 
 Everything goes through one operation, `vips thumbnail`, run as a subprocess
@@ -1095,7 +1107,7 @@ renderer and no asset directory.
 |---|---|---|---|
 | `ready` | `ready` | the WebP | `private, max-age=86400` |
 | `ready` | `pending` | icon, `X-Representation-State: pending` | `no-store` |
-| `ready` | `failed`, `unavailable` | icon, state in the header | `private, max-age=86400` |
+| `ready` | `failed`, `unavailable`, `disabled` | icon, state in the header | `private, max-age=86400` |
 | not yet `ready` | any | icon, `pending` | `no-store` |
 | terminal | any | icon, `unavailable` (private port; public is `404`) | `private, max-age=86400` |
 
@@ -1157,8 +1169,9 @@ A document that is not one of these has no preview, whether PDF or office:
 the first page of a PDF is its thumbnail (see "Thumbnail"), not a preview.
 
 Files with no source answer `404` from the preview endpoint, with
-`preview_state = unavailable`; so do `pending` and `failed` ones, each with
-its state in `X-Representation-State` and a message saying why. A blob that
+`preview_state = unavailable`; so do `pending`, `failed` and `disabled`
+ones, each with its state in `X-Representation-State` and a message saying
+why. A blob that
 is not `ready` answers `409` as the original does.
 
 ### Sandboxing

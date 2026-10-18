@@ -179,6 +179,7 @@ fn placeholder(
             RepresentationState::Pending => "preview is pending".to_string(),
             RepresentationState::Failed => "preview could not be generated".to_string(),
             RepresentationState::Unavailable => "no preview for this file".to_string(),
+            RepresentationState::Disabled => "preview disabled for this blob".to_string(),
             RepresentationState::Ready => unreachable!("a ready preview is served, not placed"),
         })
         .into_response(),

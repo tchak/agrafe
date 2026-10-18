@@ -23,14 +23,21 @@ pub async fn insert(exec: impl PgExecutor<'_>, new: &NewBlob) -> sqlx::Result<Bl
     } else {
         ScanState::Pending
     };
+    let initial = |kind| {
+        if new.representations.contains(&kind) {
+            RepresentationState::Pending
+        } else {
+            RepresentationState::Disabled
+        }
+    };
     sqlx::query_as::<_, Blob>(
         r#"
         INSERT INTO blobs (
             id, state, filename, content_type, category, input_type,
             checksum_sha256, size, skip_virus_scan, expires_at, scan_state, priority,
-            source_columns
+            source_columns, thumbnail_state, preview_state
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
         RETURNING *
         "#,
     )
@@ -47,6 +54,8 @@ pub async fn insert(exec: impl PgExecutor<'_>, new: &NewBlob) -> sqlx::Result<Bl
     .bind(scan_state.as_str())
     .bind(new.priority.rank())
     .bind(new.source_columns.as_ref().map(sqlx::types::Json))
+    .bind(initial(Representation::Thumbnail).as_str())
+    .bind(initial(Representation::Preview).as_str())
     .fetch_one(exec)
     .await
 }
@@ -499,13 +508,19 @@ pub async fn finish_scan(pool: &PgPool, id: Uuid, verdict: &Verdict) -> sqlx::Re
 
 /// What a blob that just changed state needs done: while it waits in
 /// `uploaded`, a scan for a file or the build for a source; the
-/// representations once it is `ready`; nothing otherwise.
+/// representations once it is `ready`, unless both were disabled at
+/// creation; nothing otherwise.
 async fn enqueue_next(conn: &mut PgConnection, blob: &Blob) -> sqlx::Result<()> {
+    let pending = |kind| blob.representation_state(kind) == RepresentationState::Pending;
     let kinds: &[JobKind] = match (blob.state, blob.input_type) {
         (BlobState::Uploaded, InputType::Raw | InputType::Multipart) => &[JobKind::Scan],
         (BlobState::Uploaded, InputType::Rows) => &[JobKind::Rows],
         (BlobState::Uploaded, InputType::Archive) => &[JobKind::Archive],
-        (BlobState::Ready, _) => &[JobKind::Render],
+        (BlobState::Ready, _)
+            if pending(Representation::Thumbnail) || pending(Representation::Preview) =>
+        {
+            &[JobKind::Render]
+        }
         _ => &[],
     };
     let now = Timestamp::now();
@@ -746,9 +761,9 @@ pub async fn finish_representation(
 }
 
 /// Ask for `kind` to be (re)generated: the representation goes back to
-/// `pending` and a job is enqueued, if the blob is still `ready`. The
-/// lazy path of the `GET` handler, for a missing object or a stale variant
-/// version.
+/// `pending` and a job is enqueued, if the blob is still `ready` and the
+/// representation was not disabled at creation. The lazy path of the
+/// `GET` handler, for a missing object or a stale variant version.
 pub async fn request_representation(
     pool: &PgPool,
     id: Uuid,
@@ -763,6 +778,10 @@ pub async fn request_representation(
         .push_bind(id)
         .push(" AND state = ")
         .push_bind(BlobState::Ready.as_str())
+        .push(" AND ")
+        .push(kind.state_column())
+        .push(" <> ")
+        .push_bind(RepresentationState::Disabled.as_str())
         .push(" RETURNING priority");
     let Some(rank) = qb
         .build_query_scalar::<i16>()

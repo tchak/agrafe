@@ -9,7 +9,7 @@ use jiff::{SignedDuration, Timestamp};
 use serde::Deserialize;
 use uuid::Uuid;
 
-use super::{Blob, InputType, repo};
+use super::{Blob, InputType, Representation, repo};
 use crate::app::Agrafe;
 use crate::attachment::{self, AttachmentRequest, NewAttachment};
 use crate::classify::{self, Category};
@@ -69,6 +69,10 @@ pub struct CreateBlobRequest {
     /// Where the blob's jobs go in their kind's queue.
     #[serde(default)]
     pub priority: Priority,
+    /// The derived representations to render, both by default. An empty
+    /// list renders nothing, for files nobody will look at through the
+    /// service.
+    pub representations: Option<Vec<Representation>>,
     /// Attach the blob to a record as it is created. The blob then has no
     /// expiry, so `expires_at` and `expires_in` must be omitted.
     pub attachment: Option<AttachmentRequest>,
@@ -90,6 +94,8 @@ pub struct NewBlob {
     /// `None` only for a blob created attached.
     pub expires_at: Option<Timestamp>,
     pub priority: Priority,
+    /// The representations to render; the others start `disabled`.
+    pub representations: Vec<Representation>,
     pub attachment: Option<NewAttachment>,
 }
 
@@ -203,6 +209,9 @@ pub fn validate(
         skip_virus_scan: req.skip_virus_scan || !req.input_type.is_direct(),
         expires_at,
         priority: req.priority,
+        representations: req
+            .representations
+            .unwrap_or_else(|| vec![Representation::Thumbnail, Representation::Preview]),
         attachment,
     })
 }
@@ -404,6 +413,7 @@ mod tests {
             expires_at: None,
             expires_in: None,
             priority: Priority::Normal,
+            representations: None,
             attachment: None,
         }
     }
