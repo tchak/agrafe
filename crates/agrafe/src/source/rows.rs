@@ -72,8 +72,8 @@ pub struct Sheet {
 
 /// The sheet name a `rows` blob's one sheet gets: the filename's stem,
 /// made acceptable to Excel, which caps names at 31 characters, forbids
-/// `[ ] : * ? / \` and a leading or trailing apostrophe, and wants
-/// something there.
+/// `[ ] : * ? / \` and a leading or trailing apostrophe, reserves
+/// `History` for its change tracking, and wants something there.
 pub fn sheet_name(filename: &str) -> String {
     let stem = match filename.rsplit_once('.') {
         Some((stem, _)) if !stem.is_empty() => stem,
@@ -89,7 +89,7 @@ pub fn sheet_name(filename: &str) -> String {
     let trimmed = cleaned.trim().trim_matches('\'').trim();
     let name: String = trimmed.chars().take(MAX_SHEET_NAME_LEN).collect();
     let name = name.trim_end().trim_end_matches('\'').trim_end();
-    if name.is_empty() {
+    if name.is_empty() || name.eq_ignore_ascii_case("history") {
         DEFAULT_SHEET_NAME.to_string()
     } else {
         name.to_string()
@@ -501,6 +501,9 @@ mod tests {
         assert_eq!(sheet_name("'quoted'.xlsx"), "quoted");
         assert_eq!(sheet_name("'.xlsx"), DEFAULT_SHEET_NAME);
         assert_eq!(sheet_name("???.xlsx"), "___");
+        assert_eq!(sheet_name("History.xlsx"), DEFAULT_SHEET_NAME);
+        assert_eq!(sheet_name("history.ods"), DEFAULT_SHEET_NAME);
+        assert_eq!(sheet_name("Historique.xlsx"), "Historique");
         let long = format!("{}.xlsx", "é".repeat(40));
         assert_eq!(sheet_name(&long).chars().count(), MAX_SHEET_NAME_LEN);
     }

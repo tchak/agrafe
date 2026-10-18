@@ -563,7 +563,8 @@ digits, so a backend exporting 64-bit identifiers sends them as strings.
 
 The one sheet is named after the filename's stem, made acceptable to
 Excel: its forbidden characters `[ ] : * ? / \` replaced, at most 31
-characters, `Sheet1` when nothing is left.
+characters, `Sheet1` when nothing is left or when the stem is `History`,
+which Excel reserves for its change tracking and refuses on opening.
 
 The output format is the blob's `content_type`: `text/csv`, the XLSX type
 or the ODS type; anything else is refused at creation. All three are
