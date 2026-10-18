@@ -215,8 +215,9 @@ pub fn parse_date(s: &str) -> Option<civil::Date> {
 }
 
 /// `YYYY-MM-DDTHH:MM:SS`, an optional fraction of up to nine digits, an
-/// optional `Z` or `±HH:MM` offset, which is dropped: a spreadsheet has no
-/// timezone, and what the backend sends is what shows.
+/// optional offset in any ISO 8601 form, `Z`, `±HH`, `±HHMM` or `±HH:MM`,
+/// which is dropped: a spreadsheet has no timezone, and what the backend
+/// sends is what shows.
 pub fn parse_datetime(s: &str) -> Option<civil::DateTime> {
     let (date, rest) = s.split_at_checked(10)?;
     let date = parse_date(date)?;
@@ -242,10 +243,16 @@ pub fn parse_datetime(s: &str) -> Option<civil::DateTime> {
         "" | "Z" => {}
         offset => {
             let b = offset.as_bytes();
-            if b.len() != 6 || !(b[0] == b'+' || b[0] == b'-') || b[3] != b':' {
+            if !(b[0] == b'+' || b[0] == b'-') {
                 return None;
             }
-            if digits(&b[1..3])? > 23 || digits(&b[4..6])? > 59 {
+            let (hours, minutes) = match b.len() {
+                3 => (&b[1..3], None),
+                5 => (&b[1..3], Some(&b[3..5])),
+                6 if b[3] == b':' => (&b[1..3], Some(&b[4..6])),
+                _ => return None,
+            };
+            if digits(hours)? > 23 || minutes.map(digits).unwrap_or(Some(0))? > 59 {
                 return None;
             }
         }
@@ -465,6 +472,12 @@ mod tests {
         assert_eq!(parse_datetime("2026-10-17T12:00:00Z"), Some(noon));
         assert_eq!(parse_datetime("2026-10-17T12:00:00+02:00"), Some(noon));
         assert_eq!(parse_datetime("2026-10-17T12:00:00-05:30"), Some(noon));
+        assert_eq!(parse_datetime("2026-10-17T12:00:00+0200"), Some(noon));
+        assert_eq!(parse_datetime("2026-10-17T12:00:00+02"), Some(noon));
+        assert_eq!(
+            parse_datetime("2026-10-17T12:00:00.5-05"),
+            Some(civil::date(2026, 10, 17).at(12, 0, 0, 500_000_000))
+        );
         assert_eq!(
             parse_datetime("2026-10-17T12:00:00.123456789"),
             Some(civil::date(2026, 10, 17).at(12, 0, 0, 123_456_789))
@@ -482,8 +495,14 @@ mod tests {
             "2026-10-17T12:00:00.",
             "2026-10-17T12:00:00.1234567890",
             "2026-10-17T12:00:00+2:00",
-            "2026-10-17T12:00:00+0200",
+            "2026-10-17T12:00:00+2",
+            "2026-10-17T12:00:00+020",
+            "2026-10-17T12:00:00+02:0",
             "2026-10-17T12:00:00+24:00",
+            "2026-10-17T12:00:00+2400",
+            "2026-10-17T12:00:00+24",
+            "2026-10-17T12:00:00+0260",
+            "2026-10-17T12:00:00+",
             "2026-10-17T12:00:00z",
             "2026-10-17T12:00:00Zx",
         ] {

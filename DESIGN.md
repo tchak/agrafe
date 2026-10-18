@@ -545,8 +545,9 @@ A column without a `type` takes what the JSON scalar says: a number is a
 numeric cell, a boolean a boolean cell, a string a text cell. Two types can
 be declared, `date` and `datetime`, whose values must be `null` or a string
 in ISO 8601 form, checked at accept: `YYYY-MM-DD` for a date,
-`YYYY-MM-DDTHH:MM:SS` with an optional fraction and an optional offset or
-`Z` for a datetime. Spreadsheets have no timezone, so a datetime is written
+`YYYY-MM-DDTHH:MM:SS` with an optional fraction and an optional offset in
+any ISO 8601 form, `Z`, `±HH`, `±HHMM` or `±HH:MM`, for a datetime.
+Spreadsheets have no timezone, so a datetime is written
 as the wall-clock time given and the offset is dropped: the backend formats
 in the zone its users read, and what it sends is what shows. Dates are
 never inferred from the shape of a string: a free-text value that happens
