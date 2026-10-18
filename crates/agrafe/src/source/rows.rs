@@ -115,9 +115,12 @@ pub fn switch_target(sheets: &[Sheet], current: usize, name: &str) -> Result<usi
         return Err(format!("no sheet named {name:?} is declared"));
     };
     if index == current {
-        return Err(format!(
-            "sheet {name:?} is already the current sheet; rows before any switch belong to the first sheet"
-        ));
+        let hint = if current == 0 {
+            "; rows before any switch belong to the first sheet"
+        } else {
+            ""
+        };
+        return Err(format!("sheet {name:?} is already the current sheet{hint}"));
     }
     if index < current {
         return Err(format!(
@@ -705,7 +708,12 @@ mod tests {
         assert_eq!(switch_target(&sheets, 0, "three"), Ok(2));
         assert_eq!(switch_target(&sheets, 1, "three"), Ok(2));
         let err = switch_target(&sheets, 0, "one").unwrap_err();
-        assert!(err.contains("already the current sheet"), "{err}");
+        assert!(
+            err.contains("already the current sheet; rows before any switch belong to the first"),
+            "{err}"
+        );
+        let err = switch_target(&sheets, 1, "two").unwrap_err();
+        assert_eq!(err, "sheet \"two\" is already the current sheet");
         let err = switch_target(&sheets, 2, "one").unwrap_err();
         assert!(
             err.contains("comes before the current sheet \"three\""),
