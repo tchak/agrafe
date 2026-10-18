@@ -30,7 +30,8 @@ pub const MAX_SHEET_COLUMNS: usize = 16_384;
 /// the cell; a header is a cell too.
 pub const MAX_SHEET_CELL_LEN: usize = 32_767;
 
-/// Longest name an XLSX sheet may have.
+/// Longest name an XLSX sheet may have, counted as Excel counts, in UTF-16
+/// units, like a cell's text.
 pub const MAX_SHEET_NAME_LEN: usize = 31;
 
 /// Sheets a workbook holds at most. Excel has no limit and LibreOffice
@@ -85,7 +86,7 @@ pub fn check_sheet_name(name: &str) -> Result<(), &'static str> {
     if name.trim().is_empty() {
         return Err("must not be empty");
     }
-    if name.chars().count() > MAX_SHEET_NAME_LEN {
+    if name.encode_utf16().count() > MAX_SHEET_NAME_LEN {
         return Err("is longer than the 31 characters a sheet name holds");
     }
     if name
@@ -149,13 +150,28 @@ pub fn sheet_name(filename: &str) -> String {
         })
         .collect();
     let trimmed = cleaned.trim().trim_matches('\'').trim();
-    let name: String = trimmed.chars().take(MAX_SHEET_NAME_LEN).collect();
-    let name = name.trim_end().trim_end_matches('\'').trim_end();
+    let name = truncate_sheet_name(trimmed)
+        .trim_end()
+        .trim_end_matches('\'')
+        .trim_end();
     if name.is_empty() || name.eq_ignore_ascii_case("history") {
         DEFAULT_SHEET_NAME.to_string()
     } else {
         name.to_string()
     }
+}
+
+/// The longest prefix of `s` that fits a sheet name, whole characters
+/// only.
+fn truncate_sheet_name(s: &str) -> &str {
+    let mut units = 0;
+    for (at, c) in s.char_indices() {
+        units += c.len_utf16();
+        if units > MAX_SHEET_NAME_LEN {
+            return &s[..at];
+        }
+    }
+    s
 }
 
 /// One cell as the source gave it: a scalar, or an empty cell. It borrows
@@ -660,6 +676,10 @@ mod tests {
         assert_eq!(sheet_name("Historique.xlsx"), "Historique");
         let long = format!("{}.xlsx", "é".repeat(40));
         assert_eq!(sheet_name(&long).chars().count(), MAX_SHEET_NAME_LEN);
+        // Counted as Excel counts, in UTF-16 units: an emoji is two, and a
+        // name is whole characters.
+        let wide = format!("{}.xlsx", "😀".repeat(20));
+        assert_eq!(sheet_name(&wide), "😀".repeat(15));
     }
 
     #[test]
@@ -668,6 +688,8 @@ mod tests {
         assert_eq!(check_sheet_name("été"), Ok(()));
         assert_eq!(check_sheet_name("Historique"), Ok(()));
         assert_eq!(check_sheet_name(&"x".repeat(MAX_SHEET_NAME_LEN)), Ok(()));
+        assert_eq!(check_sheet_name(&"😀".repeat(15)), Ok(()));
+        assert!(check_sheet_name(&"😀".repeat(16)).is_err());
         for (bad, says) in [
             ("", "empty"),
             ("   ", "empty"),

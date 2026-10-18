@@ -705,8 +705,8 @@ digits, so a backend exporting 64-bit identifiers sends them as strings.
 
 A blob declared with `columns` has one sheet, named after the filename's
 stem, made acceptable to Excel: its forbidden characters `[ ] : * ? / \`
-replaced, at most 31 characters, `Sheet1` when nothing is left or when the
-stem is `History`, which Excel reserves for its change tracking and
+replaced, at most 31 characters as Excel counts them, in UTF-16 units,
+`Sheet1` when nothing is left or when the stem is `History`, which Excel reserves for its change tracking and
 refuses on opening. A workbook of several sheets is declared with `sheets`
 instead, see "Workbooks" below.
 
@@ -790,8 +790,8 @@ once per sheet.
   is read back on every part and nothing legitimate needs more. A list
   of one is a workbook whose sheet has a chosen name. Each sheet's `columns` follow the rules above,
   and its name is validated as Excel wants it, since Excel refuses to
-  open a workbook that breaks them: at most 31 characters, none of
-  `[ ] : * ? / \`, no control characters, not blank, not starting or
+  open a workbook that breaks them: at most 31 characters in UTF-16
+  units, none of `[ ] : * ? / \`, no control characters, not blank, not starting or
   ending with an apostrophe, not `History`, and unique among the sheets
   ignoring case. LibreOffice forbids the same characters.
 - In the source, an object line `{"sheet": "..."}` switches the current
