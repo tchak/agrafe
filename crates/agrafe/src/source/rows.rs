@@ -116,8 +116,7 @@ pub fn parse_line<'a>(line: &'a [u8], columns: &[Column]) -> Result<Vec<Cell<'a>
         .map_err(|e| format!("expected a JSON array of cell values: {e}"))?;
     if values.len() != columns.len() {
         return Err(format!(
-            "expected {} cells for the {} declared columns, got {}",
-            columns.len(),
+            "expected {} cells, one per declared column, got {}",
             columns.len(),
             values.len()
         ));
@@ -160,12 +159,12 @@ pub fn check_sheet_cells(cells: &[Cell<'_>], columns: &[Column]) -> Result<(), S
 fn parse_cell(raw: &str, kind: Option<ColumnType>) -> Result<Cell<'_>, String> {
     let expects = |kind: ColumnType| {
         match kind {
-        ColumnType::Date => "must be a date as YYYY-MM-DD, or null".to_string(),
-        ColumnType::Datetime => {
-            "must be a datetime as YYYY-MM-DDTHH:MM:SS, with an optional fraction and offset, or null"
-                .to_string()
+            ColumnType::Date => "must be a date as YYYY-MM-DD, or null",
+            ColumnType::Datetime => {
+                "must be a datetime as YYYY-MM-DDTHH:MM:SS, with an optional fraction and offset, or null"
+            }
         }
-    }
+        .to_string()
     };
     match raw.as_bytes().first() {
         Some(b'n') => Ok(Cell::Null),

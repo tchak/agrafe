@@ -62,15 +62,17 @@ pub async fn write(
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>"#,
     );
     push_row(package.buf(), &letters, 1, &header(sheet));
+    // The number of the last row written, the header's to begin with.
     let mut r = 1u64;
     loop {
-        r += 1;
         let buf = package.buf();
-        if rows
-            .next_row(|cells| push_row(buf, &letters, r, cells))
-            .await?
-            .is_none()
-        {
+        let wrote = rows
+            .next_row(|cells| {
+                r += 1;
+                push_row(buf, &letters, r, cells)
+            })
+            .await?;
+        if wrote.is_none() {
             break;
         }
         package.flush(false).await?;
