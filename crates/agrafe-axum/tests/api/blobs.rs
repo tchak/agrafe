@@ -217,12 +217,26 @@ async fn blobs_past_expires_at_are_expired_before_the_reaper_runs() {
     // The public port treats them as gone.
     for url in [
         public_url(&ready, "metadata"),
-        public_url(&ready, "original"),
         public_url(&created, "metadata"),
     ] {
         let (status, body) = call(&app.public, req(Method::GET, &url)).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{url}: {body}");
     }
+    // The sealed original URL minted before the expiry still answers until
+    // the purge takes the object: nothing on that path checks the row. One
+    // minted now expires with the blob, which is already.
+    let (status, _) = call(
+        &app.public,
+        req(Method::GET, &public_url(&ready, "original")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let ready = get_blob(&app, id_of(&ready)).await;
+    assert!(ready["envelope"].is_null());
+    let url = public_url(&ready, "original");
+    assert!(!url.contains("e="), "no envelope once expired: {url}");
+    let (status, body) = call(&app.public, req(Method::GET, &url)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{url}: {body}");
     let (status, _) = call(
         &app.public,
         put_raw(&public_url(&created, "upload"), vec![0; 1024]),

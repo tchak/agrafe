@@ -1,5 +1,6 @@
 //! Serving the decrypted original: headers, ranges, damaged objects.
 
+use agrafe::jobs::JobKind;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use http_body_util::BodyExt;
@@ -324,18 +325,32 @@ async fn original_waits_for_the_scan() {
     assert_eq!(body["error"]["code"], "conflict");
 }
 
-/// Deleted: gone from the public port, a conflict on the private one.
+/// Deleted: gone from the public port, a conflict on the private one. A
+/// sealed URL minted before the delete answers until the purge takes the
+/// object, and no later.
 #[tokio::test]
 async fn original_of_a_deleted_blob() {
     let app = setup().await;
     let blob = ready_blob(&app, &png_bytes(3000)).await;
     let id = id_of(&blob);
     assert_eq!(delete(&app, id).await, StatusCode::NO_CONTENT);
+    let sealed = public_url(&blob, "original");
+    let (status, _) = call(&app.public, req(Method::GET, &sealed)).await;
+    assert_eq!(status, StatusCode::OK);
+    let deleted = get_blob(&app, id).await;
+    assert_eq!(deleted["state"], "deleted");
     let (status, _) = call(
         &app.public,
-        req(Method::GET, &public_url(&blob, "original")),
+        req(Method::GET, &public_url(&deleted, "original")),
     )
     .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    sqlx::query("UPDATE jobs SET run_at = now() WHERE kind = 'purge'")
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+    while run_job(&app, JobKind::Purge).await {}
+    let (status, _) = call(&app.public, req(Method::GET, &sealed)).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     let uri = format!("/blobs/{id}/original/photo.png");
     let (status, _) = call(&app.private, req(Method::GET, &uri)).await;

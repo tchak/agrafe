@@ -7,6 +7,7 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use agrafe::attachment::Attachment;
+use agrafe::blob::envelope::Envelope;
 use agrafe::blob::urls::BlobUrls;
 use agrafe::blob::{Blob, BlobHead, BlobState, InputType, RepresentationState, ScanState};
 use agrafe::classify::Category;
@@ -50,6 +51,10 @@ pub struct BlobResponse {
     /// `expires_at`.
     pub attachments: Vec<AttachmentResponse>,
     pub urls: BlobUrls,
+    /// What a read of the blob needs of this row, once it is `ready`, as
+    /// one opaque string: a backend holding the signing key mints sealed
+    /// URLs from it without asking. See DESIGN.md, "Sealed URLs".
+    pub envelope: Option<String>,
 }
 
 impl BlobResponse {
@@ -86,6 +91,7 @@ impl BlobResponse {
             purged_at: blob.purged_at,
             attachments: attachments.iter().map(AttachmentResponse::new).collect(),
             urls,
+            envelope: Envelope::from_head(&blob.head(), Timestamp::now()).map(|e| e.encode()),
         }
     }
 }

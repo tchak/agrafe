@@ -88,7 +88,7 @@ No signature. Reachable only from trusted networks.
 |---|---|---|
 | `POST` | `/blobs` | Create a blob (metadata only, no bytes yet) |
 | `GET` | `/blobs` | List blobs, cursor paginated, filterable |
-| `GET` | `/blobs/:id` | Full metadata, attachments and ready-made signed public URLs |
+| `GET` | `/blobs/:id` | Full metadata, attachments, ready-made signed public URLs and, once `ready`, the envelope |
 | `PUT` | `/blobs/:id` | Upload bytes (all input types), once |
 | `PUT` | `/blobs/:id/parts/:n` | Append part `n` of a `rows` or `archive` source |
 | `POST` | `/blobs/:id/finish` | Seal a source sent in parts and enqueue its build |
@@ -189,6 +189,46 @@ message = METHOD "\n" expires_unix "\n" path_and_query_after_token
   validated when minted, unknown names included, so a backend mistake is a
   `422` on the private port and never a client error on a correctly signed
   URL.
+
+### Sealed URLs
+
+The read routes are the hot path, and the one query on it is the row
+lookup. A sealed URL carries the row instead: the **envelope**, one opaque
+string with everything serving a `ready` blob needs (the wrapped data key
+and its KEK id, the stream header and segment size, the size, checksum and
+content type of the original, the category, and for each representation
+its state, variant version, digest and size; format in
+`blob::envelope`). It travels as the signed query parameter `e`, so it is
+covered by the signature like the rest of the target, and the wrapped key
+is bound to the blob id, so nothing in it needs protecting on its own. The
+public read routes with an `e` verify the signature, decode the envelope
+and go to the bucket: no database on either side. Those without one look
+the row up as before.
+
+- The server seals the read URLs it mints for a blob that is `ready` and
+  not expired. `GET /blobs/:id` on the private port returns the same
+  `envelope`, so a backend holding the signing key stores it with the id
+  and the filename and mints sealed URLs itself, without a call, as it
+  would with `rails_blob_path`. It is a snapshot: a representation still
+  `pending` in it falls back to the row when served, and the backend
+  refreshes its copy once the render is done, when it polls the metadata
+  anyway. Blobs are write-once, so the rest never changes.
+- The original is served from the envelope alone. An object that is not
+  in the bucket is `404`: the blob was purged.
+- A representation is served from the envelope when it records it `ready`
+  with the current variant version: `304` and `HEAD` from the digest and
+  size, the bytes from the bucket. Anything else, a pending render, an
+  older version, a missing object, is handed to the row, which knows
+  better and does the repair.
+- Nothing on the sealed path reads the row, so a blob deleted or expired
+  after the URL was minted stays readable until the purge takes its
+  objects (the reaper's interval plus `upload.purge_delay`) or the URL
+  expires, whichever comes first; the row-backed routes hide it at once.
+  URLs the server mints for a blob with an `expires_at` expire no later
+  than the blob, unless `permanent` was asked for. A backend minting its
+  own picks the TTL it stands behind.
+- An envelope that does not decode is `400`: the URL was signed, so it is
+  the minter's mistake, not a forgery.
 
 ## Blobs
 
@@ -1092,7 +1132,9 @@ the envelope, the representation states), never the whole row: a `rows`
 blob keeps its column declaration on the row as JSON, up to megabytes a
 download has no use for.
 
-That lookup is answered from an in-process cache for a row served lately,
+A sealed URL (see "Sealed URLs") carries the row and skips the lookup
+altogether. Otherwise it is answered from an in-process cache for a row
+served lately,
 `blobs.read_cache_ttl` (default thirty seconds), so a blob read many times
 costs one query per process per period. Only a settled row is kept: `ready`
 or terminal, with no representation pending. Such a row changes only by

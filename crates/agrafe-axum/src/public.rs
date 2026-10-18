@@ -11,10 +11,11 @@ use uuid::Uuid;
 use super::body;
 use super::extract::{Json, Path, Query};
 use super::json::PublicBlobResponse;
-use super::original::{self, OriginalQuery};
+use super::original::{self, Origin, OriginalQuery};
 use super::representation::{self, Port, RepresentationQuery};
 use super::signed::Signed;
 use agrafe::Agrafe;
+use agrafe::blob::envelope::Envelope;
 use agrafe::blob::{BlobHead, Representation};
 
 use crate::error::{ApiError, ApiResult};
@@ -86,8 +87,18 @@ async fn get_original(
     method: Method,
     headers: HeaderMap,
 ) -> ApiResult<Response> {
-    let blob = find_visible(&state, id).await?;
-    original::serve(&state, blob, &filename, query, &method, &headers).await
+    // Sealed: the envelope is the row, and nothing is looked up.
+    let (blob, origin) = match query.e.as_deref().map(decode_envelope).transpose()? {
+        Some(envelope) => (envelope.head(id, &filename), Origin::Envelope),
+        None => (find_visible(&state, id).await?, Origin::Row),
+    };
+    original::serve(&state, blob, &filename, query, &method, &headers, origin).await
+}
+
+/// An envelope that does not decode is a minter's mistake: the URL was
+/// signed, so it is no forgery.
+fn decode_envelope(e: &str) -> ApiResult<Envelope> {
+    Envelope::decode(e).map_err(|err| ApiError::BadRequest(err.to_string()))
 }
 
 /// Look a blob up as the public port sees it: terminal states are `404`.
@@ -107,11 +118,44 @@ async fn get_preview(
     method: Method,
     headers: HeaderMap,
 ) -> ApiResult<Response> {
+    serve_representation(
+        state,
+        id,
+        Representation::Preview,
+        filename,
+        query,
+        method,
+        headers,
+    )
+    .await
+}
+
+/// Sealed when the URL carries an envelope that has `kind` rendered; from
+/// the row otherwise, as when a render was still pending at minting.
+async fn serve_representation(
+    state: Agrafe,
+    id: Uuid,
+    kind: Representation,
+    filename: String,
+    query: RepresentationQuery,
+    method: Method,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    if let Some(e) = &query.e {
+        let envelope = decode_envelope(e)?;
+        if let Some(response) = representation::serve_sealed(
+            &state, id, &envelope, kind, &filename, &query, &method, &headers,
+        )
+        .await?
+        {
+            return Ok(response);
+        }
+    }
     let blob = find_visible(&state, id).await?;
     representation::serve(
         &state,
         blob,
-        Representation::Preview,
+        kind,
         &filename,
         query,
         &method,
@@ -129,16 +173,14 @@ async fn get_thumbnail(
     method: Method,
     headers: HeaderMap,
 ) -> ApiResult<Response> {
-    let blob = find_visible(&state, id).await?;
-    representation::serve(
-        &state,
-        blob,
+    serve_representation(
+        state,
+        id,
         Representation::Thumbnail,
-        &filename,
+        filename,
         query,
-        &method,
-        &headers,
-        Port::Public,
+        method,
+        headers,
     )
     .await
 }

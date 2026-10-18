@@ -47,6 +47,11 @@ pub enum ReadError {
 }
 
 impl ReadError {
+    /// Whether the object is not in the store.
+    pub fn is_not_found(&self) -> bool {
+        matches!(self, ReadError::Store(object_store::Error::NotFound { .. }))
+    }
+
     /// Whether reading again would fail the same way: the row or the object
     /// is damaged. A store error, or an object ending short of what its
     /// length promised, may be the connection's.

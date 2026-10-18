@@ -18,4 +18,5 @@ mod representations;
 mod rows;
 mod scan;
 mod schema;
+mod sealed;
 mod upload;

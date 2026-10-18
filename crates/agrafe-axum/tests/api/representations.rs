@@ -864,7 +864,7 @@ async fn waiting_for_a_pending_representation() {
     .await;
     assert_eq!(status, StatusCode::OK, "{minted}");
     let thumbnail = public_path(minted["thumbnail"].as_str().unwrap());
-    assert!(thumbnail.ends_with("?wait=5000"), "{thumbnail}");
+    assert!(thumbnail.contains("wait=5000"), "{thumbnail}");
 
     // The render lands while the request waits.
     let state = app.state.clone();

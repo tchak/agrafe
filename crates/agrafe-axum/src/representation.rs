@@ -18,6 +18,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use agrafe::Agrafe;
+use agrafe::blob::envelope::Envelope;
 use agrafe::blob::representation::Resolved;
 use agrafe::blob::urls::MAX_WAIT;
 use agrafe::blob::{BlobHead, Rendered, Representation, RepresentationState};
@@ -41,6 +42,8 @@ pub struct RepresentationQuery {
     pub filename: Option<String>,
     /// Milliseconds to wait for a pending representation before answering.
     pub wait: Option<u64>,
+    /// The envelope of a sealed URL, public port only.
+    pub e: Option<String>,
 }
 
 /// Which port is asking: the public one does not see terminal blobs.
@@ -108,6 +111,39 @@ pub async fn serve(
             ))),
         },
     }
+}
+
+/// Serve `kind` from the URL's envelope, with no row to look up, when
+/// the envelope has it rendered with the current variant version. `None`
+/// otherwise: a render was pending or the version has moved since the
+/// envelope was minted, and the row knows better.
+#[allow(clippy::too_many_arguments)]
+pub async fn serve_sealed(
+    state: &Agrafe,
+    id: Uuid,
+    envelope: &Envelope,
+    kind: Representation,
+    filename: &str,
+    query: &RepresentationQuery,
+    method: &Method,
+    headers: &HeaderMap,
+) -> ApiResult<Option<Response>> {
+    let sealed = envelope.representation(kind);
+    let current = state.config().media.variant_version;
+    let (Some(rendered), RepresentationState::Ready, Some(version)) =
+        (sealed.rendered, sealed.state, sealed.variant_version)
+    else {
+        return Ok(None);
+    };
+    if version != current {
+        return Ok(None);
+    }
+    let blob = envelope.head(id, filename);
+    let name = webp_name(query.filename.as_deref().unwrap_or(filename));
+    let disposition = original::content_disposition(query.disposition.as_deref(), &name)?;
+    image(state, &blob, kind, rendered, disposition, method, headers)
+        .await
+        .map(Some)
 }
 
 async fn refetch(state: &Agrafe, id: Uuid, port: Port) -> ApiResult<BlobHead> {

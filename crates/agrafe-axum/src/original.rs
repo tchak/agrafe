@@ -27,6 +27,17 @@ pub struct OriginalQuery {
     pub disposition: Option<String>,
     /// Download name, instead of the blob's filename.
     pub filename: Option<String>,
+    /// The envelope of a sealed URL, public port only.
+    pub e: Option<String>,
+}
+
+/// Where the row came from: the database, or the URL's envelope. On the
+/// sealed path a missing object means the blob is gone, since nothing
+/// checked the row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    Row,
+    Envelope,
 }
 
 /// Serve `blob`'s original. `filename` is the path segment, which must match
@@ -38,6 +49,7 @@ pub async fn serve(
     query: OriginalQuery,
     method: &Method,
     headers: &HeaderMap,
+    origin: Origin,
 ) -> ApiResult<Response> {
     if filename != blob.filename {
         return Err(ApiError::NotFound);
@@ -142,9 +154,13 @@ pub async fn serve(
         return Ok(response);
     }
 
-    let mut reader = Reader::open(state, &stored, span)
-        .await
-        .map_err(|e| ApiError::internal(format!("blob {}: opening the original: {e}", blob.id)))?;
+    let mut reader = Reader::open(state, &stored, span).await.map_err(|e| {
+        if origin == Origin::Envelope && e.is_not_found() {
+            ApiError::NotFound
+        } else {
+            ApiError::internal(format!("blob {}: opening the original: {e}", blob.id))
+        }
+    })?;
     // Open the first segment before the response starts: a wrong key, a
     // tampered object or a missing one is then a logged `500`, not a `200`
     // cut short.

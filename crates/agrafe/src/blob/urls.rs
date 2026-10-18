@@ -7,10 +7,12 @@ use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime};
 
 use http::Method;
+use jiff::Timestamp;
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::envelope::Envelope;
 use super::{Blob, create, repo};
 use crate::app::Agrafe;
 use crate::signing::PERMANENT;
@@ -111,6 +113,7 @@ pub fn validate_query(query: &BTreeMap<String, String>) -> Result<(), MintError>
                 validate_wait(value).map_err(MintError::Invalid)?;
             }
             other => {
+                // `e` among them: the envelope is the server's to add.
                 return Err(MintError::Invalid(format!(
                     "unknown query parameter `{other}`; allowed: disposition, filename, wait"
                 )));
@@ -143,11 +146,16 @@ pub fn validate_wait(value: &str) -> Result<Duration, String> {
     Ok(wait)
 }
 
+/// The signed query parameter carrying the envelope of a sealed URL.
+pub const ENVELOPE_PARAM: &str = "e";
+
 /// Mint at `now`, for callers that want several blobs to share one expiry.
+/// The read URLs of a `ready` blob are sealed: they carry its envelope,
+/// and expire no later than the blob does.
 pub fn mint(state: &Agrafe, blob: &Blob, opts: &MintOptions, now: SystemTime) -> BlobUrls {
     let signer = state.signer();
     let ttl = &state.config().signing.ttl;
-    let read_expires = if opts.permanent {
+    let mut read_expires = if opts.permanent {
         PERMANENT
     } else {
         signer.expiry_for(opts.ttl.unwrap_or(ttl.read), now)
@@ -158,11 +166,30 @@ pub fn mint(state: &Agrafe, blob: &Blob, opts: &MintOptions, now: SystemTime) ->
         signer.expiry_for(opts.ttl.unwrap_or(ttl.metadata), now)
     };
 
-    let query = if opts.query.is_empty() {
+    let envelope = Timestamp::try_from(now)
+        .ok()
+        .and_then(|now| Envelope::from_head(&blob.head(), now))
+        .map(|e| e.encode());
+    if envelope.is_some()
+        && !opts.permanent
+        && let Some(at) = blob.expires_at
+    {
+        // Nothing on the sealed path checks the row, so the URL carries
+        // the expiry. A permanent URL was asked for as such.
+        read_expires = read_expires.min(at.as_second().max(0) as u64);
+    }
+
+    // Sorted by name, the envelope among the others, so that a minter
+    // elsewhere builds the same string.
+    let mut query = opts.query.clone();
+    if let Some(e) = envelope {
+        query.insert(ENVELOPE_PARAM.to_owned(), e);
+    }
+    let query = if query.is_empty() {
         String::new()
     } else {
         let mut q = form_urlencoded::Serializer::new(String::new());
-        for (k, v) in &opts.query {
+        for (k, v) in &query {
             q.append_pair(k, v);
         }
         format!("?{}", q.finish())
