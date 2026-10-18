@@ -418,15 +418,19 @@ attachments (
 UNIQUE (record_type, record_id, name, blob_id)
 INDEX  (blob_id)
 INDEX  (record_type, name, id)
+INDEX  (record_type, id)
 ```
 
 `record_type` and `name` have a handful of values each; `record_id` has as
 many as the backend has records. The unique index makes attach idempotent
 and serves every lookup by record, which is why `record_id` is only accepted
 together with `record_type`: an id means nothing without its type, and there
-is no index on it alone. `(record_type, name, id)` serves the low-cardinality
-scans with the cursor, `record_type` alone through its prefix. `(blob_id)`
-serves a blob's own attachments and the last-detach check.
+is no index on it alone. `(record_type, name, id)` and `(record_type, id)`
+serve the low-cardinality scans with the cursor; the first's prefix does not
+serve the second, since the id order the cursor pages on is lost after
+`name`. `name` alone has no index: nothing lists every avatar regardless of
+what it belongs to. `(blob_id)` serves a blob's own attachments and the
+last-detach check.
 
 `GET /attachments` is cursor paginated on the attachment id like `/blobs`,
 with filters `record_type`, `record_id` (with `record_type`), `name` and
