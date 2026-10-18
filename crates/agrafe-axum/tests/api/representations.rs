@@ -617,6 +617,90 @@ async fn thumbnails_regenerate_from_the_stored_preview() {
     assert_eq!(get_blob(&app, id).await["preview_state"], "ready");
 }
 
+/// A thumbnail regenerated on its own follows the verdict the preview has
+/// from this version: none from a failed preview, the text sample for a
+/// file with no preview, and a preview rendered again when its object is
+/// gone.
+#[tokio::test]
+async fn thumbnails_regenerate_from_the_preview_verdict() {
+    let app = setup().await;
+    let broken = ready_file(&app, "broken.jpg", "image/jpeg", &fixture("truncated.jpg")).await;
+    let notes = ready_file(&app, "notes.txt", "text/plain", b"Bonjour\n").await;
+    let photo = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
+    render_all(&app).await;
+    let photo_id = id_of(&photo);
+    for object in ["thumbnail", "preview"] {
+        app.state
+            .store()
+            .delete(&object_store::path::Path::from(format!(
+                "{photo_id}/{object}"
+            )))
+            .await
+            .unwrap();
+    }
+
+    for (blob, preview, thumbnail) in [
+        (&broken, "failed", "failed"),
+        (&notes, "unavailable", "ready"),
+        (&photo, "ready", "ready"),
+    ] {
+        let id = id_of(blob);
+        let name = blob["filename"].as_str().unwrap();
+        sqlx::query("UPDATE blobs SET thumbnail_variant_version = 0 WHERE id = $1")
+            .bind(parse_id(id))
+            .execute(app.state.pool())
+            .await
+            .unwrap();
+        icon(&app, &format!("/blobs/{id}/thumbnail/{name}"), "pending").await;
+        assert!(run_job(&app, JobKind::Render).await, "{name}");
+        let got = get_blob(&app, id).await;
+        assert_eq!(got["preview_state"], preview, "{name}");
+        assert_eq!(got["thumbnail_state"], thumbnail, "{name}");
+    }
+    rendered(&app, &format!("/blobs/{photo_id}/thumbnail/photo.jpg")).await;
+    rendered(&app, &format!("/blobs/{photo_id}/preview/photo.jpg")).await;
+}
+
+/// A render job that finds nothing to do, because the blob is no longer
+/// readable or nothing is pending, finishes without touching it.
+#[tokio::test]
+async fn render_jobs_with_nothing_to_do_finish() {
+    let app = setup().await;
+    let photo = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
+    let id = id_of(&photo);
+    render_all(&app).await;
+    let rendered_at: String =
+        sqlx::query_scalar("SELECT updated_at::text FROM blobs WHERE id = $1")
+            .bind(parse_id(id))
+            .fetch_one(app.state.pool())
+            .await
+            .unwrap();
+    let enqueue = || async {
+        sqlx::query("INSERT INTO jobs (kind, blob_id) VALUES ('render', $1)")
+            .bind(parse_id(id))
+            .execute(app.state.pool())
+            .await
+            .unwrap();
+    };
+
+    enqueue().await;
+    assert!(run_job(&app, JobKind::Render).await);
+    let unchanged: String = sqlx::query_scalar("SELECT updated_at::text FROM blobs WHERE id = $1")
+        .bind(parse_id(id))
+        .fetch_one(app.state.pool())
+        .await
+        .unwrap();
+    assert_eq!(unchanged, rendered_at, "nothing pending, nothing written");
+
+    let pending = ready_file(&app, "again.jpg", "image/jpeg", &fixture("photo.jpg")).await;
+    assert_eq!(delete(&app, id_of(&pending)).await, StatusCode::NO_CONTENT);
+    assert!(run_job(&app, JobKind::Render).await);
+    let got = get_blob(&app, id_of(&pending)).await;
+    assert_eq!(got["state"], "deleted");
+    assert_eq!(got["thumbnail_state"], "pending", "never rendered");
+    assert_eq!(jobs_for(&app, id_of(&pending)).await, ["purge"]);
+}
+
 #[tokio::test]
 async fn waiting_for_a_pending_representation() {
     let app = setup().await;
