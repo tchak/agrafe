@@ -1,7 +1,8 @@
-//! XLSX as a streamed package: one sheet, inline strings rather than a
-//! shared string table, numbers and booleans as typed cells, dates and
-//! datetimes as serial numbers with a cell style pointing at the built-in
-//! number formats 14 and 22, so Excel shows them in the user's locale. See
+//! XLSX as a streamed package: one worksheet entry per sheet, written
+//! whole before the next, inline strings rather than a shared string
+//! table, numbers and booleans as typed cells, dates and datetimes as
+//! serial numbers with a cell style pointing at the built-in number
+//! formats 14 and 22, so Excel shows them in the user's locale. See
 //! DESIGN.md, "Rows".
 
 use std::borrow::Cow;
@@ -15,14 +16,8 @@ use super::{SourceRows, header};
 use crate::jobs::build::{BuildError, Sink};
 use crate::source::rows::{Cell, Sheet};
 
-const CONTENT_TYPES: &[u8] = br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>"#;
-
 const ROOT_RELS: &[u8] = br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#;
-
-const WORKBOOK_RELS: &[u8] = br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>"#;
 
 /// Three cell formats: the default, the built-in date format 14 and the
 /// built-in datetime format 22, both rendered by Excel in the locale.
@@ -42,54 +37,116 @@ const EPOCH: civil::Date = civil::Date::constant(1899, 12, 30);
 const FIRST_SERIAL: civil::Date = civil::Date::constant(1900, 3, 1);
 
 pub async fn write(
-    sheet: &Sheet,
+    sheets: &[Sheet],
     rows: &mut SourceRows<'_>,
     sink: &mut Sink,
 ) -> Result<(), BuildError> {
     let mut package = Package::new(sink);
-    package.file("[Content_Types].xml", CONTENT_TYPES).await?;
-    package.file("_rels/.rels", ROOT_RELS).await?;
-    package.file("xl/workbook.xml", &workbook(sheet)).await?;
     package
-        .file("xl/_rels/workbook.xml.rels", WORKBOOK_RELS)
+        .file("[Content_Types].xml", &content_types(sheets.len()))
+        .await?;
+    package.file("_rels/.rels", ROOT_RELS).await?;
+    package.file("xl/workbook.xml", &workbook(sheets)).await?;
+    package
+        .file("xl/_rels/workbook.xml.rels", &workbook_rels(sheets.len()))
         .await?;
     package.file("xl/styles.xml", STYLES).await?;
 
-    let letters: Vec<String> = (0..sheet.columns.len()).map(column_letters).collect();
-    package.begin("xl/worksheets/sheet1.xml").await?;
-    package.buf().extend_from_slice(
-        br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    for (index, sheet) in sheets.iter().enumerate() {
+        rows.begin_sheet(index);
+        let letters: Vec<String> = (0..sheet.columns.len()).map(column_letters).collect();
+        package.begin(&sheet_entry(index + 1)).await?;
+        package.buf().extend_from_slice(
+            br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>"#,
-    );
-    push_row(package.buf(), &letters, 1, &header(sheet));
-    // The number of the last row written, the header's to begin with.
-    let mut r = 1u64;
-    loop {
-        let buf = package.buf();
-        let wrote = rows
-            .next_row(|cells| {
-                r += 1;
-                push_row(buf, &letters, r, cells)
-            })
-            .await?;
-        if wrote.is_none() {
-            break;
+        );
+        push_row(package.buf(), &letters, 1, &header(sheet));
+        // The number of the last row written, the header's to begin with.
+        let mut r = 1u64;
+        loop {
+            let buf = package.buf();
+            let wrote = rows
+                .next_row(|cells| {
+                    r += 1;
+                    push_row(buf, &letters, r, cells)
+                })
+                .await?;
+            if wrote.is_none() {
+                break;
+            }
+            package.flush(false).await?;
         }
-        package.flush(false).await?;
+        package.buf().extend_from_slice(b"</sheetData></worksheet>");
+        package.end().await?;
     }
-    package.buf().extend_from_slice(b"</sheetData></worksheet>");
-    package.end().await?;
     package.finish().await
 }
 
-fn workbook(sheet: &Sheet) -> Vec<u8> {
+/// The package path of worksheet `n`, numbered from one.
+fn sheet_entry(n: usize) -> String {
+    format!("xl/worksheets/sheet{n}.xml")
+}
+
+/// The content types: the defaults, the workbook, every worksheet and the
+/// styles.
+fn content_types(sheets: usize) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(
         br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name=""#,
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>"#,
     );
-    push_attr(&mut out, &sheet.name);
-    out.extend_from_slice(br#"" sheetId="1" r:id="rId1"/></sheets></workbook>"#);
+    for n in 1..=sheets {
+        write!(
+            out,
+            r#"<Override PartName="/{}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>"#,
+            sheet_entry(n)
+        )
+        .expect("vec");
+    }
+    out.extend_from_slice(
+        br#"<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>"#,
+    );
+    out
+}
+
+/// The workbook: the sheets in order, `sheetId` and relationship `rId`
+/// both numbered from one.
+fn workbook(sheets: &[Sheet]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(
+        br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>"#,
+    );
+    for (index, sheet) in sheets.iter().enumerate() {
+        let n = index + 1;
+        out.extend_from_slice(b"<sheet name=\"");
+        push_attr(&mut out, &sheet.name);
+        write!(out, r#"" sheetId="{n}" r:id="rId{n}"/>"#).expect("vec");
+    }
+    out.extend_from_slice(b"</sheets></workbook>");
+    out
+}
+
+/// The workbook's relationships: one per worksheet, then the styles.
+fn workbook_rels(sheets: usize) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(
+        br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">"#,
+    );
+    for n in 1..=sheets {
+        write!(
+            out,
+            r#"<Relationship Id="rId{n}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{n}.xml"/>"#
+        )
+        .expect("vec");
+    }
+    write!(
+        out,
+        r#"<Relationship Id="rId{}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>"#,
+        sheets + 1
+    )
+    .expect("vec");
     out
 }
 
@@ -276,6 +333,41 @@ mod tests {
                 "</row>"
             )
         );
+    }
+
+    #[test]
+    fn workbook_parts_list_every_sheet() {
+        let sheets = vec![
+            Sheet {
+                name: "A & B".into(),
+                columns: vec![],
+            },
+            Sheet {
+                name: "C".into(),
+                columns: vec![],
+            },
+        ];
+        let workbook = String::from_utf8(workbook(&sheets)).unwrap();
+        assert!(
+            workbook.contains(
+                r#"<sheets><sheet name="A &amp; B" sheetId="1" r:id="rId1"/><sheet name="C" sheetId="2" r:id="rId2"/></sheets>"#
+            ),
+            "{workbook}"
+        );
+        let rels = String::from_utf8(workbook_rels(2)).unwrap();
+        assert!(rels.contains(r#"Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml""#), "{rels}");
+        assert!(rels.contains(r#"Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml""#), "{rels}");
+        assert!(rels.contains(r#"Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml""#), "{rels}");
+        let types = String::from_utf8(content_types(2)).unwrap();
+        assert!(
+            types.contains(r#"PartName="/xl/worksheets/sheet1.xml""#),
+            "{types}"
+        );
+        assert!(
+            types.contains(r#"PartName="/xl/worksheets/sheet2.xml""#),
+            "{types}"
+        );
+        assert!(!types.contains("sheet3.xml"), "{types}");
     }
 
     #[test]

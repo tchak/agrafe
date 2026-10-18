@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::app::Agrafe;
 use crate::classify::Category;
 use crate::jobs::Priority;
-use crate::source::rows::{Column, Sheet};
+use crate::source::rows::Sheet;
 use repo::{ListParams, Page};
 
 /// Why a blob could not be deleted.
@@ -289,8 +289,13 @@ pub struct Blob {
     /// When the last part landed.
     #[sqlx(try_from = "crate::db::NullableTimestamp")]
     pub source_updated_at: Option<Timestamp>,
-    /// The sheets of a `rows` blob, one for now, each with its columns in
-    /// order: declared at creation, read by accept and build.
+    /// Index, from zero, of the sheet of a `rows` blob the source is
+    /// filling, and the lines accepted into it so far: the row limit is per
+    /// sheet. Zero for anything else.
+    pub source_sheet: i32,
+    pub source_sheet_rows: i64,
+    /// The sheets of a `rows` blob in workbook order, each with its columns
+    /// in order: declared at creation, read by accept and build.
     pub source_columns: Option<sqlx::types::Json<Vec<Sheet>>>,
     /// Set by the archive build: members written, and members skipped
     /// because they were gone by then.
@@ -389,16 +394,12 @@ impl Blob {
         format!("{id}/source/{n}")
     }
 
-    /// The one sheet of a `rows` blob.
-    pub fn sheet(&self) -> Option<&Sheet> {
+    /// The sheets of a `rows` blob, in workbook order: at least one.
+    pub fn sheets(&self) -> Option<&[Sheet]> {
         self.source_columns
             .as_ref()
-            .and_then(|sheets| sheets.0.first())
-    }
-
-    /// The columns of a `rows` blob, in sheet order.
-    pub fn columns(&self) -> Option<&[Column]> {
-        self.sheet().map(|sheet| sheet.columns.as_slice())
+            .map(|sheets| sheets.0.as_slice())
+            .filter(|sheets| !sheets.is_empty())
     }
 }
 

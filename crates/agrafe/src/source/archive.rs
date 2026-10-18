@@ -226,6 +226,7 @@ impl Tap for Accept {
             rows: self.rows,
             bytes: self.bytes,
             size: Some(self.added),
+            sheet: None,
         })
     }
 }

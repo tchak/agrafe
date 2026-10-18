@@ -1,5 +1,6 @@
-//! Generated spreadsheets: the columns declared at creation, the rows
-//! accepted in parts against them, and the build to CSV, XLSX or ODS.
+//! Generated spreadsheets: the columns, or the sheets and their columns,
+//! declared at creation, the rows accepted in parts against them, and the
+//! build to CSV, XLSX or ODS.
 
 use std::io::{Cursor, Read};
 
@@ -28,6 +29,21 @@ fn rows_blob(filename: &str, content_type: &str) -> Value {
         "content_type": content_type,
         "input_type": "rows",
         "columns": columns(),
+    })
+}
+
+/// A workbook of three sheets: the sample's columns, then two narrower
+/// ones.
+fn workbook_blob(filename: &str, content_type: &str) -> Value {
+    json!({
+        "filename": filename,
+        "content_type": content_type,
+        "input_type": "rows",
+        "sheets": [
+            {"name": "Dossiers", "columns": columns()},
+            {"name": "Avis & notes", "columns": [{"name": "Dossier"}, {"name": "Avis"}]},
+            {"name": "Vide", "columns": [{"name": "Rien"}]},
+        ],
     })
 }
 
@@ -311,7 +327,7 @@ async fn creation_checks_the_columns() {
         (
             "missing",
             json!({"filename": "e.csv", "content_type": "text/csv", "input_type": "rows"}),
-            "columns are required",
+            "requires columns or sheets",
         ),
         (
             "empty",
@@ -418,9 +434,9 @@ async fn row_rejections() {
             "line 1: expected a JSON array",
         ),
         (
-            "an object",
+            "an object that is not a switch",
             b"{\"Nom\": \"x\"}\n".to_vec(),
-            "line 1: expected a JSON array",
+            "line 1: expected {\"sheet\": \"...\"} to switch sheets",
         ),
         (
             "too short",
@@ -536,11 +552,13 @@ async fn sheet_row_limit() {
         let (status, _) = put_part(&app, id, 1, source(std::slice::from_ref(&one))).await;
         assert_eq!(status, StatusCode::OK);
         // As if 1 048 572 rows had landed: three more fit, a fourth does not.
-        sqlx::query("UPDATE blobs SET source_rows = 1048572 WHERE id = $1")
-            .bind(parse_id(id))
-            .execute(app.state.pool())
-            .await
-            .unwrap();
+        sqlx::query(
+            "UPDATE blobs SET source_rows = 1048572, source_sheet_rows = 1048572 WHERE id = $1",
+        )
+        .bind(parse_id(id))
+        .execute(app.state.pool())
+        .await
+        .unwrap();
         let (status, body) = put_part(&app, id, 2, source(&vec![one.clone(); 4])).await;
         if limited {
             assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
@@ -554,6 +572,322 @@ async fn sheet_row_limit() {
         } else {
             assert_eq!(status, StatusCode::OK, "{body}");
         }
+    }
+}
+
+/// A workbook: the sheets declared in order, the source switching between
+/// them with `{"sheet": "..."}` lines, in any part, and every sheet in
+/// the package, a header alone for one no switch pointed at.
+#[tokio::test]
+async fn xlsx_workbook() {
+    let app = setup().await;
+    let created = create(&app, workbook_blob("dossiers.xlsx", XLSX)).await;
+    let id = id_of(&created);
+    assert!(created.get("sheets").is_none(), "not reported back");
+    // Rows before any switch belong to the first sheet; a switch may come
+    // in a later part than the rows before it.
+    let (status, body) = put_part(&app, id, 1, lines(&SAMPLE[..2])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = put_part(
+        &app,
+        id,
+        2,
+        lines(&[
+            SAMPLE[2],
+            r#"{"sheet": "Avis & notes"}"#,
+            r#"["Dupont", "Favorable"]"#,
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["source_rows"], 4, "switch lines are not rows");
+    let (status, body) = put_part(&app, id, 3, lines(&[r#"["Martin", "Défavorable"]"#])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["source_rows"], 5);
+    let (status, body) = finish(&app, id).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let built = build(&app, id).await;
+    let entries = unzip(&download(&app, &built).await);
+    let names: Vec<&str> = entries.iter().map(|(n, _, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "[Content_Types].xml",
+            "_rels/.rels",
+            "xl/workbook.xml",
+            "xl/_rels/workbook.xml.rels",
+            "xl/styles.xml",
+            "xl/worksheets/sheet1.xml",
+            "xl/worksheets/sheet2.xml",
+            "xl/worksheets/sheet3.xml",
+        ]
+    );
+    let text = |name: &str| String::from_utf8(entry(&entries, name).to_vec()).unwrap();
+    let workbook = text("xl/workbook.xml");
+    assert!(
+        workbook.contains(concat!(
+            r#"<sheets><sheet name="Dossiers" sheetId="1" r:id="rId1"/>"#,
+            r#"<sheet name="Avis &amp; notes" sheetId="2" r:id="rId2"/>"#,
+            r#"<sheet name="Vide" sheetId="3" r:id="rId3"/></sheets>"#
+        )),
+        "{workbook}"
+    );
+    let rels = text("xl/_rels/workbook.xml.rels");
+    assert!(
+        rels.contains(r#"Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet3.xml""#),
+        "{rels}"
+    );
+    assert!(
+        rels.contains(r#"Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles""#),
+        "{rels}"
+    );
+    let types = text("[Content_Types].xml");
+    assert_eq!(types.matches("spreadsheetml.worksheet+xml").count(), 3);
+
+    let first = text("xl/worksheets/sheet1.xml");
+    assert_eq!(first.matches("<row ").count(), 4, "header and three rows");
+    assert!(
+        first.contains("Dupont") && first.contains(r#"<row r="4">"#),
+        "{first}"
+    );
+    let second = text("xl/worksheets/sheet2.xml");
+    assert_eq!(second.matches("<row ").count(), 3, "header and two rows");
+    assert!(
+        second.contains(r#"<row r="1"><c r="A1" t="inlineStr"><is><t xml:space="preserve">Dossier</t></is></c><c r="B1" t="inlineStr"><is><t xml:space="preserve">Avis</t></is></c></row>"#),
+        "{second}"
+    );
+    assert!(
+        second.contains("Favorable") && second.contains("Défavorable"),
+        "{second}"
+    );
+    let third = text("xl/worksheets/sheet3.xml");
+    assert_eq!(third.matches("<row ").count(), 1, "a header alone");
+    assert!(third.contains("Rien"), "{third}");
+}
+
+#[tokio::test]
+async fn ods_workbook() {
+    let app = setup().await;
+    let created = create(&app, workbook_blob("dossiers.ods", ODS)).await;
+    let id = id_of(&created);
+    // Straight to the last sheet: the ones skipped get a header alone.
+    let (status, body) = put_private(
+        &app,
+        id,
+        lines(&[SAMPLE[0], r#"{"sheet": "Vide"}"#, r#"["pas si vide"]"#]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["source_rows"], 2);
+    let built = build(&app, id).await;
+    let entries = unzip(&download(&app, &built).await);
+    let content = String::from_utf8(entry(&entries, "content.xml").to_vec()).unwrap();
+    let tables: Vec<usize> = content
+        .match_indices("<table:table ")
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(tables.len(), 3, "{content}");
+    let (first, rest) = content.split_at(tables[1]);
+    let (second, third) = rest.split_at(tables[2] - tables[1]);
+    assert!(
+        first.contains(r#"<table:table table:name="Dossiers"><table:table-column table:number-columns-repeated="5"/>"#),
+        "{first}"
+    );
+    assert_eq!(first.matches("<table:table-row>").count(), 2);
+    assert!(first.contains("Dupont"), "{first}");
+    assert!(
+        second.contains(r#"<table:table table:name="Avis &amp; notes"><table:table-column table:number-columns-repeated="2"/>"#),
+        "{second}"
+    );
+    assert_eq!(second.matches("<table:table-row>").count(), 1, "{second}");
+    assert!(
+        third.starts_with(r#"<table:table table:name="Vide"><table:table-column table:number-columns-repeated="1"/>"#),
+        "{third}"
+    );
+    assert_eq!(third.matches("<table:table-row>").count(), 2, "{third}");
+    assert!(third.contains("pas si vide"), "{third}");
+    assert!(
+        third.ends_with(
+            "</table:table></office:spreadsheet></office:body></office:document-content>"
+        ),
+        "{third}"
+    );
+}
+
+/// A switch must name a declared sheet after the current one; a wrong one
+/// fails the part like any bad line, and the blob keeps what it had.
+#[tokio::test]
+async fn sheet_switch_rejections() {
+    let app = setup().await;
+    let created = create(&app, workbook_blob("switch.xlsx", XLSX)).await;
+    let id = id_of(&created);
+    let (status, body) = put_part(
+        &app,
+        id,
+        1,
+        lines(&[SAMPLE[0], r#"{"sheet": "Avis & notes"}"#, r#"["a", "b"]"#]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let cases: Vec<(&str, &str, &str)> = vec![
+        (
+            "undeclared",
+            r#"{"sheet": "Pièces"}"#,
+            "line 1: no sheet named \"Pièces\" is declared",
+        ),
+        (
+            "case matters",
+            r#"{"sheet": "vide"}"#,
+            "no sheet named \"vide\"",
+        ),
+        (
+            "backwards",
+            r#"{"sheet": "Dossiers"}"#,
+            "line 1: sheet \"Dossiers\" comes before the current sheet \"Avis & notes\"",
+        ),
+        (
+            "the current sheet",
+            r#"{"sheet": "Avis & notes"}"#,
+            "already the current sheet",
+        ),
+        (
+            "not a switch",
+            r#"{"sheet": "Vide", "rows": 2}"#,
+            "line 1: expected {\"sheet\": \"...\"} to switch sheets",
+        ),
+        ("not a name", r#"{"sheet": 3}"#, "to switch sheets"),
+        (
+            "rows against the current sheet",
+            r#"["a", "b", "c"]"#,
+            "expected 2 cells",
+        ),
+        (
+            "rows against the new sheet",
+            "{\"sheet\": \"Vide\"}\n[\"a\", \"b\"]",
+            "line 2: expected 1 cells",
+        ),
+    ];
+    for (name, line, says) in cases {
+        let (status, body) = put_part(&app, id, 2, lines(&[line])).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{name}: {body}");
+        let message = body["error"]["message"].as_str().unwrap();
+        assert!(message.contains(says), "{name}: {body}");
+        let got = get_blob(&app, id).await;
+        assert_eq!(got["source_parts"], 1, "{name}");
+        assert_eq!(got["source_rows"], 2, "{name}");
+    }
+    // The position survives a refused part: still on the second sheet.
+    let (status, body) = put_part(&app, id, 2, lines(&[r#"["c", "d"]"#])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["source_rows"], 3);
+
+    // A blob declared with `columns` has one sheet, so no switch can name a
+    // later one, whatever the format.
+    for (filename, content_type) in [("one.xlsx", XLSX), ("one.csv", "text/csv")] {
+        let created = create(&app, rows_blob(filename, content_type)).await;
+        let (status, body) =
+            put_part(&app, id_of(&created), 1, lines(&[r#"{"sheet": "Avis"}"#])).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        let message = body["error"]["message"].as_str().unwrap();
+        assert!(message.contains("no sheet named \"Avis\""), "{body}");
+        let (status, body) =
+            put_part(&app, id_of(&created), 1, lines(&[r#"{"sheet": "one"}"#])).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        let message = body["error"]["message"].as_str().unwrap();
+        assert!(message.contains("already the current sheet"), "{body}");
+    }
+}
+
+/// The row limit is per sheet: a switch starts the count over.
+#[tokio::test]
+async fn sheet_row_limit_is_per_sheet() {
+    let app = setup().await;
+    let created = create(&app, workbook_blob("per-sheet.xlsx", XLSX)).await;
+    let id = id_of(&created);
+    let one = json!(["x", 1, true, null, null]);
+    let (status, _) = put_part(&app, id, 1, source(std::slice::from_ref(&one))).await;
+    assert_eq!(status, StatusCode::OK);
+    sqlx::query(
+        "UPDATE blobs SET source_rows = 1048575, source_sheet_rows = 1048575 WHERE id = $1",
+    )
+    .bind(parse_id(id))
+    .execute(app.state.pool())
+    .await
+    .unwrap();
+    let (status, body) = put_part(&app, id, 2, source(std::slice::from_ref(&one))).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("sheet \"Dossiers\" would exceed 1048576 rows"),
+        "{body}"
+    );
+    let mut next = lines(&[r#"{"sheet": "Avis & notes"}"#]);
+    next.extend(source(&vec![json!(["a", "b"]); 4]));
+    let (status, body) = put_part(&app, id, 2, next).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["source_rows"], 1_048_579);
+}
+
+#[tokio::test]
+async fn creation_checks_the_sheets() {
+    let app = setup().await;
+    let post = |body: Value| call(&app.private, json_req(Method::POST, "/blobs", body));
+    let cols = json!([{"name": "a"}]);
+    let cases: Vec<(&str, Value, &str)> = vec![
+        (
+            "csv",
+            json!({"filename": "e.csv", "content_type": "text/csv", "input_type": "rows", "sheets": [{"name": "s", "columns": cols}]}),
+            "a CSV holds one sheet",
+        ),
+        (
+            "both",
+            json!({"filename": "e.xlsx", "content_type": XLSX, "input_type": "rows", "columns": cols, "sheets": [{"name": "s", "columns": cols}]}),
+            "mutually exclusive",
+        ),
+        (
+            "none",
+            json!({"filename": "e.xlsx", "content_type": XLSX, "input_type": "rows", "sheets": []}),
+            "at least one sheet",
+        ),
+        (
+            "not for archives",
+            json!({"filename": "e.zip", "content_type": "application/zip", "input_type": "archive", "sheets": [{"name": "s", "columns": cols}]}),
+            "sheets apply to rows input only",
+        ),
+        (
+            "forbidden character",
+            json!({"filename": "e.xlsx", "content_type": XLSX, "input_type": "rows", "sheets": [{"name": "a/b", "columns": cols}]}),
+            "sheet 1 has a name that must not contain any of [ ] : * ? / \\",
+        ),
+        (
+            "too long",
+            json!({"filename": "e.xlsx", "content_type": XLSX, "input_type": "rows", "sheets": [{"name": "n".repeat(32), "columns": cols}]}),
+            "31 characters",
+        ),
+        (
+            "duplicate ignoring case",
+            json!({"filename": "e.ods", "content_type": ODS, "input_type": "rows", "sheets": [{"name": "Avis", "columns": cols}, {"name": "AVIS", "columns": cols}]}),
+            "sheet 2 has the same name as sheet 1",
+        ),
+        (
+            "unknown key",
+            json!({"filename": "e.xlsx", "content_type": XLSX, "input_type": "rows", "sheets": [{"name": "s", "columns": cols, "hidden": true}]}),
+            "hidden",
+        ),
+        (
+            "a sheet's columns",
+            json!({"filename": "e.xlsx", "content_type": XLSX, "input_type": "rows", "sheets": [{"name": "s", "columns": cols}, {"name": "t", "columns": [{"name": "a\u{202E}b"}]}]}),
+            "sheet 2: column 1 has a name with control characters",
+        ),
+    ];
+    for (name, body, says) in cases {
+        let (status, res) = post(body).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{name}: {res}");
+        let message = res["error"]["message"].as_str().unwrap();
+        assert!(message.contains(says), "{name}: {res}");
     }
 }
 

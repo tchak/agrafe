@@ -112,7 +112,8 @@ every decision.
 ### Generated files
 
 - **Spreadsheets**: send rows as JSONL against declared columns and get a
-  CSV, XLSX or ODS back, with typed `date` and `datetime` columns.
+  CSV, XLSX or ODS back, with typed `date` and `datetime` columns and, for
+  XLSX and ODS, several sheets per workbook.
 - **ZIP archives**: send a manifest of paths and blob ids and get a ZIP of
   those blobs, with path normalisation and collision-safe deduplication.
 - **Sent in parts**: large sources arrive as many short requests, so a
@@ -291,6 +292,27 @@ Large exports go in parts, then a finish call starts the build:
 curl -s -X PUT "localhost:8080/blobs/$SHEET/parts/1" --data-binary @page-1.jsonl
 curl -s -X PUT "localhost:8080/blobs/$SHEET/parts/2" --data-binary @page-2.jsonl
 curl -s -X POST "localhost:8080/blobs/$SHEET/finish"
+```
+
+An XLSX or ODS workbook can hold several sheets: declare `sheets` instead
+of `columns`, send the rows of the first sheet, then a `{"sheet": "..."}`
+line before the rows of each following sheet, in the declared order. A
+sheet given no rows gets its header alone.
+
+```sh
+BOOK=$(curl -s localhost:8080/blobs \
+  -H 'content-type: application/json' \
+  -d '{"filename": "users.xlsx",
+       "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+       "input_type": "rows",
+       "sheets": [
+         {"name": "Users", "columns": [{"name": "Name"}, {"name": "Signed up", "type": "date"}]},
+         {"name": "Teams", "columns": [{"name": "Team"}, {"name": "Members"}]}]}' \
+  | jq -r .id)
+
+printf '%s\n' '["Ada", "2026-01-15"]' '["Grace", "2026-02-03"]' \
+  '{"sheet": "Teams"}' '["Compilers", 2]' \
+  | curl -s -X PUT "localhost:8080/blobs/$BOOK" --data-binary @- | jq .state
 ```
 
 ### Build a ZIP archive

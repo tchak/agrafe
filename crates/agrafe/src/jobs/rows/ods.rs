@@ -1,7 +1,7 @@
 //! ODS as a streamed package: `mimetype` first and stored as the format
-//! requires, then the manifest and a streamed `content.xml` with typed
-//! cells, the typed value in its attribute and the displayed text
-//! alongside. See DESIGN.md, "Rows".
+//! requires, then the manifest and a streamed `content.xml` holding the
+//! sheets as tables in sequence, with typed cells, the typed value in its
+//! attribute and the displayed text alongside. See DESIGN.md, "Rows".
 
 use std::io::Write;
 
@@ -16,7 +16,7 @@ const MANIFEST: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
 <manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.2"><manifest:file-entry manifest:full-path="/" manifest:version="1.2" manifest:media-type="application/vnd.oasis.opendocument.spreadsheet"/><manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/></manifest:manifest>"#;
 
 pub async fn write(
-    sheet: &Sheet,
+    sheets: &[Sheet],
     rows: &mut SourceRows<'_>,
     sink: &mut Sink,
 ) -> Result<(), BuildError> {
@@ -25,29 +25,34 @@ pub async fn write(
     package.file("META-INF/manifest.xml", MANIFEST).await?;
 
     package.begin("content.xml").await?;
-    let buf = package.buf();
-    buf.extend_from_slice(
-        br#"<?xml version="1.0" encoding="UTF-8"?>
-<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" office:version="1.2"><office:body><office:spreadsheet><table:table table:name=""#,
-    );
-    push_attr(buf, &sheet.name);
-    write!(
-        buf,
-        "\"><table:table-column table:number-columns-repeated=\"{}\"/>",
-        sheet.columns.len()
-    )
-    .expect("vec");
-    push_row(buf, &header(sheet));
-    while rows
-        .next_row(|cells| push_row(package.buf(), cells))
-        .await?
-        .is_some()
-    {
-        package.flush(false).await?;
-    }
     package.buf().extend_from_slice(
-        b"</table:table></office:spreadsheet></office:body></office:document-content>",
+        br#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" office:version="1.2"><office:body><office:spreadsheet>"#,
     );
+    for (index, sheet) in sheets.iter().enumerate() {
+        rows.begin_sheet(index);
+        let buf = package.buf();
+        buf.extend_from_slice(b"<table:table table:name=\"");
+        push_attr(buf, &sheet.name);
+        write!(
+            buf,
+            "\"><table:table-column table:number-columns-repeated=\"{}\"/>",
+            sheet.columns.len()
+        )
+        .expect("vec");
+        push_row(buf, &header(sheet));
+        while rows
+            .next_row(|cells| push_row(package.buf(), cells))
+            .await?
+            .is_some()
+        {
+            package.flush(false).await?;
+        }
+        package.buf().extend_from_slice(b"</table:table>");
+    }
+    package
+        .buf()
+        .extend_from_slice(b"</office:spreadsheet></office:body></office:document-content>");
     package.end().await?;
     package.finish().await
 }

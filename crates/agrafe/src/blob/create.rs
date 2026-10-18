@@ -54,8 +54,12 @@ pub struct CreateBlobRequest {
     pub checksum: Option<String>,
     /// Declared size in bytes. Required for `raw` and `multipart`.
     pub size: Option<i64>,
-    /// The columns of the sheet, in order. Required for `rows`.
+    /// The columns of the one sheet, in order. A `rows` blob takes this or
+    /// `sheets`.
     pub columns: Option<Vec<Column>>,
+    /// The sheets of the workbook, in order, each with its columns. For
+    /// `rows` to XLSX or ODS; a CSV holds one sheet.
+    pub sheets: Option<Vec<Sheet>>,
     #[serde(default)]
     pub skip_virus_scan: bool,
     pub expires_at: Option<Timestamp>,
@@ -121,18 +125,25 @@ pub fn validate(
         validate_generated_content_type(req.input_type, &content_type)?;
         (None, None)
     };
-    let source_columns = match (req.input_type, req.columns) {
-        (InputType::Rows, Some(columns)) => Some(vec![Sheet {
+    let source_columns = match (req.input_type, req.columns, req.sheets) {
+        (InputType::Rows, Some(_), Some(_)) => {
+            return Err(unprocessable("columns and sheets are mutually exclusive"));
+        }
+        (InputType::Rows, Some(columns), None) => Some(vec![Sheet {
             name: rows::sheet_name(&filename),
             columns: validate_columns(columns, &content_type)?,
         }]),
-        (InputType::Rows, None) => {
-            return Err(unprocessable("columns are required for rows input"));
+        (InputType::Rows, None, Some(sheets)) => Some(validate_sheets(sheets, &content_type)?),
+        (InputType::Rows, None, None) => {
+            return Err(unprocessable("rows input requires columns or sheets"));
         }
-        (_, Some(_)) => {
+        (_, Some(_), _) => {
             return Err(unprocessable("columns apply to rows input only"));
         }
-        (_, None) => None,
+        (_, None, Some(_)) => {
+            return Err(unprocessable("sheets apply to rows input only"));
+        }
+        (_, None, None) => None,
     };
 
     let expires_at = match (req.expires_at, req.expires_in) {
@@ -294,6 +305,44 @@ fn validate_columns(columns: Vec<Column>, content_type: &str) -> Result<Vec<Colu
     Ok(columns)
 }
 
+/// The sheets of a workbook: at least one, each named as Excel accepts,
+/// no two alike ignoring case, each with columns as `validate_columns`
+/// wants them. Not for CSV, which holds one sheet.
+fn validate_sheets(sheets: Vec<Sheet>, content_type: &str) -> Result<Vec<Sheet>, CreateError> {
+    if !rows::is_sheet(content_type) {
+        return Err(unprocessable(
+            "sheets apply to XLSX and ODS output; a CSV holds one sheet, declared with columns",
+        ));
+    }
+    if sheets.is_empty() {
+        return Err(unprocessable("sheets must declare at least one sheet"));
+    }
+    let mut seen: Vec<String> = Vec::with_capacity(sheets.len());
+    sheets
+        .into_iter()
+        .enumerate()
+        .map(|(i, sheet)| {
+            let n = i + 1;
+            rows::check_sheet_name(&sheet.name)
+                .map_err(|why| unprocessable(format!("sheet {n} has a name that {why}")))?;
+            let folded = sheet.name.to_lowercase();
+            if let Some(j) = seen.iter().position(|s| *s == folded) {
+                return Err(unprocessable(format!(
+                    "sheet {n} has the same name as sheet {}, ignoring case",
+                    j + 1
+                )));
+            }
+            seen.push(folded);
+            let columns = validate_columns(sheet.columns, content_type)
+                .map_err(|e| unprocessable(format!("sheet {n}: {e}")))?;
+            Ok(Sheet {
+                name: sheet.name,
+                columns,
+            })
+        })
+        .collect()
+}
+
 fn validate_generated_content_type(
     input_type: InputType,
     content_type: &str,
@@ -344,6 +393,7 @@ mod tests {
                     kind: None,
                 }]
             }),
+            sheets: None,
             skip_virus_scan: false,
             expires_at: None,
             expires_in: None,
@@ -525,6 +575,134 @@ mod tests {
             validate(r, &cfg(), &blobs(), now).is_ok(),
             "CSV has no such limit"
         );
+    }
+
+    fn sheet(name: &str, columns: &[&str]) -> Sheet {
+        Sheet {
+            name: name.into(),
+            columns: columns
+                .iter()
+                .map(|c| Column {
+                    name: c.to_string(),
+                    kind: None,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn rows_declare_their_sheets() {
+        let now = Timestamp::now();
+        let workbook = |content_type: &str, sheets: Vec<Sheet>| {
+            let mut r = req(InputType::Rows, content_type);
+            r.columns = None;
+            r.sheets = Some(sheets);
+            r
+        };
+        let b = validate(
+            workbook(
+                classify::XLSX,
+                vec![sheet("Dossiers", &["a", "b"]), sheet("Avis", &["c"])],
+            ),
+            &cfg(),
+            &blobs(),
+            now,
+        )
+        .unwrap();
+        let sheets = b.source_columns.unwrap();
+        assert_eq!(sheets.len(), 2);
+        assert_eq!(sheets[0].name, "Dossiers");
+        assert_eq!(sheets[0].columns.len(), 2);
+        assert_eq!(sheets[1].name, "Avis");
+        assert!(
+            validate(
+                workbook(classify::ODS, vec![sheet("Une", &["a"])]),
+                &cfg(),
+                &blobs(),
+                now
+            )
+            .is_ok(),
+            "one named sheet"
+        );
+
+        let cases: Vec<(&str, CreateBlobRequest, &str)> = vec![
+            (
+                "csv",
+                workbook(classify::CSV, vec![sheet("a", &["a"])]),
+                "a CSV holds one sheet",
+            ),
+            (
+                "none",
+                workbook(classify::XLSX, vec![]),
+                "at least one sheet",
+            ),
+            (
+                "both",
+                {
+                    let mut r = req(InputType::Rows, classify::XLSX);
+                    r.sheets = Some(vec![sheet("a", &["a"])]);
+                    r
+                },
+                "mutually exclusive",
+            ),
+            (
+                "neither",
+                {
+                    let mut r = req(InputType::Rows, classify::XLSX);
+                    r.columns = None;
+                    r
+                },
+                "requires columns or sheets",
+            ),
+            (
+                "not for archives",
+                {
+                    let mut r = req(InputType::Archive, classify::ZIP);
+                    r.sheets = Some(vec![sheet("a", &["a"])]);
+                    r
+                },
+                "sheets apply to rows input only",
+            ),
+            (
+                "bad name",
+                workbook(
+                    classify::XLSX,
+                    vec![sheet("a", &["a"]), sheet("b:c", &["a"])],
+                ),
+                "sheet 2 has a name that must not contain",
+            ),
+            (
+                "reserved name",
+                workbook(classify::XLSX, vec![sheet("History", &["a"])]),
+                "sheet 1 has a name that is reserved",
+            ),
+            (
+                "duplicate ignoring case",
+                workbook(
+                    classify::XLSX,
+                    vec![
+                        sheet("Été", &["a"]),
+                        sheet("b", &["a"]),
+                        sheet("été", &["a"]),
+                    ],
+                ),
+                "sheet 3 has the same name as sheet 1",
+            ),
+            (
+                "no columns",
+                workbook(classify::XLSX, vec![sheet("a", &["a"]), sheet("b", &[])]),
+                "sheet 2: columns must name at least one column",
+            ),
+            (
+                "bad column",
+                workbook(classify::XLSX, vec![sheet("a", &["x", ""])]),
+                "sheet 1: column 2 has an empty name",
+            ),
+        ];
+        for (name, r, says) in cases {
+            let err = validate(r, &cfg(), &blobs(), now).unwrap_err();
+            assert!(err.to_string().contains(says), "{name}: {err}");
+        }
     }
 
     #[test]

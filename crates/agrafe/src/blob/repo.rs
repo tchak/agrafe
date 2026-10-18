@@ -337,6 +337,19 @@ pub struct PartAccepted {
     /// What the part adds to the size of the generated file, when the type
     /// knows it at accept time: the members of an archive.
     pub size: Option<u64>,
+    /// Where the part left a `rows` source: the sheet it is filling and the
+    /// lines in it so far. `None` leaves the row as it is.
+    pub sheet: Option<SheetPosition>,
+}
+
+/// The position of a `rows` source within its workbook, carried across
+/// parts because the row limit is per sheet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SheetPosition {
+    /// Index of the sheet, from zero.
+    pub index: u32,
+    /// Lines accepted into it so far.
+    pub rows: u64,
 }
 
 /// Part `n` is stored: `uploading` back to `created`, the part counted on
@@ -354,6 +367,8 @@ pub async fn complete_part(
          SET state = $2, source_parts = $4, source_rows = source_rows + $5, \
              source_size = source_size + $6, \
              size = CASE WHEN $7::bigint IS NULL THEN size ELSE COALESCE(size, 0) + $7 END, \
+             source_sheet = COALESCE($9, source_sheet), \
+             source_sheet_rows = COALESCE($10, source_sheet_rows), \
              source_updated_at = now() \
          WHERE id = $1 AND state = $3 AND upload_started_at = $8 RETURNING *",
     )
@@ -365,6 +380,8 @@ pub async fn complete_part(
     .bind(accepted.bytes as i64)
     .bind(accepted.size.map(|s| s as i64))
     .bind(started.to_sqlx())
+    .bind(accepted.sheet.map(|p| p.index as i32))
+    .bind(accepted.sheet.map(|p| p.rows as i64))
     .fetch_optional(&mut *conn)
     .await?;
     match updated {

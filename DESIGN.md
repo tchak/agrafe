@@ -205,7 +205,8 @@ message = METHOD "\n" expires_unix "\n" path_and_query_after_token
 | `input_type` | yes | `raw`, `multipart`, `rows`, `archive` |
 | `checksum` | for `raw`, `multipart` | SHA-256 of the bytes, base64 |
 | `size` | for `raw`, `multipart` | Declared size in bytes, enforced on upload |
-| `columns` | for `rows` | The columns of the sheet, in order: a list of `{"name": "...", "type": "..."}`, `type` optional. See "Rows" |
+| `columns` | for `rows`, or `sheets` | The columns of the one sheet, in order: a list of `{"name": "...", "type": "..."}`, `type` optional. See "Rows" |
+| `sheets` | for `rows`, or `columns` | The sheets of an XLSX or ODS workbook, in order: a list of `{"name": "...", "columns": [...]}`. See "Rows" |
 | `skip_virus_scan` | no, default `false` | Private-only, backend vouches for the source |
 | `priority` | no, default `normal` | `high`, `normal` or `low`: where the blob's jobs go in their kind's queue, see "Jobs" |
 | `expires_at` or `expires_in` | no, default `blobs.default_expires_in` | Absolute timestamp or duration such as `7d`. Cleared by the first attachment, see "Attachments" |
@@ -226,7 +227,7 @@ The name describes the shape of the `PUT` body.
 |---|---|---|
 | `raw` | The file bytes | The file |
 | `multipart` | `multipart/form-data` with one part named `file` holding the bytes; the part's own filename, if any, is ignored | The file |
-| `rows` | JSONL, one array of cell values per line, positional against the `columns` declared at creation | CSV, XLSX or ODS per the blob content type, built by a job after the request (see "Generated blobs") |
+| `rows` | JSONL, one array of cell values per line, positional against the columns of the current sheet; an object line `{"sheet": "..."}` switches to a later sheet | CSV, XLSX or ODS per the blob content type, built by a job after the request (see "Generated blobs") |
 | `archive` | JSONL, one `{"path": "...", "blob_id": "..."}` per line | ZIP containing the referenced blobs, built by a job after the request (see "Generated blobs") |
 
 `rows` and `archive` are **private-only**. An `archive` upload reads other
@@ -608,7 +609,9 @@ of the row, in the code or in an operator's head, has to read `created` as
 What the accept pass has to carry across parts stays small and sits on the
 row: `source_parts`, `source_size` (bytes of source), `source_rows`
 (lines) and `source_updated_at`, the first three reported by `GET` for
-generated blobs. The `source_columns` of a `rows` blob are written at
+generated blobs, and for a `rows` blob the sheet the source is filling and
+the rows in it so far (`source_sheet`, `source_sheet_rows`), since the row
+limit is per sheet. The `source_columns` of a `rows` blob are written at
 creation and only read by accept and build. Anything per line is left to
 the build, which reads the source in order anyway. Parts are capped at
 10 000.
@@ -700,10 +703,12 @@ so `1.10` stays `1.10`; one that does not fit a double, `1e999`, is refused
 at accept, since no cell can hold it. Excel keeps fifteen significant
 digits, so a backend exporting 64-bit identifiers sends them as strings.
 
-The one sheet is named after the filename's stem, made acceptable to
-Excel: its forbidden characters `[ ] : * ? / \` replaced, at most 31
-characters, `Sheet1` when nothing is left or when the stem is `History`,
-which Excel reserves for its change tracking and refuses on opening.
+A blob declared with `columns` has one sheet, named after the filename's
+stem, made acceptable to Excel: its forbidden characters `[ ] : * ? / \`
+replaced, at most 31 characters, `Sheet1` when nothing is left or when the
+stem is `History`, which Excel reserves for its change tracking and
+refuses on opening. A workbook of several sheets is declared with `sheets`
+instead, see "Workbooks" below.
 
 The output format is the blob's `content_type`: `text/csv`, the XLSX type
 or the ODS type; anything else is refused at creation. All three are
@@ -719,8 +724,9 @@ written row by row, the header first:
   CSV has no types, so all of it is text to the reader; and a French Excel
   splits on `;` and reads `3.14` as text, so the CSV is the format for
   machines and the XLSX is what an agent opens.
-- XLSX as a streamed package: one sheet, inline strings rather than a
-  shared string table, which would need a second pass over the data.
+- XLSX as a streamed package: one worksheet entry per sheet, inline
+  strings rather than a shared string table, which would need a second
+  pass over the data.
   Numbers are numeric cells, booleans `t="b"` cells holding `1` or `0`,
   strings text cells, which Excel never evaluates. Dates and datetimes are
   serial numbers (days since 1899-12-30, the time as the fraction) with a
@@ -770,17 +776,22 @@ whichever part it is in. Excel repairs a workbook with a longer text,
 truncating the cell, and says so on opening. CSV has none of these
 limits. A `rows` blob with no lines produces a header only.
 
-Multi-sheet workbooks are not supported yet, but the design leaves them
-an additive extension. `source_columns` is stored as a list of sheets from
-the start, the one sheet of `columns` named after the filename stem, and
-the build is one function that emits a sheet from a column list and a row
-iterator, called once. The extension, when needed:
+#### Workbooks
+
+An XLSX or ODS blob may hold several sheets. `source_columns` is a list
+of sheets either way, the one sheet of `columns` named after the filename
+stem, and the build emits a sheet from a column list and a row iterator,
+once per sheet.
 
 - Create takes `sheets`, a list of `{"name": "...", "columns": [...]}` in
   workbook order, mutually exclusive with `columns`, refused for
-  `text/csv`. Sheet names are validated at creation: XLSX caps them at 31
-  characters, forbids `[ ] : * ? / \` and wants them unique
-  case-insensitively; LibreOffice forbids the same characters.
+  `text/csv`, which holds one sheet. A list of one is a workbook whose
+  sheet has a chosen name. Each sheet's `columns` follow the rules above,
+  and its name is validated as Excel wants it, since Excel refuses to
+  open a workbook that breaks them: at most 31 characters, none of
+  `[ ] : * ? / \`, no control characters, not blank, not starting or
+  ending with an apostrophe, not `History`, and unique among the sheets
+  ignoring case. LibreOffice forbids the same characters.
 - In the source, an object line `{"sheet": "..."}` switches the current
   sheet; rows are arrays, so the shape is unambiguous. Lines before any
   switch belong to the first sheet, so a single-sheet source never carries
@@ -788,15 +799,20 @@ iterator, called once. The extension, when needed:
   keeps the source grouped by sheet in workbook order: an XLSX sheet is one
   zip entry written whole before the next, an ODS `content.xml` holds its
   tables in sequence, and without grouping the build would need one pass
-  over the source per sheet. A sheet no switch points at gets a header
-  only.
+  over the source per sheet. A switch to the current sheet, to an earlier
+  one or to an undeclared name fails the part at its line, like any bad
+  line, and so does an object line that is anything but `{"sheet": "..."}`.
+  A sheet no switch points at gets a header only. Switch lines are not
+  counted in `source_rows`.
 - Accept carries two more fields on the row, the current sheet index and
   the row count within it, since the row limit is per sheet; `source_rows`
   stays the total. The switch line is valid in any part, so parts stay
-  uniform and resuming stays `source_parts` alone.
+  uniform and resuming stays `source_parts` alone. Neither field is
+  reported by `GET`: the backend knows where it is from what it sent.
 - The build loops over the sheets, consuming the source up to the next
-  switch line; the workbook relationships and the ODS table list are the
-  only extra output.
+  switch line, which it holds until it reaches the sheet named; the
+  workbook relationships and content types, one entry per sheet, and the
+  ODS table list are the only extra output.
 
 Rejected: parts per sheet (`PUT /blobs/:id/sheets/:s/parts/:n`), which
 breaks the one-counter resume rule for a backend that produces the sheets

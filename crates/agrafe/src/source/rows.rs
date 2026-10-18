@@ -1,6 +1,8 @@
-//! The source of a `rows` blob: the columns declared at creation, and one
-//! JSON array of cell values per line, positional against them, checked
-//! as the part arrives. See DESIGN.md, "Rows".
+//! The source of a `rows` blob: the sheets and their columns declared at
+//! creation, and one JSON array of cell values per line, positional
+//! against the current sheet's columns, checked as the part arrives. An
+//! object line `{"sheet": "..."}` switches to a later sheet. See
+//! DESIGN.md, "Rows".
 
 use std::borrow::Cow;
 
@@ -12,8 +14,9 @@ use serde_json::value::RawValue;
 use super::{LineError, Lines};
 use crate::app::Agrafe;
 use crate::blob::Blob;
-use crate::blob::repo::PartAccepted;
+use crate::blob::repo::{PartAccepted, SheetPosition};
 use crate::classify;
+use crate::text::is_bidi_control;
 use crate::upload::{Tap, UploadError};
 
 /// Rows an XLSX or ODS sheet holds at most, the header included.
@@ -63,19 +66,68 @@ pub struct Column {
     pub kind: Option<ColumnType>,
 }
 
-/// One sheet of the workbook. `source_columns` is a list of these from the
-/// start, one for now, so a multi-sheet extension adds and changes nothing
-/// of the stored shape.
+/// One sheet of the workbook, as declared at creation and stored on the
+/// row in `source_columns`, a list of these in workbook order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Sheet {
     pub name: String,
     pub columns: Vec<Column>,
 }
 
-/// The sheet name a `rows` blob's one sheet gets: the filename's stem,
-/// made acceptable to Excel, which caps names at 31 characters, forbids
-/// `[ ] : * ? / \` and a leading or trailing apostrophe, reserves
-/// `History` for its change tracking, and wants something there.
+/// Why a declared sheet name is not one Excel accepts.
+pub fn check_sheet_name(name: &str) -> Result<(), &'static str> {
+    if name.trim().is_empty() {
+        return Err("must not be empty");
+    }
+    if name.chars().count() > MAX_SHEET_NAME_LEN {
+        return Err("is longer than the 31 characters a sheet name holds");
+    }
+    if name
+        .chars()
+        .any(|c| matches!(c, '[' | ']' | ':' | '*' | '?' | '/' | '\\'))
+    {
+        return Err("must not contain any of [ ] : * ? / \\");
+    }
+    if name.chars().any(|c| c.is_control() || is_bidi_control(c)) {
+        return Err("must not contain control characters");
+    }
+    if name.starts_with('\'') || name.ends_with('\'') {
+        return Err("must not start or end with an apostrophe");
+    }
+    if name.eq_ignore_ascii_case("history") {
+        return Err("is reserved by Excel for its change tracking");
+    }
+    Ok(())
+}
+
+/// The index of the sheet a `{"sheet": "..."}` line names, which must come
+/// after `current` in workbook order: the source is grouped by sheet, so
+/// a sheet is written whole before the next. The message says what is
+/// wrong with the switch.
+pub fn switch_target(sheets: &[Sheet], current: usize, name: &str) -> Result<usize, String> {
+    let Some(index) = sheets.iter().position(|s| s.name == name) else {
+        return Err(format!("no sheet named {name:?} is declared"));
+    };
+    if index == current {
+        return Err(format!(
+            "sheet {name:?} is already the current sheet; rows before any switch belong to the first sheet"
+        ));
+    }
+    if index < current {
+        return Err(format!(
+            "sheet {name:?} comes before the current sheet {:?}; a source is grouped by sheet in workbook order",
+            sheets[current].name
+        ));
+    }
+    Ok(index)
+}
+
+/// The name the sheet of a `rows` blob declared with `columns` gets: the
+/// filename's stem, made acceptable to Excel, which caps names at 31
+/// characters, forbids `[ ] : * ? / \` and a leading or trailing
+/// apostrophe, reserves `History` for its change tracking, and wants
+/// something there.
 pub fn sheet_name(filename: &str) -> String {
     let stem = match filename.rsplit_once('.') {
         Some((stem, _)) if !stem.is_empty() => stem,
@@ -115,7 +167,35 @@ pub enum Cell<'a> {
     DateTime(civil::DateTime),
 }
 
-/// Parse and check one line against `columns`. The message names what is
+/// One line of the source: a row of the current sheet, or a switch to the
+/// sheet named.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Line<'a> {
+    Row(Vec<Cell<'a>>),
+    Switch(String),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SwitchLine {
+    sheet: String,
+}
+
+/// Parse and check one line: a JSON array of cell values against
+/// `columns`, or `{"sheet": "..."}`. The message names what is wrong with
+/// it. Which sheet a switch may name is the caller's to check, with
+/// [`switch_target`].
+pub fn parse_source_line<'a>(line: &'a [u8], columns: &[Column]) -> Result<Line<'a>, String> {
+    let first = line.iter().find(|b| !b.is_ascii_whitespace()).copied();
+    if first == Some(b'{') {
+        let switch: SwitchLine = serde_json::from_slice(line)
+            .map_err(|e| format!("expected {{\"sheet\": \"...\"}} to switch sheets: {e}"))?;
+        return Ok(Line::Switch(switch.sheet));
+    }
+    parse_line(line, columns).map(Line::Row)
+}
+
+/// Parse and check one row against `columns`. The message names what is
 /// wrong with it.
 pub fn parse_line<'a>(line: &'a [u8], columns: &[Column]) -> Result<Vec<Cell<'a>>, String> {
     let values: Vec<&'a RawValue> = serde_json::from_slice(line)
@@ -297,17 +377,21 @@ fn digits(b: &[u8]) -> Option<u32> {
 }
 
 /// The accept pass over one part of rows: lines parsed as they arrive,
-/// against the blob's columns, within the sheet's limits.
+/// against the current sheet's columns, within the sheet's limits. Where
+/// the part leaves the source, the sheet and the rows in it, goes on the
+/// row for the next part.
 pub struct Accept {
-    columns: Vec<Column>,
+    sheets: Vec<Sheet>,
     /// `upload.max_size`, the bound on one part.
     max_part: u64,
     /// Whether the output is a sheet, with its cell length limit.
     sheet: bool,
-    /// Data rows the sheet holds at most, when the format has a limit.
+    /// Data rows a sheet holds at most, when the format has a limit.
     row_limit: Option<u64>,
-    /// Lines across the parts before this one.
-    rows_before: u64,
+    /// Index of the sheet the lines go to.
+    current: usize,
+    /// Lines in the current sheet, the parts before this one included.
+    sheet_rows: u64,
     lines: Lines,
     rows: u64,
     bytes: u64,
@@ -315,15 +399,20 @@ pub struct Accept {
 
 impl Accept {
     pub fn new(state: &Agrafe, blob: &Blob) -> Result<Self, UploadError> {
-        let columns = blob.columns().ok_or(UploadError::NoColumns)?.to_vec();
+        let sheets = blob.sheets().ok_or(UploadError::NoColumns)?.to_vec();
         let sheet = is_sheet(&blob.content_type);
+        let current = usize::try_from(blob.source_sheet).unwrap_or(0);
+        if current >= sheets.len() {
+            return Err(UploadError::NoColumns);
+        }
         Ok(Self {
-            columns,
+            sheets,
             max_part: state.config().upload.max_size.as_u64(),
             sheet,
             // The header takes one row of the sheet.
             row_limit: sheet.then_some(MAX_SHEET_ROWS - 1),
-            rows_before: blob.source_rows.max(0) as u64,
+            current,
+            sheet_rows: blob.source_sheet_rows.max(0) as u64,
             lines: Lines::new(),
             rows: 0,
             bytes: 0,
@@ -341,20 +430,31 @@ impl Tap for Accept {
         }
         self.lines.push(chunk);
         while let Some((line, bytes)) = self.lines.next_line()? {
-            let cells =
-                parse_line(&bytes, &self.columns).map_err(|reason| LineError { line, reason })?;
+            let columns = &self.sheets[self.current].columns;
+            let cells = match parse_source_line(&bytes, columns)
+                .map_err(|reason| LineError { line, reason })?
+            {
+                Line::Switch(name) => {
+                    self.current = switch_target(&self.sheets, self.current, &name)
+                        .map_err(|reason| LineError { line, reason })?;
+                    self.sheet_rows = 0;
+                    continue;
+                }
+                Line::Row(cells) => cells,
+            };
             if self.sheet {
-                check_sheet_cells(&cells, &self.columns)
-                    .map_err(|reason| LineError { line, reason })?;
+                check_sheet_cells(&cells, columns).map_err(|reason| LineError { line, reason })?;
             }
             self.rows += 1;
+            self.sheet_rows += 1;
             if let Some(limit) = self.row_limit
-                && self.rows_before + self.rows > limit
+                && self.sheet_rows > limit
             {
                 return Err(LineError {
                     line,
                     reason: format!(
-                        "the sheet would exceed {MAX_SHEET_ROWS} rows, the header included"
+                        "sheet {:?} would exceed {MAX_SHEET_ROWS} rows, the header included",
+                        self.sheets[self.current].name
                     ),
                 }
                 .into());
@@ -369,6 +469,10 @@ impl Tap for Accept {
             rows: self.rows,
             bytes: self.bytes,
             size: None,
+            sheet: Some(SheetPosition {
+                index: self.current as u32,
+                rows: self.sheet_rows,
+            }),
         })
     }
 }
@@ -551,6 +655,89 @@ mod tests {
     }
 
     #[test]
+    fn declared_sheet_names() {
+        assert_eq!(check_sheet_name("Dossiers 2026"), Ok(()));
+        assert_eq!(check_sheet_name("été"), Ok(()));
+        assert_eq!(check_sheet_name("Historique"), Ok(()));
+        assert_eq!(check_sheet_name(&"x".repeat(MAX_SHEET_NAME_LEN)), Ok(()));
+        for (bad, says) in [
+            ("", "empty"),
+            ("   ", "empty"),
+            ("x".repeat(MAX_SHEET_NAME_LEN + 1).as_str(), "31 characters"),
+            ("a:b", "[ ] : * ? / \\"),
+            ("a/b", "[ ] : * ? / \\"),
+            ("a\\b", "[ ] : * ? / \\"),
+            ("[a]", "[ ] : * ? / \\"),
+            ("a*", "[ ] : * ? / \\"),
+            ("a?", "[ ] : * ? / \\"),
+            ("a\nb", "control"),
+            ("a\u{202E}b", "control"),
+            ("'quoted'", "apostrophe"),
+            ("'lead", "apostrophe"),
+            ("trail'", "apostrophe"),
+            ("History", "reserved"),
+            ("history", "reserved"),
+        ] {
+            let err = check_sheet_name(bad).unwrap_err();
+            assert!(err.contains(says), "{bad:?}: {err}");
+        }
+    }
+
+    fn sheets(names: &[&str]) -> Vec<Sheet> {
+        names
+            .iter()
+            .map(|name| Sheet {
+                name: name.to_string(),
+                columns: columns(&[("a", None)]),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn switches_go_forward() {
+        let sheets = sheets(&["one", "two", "three"]);
+        assert_eq!(switch_target(&sheets, 0, "two"), Ok(1));
+        assert_eq!(switch_target(&sheets, 0, "three"), Ok(2));
+        assert_eq!(switch_target(&sheets, 1, "three"), Ok(2));
+        let err = switch_target(&sheets, 0, "one").unwrap_err();
+        assert!(err.contains("already the current sheet"), "{err}");
+        let err = switch_target(&sheets, 2, "one").unwrap_err();
+        assert!(
+            err.contains("comes before the current sheet \"three\""),
+            "{err}"
+        );
+        let err = switch_target(&sheets, 0, "Two").unwrap_err();
+        assert!(err.contains("no sheet named \"Two\""), "{err}");
+    }
+
+    #[test]
+    fn source_lines_are_rows_or_switches() {
+        let cols = columns(&[("a", None)]);
+        assert_eq!(
+            parse_source_line(br#"["x"]"#, &cols),
+            Ok(Line::Row(vec![Cell::Text("x".into())]))
+        );
+        assert_eq!(
+            parse_source_line(br#"{"sheet": "two"}"#, &cols),
+            Ok(Line::Switch("two".into()))
+        );
+        assert_eq!(
+            parse_source_line(r#"  {"sheet":"t\u00e9"}"#.as_bytes(), &cols),
+            Ok(Line::Switch("té".into()))
+        );
+        for (bad, says) in [
+            (&br#"{"sheet": 1}"#[..], "to switch sheets"),
+            (br#"{"sheet": "two", "rows": 1}"#, "to switch sheets"),
+            (br#"{"name": "two"}"#, "to switch sheets"),
+            (br#"{}"#, "to switch sheets"),
+            (br#"nope"#, "expected a JSON array"),
+        ] {
+            let err = parse_source_line(bad, &cols).unwrap_err();
+            assert!(err.contains(says), "{bad:?}: {err}");
+        }
+    }
+
+    #[test]
     fn columns_serialize_without_an_absent_type() {
         let sheet = Sheet {
             name: "s".into(),
@@ -564,5 +751,9 @@ mod tests {
         assert_eq!(parsed.kind, Some(ColumnType::Datetime));
         assert!(serde_json::from_str::<Column>(r#"{"name":"x","type":"time"}"#).is_err());
         assert!(serde_json::from_str::<Column>(r#"{"name":"x","width":3}"#).is_err());
+        assert!(
+            serde_json::from_str::<Sheet>(r#"{"name":"s","columns":[{"name":"a"}],"x":1}"#)
+                .is_err()
+        );
     }
 }
