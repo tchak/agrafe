@@ -507,7 +507,12 @@ scanned clean, or was uploaded `skip_virus_scan` by the backend, which is
 its call to make for its own content and which the archive inherits: an
 archive is no more and no less trusted than its members. No thumbnail or preview beyond
 the category icon. When the build finishes the blob moves to `ready` with
-the checksum and the final size on the row. Out of attempts, the blob is stuck in `uploaded`,
+the checksum and the final size on the row. A failure the next attempt
+would repeat, a source line that does not parse, a row missing its key
+material, or a stored source or member that is damaged (a broken header,
+a length no stream produces, a segment that fails authentication), kills
+the job at once rather than through the backoff; a bucket or database
+error, or an object cut short in transit, is retried. Out of attempts, the blob is stuck in `uploaded`,
 unreadable, like a scan that never completes. No new state: `uploaded`
 already means that what the client sent is in the bucket and a job has to
 finish the blob. The source is purged with the rest of the prefix.

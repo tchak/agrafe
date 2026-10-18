@@ -744,3 +744,46 @@ async fn permanent_build_failures_die_at_once() {
     assert!(error.contains("wrapped key"), "{error}");
     assert_eq!(get_blob(&app, id).await["state"], "uploaded");
 }
+
+/// A member whose stored object is damaged fails the build for good at the
+/// first attempt: it is not gone, so it is not skipped, and another attempt
+/// would read the same bytes.
+#[tokio::test]
+async fn a_damaged_member_kills_the_build() {
+    use object_store::ObjectStoreExt;
+    use object_store::path::Path as ObjectPath;
+
+    let app = setup().await;
+    let member = ready_blob(&app, &png_bytes(100)).await;
+    let key = ObjectPath::from(storage_key(&app, id_of(&member)).await);
+    let mut stored = app
+        .state
+        .store()
+        .get(&key)
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap()
+        .to_vec();
+    let last = stored.len() - 1;
+    stored[last] ^= 1;
+    app.state.store().put(&key, stored.into()).await.unwrap();
+
+    let created = create(&app, archive_blob("damaged.zip")).await;
+    let id = id_of(&created);
+    let (status, _) = put_private(&app, id, manifest(&[("a.png", id_of(&member))])).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(run_job(&app, JobKind::Archive).await);
+    let (attempts, dead, error): (i32, bool, String) = sqlx::query_as(
+        "SELECT attempts, failed_at IS NOT NULL, last_error FROM jobs \
+         WHERE kind = 'archive' AND blob_id = $1",
+    )
+    .bind(parse_id(id))
+    .fetch_one(app.state.pool())
+    .await
+    .unwrap();
+    assert_eq!((attempts, dead), (1, true), "{error}");
+    assert!(error.contains("opening segment 0"), "{error}");
+    assert_eq!(get_blob(&app, id).await["state"], "uploaded");
+}

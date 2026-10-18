@@ -45,6 +45,22 @@ pub enum ReadError {
     },
 }
 
+impl ReadError {
+    /// Whether reading again would fail the same way: the row or the object
+    /// is damaged. A store error, or an object ending short of what its
+    /// length promised, may be the connection's.
+    pub fn is_permanent(&self) -> bool {
+        match self {
+            ReadError::Incomplete { .. }
+            | ReadError::Header { .. }
+            | ReadError::Key(_)
+            | ReadError::Length { .. }
+            | ReadError::Segment { .. } => true,
+            ReadError::Store(_) | ReadError::Truncated(_) => false,
+        }
+    }
+}
+
 /// Everything the row must carry once an object is stored.
 pub struct Stored {
     pub storage_key: String,

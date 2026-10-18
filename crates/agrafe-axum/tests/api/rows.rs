@@ -585,8 +585,9 @@ async fn permanent_rows_build_failures_die_at_once() {
     assert_eq!(get_blob(&app, id).await["state"], "uploaded");
 }
 
-/// A source part damaged in the store fails the build, whether its length
-/// fits no stream or its header does not parse; nothing is written.
+/// A source part damaged in the store, whether its length fits no stream
+/// or its header does not parse, fails the build for good at the first
+/// attempt: another would read the same bytes. Nothing is written.
 #[tokio::test]
 async fn damaged_source_parts_fail_the_build() {
     use object_store::ObjectStoreExt;
@@ -618,7 +619,15 @@ async fn damaged_source_parts_fail_the_build() {
         app.state.store().put(&key, stored.into()).await.unwrap();
 
         assert!(run_job(&app, JobKind::Rows).await);
-        let error = last_error(&app, id).await;
+        let (attempts, dead, error): (i32, bool, String) = sqlx::query_as(
+            "SELECT attempts, failed_at IS NOT NULL, last_error FROM jobs \
+             WHERE kind = 'rows' AND blob_id = $1",
+        )
+        .bind(parse_id(id))
+        .fetch_one(app.state.pool())
+        .await
+        .unwrap();
+        assert_eq!((attempts, dead), (1, true), "{error}");
         assert!(error.contains(want), "{error}");
         assert_eq!(get_blob(&app, id).await["state"], "uploaded");
         let original = format!("{id}/original");

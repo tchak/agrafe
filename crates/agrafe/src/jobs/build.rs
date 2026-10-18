@@ -70,16 +70,18 @@ pub enum BuildError {
 impl BuildError {
     /// Whether the next attempt would fail the same way. A source that does
     /// not parse, a row missing its key material, a key that does not
-    /// unwrap and a package the writer refuses are the blob's own; the
-    /// bucket and the database may come back.
+    /// unwrap, a stored object that is damaged and a package the writer
+    /// refuses are the blob's own; the bucket and the database may come
+    /// back.
     pub fn is_permanent(&self) -> bool {
-        matches!(
-            self,
+        match self {
             BuildError::Source { .. }
-                | BuildError::Incomplete { .. }
-                | BuildError::Key(_)
-                | BuildError::Zip(_)
-        )
+            | BuildError::Incomplete { .. }
+            | BuildError::Key(_)
+            | BuildError::Zip(_) => true,
+            BuildError::Read(err) => err.is_permanent(),
+            _ => false,
+        }
     }
 }
 
