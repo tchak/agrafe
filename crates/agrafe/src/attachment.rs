@@ -84,7 +84,10 @@ impl Agrafe {
             // The blob was pruned meanwhile, and the attachment with it.
             return Ok(false);
         }
-        delete(&mut *tx, id).await?;
+        if !delete(&mut *tx, id).await? {
+            // Another detach took it between `find` and the lock.
+            return Ok(false);
+        }
         if count_for_blob(&mut *tx, attachment.blob_id).await? == 0 {
             let expires_at = self.config().blobs.default_expires_at(Timestamp::now());
             set_expiry(&mut tx, attachment.blob_id, expires_at).await?;

@@ -536,3 +536,43 @@ async fn attach_waits_for_the_expiry_lock_and_sees_its_outcome() {
     assert_eq!(blob["state"], "expired");
     assert_eq!(blob["attachments"], json!([]));
 }
+
+/// Two detaches of one attachment contend for the blob row: the one that
+/// waits finds the attachment gone and says so, rather than claiming a
+/// detach it did not do.
+#[tokio::test]
+async fn a_detach_that_lost_the_race_finds_nothing() {
+    let app = setup().await;
+    let created = create(&app, raw_blob()).await;
+    let id = parse_id(id_of(&created));
+    let (status, attached) =
+        attach(&app, id_of(&created), attachment("Dossier", "1", "piece")).await;
+    assert_eq!(status, StatusCode::CREATED, "{attached}");
+    let attachment_id = parse_id(attached["id"].as_str().unwrap());
+
+    let mut tx = app.state.pool().begin().await.unwrap();
+    sqlx::query("SELECT id FROM blobs WHERE id = $1 FOR UPDATE")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+
+    let state = app.state.clone();
+    let detaching = tokio::spawn(async move { state.detach_blob(attachment_id).await });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!detaching.is_finished(), "the detach waits on the row lock");
+
+    // The detach holding the lock takes the row.
+    sqlx::query("DELETE FROM attachments WHERE id = $1")
+        .bind(attachment_id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    assert!(!detaching.await.unwrap().unwrap(), "nothing left to detach");
+    assert_eq!(
+        get_blob(&app, id_of(&created)).await["attachments"],
+        json!([])
+    );
+}
