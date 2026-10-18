@@ -344,6 +344,118 @@ mod tests {
         assert!(extract(pdf, &lenient, LIMIT).is_some());
     }
 
+    /// `flate.pdf` with its image dictionary changed by `edit`, extracted.
+    fn flate_with(edit: impl FnOnce(&mut lopdf::Dictionary)) -> Option<Extracted> {
+        let mut doc = Document::load_mem(include_bytes!("../../../fixtures/flate.pdf")).unwrap();
+        let image = doc
+            .objects
+            .values_mut()
+            .find_map(|object| match object {
+                Object::Stream(stream)
+                    if stream.dict.get(b"Subtype").and_then(Object::as_name).ok()
+                        == Some(b"Image") =>
+                {
+                    Some(stream)
+                }
+                _ => None,
+            })
+            .unwrap();
+        edit(&mut image.dict);
+        let mut bytes = Vec::new();
+        doc.save_to(&mut bytes).unwrap();
+        extract(&bytes, &thresholds(), LIMIT)
+    }
+
+    #[test]
+    fn raw_samples_pnm_cannot_carry_are_left_to_the_renderer() {
+        // Grey samples read off the same 24 bytes: a PGM of the first 8.
+        let grey = flate_with(|d| d.set("ColorSpace", Object::Name(b"DeviceGray".to_vec())));
+        let grey = grey.unwrap();
+        assert_eq!(grey.format, "pgm");
+        assert!(grey.bytes.starts_with(b"P5\n4 2\n255\n"));
+        assert_eq!(grey.bytes.len(), "P5\n4 2\n255\n".len() + 4 * 2);
+
+        // 16 bits a sample needs twice the bytes the stream has.
+        assert_eq!(flate_with(|d| d.set("BitsPerComponent", 16)), None);
+        assert_eq!(flate_with(|d| d.set("BitsPerComponent", 1)), None);
+        assert_eq!(
+            flate_with(|d| d.set("ColorSpace", Object::Name(b"DeviceCMYK".to_vec()))),
+            None
+        );
+        assert_eq!(flate_with(|d| d.set("ImageMask", true)), None);
+        // A decode array remaps the samples, which PNM cannot say.
+        assert_eq!(
+            flate_with(|d| d.set(
+                "Decode",
+                vec![1.into(), 0.into(), 1.into(), 0.into(), 1.into(), 0.into()]
+            )),
+            None
+        );
+        assert_eq!(flate_with(|d| d.set("Width", 0)), None);
+    }
+
+    #[test]
+    fn colour_spaces_pnm_carries() {
+        let mut doc = Document::with_version("1.7");
+        let mut icc = |n: i64| {
+            let id = doc.add_object(Stream::new(lopdf::dictionary! { "N" => n }, Vec::new()));
+            Object::Array(vec![Object::Name(b"ICCBased".to_vec()), id.into()])
+        };
+        let (icc_rgb, icc_grey, icc_cmyk) = (icc(3), icc(1), icc(4));
+        let family = |name: &[u8]| {
+            Object::Array(vec![
+                Object::Name(name.to_vec()),
+                Object::Dictionary(lopdf::Dictionary::new()),
+            ])
+        };
+        for (space, want) in [
+            (Object::Name(b"DeviceRGB".to_vec()), Some(3)),
+            (Object::Name(b"DeviceGray".to_vec()), Some(1)),
+            (Object::Name(b"DeviceCMYK".to_vec()), None),
+            (family(b"CalRGB"), Some(3)),
+            (family(b"CalGray"), Some(1)),
+            (family(b"Lab"), None),
+            (family(b"Indexed"), None),
+            (icc_rgb, Some(3)),
+            (icc_grey, Some(1)),
+            (icc_cmyk, None),
+            (Object::Array(vec![]), None),
+            (Object::Integer(3), None),
+        ] {
+            assert_eq!(channels(&doc, &space), want, "{space:?}");
+        }
+    }
+
+    #[test]
+    fn the_page_box_is_inherited() {
+        let mut doc = Document::load_mem(include_bytes!("../../../fixtures/image.pdf")).unwrap();
+        let page = *doc.get_pages().values().next().unwrap();
+        let page_dict = doc.get_dictionary_mut(page).unwrap();
+        let media = page_dict.remove(b"MediaBox").unwrap();
+        let parent = page_dict.get(b"Parent").unwrap().as_reference().unwrap();
+        doc.get_dictionary_mut(parent)
+            .unwrap()
+            .set("MediaBox", media);
+        let mut bytes = Vec::new();
+        doc.save_to(&mut bytes).unwrap();
+        assert_eq!(
+            extract(&bytes, &thresholds(), LIMIT).unwrap().format,
+            "jpeg"
+        );
+
+        // A box that is not four numbers, or has no area, is no page.
+        let page_dict = doc.get_dictionary_mut(page).unwrap();
+        page_dict.set("MediaBox", vec![0.into(), 0.into(), 100.into()]);
+        let mut bytes = Vec::new();
+        doc.save_to(&mut bytes).unwrap();
+        assert_eq!(extract(&bytes, &thresholds(), LIMIT), None);
+        let page_dict = doc.get_dictionary_mut(page).unwrap();
+        page_dict.set("MediaBox", vec![0.into(), 0.into(), 0.into(), 100.into()]);
+        let mut bytes = Vec::new();
+        doc.save_to(&mut bytes).unwrap();
+        assert_eq!(extract(&bytes, &thresholds(), LIMIT), None);
+    }
+
     #[test]
     fn small_or_rotated_images_are_not_extracted() {
         let pdf = include_bytes!("../../../fixtures/small.pdf");
