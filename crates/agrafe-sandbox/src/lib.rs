@@ -198,6 +198,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn output_is_bounded() {
+        let dir = std::env::temp_dir().join(format!("agrafe-sandbox-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("out");
+        let limits = Limits {
+            max_output_size: ByteSize::kib(64),
+            ..limits()
+        };
+
+        let mut write = command("sh");
+        write
+            .args(["-c", "head -c 1048576 /dev/zero > \"$1\""])
+            .arg("sh")
+            .arg(&file);
+        let outcome = run(write, &limits).await.unwrap();
+        let written = std::fs::metadata(&file).unwrap().len();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(matches!(outcome, Outcome::Failed { .. }), "{outcome:?}");
+        assert!(
+            written <= ByteSize::kib(64).as_u64(),
+            "{written} bytes written"
+        );
+    }
+
+    /// macOS does not enforce `RLIMIT_AS`, so the bound is Linux's alone.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn memory_is_bounded() {
+        let limits = Limits {
+            memory: ByteSize::mib(64),
+            ..limits()
+        };
+        // `dd` allocates its whole block up front.
+        let mut hog = command("dd");
+        hog.args(["if=/dev/zero", "of=/dev/null", "bs=256M", "count=1"]);
+        let outcome = run(hog, &limits).await.unwrap();
+        assert!(matches!(outcome, Outcome::Failed { .. }), "{outcome:?}");
+
+        let mut small = command("dd");
+        small.args(["if=/dev/zero", "of=/dev/null", "bs=1M", "count=1"]);
+        assert!(matches!(
+            run(small, &limits).await.unwrap(),
+            Outcome::Success
+        ));
+    }
+
+    #[tokio::test]
     async fn environment_is_clean() {
         let mut env = command("sh");
         env.args([
