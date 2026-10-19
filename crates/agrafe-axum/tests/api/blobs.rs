@@ -627,3 +627,109 @@ async fn state_machine_transitions() {
         Transition::Missing
     ));
 }
+
+/// The repair from the blob's side: `POST /blobs/:id/retry` enqueues
+/// whatever the blob's state waits on, supersedes the dead job of that
+/// kind and clears the failure on the row. It needs no job id, so it works
+/// once the dead job is pruned, and says `409` when there is nothing to do.
+#[tokio::test]
+async fn retry_enqueues_what_the_blob_waits_on() {
+    let app = setup().await;
+    let pool = app.state.pool();
+    async fn retry(app: &TestApp, id: String) -> (StatusCode, serde_json::Value) {
+        call(
+            &app.private,
+            req(Method::POST, &format!("/blobs/{id}/retry")),
+        )
+        .await
+    }
+
+    // A `created` blob waits on no job; an unknown id is unknown.
+    let created = create(&app, raw_blob()).await;
+    let id = id_of(&created).to_string();
+    let (status, body) = retry(&app, id.clone()).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "conflict");
+    let (status, _) = retry(&app, uuid::Uuid::now_v7().to_string()).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // An `uploaded` blob whose scan died, as the runner leaves it.
+    sqlx::query(
+        "UPDATE blobs SET state = 'uploaded', failed_at = now(), last_error = 'clamd: boom' \
+         WHERE id = $1",
+    )
+    .bind(parse_id(&id))
+    .execute(pool)
+    .await
+    .unwrap();
+    let dead: i64 = sqlx::query_scalar(
+        "INSERT INTO jobs (kind, blob_id, attempts, failed_at, locked_at, locked_by, last_error) \
+         VALUES ('scan', $1, 5, now(), now(), 'w', 'clamd: boom') RETURNING id",
+    )
+    .bind(parse_id(&id))
+    .fetch_one(pool)
+    .await
+    .unwrap();
+
+    // The retry queues a scan, drops the dead job and clears the verdict.
+    let (status, body) = retry(&app, id.clone()).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(body["state"], "uploaded");
+    assert!(body["failed_at"].is_null(), "{body}");
+    assert!(body["last_error"].is_null(), "{body}");
+    let jobs: Vec<(i64, Option<jiff_sqlx::Timestamp>)> =
+        sqlx::query_as("SELECT id, failed_at FROM jobs WHERE blob_id = $1")
+            .bind(parse_id(&id))
+            .fetch_all(pool)
+            .await
+            .unwrap();
+    assert_eq!(jobs.len(), 1, "{jobs:?}");
+    assert_ne!(jobs[0].0, dead, "the dead job is gone");
+    assert!(jobs[0].1.is_none(), "the new one is pending");
+    assert_eq!(jobs_for(&app, &id).await, vec!["scan"]);
+
+    // With that job pending, a second retry has nothing to add.
+    let (status, body) = retry(&app, id.clone()).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+
+    // A `ready` blob with a representation pending and no job to render
+    // it, the dead render pruned long ago: the retry is what gets it going.
+    let ready = ready_blob(&app, &png_bytes(100)).await;
+    let ready_id = id_of(&ready).to_string();
+    assert_eq!(ready["thumbnail_state"], "pending");
+    sqlx::query("DELETE FROM jobs WHERE blob_id = $1")
+        .bind(parse_id(&ready_id))
+        .execute(pool)
+        .await
+        .unwrap();
+    let (status, body) = retry(&app, ready_id.clone()).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(jobs_for(&app, &ready_id).await, vec!["render"]);
+
+    // A `ready` blob with its representations settled waits on nothing.
+    let bytes = png_bytes(100);
+    let mut settled = blob_for(&bytes, "image/png", "raw");
+    settled["skip_virus_scan"] = json!(true);
+    settled["representations"] = json!([]);
+    let settled = create(&app, settled).await;
+    let settled_id = id_of(&settled).to_string();
+    let (status, body) = put_private(&app, &settled_id, bytes).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], "ready");
+    let (status, body) = retry(&app, settled_id).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+
+    // Gone is gone, whether or not the reaper has recorded it.
+    let expired = create(&app, raw_blob()).await;
+    let expired_id = id_of(&expired).to_string();
+    sqlx::query(
+        "UPDATE blobs SET state = 'uploaded', expires_at = now() - interval '1 second' \
+         WHERE id = $1",
+    )
+    .bind(parse_id(&expired_id))
+    .execute(pool)
+    .await
+    .unwrap();
+    let (status, body) = retry(&app, expired_id).await;
+    assert_eq!(status, StatusCode::GONE, "{body}");
+}

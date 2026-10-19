@@ -130,6 +130,21 @@ impl From<blob::DeleteError> for ApiError {
     }
 }
 
+impl From<blob::RetryError> for ApiError {
+    fn from(err: blob::RetryError) -> Self {
+        use blob::{BlobState, RetryError};
+        match err {
+            RetryError::NotFound => ApiError::NotFound,
+            // As for an attach: an expired or deleted blob is gone for good,
+            // an infected one is still there to be told about.
+            RetryError::Terminal(BlobState::Infected) => ApiError::Conflict(err.to_string()),
+            RetryError::Terminal(_) => ApiError::Gone(err.to_string()),
+            RetryError::Nothing(_) | RetryError::Pending => ApiError::Conflict(err.to_string()),
+            RetryError::Db(e) => ApiError::internal(e),
+        }
+    }
+}
+
 impl From<AttachError> for ApiError {
     fn from(err: AttachError) -> Self {
         match err {

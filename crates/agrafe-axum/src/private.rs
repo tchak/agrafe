@@ -53,6 +53,7 @@ pub fn routes(body_limit: usize) -> Router<Agrafe> {
             put(upload_part).layer(DefaultBodyLimit::max(body_limit)),
         )
         .route("/blobs/{id}/finish", post(finish_source))
+        .route("/blobs/{id}/retry", post(retry_blob))
         .route("/blobs/{id}/urls", post(mint_urls))
         .route("/blobs/{id}/original/{filename}", get(get_original))
         .route("/blobs/{id}/preview/{filename}", get(get_preview))
@@ -166,6 +167,17 @@ async fn delete_blob(State(agrafe): State<Agrafe>, Path(id): Path<Uuid>) -> ApiR
     } else {
         Err(ApiError::NotFound)
     }
+}
+
+/// Enqueue whatever the blob is waiting on: the repair for a blob whose
+/// scan, build or render died, from the blob's side. `202`: the job is
+/// queued, the blob is not finished yet.
+async fn retry_blob(
+    State(agrafe): State<Agrafe>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<impl IntoResponse> {
+    let blob = agrafe.retry_blob(id).await?;
+    Ok((StatusCode::ACCEPTED, Json(respond(&agrafe, &blob).await?)))
 }
 
 async fn mint_urls(

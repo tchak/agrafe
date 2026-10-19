@@ -541,8 +541,15 @@ pub async fn finish_scan(pool: &PgPool, id: Uuid, verdict: &Verdict) -> sqlx::Re
 /// representations once it is `ready`, unless both were disabled at
 /// creation; nothing otherwise.
 async fn enqueue_next(conn: &mut PgConnection, blob: &Blob) -> sqlx::Result<()> {
+    enqueue_kinds(conn, blob, next_kinds(blob)).await?;
+    Ok(())
+}
+
+/// The job kinds a blob in its current state is waiting on; empty when it
+/// waits on none.
+fn next_kinds(blob: &Blob) -> &'static [JobKind] {
     let pending = |kind| blob.representation_state(kind) == RepresentationState::Pending;
-    let kinds: &[JobKind] = match (blob.state, blob.input_type) {
+    match (blob.state, blob.input_type) {
         (BlobState::Uploaded, InputType::Raw | InputType::Multipart) => &[JobKind::Scan],
         (BlobState::Uploaded, InputType::Rows) => &[JobKind::Rows],
         (BlobState::Uploaded, InputType::Archive) => &[JobKind::Archive],
@@ -552,10 +559,21 @@ async fn enqueue_next(conn: &mut PgConnection, blob: &Blob) -> sqlx::Result<()> 
             &[JobKind::Render]
         }
         _ => &[],
-    };
+    }
+}
+
+/// Enqueue one job of each of `kinds` for the blob, due now, at the blob's
+/// priority. Returns the kinds a row was inserted for: a kind with a job
+/// pending already is left to it.
+async fn enqueue_kinds(
+    conn: &mut PgConnection,
+    blob: &Blob,
+    kinds: &[JobKind],
+) -> sqlx::Result<Vec<JobKind>> {
     let now = Timestamp::now();
+    let mut inserted = Vec::new();
     for kind in kinds {
-        jobs::enqueue(
+        if jobs::enqueue(
             &mut *conn,
             *kind,
             Some(blob.id),
@@ -563,9 +581,65 @@ async fn enqueue_next(conn: &mut PgConnection, blob: &Blob) -> sqlx::Result<()> 
             serde_json::json!({}),
             now,
         )
-        .await?;
+        .await?
+        {
+            inserted.push(*kind);
+        }
     }
-    Ok(())
+    Ok(inserted)
+}
+
+/// Outcome of `retry`.
+#[derive(Debug)]
+pub enum Retry {
+    /// Jobs of these kinds were enqueued; the blob as it is after.
+    Enqueued(Blob, Vec<JobKind>),
+    /// The blob waits on no job in its state as of `now`, terminal included.
+    Nothing(Blob),
+    /// Every job the blob waits on is pending already.
+    Pending(Blob),
+    Missing,
+}
+
+/// Enqueue whatever the blob is waiting on, from the blob's side: the scan
+/// or the build of an `uploaded` blob, the render of a `ready` one with a
+/// representation `pending`. Dead jobs of those kinds for the blob are
+/// removed on the way, superseded; a pending one is left to do the work.
+/// The row is locked so a concurrent transition cannot slip in between
+/// the reading of its state and the enqueue.
+pub async fn retry(pool: &PgPool, id: Uuid, now: Timestamp) -> sqlx::Result<Retry> {
+    let mut tx = pool.begin().await?;
+    let blob = sqlx::query_as::<_, Blob>("SELECT * FROM blobs WHERE id = $1 FOR UPDATE")
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    let Some(blob) = blob else {
+        return Ok(Retry::Missing);
+    };
+    if blob.state_at(now).is_terminal() {
+        return Ok(Retry::Nothing(blob));
+    }
+    let kinds = next_kinds(&blob);
+    if kinds.is_empty() {
+        return Ok(Retry::Nothing(blob));
+    }
+    let kind_names: Vec<&str> = kinds.iter().map(|k| k.as_str()).collect();
+    sqlx::query("DELETE FROM jobs WHERE blob_id = $1 AND failed_at IS NOT NULL AND kind = ANY($2)")
+        .bind(id)
+        .bind(&kind_names)
+        .execute(&mut *tx)
+        .await?;
+    let inserted = enqueue_kinds(&mut tx, &blob, kinds).await?;
+    if inserted.is_empty() {
+        return Ok(Retry::Pending(blob));
+    }
+    // The enqueue cleared the failure on the row; read it back as it is.
+    let blob = sqlx::query_as::<_, Blob>("SELECT * FROM blobs WHERE id = $1")
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(Retry::Enqueued(blob, inserted))
 }
 
 /// Outcome of a soft delete.

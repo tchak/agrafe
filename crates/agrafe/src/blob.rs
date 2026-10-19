@@ -30,6 +30,25 @@ pub enum DeleteError {
     Db(#[from] sqlx::Error),
 }
 
+/// Why nothing was enqueued for a blob.
+#[derive(Debug, thiserror::Error)]
+pub enum RetryError {
+    #[error("blob not found")]
+    NotFound,
+    /// Expired, deleted or infected: nothing is going to finish it.
+    #[error("blob is {0}")]
+    Terminal(BlobState),
+    /// The blob is not waiting on a job: `created`, or `ready` with its
+    /// representations settled.
+    #[error("nothing to retry: a {0} blob waits on no job")]
+    Nothing(BlobState),
+    /// The job it waits on is queued or running already.
+    #[error("a job is already pending for this blob")]
+    Pending,
+    #[error("database: {0}")]
+    Db(#[from] sqlx::Error),
+}
+
 /// Why a listing was refused.
 #[derive(Debug, thiserror::Error)]
 pub enum ListError {
@@ -74,6 +93,30 @@ impl Agrafe {
             return Err(ListError::Limit(repo::MAX_LIMIT));
         }
         Ok(repo::list(self.pool(), &params).await?)
+    }
+
+    /// Enqueue whatever the blob is waiting on, the scan, build or render
+    /// its state calls for, superseding a dead job of that kind and
+    /// clearing the failure recorded on the row. The repair for a stuck
+    /// blob, from the blob's side; works after the dead job is pruned.
+    pub async fn retry_blob(&self, id: Uuid) -> Result<Blob, RetryError> {
+        let now = Timestamp::now();
+        match repo::retry(self.pool(), id, now).await? {
+            repo::Retry::Enqueued(blob, kinds) => {
+                tracing::info!(blob = %id, ?kinds, "retrying from the blob");
+                Ok(blob)
+            }
+            repo::Retry::Nothing(blob) => {
+                let state = blob.state_at(now);
+                if state.is_terminal() {
+                    Err(RetryError::Terminal(state))
+                } else {
+                    Err(RetryError::Nothing(state))
+                }
+            }
+            repo::Retry::Pending(_) => Err(RetryError::Pending),
+            repo::Retry::Missing => Err(RetryError::NotFound),
+        }
     }
 
     /// Soft delete of an unattached blob: the objects are purged

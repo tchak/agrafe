@@ -144,7 +144,8 @@ every decision.
   job kinds a worker runs, without code changes.
 - **Prometheus metrics** for queue depth and the age of the oldest due job,
   per kind and priority, plus job runs, durations and workers per process.
-- **Jobs API** to list, retry or discard failed jobs.
+- **Jobs API** to list, retry or discard failed jobs, and a retry on the
+  blob itself, which records the death of the job it was waiting on.
 - **Reaper** for expiry, stale uploads, abandoned exports, delayed purges
   of deleted and expired objects, and the pruning of old dead jobs and
   tombstones.
@@ -356,6 +357,22 @@ curl -s 'localhost:8080/jobs?state=dead' | jq
 curl -s -X POST "localhost:8080/jobs/$JOB_ID/retry"
 curl -s localhost:8080/metrics
 ```
+
+A blob whose scan, build or render ran out of attempts records it as
+`failed_at` and `last_error` in its metadata, and as `blob_failed_at` on
+the attachments listing, for as long as it stays stuck; the dead job itself
+is pruned after a week. Find them and give them another go from the blob's
+side, whichever job that takes:
+
+```sh
+curl -s 'localhost:8080/blobs?failed=true' | jq '.items[] | {id, state, last_error}'
+curl -s -X POST "localhost:8080/blobs/$ID/retry" | jq .state
+```
+
+A blob created attached and never uploaded is expired by the reaper after
+`upload.abandoned_after` (a day), attachments kept, so the record's side
+sees `expired` as its `blob_state`; an unattached one keeps to its own
+`expires_at`.
 
 The full route tables for both ports are in [DESIGN.md](DESIGN.md#interfaces),
 and every configuration key is documented in
