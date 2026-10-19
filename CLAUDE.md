@@ -57,10 +57,12 @@ See "Crates" in `DESIGN.md` for the dependency graph.
   `media.render_document_command` at the binaries under `target/debug`, or
   put `target/debug` on `PATH`.
 - Tests need a `agrafe_test` database reachable as the current OS user
-  with `CREATEDB`, or `DATABASE_URL`, and `vips` on the `PATH` (`brew install vips`). Run
-  `cargo test`, `cargo clippy --all-targets`, `cargo fmt` before committing.
-  The integration tests live in `agrafe-axum` and run the helper binaries
-  from `target/`; a plain `cargo test` builds them, `cargo test -p
+  with `CREATEDB`, or `DATABASE_URL`, and `vips` on the `PATH` (`brew
+  install vips`). Run `cargo nextest run --workspace`, `cargo clippy
+  --all-targets`, `cargo fmt` before committing. nextest kills a test
+  still running after a minute (`.config/nextest.toml`); `cargo test`
+  works too. The integration tests live in `agrafe-axum` and run the
+  helper binaries from `target/`; a workspace run builds them, `-p
   agrafe-axum` builds them on demand.
 - Test fixtures and the renderer probe files in
   `crates/agrafe-render/assets/probe` come from `fixtures/make.py`

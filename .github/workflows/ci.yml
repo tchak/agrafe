@@ -57,11 +57,15 @@ jobs:
           vips --version
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
       - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build --workspace --all-targets
+      # No doctests in the workspace: nextest runs everything there is.
       - name: Test
-        run: cargo test --workspace
+        run: cargo nextest run --workspace --profile ci
 
   msrv:
     name: MSRV (1.94)

@@ -564,22 +564,27 @@ A deployment ships four binaries together: `agrafe`, `agrafe-extract`,
 
 ```sh
 createdb agrafe_test
-cargo test
+cargo nextest run --workspace
 cargo clippy --all-targets
 cargo fmt
 ```
 
+[cargo-nextest](https://nexte.st) runs each test in a process of its own,
+all at once, and kills one still running after a minute
+(`.config/nextest.toml`); `cargo test` works too, slower, and only
+aborts a stuck API test after two minutes.
+
 Tests connect as the current OS user to `agrafe_test`; set `DATABASE_URL`
-to override. They need `vips` on the `PATH` as well. The integration tests,
-in `agrafe-axum` and `agrafe-dashboard`, use `#[sqlx::test]`: each creates
-a database of its own on that server, migrates it, and drops it when it
-passes, so the role needs `CREATEDB`. A failed test leaves its database
-behind for a look; the next run of that test drops it. The database is
-named after the test, so two runs against one server at once fail each
-other's tests: run one at a time, or give each its own server. The API tests run
-the helper binaries from `target/`: a plain `cargo test` builds them, and
-`cargo test -p agrafe-axum` builds them on demand. ClamAV is faked in
-tests.
+to override. They need `vips` on the `PATH` as well. The integration
+tests, in `agrafe-axum` and `agrafe-dashboard`, use `#[sqlx::test]`: each
+creates a database of its own on that server, migrates it, and drops it
+when it passes, so the role needs `CREATEDB`. A failed test leaves its
+database behind for a look; the next run of that test drops it. The
+database is named after the test, so two runs against one server at once
+fail each other's tests: run one at a time, or give each its own server.
+The API tests run the helper binaries from `target/`: a workspace run
+builds them, and `-p agrafe-axum` builds them on demand. ClamAV is faked
+in tests.
 
 The files under `fixtures/` and the renderer probe files under
 `crates/agrafe-render/assets/probe` are built by `fixtures/make.py` (needs

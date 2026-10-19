@@ -1,0 +1,13 @@
+# cargo-nextest (https://nexte.st): each test in a process of its own, all
+# at once. The database tests can run together because each has a database
+# of its own (`#[sqlx::test]`).
+
+[profile.default]
+# The slowest test takes about eight seconds. Past 15s a test is reported
+# slow; past a minute it is killed and fails, instead of holding the run.
+slow-timeout = { period = "15s", terminate-after = 4 }
+
+[profile.ci]
+# Every failure in one run, each printed as it happens and again at the end.
+fail-fast = false
+failure-output = "immediate-final"
