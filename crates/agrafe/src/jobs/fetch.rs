@@ -414,7 +414,10 @@ pub async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
         tracing::info!(input_type = %blob.input_type, "blob is not fetched");
         return Ok(());
     }
-    match blob.state {
+    // By the state at this instant: a blob past its expiry is expired
+    // whether or not the reaper has recorded it, and its bytes would be
+    // fetched for nothing.
+    match blob.state_at(Timestamp::now()) {
         BlobState::Created => {}
         BlobState::Uploading => return Err(uploading(state, &blob).into()),
         other => {

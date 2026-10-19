@@ -786,6 +786,30 @@ async fn an_attached_blob_whose_fetch_died_is_expired_as_abandoned() {
     assert_eq!(status, StatusCode::GONE);
 }
 
+/// A blob past its expiry is not fetched, reaper or no reaper: the remote
+/// is never contacted and the job is done.
+#[tokio::test]
+async fn an_expired_blob_is_not_fetched() {
+    let app = setup_fetching().await;
+    let base = remote(|hit| panic!("fetched {}", hit.path)).await;
+    let created = create(&app, url_blob(&format!("{base}/expired"))).await;
+    let id = id_of(&created);
+    sqlx::query("UPDATE blobs SET expires_at = now() - interval '1 second' WHERE id = $1")
+        .bind(parse_id(id))
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+    assert!(run_job(&app, JobKind::Fetch).await);
+    assert_eq!(jobs_for(&app, id).await, Vec::<String>::new(), "done");
+    // The row is left for the reaper to record the expiry.
+    let got = get_blob(&app, id).await;
+    assert_eq!(got["state"], "created", "{got}");
+    assert_eq!(got["failed_at"], json!(null));
+    assert!(stored_objects(&app).await.is_empty());
+    assert_eq!(reap_now(&app).await.expired, 1);
+    assert_eq!(get_blob(&app, id).await["state"], "expired");
+}
+
 async fn reap_now(app: &TestApp) -> Report {
     reap::reap(&app.state, Timestamp::now()).await.unwrap()
 }
