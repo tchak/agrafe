@@ -12,6 +12,7 @@ use jiff::{SignedDuration, Timestamp};
 use serde::Deserialize;
 
 use crate::jobs::JobKind;
+use crate::jobs::notify::Event;
 
 /// A configuration that cannot be loaded, or that loads but cannot be used.
 #[derive(Debug, thiserror::Error)]
@@ -46,6 +47,8 @@ pub struct Config {
     pub fetch: FetchConfig,
     #[serde(default)]
     pub dashboard: DashboardConfig,
+    #[serde(default)]
+    pub webhook: WebhookConfig,
 }
 
 impl Config {
@@ -101,6 +104,7 @@ impl Config {
                 "media.variant_version must be at least 1".into(),
             ));
         }
+        self.webhook.validate()?;
         if self.archive.max_size.as_u64() > ArchiveConfig::MAX_SIZE_LIMIT {
             return Err(ConfigError::Invalid(format!(
                 "archive.max_size must be at most {} bytes: the build writes 32 MiB parts, \
@@ -195,6 +199,12 @@ pub struct Secret(String);
 impl Secret {
     pub fn expose(&self) -> &str {
         &self.0
+    }
+}
+
+impl From<String> for Secret {
+    fn from(s: String) -> Self {
+        Self(s)
     }
 }
 
@@ -512,6 +522,92 @@ impl Default for FetchConfig {
     }
 }
 
+/// Where state changes are posted. See DESIGN.md, "Webhooks".
+#[derive(Debug, Clone, Deserialize)]
+pub struct WebhookConfig {
+    /// The one URL the deliveries go to. No webhook when unset: nothing
+    /// is enqueued.
+    pub url: Option<String>,
+    /// The signing secret, `whsec_` followed by base64, as Standard
+    /// Webhooks hands it to a receiver. Required with `url`.
+    pub secret: Option<Secret>,
+    /// The whole request, connect to the last byte of the response.
+    #[serde(with = "humantime_serde", default = "default_webhook_timeout")]
+    pub timeout: Duration,
+    /// The events delivered; every event when omitted.
+    pub events: Option<Vec<Event>>,
+}
+
+impl WebhookConfig {
+    /// Whether `event` is to be delivered: a URL is set and the event is
+    /// not filtered out.
+    pub fn wants(&self, event: Event) -> bool {
+        self.url.is_some()
+            && self
+                .events
+                .as_ref()
+                .is_none_or(|events| events.contains(&event))
+    }
+
+    /// The key the signature is computed with: the secret decoded.
+    pub fn key(&self) -> Result<Vec<u8>, ConfigError> {
+        use base64::Engine;
+        let secret = self
+            .secret
+            .as_ref()
+            .map(Secret::expose)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                ConfigError::Invalid("webhook.secret is required with webhook.url".into())
+            })?;
+        let encoded = secret.strip_prefix("whsec_").ok_or_else(|| {
+            ConfigError::Invalid(
+                "webhook.secret must be whsec_ followed by base64: whsec_ and the output of \
+                 openssl rand -base64 24"
+                    .into(),
+            )
+        })?;
+        base64::engine::general_purpose::STANDARD
+            .decode(encoded.trim())
+            .map_err(|err| ConfigError::Invalid(format!("webhook.secret is not base64: {err}")))
+    }
+
+    fn validate(&self) -> Result<(), ConfigError> {
+        let Some(url) = &self.url else {
+            return Ok(());
+        };
+        let parsed = url::Url::parse(url)
+            .map_err(|err| ConfigError::Invalid(format!("webhook.url is not a URL: {err}")))?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return Err(ConfigError::Invalid(
+                "webhook.url must be http or https".into(),
+            ));
+        }
+        self.key()?;
+        if self.events.as_ref().is_some_and(Vec::is_empty) {
+            return Err(ConfigError::Invalid(
+                "webhook.events must name at least one event, or be omitted for all".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn default_webhook_timeout() -> Duration {
+    Duration::from_secs(10)
+}
+
+impl Default for WebhookConfig {
+    fn default() -> Self {
+        Self {
+            url: None,
+            secret: None,
+            timeout: default_webhook_timeout(),
+            events: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct EncryptionConfig {
     #[serde(default)]
@@ -633,7 +729,7 @@ impl JobsConfig {
             return *n;
         }
         match kind {
-            JobKind::Scan | JobKind::Render | JobKind::Purge => 4,
+            JobKind::Scan | JobKind::Render | JobKind::Purge | JobKind::Notify => 4,
             JobKind::Fetch | JobKind::Rows => 2,
             JobKind::Archive | JobKind::Reap => 1,
         }
@@ -718,6 +814,44 @@ mod tests {
             assert_eq!(config.fetch.max_retry_after.as_secs(), 15 * 60);
             assert!(!config.fetch.allow_private_networks);
             assert!(config.fetch.user_agent.starts_with("agrafe/"));
+            assert!(config.webhook.url.is_none(), "no webhook by default");
+            assert!(!config.webhook.wants(Event::Ready));
+            assert_eq!(config.webhook.timeout.as_secs(), 10);
+            assert_eq!(config.jobs.concurrency_for(JobKind::Notify), 4);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn the_webhook_needs_a_secret_of_the_standard_shape() {
+        Jail::expect_with(|jail| {
+            jail.set_env(
+                "AGRAFE_WEBHOOK__URL",
+                "https://backend.example/agrafe/events",
+            );
+            let err = load(&example()).unwrap_err().to_string();
+            assert!(err.contains("webhook.secret is required"), "{err}");
+
+            jail.set_env("AGRAFE_WEBHOOK__SECRET", "hunter2");
+            let err = load(&example()).unwrap_err().to_string();
+            assert!(err.contains("must be whsec_"), "{err}");
+
+            jail.set_env(
+                "AGRAFE_WEBHOOK__SECRET",
+                "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw",
+            );
+            let config = load(&example())?;
+            assert!(config.webhook.wants(Event::Ready));
+            assert_eq!(config.webhook.key().unwrap().len(), 24);
+
+            jail.set_env("AGRAFE_WEBHOOK__EVENTS", r#"["infected"]"#);
+            let config = load(&example())?;
+            assert!(config.webhook.wants(Event::Infected));
+            assert!(!config.webhook.wants(Event::Ready));
+
+            jail.set_env("AGRAFE_WEBHOOK__URL", "ftp://backend.example/events");
+            let err = load(&example()).unwrap_err().to_string();
+            assert!(err.contains("http or https"), "{err}");
             Ok(())
         });
     }

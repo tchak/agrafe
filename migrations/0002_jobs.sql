@@ -2,7 +2,7 @@
 CREATE TABLE jobs (
     id           bigserial PRIMARY KEY,
     kind         text NOT NULL
-                 CHECK (kind IN ('fetch', 'scan', 'render', 'rows', 'archive', 'purge', 'reap')),
+                 CHECK (kind IN ('fetch', 'scan', 'render', 'rows', 'archive', 'purge', 'reap', 'notify')),
     blob_id      uuid REFERENCES blobs (id) ON DELETE CASCADE,
     -- Orders a kind's own queue (1 high, 0 normal, -1 low); kinds stay the
     -- isolation between job types. Copied from the blob, 0 without one.
@@ -27,8 +27,9 @@ CREATE TABLE jobs (
 -- not exclude them.
 CREATE INDEX jobs_claimable_idx ON jobs (kind, priority DESC, run_at) WHERE failed_at IS NULL;
 -- One pending job of each kind per blob; enqueue uses ON CONFLICT DO
--- NOTHING. Blob-less jobs dedupe too, so the periodic `reap` never piles
--- up however many processes start. Needs PostgreSQL 15.
+-- NOTHING, and a `notify` replaces the pending one with the newer event.
+-- Blob-less jobs dedupe too, so the periodic `reap` never piles up however
+-- many processes start. Needs PostgreSQL 15.
 CREATE UNIQUE INDEX jobs_pending_per_blob_idx ON jobs (kind, blob_id)
     NULLS NOT DISTINCT WHERE locked_at IS NULL;
 -- The reaper asks whether a purge job of any state exists for a blob, and

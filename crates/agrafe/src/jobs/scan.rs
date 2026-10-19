@@ -33,7 +33,7 @@ pub async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
     }
     let verdict = session.finish().await?;
 
-    match repo::finish_scan(state.pool(), id, &verdict).await? {
+    match repo::finish_scan(state.pool(), &state.config().webhook, id, &verdict).await? {
         Transition::Done(blob) => match verdict {
             Verdict::Clean => tracing::info!(state = %blob.state, "blob is clean"),
             Verdict::Infected(name) => tracing::warn!(signature = name, "blob is infected"),

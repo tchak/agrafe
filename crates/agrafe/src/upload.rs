@@ -322,7 +322,15 @@ where
         size: checked.received as i64,
         scan: checked.scan,
     };
-    match repo::complete_upload(state.pool(), &blob, started, &completed).await? {
+    match repo::complete_upload(
+        state.pool(),
+        &state.config().webhook,
+        &blob,
+        started,
+        &completed,
+    )
+    .await?
+    {
         Transition::Done(blob) => match completed.scan {
             ScanOutcome::Infected(name) => {
                 tracing::warn!(blob = %blob.id, signature = name, "inline scan found a virus");

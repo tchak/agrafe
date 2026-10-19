@@ -140,9 +140,13 @@ every decision.
 
 - **Postgres job queue** with `SKIP LOCKED` and `LISTEN/NOTIFY`, enqueued
   in the same transaction as the state change it follows.
-- **Per-kind worker pools** for fetch, scan, render, rows, archive, purge
-  and reap, so a slow kind never holds up another, with retries with
+- **Per-kind worker pools** for fetch, scan, render, rows, archive, purge,
+  reap and notify, so a slow kind never holds up another, with retries with
   backoff and dead-job inspection.
+- **Webhook** telling the backend when a blob is `ready`, `infected`,
+  `failed` or `expired`, carrying the blob's full metadata, signed the
+  Standard Webhooks way, enqueued with the state change it reports and
+  retried through the same queue.
 - **Per-blob priorities** (`high`, `normal`, `low`) ordering the blob's
   fetch, scan, render and build jobs within their kind.
 - **Split roles**: run `api`, `worker` or `all` per process, and pick which
@@ -244,7 +248,8 @@ The blob is `created` until the fetch job has run, then `uploaded` or
 `ready` like an upload. A fetch that gives up, on a `404` or a checksum
 mismatch at once, on a `5xx` after a few retries, leaves `failed_at` and
 `last_error` on the blob, and `POST /blobs/:id/retry` enqueues a new
-fetch, with a fresh URL on the row if the backend created a new blob. See
+fetch, with a fresh URL on the row if the backend created a new blob. The
+webhook below reports the `ready` and the `failed`. See
 [DESIGN.md](DESIGN.md#fetched-blobs) for the policy and the failure
 handling.
 
@@ -323,8 +328,8 @@ curl -s "localhost:8080/blobs/$ID/urls" \
 
 ### Export a spreadsheet
 
-Declare the columns, send the rows as JSONL, and poll until the blob is
-`ready`. The content type picks the format: `text/csv`, XLSX or ODS.
+Declare the columns, send the rows as JSONL, and wait for the `ready`
+event, or poll until the blob is `ready`. The content type picks the format: `text/csv`, XLSX or ODS.
 
 ```sh
 SHEET=$(curl -s localhost:8080/blobs \
@@ -382,6 +387,59 @@ printf '{"path": "pieces/%s", "blob_id": "%s"}\n' report.pdf "$ID" \
   | curl -s -X PUT "localhost:8080/blobs/$ZIP" --data-binary @- | jq .state
 ```
 
+### Get told when a blob is ready
+
+Rather than polling, configure one URL and agrafe `POST`s to it when a
+blob reaches a state the backend waits for: `ready` (scan passed or
+skipped, build finished), `infected` (terminal), `failed` (the job that
+was to finish the blob died; retry it or give up) and `expired` (the
+reaper recorded it, so an attached blob whose upload never came).
+
+```toml
+[webhook]
+url = "https://backend.example/agrafe/events"
+secret = "whsec_…"   # echo "whsec_$(openssl rand -base64 24)", or AGRAFE_WEBHOOK__SECRET
+# events = ["ready", "failed"]
+```
+
+Each delivery is a JSON body with the event, when it happened, the
+attempt number and the blob exactly as `GET /blobs/:id` answers at that
+moment, attachments and URLs included, so a late or repeated delivery
+tells the backend what is, not what was:
+
+```json
+{
+  "event": "ready",
+  "occurred_at": "2026-10-19T09:12:03.418Z",
+  "attempt": 1,
+  "blob": {"id": "019a…", "state": "ready", "attachments": [{"record_type": "Dossier", "record_id": "42", "name": "piece_justificative", …}], …}
+}
+```
+
+The headers follow [Standard Webhooks](https://www.standardwebhooks.com/):
+`webhook-id` (the job id, the same on every attempt of one delivery),
+`webhook-timestamp` (Unix seconds) and `webhook-signature`, `v1,` and the
+base64 of an HMAC-SHA256 over `id.timestamp.body` with the secret. Any of
+the standard's libraries verifies it; by hand, in Ruby:
+
+```ruby
+def verify!(secret, headers, raw_body)
+  id, timestamp, signatures = headers.values_at("webhook-id", "webhook-timestamp", "webhook-signature")
+  raise "stale" if (Time.now.to_i - timestamp.to_i).abs > 300
+  key = Base64.strict_decode64(secret.delete_prefix("whsec_"))
+  expected = "v1," + Base64.strict_encode64(OpenSSL::HMAC.digest("SHA256", key, "#{id}.#{timestamp}.#{raw_body}"))
+  raise "bad signature" unless signatures.split(" ").any? { |s| Rack::Utils.secure_compare(s, expected) }
+end
+```
+
+A `2xx` within `webhook.timeout` (ten seconds) is delivered. Anything
+else is retried like any job, 30 s after the first failure, doubling up to
+an hour, five attempts in all, then the delivery is a dead `notify` job:
+`GET /jobs?kind=notify&state=dead` lists them with the receiver's answer
+in `last_error`, and `POST /jobs/:id/retry` sends again once the backend
+is back. Nothing is enqueued without a `url`. See
+[DESIGN.md](DESIGN.md#webhooks) for the events and the guarantees.
+
 ### List, delete and operate
 
 ```sh
@@ -390,6 +448,7 @@ curl -s 'localhost:8080/blobs?attached=false' | jq '.items[].id'
 curl -s -X DELETE "localhost:8080/blobs/$ID"
 
 curl -s 'localhost:8080/jobs?state=dead' | jq
+curl -s 'localhost:8080/jobs?kind=notify&state=dead' | jq '.items[] | {id, blob_id, last_error}'
 curl -s -X POST "localhost:8080/jobs/$JOB_ID/retry"
 curl -s localhost:8080/metrics
 ```

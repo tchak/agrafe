@@ -14,7 +14,9 @@ use super::{
 use crate::attachment;
 use crate::clamav::Verdict;
 use crate::classify::Category;
+use crate::config::WebhookConfig;
 use crate::encryption::Envelope;
+use crate::jobs::notify::{self, Event};
 use crate::jobs::{self, JobKind, Priority};
 
 pub async fn insert(exec: impl PgExecutor<'_>, new: &NewBlob) -> sqlx::Result<Blob> {
@@ -325,6 +327,7 @@ pub struct Completed {
 /// its `upload_started_at`, may complete it.
 pub async fn complete_upload(
     pool: &PgPool,
+    webhook: &WebhookConfig,
     blob: &Blob,
     started: Timestamp,
     done: &Completed,
@@ -373,7 +376,7 @@ pub async fn complete_upload(
             None => Ok(Transition::Missing),
         };
     };
-    enqueue_next(&mut tx, &updated).await?;
+    enqueue_next(&mut tx, webhook, &updated).await?;
     tx.commit().await?;
     Ok(Transition::Done(updated))
 }
@@ -447,7 +450,11 @@ pub async fn complete_part(
 /// Seal a source: `created` to `uploaded`, with the build job enqueued in
 /// the same transaction. Refused unless the blob is a generated one holding
 /// at least one part; the caller reads the reason off the returned row.
-pub async fn finish_source(pool: &PgPool, id: Uuid) -> sqlx::Result<Transition> {
+pub async fn finish_source(
+    pool: &PgPool,
+    webhook: &WebhookConfig,
+    id: Uuid,
+) -> sqlx::Result<Transition> {
     let mut tx = pool.begin().await?;
     let updated = sqlx::query_as::<_, Blob>(
         "UPDATE blobs SET state = $2, uploaded_at = now() \
@@ -467,7 +474,7 @@ pub async fn finish_source(pool: &PgPool, id: Uuid) -> sqlx::Result<Transition> 
             None => Ok(Transition::Missing),
         };
     };
-    enqueue_next(&mut tx, &updated).await?;
+    enqueue_next(&mut tx, webhook, &updated).await?;
     tx.commit().await?;
     Ok(Transition::Done(updated))
 }
@@ -487,7 +494,12 @@ pub struct Built {
 /// The build is done: `uploaded` to `ready`, the row pointed at the object
 /// with its final checksum and size, the representations enqueued. The
 /// data key and layout were fixed by the first part and are not touched.
-pub async fn complete_build(pool: &PgPool, id: Uuid, built: &Built) -> sqlx::Result<Transition> {
+pub async fn complete_build(
+    pool: &PgPool,
+    webhook: &WebhookConfig,
+    id: Uuid,
+    built: &Built,
+) -> sqlx::Result<Transition> {
     let mut tx = pool.begin().await?;
     let updated = sqlx::query_as::<_, Blob>(
         "UPDATE blobs \
@@ -514,14 +526,19 @@ pub async fn complete_build(pool: &PgPool, id: Uuid, built: &Built) -> sqlx::Res
             None => Ok(Transition::Missing),
         };
     };
-    enqueue_next(&mut tx, &updated).await?;
+    enqueue_next(&mut tx, webhook, &updated).await?;
     tx.commit().await?;
     Ok(Transition::Done(updated))
 }
 
 /// The deferred scan's verdict: `uploaded` to `ready` or `infected`, with the
 /// representations enqueued once the file is known clean.
-pub async fn finish_scan(pool: &PgPool, id: Uuid, verdict: &Verdict) -> sqlx::Result<Transition> {
+pub async fn finish_scan(
+    pool: &PgPool,
+    webhook: &WebhookConfig,
+    id: Uuid,
+    verdict: &Verdict,
+) -> sqlx::Result<Transition> {
     let (state, scan_state, signature) = match verdict {
         Verdict::Clean => (BlobState::Ready, ScanState::Clean, None),
         Verdict::Infected(name) => (BlobState::Infected, ScanState::Infected, Some(name)),
@@ -545,7 +562,7 @@ pub async fn finish_scan(pool: &PgPool, id: Uuid, verdict: &Verdict) -> sqlx::Re
             None => Ok(Transition::Missing),
         };
     };
-    enqueue_next(&mut tx, &updated).await?;
+    enqueue_next(&mut tx, webhook, &updated).await?;
     tx.commit().await?;
     Ok(Transition::Done(updated))
 }
@@ -553,9 +570,18 @@ pub async fn finish_scan(pool: &PgPool, id: Uuid, verdict: &Verdict) -> sqlx::Re
 /// What a blob that just changed state needs done: the fetch of a `url`
 /// blob while it is `created`; while it waits in `uploaded`, a scan for a
 /// file or the build for a source; the representations once it is
-/// `ready`, unless both were disabled at creation; nothing otherwise.
-pub(crate) async fn enqueue_next(conn: &mut PgConnection, blob: &Blob) -> sqlx::Result<()> {
+/// `ready`, unless both were disabled at creation; nothing otherwise. And
+/// the news of it: a `ready` or `infected` the webhook wants is enqueued
+/// here too, in the same transaction.
+pub(crate) async fn enqueue_next(
+    conn: &mut PgConnection,
+    webhook: &WebhookConfig,
+    blob: &Blob,
+) -> sqlx::Result<()> {
     enqueue_kinds(conn, blob, next_kinds(blob)).await?;
+    if let Some(event) = Event::of(blob).filter(|event| webhook.wants(*event)) {
+        notify::enqueue(&mut *conn, blob.id, event, Timestamp::now()).await?;
+    }
     Ok(())
 }
 

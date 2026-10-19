@@ -3,6 +3,7 @@
 pub mod cache;
 pub mod create;
 pub mod envelope;
+pub mod metadata;
 pub mod read;
 pub mod repo;
 pub mod representation;

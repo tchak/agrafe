@@ -10,6 +10,7 @@ use prometheus::{
     TextEncoder,
 };
 
+use crate::jobs::notify::Event;
 use crate::jobs::{Count, JobKind, JobState, Priority};
 
 /// What a scrape can fail on.
@@ -52,6 +53,7 @@ pub struct Metrics {
     jobs: IntGaugeVec,
     oldest_due: GaugeVec,
     head_cache: IntCounterVec,
+    webhook_deliveries: IntCounterVec,
 }
 
 impl Default for Metrics {
@@ -109,13 +111,22 @@ impl Metrics {
             &["result"],
         )
         .expect("valid metric");
-        let collectors: [Box<dyn prometheus::core::Collector>; 6] = [
+        let webhook_deliveries = IntCounterVec::new(
+            Opts::new(
+                "agrafe_webhook_deliveries_total",
+                "Webhook deliveries attempted by this process, by event and result",
+            ),
+            &["event", "result"],
+        )
+        .expect("valid metric");
+        let collectors: [Box<dyn prometheus::core::Collector>; 7] = [
             Box::new(job_runs.clone()),
             Box::new(job_duration.clone()),
             Box::new(workers.clone()),
             Box::new(jobs.clone()),
             Box::new(oldest_due.clone()),
             Box::new(head_cache.clone()),
+            Box::new(webhook_deliveries.clone()),
         ];
         for c in collectors {
             registry.register(c).expect("metric names are unique");
@@ -135,6 +146,11 @@ impl Metrics {
         for result in ["hit", "miss"] {
             head_cache.with_label_values(&[result]);
         }
+        for event in Event::ALL {
+            for result in ["delivered", "failed"] {
+                webhook_deliveries.with_label_values(&[event.as_str(), result]);
+            }
+        }
         Self {
             registry,
             job_runs,
@@ -143,6 +159,7 @@ impl Metrics {
             jobs,
             oldest_due,
             head_cache,
+            webhook_deliveries,
         }
     }
 
@@ -150,6 +167,16 @@ impl Metrics {
     pub fn head_cache(&self, hit: bool) {
         self.head_cache
             .with_label_values(&[if hit { "hit" } else { "miss" }])
+            .inc();
+    }
+
+    /// A delivery of `event` was attempted and the receiver took it or not.
+    pub fn webhook_delivery(&self, event: Event, delivered: bool) {
+        self.webhook_deliveries
+            .with_label_values(&[
+                event.as_str(),
+                if delivered { "delivered" } else { "failed" },
+            ])
             .inc();
     }
 

@@ -92,7 +92,7 @@ impl Agrafe {
             .await?
             .ok_or(UploadError::NotFound)?;
         finish_refusal(&blob, Timestamp::now())?;
-        match repo::finish_source(self.pool(), id).await? {
+        match repo::finish_source(self.pool(), &self.config().webhook, id).await? {
             Transition::Done(blob) => Ok(blob),
             Transition::Conflict(current) => Err(finish_refusal(&current, Timestamp::now())
                 .err()

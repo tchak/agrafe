@@ -5,6 +5,7 @@
 pub mod archive;
 pub mod build;
 pub mod fetch;
+pub mod notify;
 pub mod purge;
 pub mod reap;
 pub mod render;
@@ -21,6 +22,7 @@ use sqlx::{PgConnection, PgExecutor, Postgres, QueryBuilder};
 use uuid::Uuid;
 
 use crate::app::Agrafe;
+use crate::config::WebhookConfig;
 
 /// Why a job listing was refused.
 #[derive(Debug, thiserror::Error)]
@@ -99,6 +101,8 @@ pub enum JobError {
     Build(#[from] build::BuildError),
     #[error("fetch: {0}")]
     Fetch(#[from] fetch::FetchError),
+    #[error("webhook: {0}")]
+    Webhook(#[from] notify::WebhookError),
 }
 
 impl JobError {
@@ -112,6 +116,7 @@ impl JobError {
             JobError::Purge(purge::PurgeError::NotTerminal(_)) => true,
             JobError::Build(err) => err.is_permanent(),
             JobError::Fetch(err) => err.is_permanent(),
+            JobError::Webhook(err) => err.is_permanent(),
             _ => false,
         }
     }
@@ -148,6 +153,8 @@ pub enum JobKind {
     Archive,
     Purge,
     Reap,
+    /// Deliver one event of a blob to the webhook. See `notify`.
+    Notify,
 }
 
 agrafe_types::str_enum!(JobKind {
@@ -158,6 +165,7 @@ agrafe_types::str_enum!(JobKind {
     Archive => "archive",
     Purge => "purge",
     Reap => "reap",
+    Notify => "notify",
 });
 
 /// Order within a kind's queue. A blob's priority is copied onto its jobs;
@@ -183,7 +191,8 @@ impl JobKind {
     /// that takes a `url` blob out of `created`, the scan or the build that
     /// takes it out of `uploaded`, the render that fills its
     /// representations. Its death is recorded on the blob; a purge or a
-    /// reap is housekeeping and leaves the blob's row alone.
+    /// reap is housekeeping, a notify is the news of the blob and not
+    /// its progress, and both leave the blob's row alone.
     pub fn finishes_blob(self) -> bool {
         matches!(
             self,
@@ -586,13 +595,17 @@ pub enum Failure {
 /// remain, otherwise mark the job dead. A `permanent` failure is one a
 /// retry cannot mend, see `JobError::is_permanent`; the job is dead at once.
 /// A `retry_after` the failure asks for, a remote's `Retry-After`, is
-/// honoured when it is longer than the backoff.
+/// honoured when it is longer than the backoff. A death stamped on the
+/// blob is reported to the webhook, when `webhook` wants `failed`; the
+/// caller runs this in a transaction so the stamp and its notification
+/// commit together.
 pub async fn fail(
     conn: &mut PgConnection,
     job: &Job,
     error: &str,
     permanent: bool,
     retry_after: Option<Duration>,
+    webhook: &WebhookConfig,
     now: Timestamp,
 ) -> sqlx::Result<Failure> {
     let error = truncate(error);
@@ -606,7 +619,7 @@ pub async fn fail(
         // `jobs.keep_failed`, the stuck blob is not. Unless a twin of this
         // job, enqueued while it ran, is still going to finish the blob.
         if let Some(blob_id) = job.blob_id.filter(|_| job.kind.finishes_blob()) {
-            sqlx::query(
+            let stamped = sqlx::query(
                 "UPDATE blobs SET failed_at = now(), last_error = $2 \
                  WHERE id = $1 AND NOT EXISTS (\
                      SELECT 1 FROM jobs \
@@ -618,7 +631,12 @@ pub async fn fail(
             .bind(job.kind.as_str())
             .bind(job.id)
             .execute(&mut *conn)
-            .await?;
+            .await?
+            .rows_affected()
+                == 1;
+            if stamped && webhook.wants(notify::Event::Failed) {
+                notify::enqueue(&mut *conn, blob_id, notify::Event::Failed, now).await?;
+            }
         }
         return Ok(Failure::Dead);
     }

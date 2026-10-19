@@ -12,6 +12,7 @@
 use jiff::Timestamp;
 use sqlx::PgExecutor;
 
+use super::notify::{self, Event};
 use super::{Job, JobError, JobKind, Priority};
 use crate::app::Agrafe;
 use crate::blob::repo;
@@ -109,6 +110,14 @@ pub async fn reap(state: &Agrafe, now: Timestamp) -> Result<Report, JobError> {
         .checked_sub(config.upload.abandoned_after)
         .unwrap_or(Timestamp::MIN);
     let abandoned = repo::expire_abandoned(&mut tx, abandoned_before).await?;
+
+    // The backend learns of each expiry from here, so `expired` lags the
+    // moment by at most one interval.
+    if config.webhook.wants(Event::Expired) {
+        for id in expired.iter().chain(&abandoned) {
+            notify::enqueue(&mut *tx, *id, Event::Expired, now).await?;
+        }
+    }
 
     // Dead jobs go first, so a purge that died is scheduled again below,
     // in the same pass, once it has been around long enough.

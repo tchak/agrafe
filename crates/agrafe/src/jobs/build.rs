@@ -135,7 +135,7 @@ pub(crate) async fn run<A: Assemble>(state: &Agrafe, job: &Job) -> Result<(), Jo
         tracing::warn!("blob left `uploaded` during the build, nothing written");
         return Ok(());
     };
-    match repo::complete_build(state.pool(), id, &built).await? {
+    match repo::complete_build(state.pool(), &state.config().webhook, id, &built).await? {
         Transition::Done(blob) => tracing::info!(
             size = built.size,
             entries = built.archive.map(|a| a.0),

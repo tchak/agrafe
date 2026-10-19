@@ -233,7 +233,7 @@ keep_failed = "7d"
 # A worker process dedicated to archive builds would say ["archive"]. Every
 # kind must be handled by some process of the deployment. The --kinds flag
 # takes precedence.
-# kinds = ["fetch", "scan", "render", "rows", "archive", "purge", "reap"]
+# kinds = ["fetch", "scan", "render", "rows", "archive", "purge", "reap", "notify"]
 
 # Workers per job kind; these are the defaults. Each kind has its own pool,
 # which is what keeps slow archive builds from holding up scans and renders.
@@ -245,6 +245,22 @@ rows = 2
 archive = 1
 purge = 4
 reap = 1
+notify = 4
+
+[webhook]
+# Where state changes are POSTed, as one JSON body per event with the
+# blob's full metadata, signed the Standard Webhooks way. See README.md,
+# "Get told when a blob is ready". No webhook when unset: nothing is
+# enqueued. One URL per deployment.
+# url = "https://backend.example/agrafe/events"
+# The signing secret: whsec_ followed by base64. Prefer AGRAFE_WEBHOOK__SECRET.
+# Generate with: echo "whsec_$(openssl rand -base64 24)"
+secret = ""
+# The whole request, connect to the last byte of the response. Anything but
+# a 2xx within it fails the attempt, retried with the jobs' backoff.
+timeout = "10s"
+# Which events to send; every event when omitted.
+# events = ["ready", "infected", "failed", "expired"]
 
 [dashboard]
 # Serve the HTML dashboard under /dashboard on the private interface: the

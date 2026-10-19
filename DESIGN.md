@@ -43,7 +43,7 @@ into a server process. Dependencies point downwards only.
 | `agrafe-extract` | The `agrafe-extract` helper: pulls the one image out of a PDF, DOCX or ODT. Library plus binary | `agrafe-types`, `lopdf`, `zip`, `quick-xml` |
 | `agrafe-render-text` | The `agrafe-render-text` helper: rasterises a text sample. Library plus binary | `agrafe-types`, `ab_glyph` |
 | `agrafe-render` | Which files render and from what, `vips thumbnail`, the icons, the drivers that spawn the helpers, the startup probe, the `[media]` tool config | `agrafe-types`, `agrafe-sandbox` |
-| `agrafe` | The library: config, database, blobs, upload pipeline, the fetch client, encryption, signing, storage, ClamAV, jobs, metrics, URL minting, and the `Agrafe` handle whose methods are the private API | `agrafe-crypto`, `agrafe-types`, `agrafe-render`, `sqlx`, `object_store`, `reqwest` |
+| `agrafe` | The library: config, database, blobs, upload pipeline, the fetch client, the webhook, encryption, signing, storage, ClamAV, jobs, metrics, URL minting, and the `Agrafe` handle whose methods are the private API | `agrafe-crypto`, `agrafe-types`, `agrafe-render`, `sqlx`, `object_store`, `reqwest` |
 | `agrafe-axum` | The two HTTP interfaces as axum routers, the extractors, `ApiError` and the mapping of the library's errors onto status codes | `agrafe`, `axum` |
 | `agrafe-dashboard` | The HTML dashboard as an axum router: the queue census, the listings and details of jobs, blobs and attachments, the retry and discard forms; compiled templates and a vendored stylesheet | `agrafe`, `agrafe-axum` (the origin check), `axum`, `askama` |
 | `agrafe-server` | The clap entry point: `serve`, `migrate`. Produces the binary named `agrafe` | `agrafe`, `agrafe-axum`, `agrafe-dashboard` |
@@ -768,8 +768,10 @@ cuts off for sure. Under the write-once rule a dropped `PUT` goes back to
 manifest and start over. Building in a job makes a crash or a deploy cost
 one attempt, retried from the stored description with no client
 involvement, and keeps the backend's side to a background job that sends
-the description, in parts when it is large, and polls, the same "accepted,
-finished by a job" contract a deferred scan already has.
+the description, in parts when it is large, and is told when it is done,
+the same "accepted, finished by a job, reported by the webhook" contract a
+deferred scan already has (see "Webhooks"; polling `GET /blobs/:id` is
+the fallback).
 
 `rows` would mostly be fast enough to build inline. It follows the same
 shape anyway: one contract for the backend, one build job per type, one way
@@ -1263,8 +1265,9 @@ For each Active Storage blob: `POST /blobs` with `input_type: "url"`, the
 presigned URL, `filename`, `content_type`, `checksum_md5` from the
 record's `checksum`, `size` from `byte_size`, `skip_virus_scan` if the
 backend vouches for the source, `priority: "low"` and the `attachment`.
-Then poll `GET /blobs/:id`, or sweep `GET /blobs?failed=true` and `GET
-/attachments?record_type=…&name=…` for `blob_state` of `expired`.
+Then take the `ready`, `failed` and `expired` events from the webhook (see
+"Webhooks"), or poll `GET /blobs/:id`, or sweep `GET /blobs?failed=true`
+and `GET /attachments?record_type=…&name=…` for `blob_state` of `expired`.
 
 Out of scope for now: `url` on the public port; authenticated fetches
 (headers, tokens), since the backend presigns instead; resuming a partial
@@ -1656,8 +1659,9 @@ Job kinds: `fetch` (download the bytes of a `url` blob, see "Fetched
 blobs"), `scan`, `render` (thumbnail and preview, whichever is pending),
 `rows` and `archive` (generate a blob of that input type from its stored
 source, see "Generated blobs"), `purge`
-(delete the objects under a blob's prefix) and `reap`, the periodic
-housekeeping. One reap, in one transaction, in this order: record
+(delete the objects under a blob's prefix), `reap`, the periodic
+housekeeping, and `notify` (deliver one event of a blob to the webhook,
+see "Webhooks"). One reap, in one transaction, in this order: record
 `expired` on every non-terminal blob past its `expires_at`; expire the
 abandoned `created` blobs, holding source parts untouched for
 `upload.abandoned_after` or attached and untouched altogether for as long
@@ -1747,15 +1751,16 @@ dead jobs; the blob's retry is for the backend looking at its records.
 travels with the commit. One listener per process wakes the pollers of that
 kind; `jobs.poll_interval` is the fallback for a missed wakeup. Concurrency is
 per kind in `jobs.concurrency` (defaults: `fetch` 2, `scan` 4, `render` 4,
-`rows` 2, `archive` 1, `purge` 4, `reap` 1): rendering is CPU bound,
-scanning waits on clamd, a build and a fetch on the network, and one
-reaper per process is plenty since a row is pending at a time anyway.
+`rows` 2, `archive` 1, `purge` 4, `reap` 1, `notify` 4): rendering is CPU
+bound, scanning waits on clamd, a build, a fetch and a delivery on the
+network, and one reaper per process is plenty since a row is pending at a
+time anyway.
 
 Isolation is by kind. Every kind has its own workers, so however many slow
 jobs of one kind are queued, the others keep flowing; that is the property
 production relies on and the reason there is no priority across kinds.
 Priority orders within a kind: `high`, `normal` or `low`, set on the blob
-at creation and copied onto its fetch, scan, render and build jobs. Purges and
+at creation and copied onto its fetch, scan, render, build and notify jobs. Purges and
 blob-less jobs run `normal` whatever the blob says: they are housekeeping
 nobody waits on. It orders, it does not reserve: a kind fed `high` jobs
 without end runs its `low` ones never, which is the point for an archive
@@ -1784,8 +1789,9 @@ the wait of the oldest due job, which is the number to alert on: it grows
 when a kind's workers cannot keep up, or, for one priority alone, when the
 higher ones starve it. A lapsed lease counts as unclaimed, as the claim query sees
 it. Per process: `agrafe_job_runs_total{kind,outcome}` with `ok`, `retry`,
-`dead` and `superseded`, `agrafe_job_duration_seconds{kind}` and
-`agrafe_workers{kind}`. A `worker` process has no API; it binds
+`dead` and `superseded`, `agrafe_job_duration_seconds{kind}`,
+`agrafe_workers{kind}` and `agrafe_webhook_deliveries_total{event,result}`
+with `delivered` or `failed`, see "Webhooks". A `worker` process has no API; it binds
 `server.private_addr` all the same, serving `/healthz` and `/metrics` only.
 
 `GET /jobs` lists jobs newest first, cursor paginated on the id, filtered by
@@ -1797,6 +1803,91 @@ finish its blob, and a running one is a worker's. A retry whose blob already
 has a pending job of that kind is `409` too; the newer job does the work.
 The same census and listing as pages, with the buttons, is the dashboard;
 see "Dashboard" under "Interfaces".
+
+## Webhooks
+
+The backend is told when a blob reaches a state it waits for: agrafe
+`POST`s to one URL it configures once, `webhook.url`. Polling `GET
+/blobs/:id` stays as the fallback and the webhook takes it out of the
+normal path, where the backend would otherwise run a polling job per blob
+it is waiting on: every blob finished by a job (a deferred scan, a `rows`
+or `archive` build, a fetch), every dead job, and every record whose
+upload the user walked away from.
+
+Four events. `ready`: the original became readable, the scan passed or was
+skipped, or the build finished. `infected`: the scan failed; terminal.
+`failed`: the job that was to finish the blob died, `failed_at` set on the
+row by `jobs::fail`; retryable through `POST /blobs/:id/retry` or `POST
+/jobs/:id/retry`, after which a `ready` or a second `failed` follows.
+`expired`: the reaper recorded the blob `expired`. `infected` and `failed`
+are two events because they call for two actions, one is final and the
+other is retry or give up. `expired` fires when the reaper records it, not
+at the instant `expires_at` passes, so it lags by up to
+`jobs.reap_interval`; attached blobs never expire, so in practice it is
+the abandonment signal, an attached blob whose file never came. No event
+for `deleted`, the backend caused it, nor for representations, which have
+`wait` and the placeholder.
+
+Delivery goes through the jobs table: a `notify` job, the blob id and the
+event in its payload, enqueued in the same transaction as the state change
+(`repo::enqueue_next` for `ready` and `infected`, which the inline scan,
+the deferred one and the builds all reach; `jobs::fail` in the branch that
+stamps the blob; the reaper for the ids `expire` and `expire_abandoned`
+return). Postgres gives the outbox for free: no transition without its
+notification, no notification for a transition that lost its conditional
+`UPDATE`. The retries with backoff, the dead state, the `/jobs` listing,
+`POST /jobs/:id/retry` and the `keep_failed` pruning all come along, so a
+backend down for an hour drains its backlog with no new machinery, and an
+operator sees undelivered notifications where dead jobs already are. A
+dead `notify` says nothing on the blob: it is the news of the blob, not
+its progress. When no URL is configured nothing is enqueued, so a
+deployment without a webhook has no idle jobs; `webhook.events` narrows
+the set.
+
+The request is a JSON body with `event`, `occurred_at` (when the
+transition was recorded), `attempt` (deliveries of this event so far, this
+one included) and `blob`, the same object `GET /blobs/:id` answers, read at
+delivery time: attachments, URLs and envelope included. A state-carrying
+body makes at-least-once delivery and reordering harmless: the backend
+applies what it sees, and a retried `failed` landing after the retry that
+fixed it still says `state: ready`. One shape for the poll and the push
+means one parser on the backend's side; the struct lives in the library,
+`blob::metadata`, and the HTTP layer serialises the same one. One `notify`
+job is pending per blob, the unique index on pending jobs, and a second
+event raised while the first is still undelivered replaces it: the newest
+event, its attempts started over, with the state behind it at delivery.
+The backend then hears `expired` rather than a `ready` that is no longer
+true, and `ready` after a `failed` the retry already mended. A blob pruned
+before its delivery (`blobs.keep_purged`) takes its jobs with it.
+
+The headers follow [Standard Webhooks](https://www.standardwebhooks.com/):
+`webhook-id` is the job id, stable across the retries of one delivery so
+the receiver can deduplicate on it, `webhook-timestamp` the Unix seconds
+at sending, and `webhook-signature` is `v1,` followed by the base64 of the
+HMAC-SHA256 of `id.timestamp.body` under the secret. The receiver checks
+the signature over the raw body, then rejects a stale timestamp. The
+secret, `webhook.secret`, is `whsec_` followed by base64 as the standard's
+libraries expect it, so a backend verifies with one of them and no code.
+It is its own secret, not a `[signing]` key: those mint URLs and should
+not double as a shared secret with the backend. A `2xx` within
+`webhook.timeout` (default ten seconds) is delivered. Anything else, a
+timeout or a connection error fails the attempt and goes through the
+backoff, the head of a non-`2xx` body in `last_error`. No redirect is
+followed: the URL is the operator's and is taken as given.
+
+One URL per deployment, not a per-blob callback URL at creation: there is
+one backend, and a per-blob URL is an SSRF primitive handed to whoever
+holds the private port. A list of endpoints is a small extension if a
+second consumer ever appears. Delivering from the transition itself,
+outside the jobs table, would lose the outbox guarantee and the retry,
+dead and listing machinery for nothing; a single `changed` event carrying
+only the id would have the backend poll anyway, where sending the
+metadata is one query at delivery time.
+
+`agrafe_webhook_deliveries_total{event,result}` counts the attempts of
+this process, `delivered` or `failed`; the `notify` series of the queue
+gauges show the backlog, and `agrafe_jobs{kind="notify",state="dead"}` is
+the number to alert on, the deliveries given up.
 
 ## Configuration
 
@@ -1813,7 +1904,7 @@ is redacted so a dumped config cannot leak them. See `config/example.toml`.
 | HTTP | `axum` on `tokio`, two routers sharing state, two listeners |
 | Database | Postgres via `sqlx`, migrations in `migrations/` |
 | Object store | `object_store`, local filesystem or S3 |
-| Fetching `url` blobs | `reqwest` with rustls, a resolver of our own enforcing the address policy |
+| Fetching `url` blobs, webhook deliveries | `reqwest` with rustls, a resolver of our own enforcing the address policy on fetches |
 | Config | `figment` with TOML and env providers |
 | Signing | `hmac` + `sha2` |
 | Encryption | `aes-gcm` + `hkdf`, Tink streaming format, own crate (`agrafe-crypto`) |

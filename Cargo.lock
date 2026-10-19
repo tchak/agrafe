@@ -119,6 +119,7 @@ dependencies = [
  "bytesize",
  "figment",
  "futures",
+ "hmac",
  "http",
  "http-body-util",
  "jiff",

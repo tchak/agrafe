@@ -14,7 +14,9 @@ use tokio::task::JoinSet;
 use tracing::Instrument as _;
 use uuid::Uuid;
 
-use super::{Failure, Job, JobError, JobKind, archive, fetch, purge, reap, render, rows, scan};
+use super::{
+    Failure, Job, JobError, JobKind, archive, fetch, notify, purge, reap, render, rows, scan,
+};
 use crate::app::Agrafe;
 use crate::metrics::Outcome;
 
@@ -133,20 +135,24 @@ async fn run_claimed(state: &Agrafe, job: &Job, worker: &str) -> sqlx::Result<()
             Outcome::Ok
         }
         Err(err) => {
-            let mut conn = state.pool().acquire().await?;
+            // One transaction: a death stamped on the blob commits with
+            // the notification of it.
+            let mut tx = state.pool().begin().await?;
             let error = err.to_string();
             let permanent = err.is_permanent();
             let retry_after = err.retry_after();
-            match super::fail(
-                &mut conn,
+            let failure = super::fail(
+                &mut tx,
                 job,
                 &error,
                 permanent,
                 retry_after,
+                &state.config().webhook,
                 Timestamp::now(),
             )
-            .await?
-            {
+            .await?;
+            tx.commit().await?;
+            match failure {
                 Failure::Retry(at) => {
                     tracing::warn!(error, retry_at = %at, "job failed");
                     Outcome::Retry
@@ -175,6 +181,7 @@ async fn handle(state: &Agrafe, job: &Job) -> Result<(), JobError> {
         JobKind::Archive => archive::run(state, job).await,
         JobKind::Purge => purge::run(state, job).await,
         JobKind::Reap => reap::run(state, job).await,
+        JobKind::Notify => notify::run(state, job).await,
     }
 }
 

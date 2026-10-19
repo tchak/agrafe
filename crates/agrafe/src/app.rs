@@ -12,7 +12,7 @@ use crate::blob::cache::HeadCache;
 use crate::clamav::Clamd;
 use crate::config::{Config, ConfigError};
 use crate::encryption::Keks;
-use crate::jobs::fetch;
+use crate::jobs::{fetch, notify};
 use crate::metrics::Metrics;
 use crate::signing::Signer;
 use crate::storage::{self, Store};
@@ -26,6 +26,8 @@ pub enum InitError {
     Config(#[from] ConfigError),
     #[error("building the fetch client: {0}")]
     Fetch(#[from] reqwest::Error),
+    #[error("building the webhook client: {0}")]
+    Webhook(reqwest::Error),
 }
 
 /// A cheap-to-clone handle on one agrafe instance.
@@ -40,6 +42,7 @@ struct Inner {
     keks: Keks,
     clamd: Clamd,
     fetcher: fetch::Client,
+    webhook: Option<notify::Client>,
     heads: HeadCache,
     metrics: Metrics,
 }
@@ -56,6 +59,13 @@ impl Agrafe {
         let keks = Keks::from_config(&config.encryption)?;
         let clamd = Clamd::from_config(&config.clamav);
         let fetcher = fetch::Client::from_config(&config.fetch)?;
+        let webhook = match &config.webhook.url {
+            Some(url) => Some(
+                notify::Client::new(url, config.webhook.key()?, config.webhook.timeout)
+                    .map_err(InitError::Webhook)?,
+            ),
+            None => None,
+        };
         let heads = HeadCache::from_config(&config.blobs);
         Ok(Self(Arc::new(Inner {
             config,
@@ -65,6 +75,7 @@ impl Agrafe {
             keks,
             clamd,
             fetcher,
+            webhook,
             heads,
             metrics: Metrics::new(),
         })))
@@ -97,6 +108,11 @@ impl Agrafe {
     /// The client `url` blobs are fetched through.
     pub fn fetcher(&self) -> &fetch::Client {
         &self.0.fetcher
+    }
+
+    /// The client deliveries go through; `None` without a `[webhook]` URL.
+    pub fn webhook(&self) -> Option<&notify::Client> {
+        self.0.webhook.as_ref()
     }
 
     /// The rows the read routes served lately.
