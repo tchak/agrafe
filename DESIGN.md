@@ -1025,8 +1025,10 @@ and an optional size. A response that carries a `Content-Length` and no
 declared size takes it as the size: hyper fails the body if it falls short
 of it, and the inline-scan decision is made on it as on a declaration.
 
-The URL is stored on the row, since retries need it, and reported in
-private metadata only. It never appears in `last_error`, logs or public
+The URL is stored on the row, since retries need it, reported in private
+metadata only, and cleared by the completion of the upload: a retry reads
+it only while the blob is `created`, and after that it would be a stale
+secret on every listing. It never appears in `last_error`, logs or public
 metadata: migration URLs are presigned, so they are secrets with an
 expiry. The HTTP client's errors carry the URL and are stripped of it
 before they are written anywhere, and the server caps the client's own

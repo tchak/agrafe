@@ -341,7 +341,10 @@ pub async fn complete_upload(
             scanned_at = CASE WHEN $11 THEN now() END,
             scan_signature = $13,
             uploaded_at = now(),
-            checksum_md5 = $15
+            checksum_md5 = $15,
+            -- The presigned URL of a fetched blob served its purpose: a
+            -- retry only ever reads it while the blob is created.
+            url = NULL
         WHERE id = $1 AND state = $12 AND upload_started_at = $14
         RETURNING *
         "#,

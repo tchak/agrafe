@@ -29,8 +29,8 @@ pub struct BlobResponse {
     /// "Creation".
     pub checksum_md5: Option<String>,
     pub size: Option<i64>,
-    /// Where a `url` blob is fetched from. Private metadata only: a
-    /// presigned URL is a secret.
+    /// Where a `url` blob is fetched from, until it has been. Private
+    /// metadata only: a presigned URL is a secret.
     pub url: Option<String>,
     pub skip_virus_scan: bool,
     pub public_upload_allowed: bool,

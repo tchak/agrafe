@@ -18,9 +18,10 @@ CREATE TABLE blobs (
     checksum_md5      bytea CHECK (checksum_md5 IS NULL OR octet_length(checksum_md5) = 16),
     size              bigint CHECK (size IS NULL OR size >= 0),
     skip_virus_scan   boolean NOT NULL DEFAULT false,
-    -- Where a `url` blob's bytes are fetched from, kept for the retries. A
-    -- presigned URL is a secret with an expiry: private metadata only, never
-    -- in an error or a log. See DESIGN.md, "Fetched blobs".
+    -- Where a `url` blob's bytes are fetched from, kept for the retries and
+    -- cleared once they are in. A presigned URL is a secret with an expiry:
+    -- private metadata only, never in an error or a log. See DESIGN.md,
+    -- "Fetched blobs".
     url               text,
     expires_at        timestamptz,
     -- Where the blob's jobs go in their kind's queue, as the rank the claim

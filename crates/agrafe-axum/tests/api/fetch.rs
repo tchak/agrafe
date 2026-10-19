@@ -209,7 +209,7 @@ async fn a_url_blob_is_fetched_by_a_job() {
     );
     assert_eq!(got["checksum_md5"], md5_of(&bytes));
     assert_eq!(got["size"], bytes.len());
-    assert_eq!(got["url"], url, "kept for the record");
+    assert_eq!(got["url"], json!(null), "a presigned secret, cleared once the bytes are in");
     assert!(got["uploaded_at"].is_string());
     assert_eq!(jobs_for(&app, id).await, ["render"]);
     assert_eq!(stored_plaintext(&app, id).await, bytes);

@@ -381,8 +381,9 @@ pub struct Blob {
     pub checksum_md5: Option<Vec<u8>>,
     pub size: Option<i64>,
     pub skip_virus_scan: bool,
-    /// Where a `url` blob is fetched from. Private metadata only: a
-    /// presigned URL is a secret, and it never goes into an error or a log.
+    /// Where a `url` blob is fetched from, while it is `created`: cleared
+    /// once the bytes are in. Private metadata only: a presigned URL is a
+    /// secret, and it never goes into an error or a log.
     pub url: Option<String>,
     #[sqlx(try_from = "crate::db::NullableTimestamp")]
     pub expires_at: Option<Timestamp>,
