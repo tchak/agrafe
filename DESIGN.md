@@ -1022,8 +1022,10 @@ encoding as our SHA-256 field, so a record's value pastes straight into
 `checksum_md5`. The pipeline already computes MD5 next to SHA-256; the
 change is a compare in the checker and a declaration with optional digests
 and an optional size. A response that carries a `Content-Length` and no
-declared size takes it as the size: hyper fails the body if it falls short
-of it, and the inline-scan decision is made on it as on a declaration.
+declared size takes it as the cap, not as a declaration: the inline-scan
+decision is made on it as on a declared size, hyper fails the body if it
+falls short of it, and a mismatch is never reported as one against a size
+the backend did not give.
 
 The URL is stored on the row, since retries need it, reported in private
 metadata only, and cleared by the completion of the upload: a retry reads

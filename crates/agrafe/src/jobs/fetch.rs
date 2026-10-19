@@ -473,13 +473,11 @@ async fn fetch(state: &Agrafe, blob: Blob) -> Result<(), FetchError> {
                     max: declared.cap,
                 });
             }
-            // The remote's word is as good as a declaration: hyper fails
-            // the body if it falls short of it, and the inline scan
-            // decision can use it.
-            None => {
-                declared.size = Some(len);
-                declared.cap = len;
-            }
+            // The remote's word bounds the body and settles the inline
+            // scan decision, as a declaration would; hyper fails the body
+            // if it falls short of it. It is not a declaration: nothing
+            // the backend did not say is held against the bytes.
+            None => declared.cap = len,
         }
     }
 
