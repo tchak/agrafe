@@ -11,6 +11,7 @@
 
 use jiff::Timestamp;
 use sqlx::PgExecutor;
+use uuid::Uuid;
 
 use super::notify::{self, Event};
 use super::{Job, JobError, JobKind, Priority};
@@ -114,9 +115,8 @@ pub async fn reap(state: &Agrafe, now: Timestamp) -> Result<Report, JobError> {
     // The backend learns of each expiry from here, so `expired` lags the
     // moment by at most one interval.
     if config.webhook.wants(Event::Expired) {
-        for id in expired.iter().chain(&abandoned) {
-            notify::enqueue(&mut *tx, *id, Event::Expired, now).await?;
-        }
+        let ids: Vec<Uuid> = expired.iter().chain(&abandoned).copied().collect();
+        notify::enqueue_each(&mut *tx, &ids, Event::Expired, now).await?;
     }
 
     // Dead jobs go first, so a purge that died is scheduled again below,

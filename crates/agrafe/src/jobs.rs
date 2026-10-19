@@ -635,7 +635,14 @@ pub async fn fail(
             .rows_affected()
                 == 1;
             if stamped && webhook.wants(notify::Event::Failed) {
-                notify::enqueue(&mut *conn, blob_id, notify::Event::Failed, now).await?;
+                notify::enqueue(
+                    &mut *conn,
+                    blob_id,
+                    job.priority,
+                    notify::Event::Failed,
+                    now,
+                )
+                .await?;
             }
         }
         return Ok(Failure::Dead);

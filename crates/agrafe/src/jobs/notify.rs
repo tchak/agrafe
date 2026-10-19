@@ -22,7 +22,7 @@ use sha2::Sha256;
 use sqlx::PgExecutor;
 use uuid::Uuid;
 
-use super::{Job, JobError, JobKind};
+use super::{Job, JobError, JobKind, Priority};
 use crate::app::Agrafe;
 use crate::blob::metadata::BlobMetadata;
 use crate::blob::{Blob, BlobState, repo};
@@ -87,42 +87,87 @@ pub struct Body {
     pub blob: BlobMetadata,
 }
 
-/// Enqueue the delivery of `event` for the blob, due at `now`, at the
-/// blob's priority. A notify job pending for the blob is replaced: the
-/// newest event wins, its attempts start over. Returns whether a job was
-/// written; none when the blob's row is gone. The caller checks
-/// `WebhookConfig::wants` first.
-pub async fn enqueue(
-    exec: impl PgExecutor<'_>,
-    blob_id: Uuid,
-    event: Event,
-    now: Timestamp,
-) -> sqlx::Result<bool> {
-    let payload = serde_json::to_value(Payload {
+/// What a pending notify job for the blob becomes when a newer event is
+/// enqueued: the newest event wins, its attempts start over.
+macro_rules! on_conflict {
+    () => {
+        "ON CONFLICT (kind, blob_id) WHERE locked_at IS NULL \
+         DO UPDATE SET payload = EXCLUDED.payload, run_at = EXCLUDED.run_at, \
+                       attempts = 0, last_error = NULL"
+    };
+}
+
+fn payload(event: Event, now: Timestamp) -> serde_json::Value {
+    serde_json::to_value(Payload {
         id: Uuid::now_v7(),
         event,
         occurred_at: now,
     })
-    .expect("the payload serialises");
-    let result = sqlx::query(
+    .expect("the payload serialises")
+}
+
+/// Enqueue the delivery of `event` for the blob, due at `now`, at
+/// `priority`, the blob's. A notify job pending for the blob is replaced,
+/// see `ON_CONFLICT`. The caller checks `WebhookConfig::wants` first.
+pub async fn enqueue(
+    exec: impl PgExecutor<'_>,
+    blob_id: Uuid,
+    priority: Priority,
+    event: Event,
+    now: Timestamp,
+) -> sqlx::Result<()> {
+    sqlx::query(concat!(
         "WITH written AS (\
              INSERT INTO jobs (kind, blob_id, priority, payload, run_at) \
-             SELECT $1, id, priority, $3, $4 FROM blobs WHERE id = $2 \
-             ON CONFLICT (kind, blob_id) WHERE locked_at IS NULL \
-             DO UPDATE SET payload = EXCLUDED.payload, run_at = EXCLUDED.run_at, \
-                           attempts = 0, last_error = NULL \
-             RETURNING kind\
+             VALUES ($1, $2, $3, $4, $5) ",
+        on_conflict!(),
+        " RETURNING kind\
          ) \
-         SELECT pg_notify($5, kind) FROM written",
-    )
+         SELECT pg_notify($6, kind) FROM written"
+    ))
     .bind(JobKind::Notify.as_str())
     .bind(blob_id)
-    .bind(payload)
+    .bind(priority.rank())
+    .bind(payload(event, now))
     .bind(now.to_sqlx())
     .bind(super::CHANNEL)
     .execute(exec)
     .await?;
-    Ok(result.rows_affected() == 1)
+    Ok(())
+}
+
+/// `enqueue` for each of `blob_ids`, each at its blob's priority, in one
+/// statement: the reaper's expiries, which can be many after an outage.
+/// An id without a row is skipped.
+pub async fn enqueue_each(
+    exec: impl PgExecutor<'_>,
+    blob_ids: &[Uuid],
+    event: Event,
+    now: Timestamp,
+) -> sqlx::Result<()> {
+    if blob_ids.is_empty() {
+        return Ok(());
+    }
+    let payloads: Vec<serde_json::Value> = blob_ids.iter().map(|_| payload(event, now)).collect();
+    sqlx::query(concat!(
+        "WITH written AS (\
+             INSERT INTO jobs (kind, blob_id, priority, payload, run_at) \
+             SELECT $1, b.id, b.priority, e.payload, $4 \
+             FROM unnest($2::uuid[], $3::jsonb[]) AS e (id, payload) \
+             JOIN blobs b ON b.id = e.id ",
+        on_conflict!(),
+        " RETURNING kind\
+         ) \
+         SELECT pg_notify($5, kind) FROM written"
+    ))
+    .bind(JobKind::Notify.as_str())
+    .bind(blob_ids)
+    .bind(payloads)
+    .bind(now.to_sqlx())
+    .bind(super::CHANNEL)
+    .execute(exec)
+    .await?;
+    Ok(())
 }
 
 /// Why a delivery failed. The message is what `last_error` keeps.

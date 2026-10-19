@@ -580,7 +580,7 @@ pub(crate) async fn enqueue_next(
 ) -> sqlx::Result<()> {
     enqueue_kinds(conn, blob, next_kinds(blob)).await?;
     if let Some(event) = Event::of(blob).filter(|event| webhook.wants(*event)) {
-        notify::enqueue(&mut *conn, blob.id, event, Timestamp::now()).await?;
+        notify::enqueue(&mut *conn, blob.id, blob.priority, event, Timestamp::now()).await?;
     }
     Ok(())
 }
