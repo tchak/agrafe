@@ -397,6 +397,12 @@ pub struct Blob {
     /// When the purge removed the objects from the bucket.
     #[sqlx(try_from = "crate::db::NullableTimestamp")]
     pub purged_at: Option<Timestamp>,
+    /// When the job that was to finish the blob ran out of attempts, and
+    /// what it said; cleared when another is enqueued. Outlives the dead
+    /// job, which the reaper prunes.
+    #[sqlx(try_from = "crate::db::NullableTimestamp")]
+    pub failed_at: Option<Timestamp>,
+    pub last_error: Option<String>,
 }
 
 impl Blob {

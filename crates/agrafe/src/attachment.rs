@@ -163,15 +163,18 @@ impl Attached {
     }
 }
 
-/// An attachment as the listing shows it: with the state of its blob, so
-/// that a record's side can tell a live file from an expired or infected
-/// one without a second request.
+/// An attachment as the listing shows it: with the state of its blob, and
+/// whether the job that was to finish the blob died, so that a record's
+/// side can tell a live file from an expired, infected or stuck one
+/// without a second request.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Listed {
     #[sqlx(flatten)]
     pub attachment: Attachment,
     #[sqlx(try_from = "String")]
     pub blob_state: BlobState,
+    #[sqlx(try_from = "crate::db::NullableTimestamp")]
+    pub blob_failed_at: Option<Timestamp>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -335,7 +338,7 @@ pub async fn for_blobs(exec: impl PgExecutor<'_>, ids: &[Uuid]) -> sqlx::Result<
 pub async fn list(exec: impl PgExecutor<'_>, params: &ListParams) -> sqlx::Result<Page> {
     let limit = params.limit;
     let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
-        "SELECT a.*, b.state AS blob_state FROM attachments a \
+        "SELECT a.*, b.state AS blob_state, b.failed_at AS blob_failed_at FROM attachments a \
          JOIN blobs b ON b.id = a.blob_id WHERE true",
     );
     if let Some(record_type) = &params.record_type {

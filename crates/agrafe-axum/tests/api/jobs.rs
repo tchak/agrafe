@@ -428,7 +428,35 @@ async fn operators_see_retry_and_discard_dead_jobs() {
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
 
-    // Retrying makes the dead job due again, with a fresh attempt budget.
+    // The blob only records the death of a job that was to finish it; the
+    // purge is housekeeping.
+    sqlx::query("UPDATE blobs SET failed_at = now(), last_error = 'boom' WHERE id = $1")
+        .bind(blob)
+        .execute(pool)
+        .await
+        .unwrap();
+    let dead_purge: i64 = sqlx::query_scalar(
+        "INSERT INTO jobs (kind, blob_id, failed_at, locked_at, locked_by, last_error) \
+         VALUES ('purge', $1, now(), now(), 'w', 'bust') RETURNING id",
+    )
+    .bind(blob)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    let (status, _) = call(
+        &app.private,
+        req(Method::POST, &format!("/jobs/{dead_purge}/retry")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let got = get_blob(&app, id_of(&created)).await;
+    assert_eq!(
+        got["last_error"], "boom",
+        "a purge's retry says nothing of the blob"
+    );
+
+    // Retrying makes the dead job due again, with a fresh attempt budget,
+    // and clears the verdict on the blob.
     let (status, body) = call(
         &app.private,
         req(Method::POST, &format!("/jobs/{dead}/retry")),

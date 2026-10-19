@@ -412,8 +412,9 @@ which needs its expiry: one the backend holds on to stays.
 Separate from the blob state, each blob tracks `scan_state`
 (`pending`, `clean`, `infected`, `skipped`), `scan_signature` (what clamd
 found, for `infected`, whichever path scanned the file; private metadata
-only) and a state per derived representation (`pending`, `ready`, `failed`,
-`unavailable`, `disabled`).
+only), a state per derived representation (`pending`, `ready`, `failed`,
+`unavailable`, `disabled`), and `failed_at` with `last_error` when the job
+that was to move it along died (see "Jobs").
 
 ### Attachments
 
@@ -540,7 +541,8 @@ about its own records, and nothing a browser is told.
 sort by creation time. Filters: `content_type`, `category`, `state`,
 `scan_state`, `attached` (`true` or `false`: whether any attachment exists,
 which for a non-terminal blob is whether `expires_at` is null, see
-"Attachments"). Response carries `next_cursor` or null.
+"Attachments"), `failed` (`true` or `false`: whether the job that was to
+finish the blob died, see "Jobs"). Response carries `next_cursor` or null.
 
 The three listings, `/blobs`, `/attachments` and `/jobs`, take a `limit`,
 default 50, at most 200. A limit out of that range, an unknown filter value
@@ -1383,6 +1385,19 @@ build's permanent errors, see "Build") is dead at once, without the
 backoff. A failing
 job whose twin was enqueued while it was locked is dropped in favour of the
 newer one.
+
+A dead job that was to finish its blob, a scan, a build or a render,
+leaves its verdict on the blob as well: `failed_at` and `last_error` on
+the row, in private metadata, as `blob_failed_at` on the attachments
+listing, and behind `GET /blobs?failed=true`. Why twice: the dead job is
+pruned after `jobs.keep_failed`, the blob it left in `uploaded`, or
+`ready` with a representation `pending`, is not, and an attached one is
+never expired either. Without the row's copy, a blob whose job died a
+week ago is indistinguishable from one whose job is queued. The verdict is
+cleared when a job of a finishing kind is enqueued or retried for the
+blob, which is to say when something is going to finish it after all. A
+dead purge says nothing on the blob: it is housekeeping of a terminal
+blob, and the dead job itself is the evidence of the bug that enqueued it.
 
 `enqueue` calls `pg_notify` in the same statement, so the notification
 travels with the commit. One listener per process wakes the pollers of that

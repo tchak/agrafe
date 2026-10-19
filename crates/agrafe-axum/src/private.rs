@@ -97,6 +97,7 @@ pub struct ListQuery {
     pub state: Option<BlobState>,
     pub scan_state: Option<ScanState>,
     pub attached: Option<bool>,
+    pub failed: Option<bool>,
     pub cursor: Option<Uuid>,
     pub limit: Option<usize>,
 }
@@ -111,6 +112,7 @@ async fn list_blobs(
         state: q.state,
         scan_state: q.scan_state,
         attached: q.attached,
+        failed: q.failed,
         cursor: q.cursor,
         limit: q.limit.unwrap_or(repo::DEFAULT_LIMIT),
     };

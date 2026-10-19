@@ -52,6 +52,12 @@ pub struct BlobResponse {
     pub uploaded_at: Option<Timestamp>,
     pub deleted_at: Option<Timestamp>,
     pub purged_at: Option<Timestamp>,
+    /// Set when the job that was to finish the blob, a scan, a build or a
+    /// render, ran out of attempts: the blob is stuck where it is until
+    /// `POST /blobs/:id/retry` or a delete. Cleared when a job is enqueued
+    /// for it again. See DESIGN.md, "Jobs".
+    pub failed_at: Option<Timestamp>,
+    pub last_error: Option<String>,
     /// The records using the blob, oldest first. A blob with any has no
     /// `expires_at`.
     pub attachments: Vec<AttachmentResponse>,
@@ -95,6 +101,8 @@ impl BlobResponse {
             uploaded_at: blob.uploaded_at,
             deleted_at: blob.deleted_at,
             purged_at: blob.purged_at,
+            failed_at: blob.failed_at,
+            last_error: blob.last_error.clone(),
             attachments: attachments.iter().map(AttachmentResponse::new).collect(),
             urls,
             envelope: Envelope::from_head(&blob.head(), Timestamp::now()).map(|e| e.encode()),

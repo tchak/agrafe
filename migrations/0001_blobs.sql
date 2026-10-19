@@ -96,7 +96,15 @@ CREATE TABLE blobs (
     upload_heartbeat_at timestamptz,
     uploaded_at         timestamptz,
     deleted_at          timestamptz,
-    purged_at           timestamptz
+    purged_at           timestamptz,
+
+    -- The job that was to finish the blob (a scan, a build or a render) ran
+    -- out of attempts: when, and its last error. Set when such a job dies,
+    -- cleared when one of its kind is enqueued or retried for the blob, so
+    -- a stuck blob stays visible after the dead job itself is pruned. See
+    -- DESIGN.md, "Jobs".
+    failed_at           timestamptz,
+    last_error          text
 );
 
 -- Keep blobs.updated_at current on every UPDATE so no code path has to.
@@ -117,6 +125,9 @@ CREATE INDEX blobs_state_idx        ON blobs (state, id);
 CREATE INDEX blobs_scan_state_idx   ON blobs (scan_state, id);
 CREATE INDEX blobs_category_idx     ON blobs (category, id);
 CREATE INDEX blobs_content_type_idx ON blobs (content_type, id);
+-- Blobs whose job died, for `GET /blobs?failed=true`.
+CREATE INDEX blobs_failed_idx       ON blobs (id)
+    WHERE failed_at IS NOT NULL;
 -- Reaper: expiring blobs.
 CREATE INDEX blobs_expires_at_idx   ON blobs (expires_at)
     WHERE expires_at IS NOT NULL AND state NOT IN ('expired', 'deleted');

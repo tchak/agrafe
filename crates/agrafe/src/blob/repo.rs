@@ -99,6 +99,8 @@ pub struct ListParams {
     pub scan_state: Option<ScanState>,
     /// Whether any attachment exists for the blob.
     pub attached: Option<bool>,
+    /// Whether the job that was to finish the blob died (`failed_at`).
+    pub failed: Option<bool>,
     pub cursor: Option<Uuid>,
     /// Already validated to lie in `1..=MAX_LIMIT`.
     pub limit: usize,
@@ -131,6 +133,13 @@ pub async fn list(exec: impl PgExecutor<'_>, params: &ListParams) -> sqlx::Resul
     if let Some(attached) = params.attached {
         qb.push(if attached { " AND " } else { " AND NOT " })
             .push("EXISTS (SELECT 1 FROM attachments WHERE attachments.blob_id = blobs.id)");
+    }
+    if let Some(failed) = params.failed {
+        qb.push(if failed {
+            " AND failed_at IS NOT NULL"
+        } else {
+            " AND failed_at IS NULL"
+        });
     }
     if let Some(cursor) = params.cursor {
         qb.push(" AND id < ").push_bind(cursor);

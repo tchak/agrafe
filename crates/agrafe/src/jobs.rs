@@ -154,6 +154,19 @@ agrafe_types::str_enum!(Priority {
     Low => "low",
 });
 
+impl JobKind {
+    /// Whether a job of this kind is what moves its blob along: the scan
+    /// or the build that takes it out of `uploaded`, the render that fills
+    /// its representations. Its death is recorded on the blob; a purge or a
+    /// reap is housekeeping and leaves the blob's row alone.
+    pub fn finishes_blob(self) -> bool {
+        matches!(
+            self,
+            JobKind::Scan | JobKind::Render | JobKind::Rows | JobKind::Archive
+        )
+    }
+}
+
 impl Priority {
     /// What the `jobs.priority` column holds; the claim orders on it.
     pub fn rank(self) -> i16 {
@@ -380,6 +393,9 @@ pub async fn retry(conn: &mut PgConnection, id: i64) -> sqlx::Result<Action> {
                 .bind(job.kind.as_str())
                 .execute(&mut *conn)
                 .await?;
+            if let Some(blob_id) = job.blob_id.filter(|_| job.kind.finishes_blob()) {
+                clear_failure(&mut *conn, blob_id).await?;
+            }
             Ok(Action::Done(job))
         }
         Ok(None) => Ok(match find(&mut *conn, id).await? {
@@ -392,6 +408,19 @@ pub async fn retry(conn: &mut PgConnection, id: i64) -> sqlx::Result<Action> {
         }),
         Err(err) => Err(err),
     }
+}
+
+/// Forget the dead job a blob's row records: something is going to finish
+/// the blob after all.
+async fn clear_failure(exec: impl PgExecutor<'_>, blob_id: Uuid) -> sqlx::Result<()> {
+    sqlx::query(
+        "UPDATE blobs SET failed_at = NULL, last_error = NULL \
+         WHERE id = $1 AND failed_at IS NOT NULL",
+    )
+    .bind(blob_id)
+    .execute(exec)
+    .await?;
+    Ok(())
 }
 
 /// Remove a dead job. A live one is left alone: a pending job is the only
@@ -415,7 +444,8 @@ pub async fn discard(conn: &mut PgConnection, id: i64) -> sqlx::Result<Action> {
 /// Insert a job. At most one pending job of each kind exists per blob, the
 /// blob-less ones counting as one blob, and duplicates are dropped. Returns
 /// whether a row was inserted. Workers are notified when the surrounding
-/// transaction commits.
+/// transaction commits. A job that finishes its blob clears the failure a
+/// dead predecessor left on the blob's row, see `fail`.
 pub async fn enqueue(
     exec: impl PgExecutor<'_>,
     kind: JobKind,
@@ -428,7 +458,11 @@ pub async fn enqueue(
         "WITH inserted AS (\
              INSERT INTO jobs (kind, blob_id, priority, payload, run_at) \
              VALUES ($1, $2, $3, $4, $5) \
-             ON CONFLICT DO NOTHING RETURNING kind\
+             ON CONFLICT DO NOTHING RETURNING kind, blob_id\
+         ), cleared AS (\
+             UPDATE blobs SET failed_at = NULL, last_error = NULL \
+             WHERE $7 AND failed_at IS NOT NULL \
+               AND id IN (SELECT blob_id FROM inserted)\
          ) \
          SELECT pg_notify($6, kind) FROM inserted",
     )
@@ -438,6 +472,7 @@ pub async fn enqueue(
     .bind(payload)
     .bind(run_at.to_sqlx())
     .bind(CHANNEL)
+    .bind(kind.finishes_blob())
     .execute(exec)
     .await?;
     Ok(result.rows_affected() == 1)
@@ -534,6 +569,15 @@ pub async fn fail(
             .bind(&error)
             .execute(&mut *conn)
             .await?;
+        // The blob keeps the verdict too: the dead job is pruned after
+        // `jobs.keep_failed`, the stuck blob is not.
+        if let Some(blob_id) = job.blob_id.filter(|_| job.kind.finishes_blob()) {
+            sqlx::query("UPDATE blobs SET failed_at = now(), last_error = $2 WHERE id = $1")
+                .bind(blob_id)
+                .bind(&error)
+                .execute(&mut *conn)
+                .await?;
+        }
         return Ok(Failure::Dead);
     }
     let run_at = now + backoff(job.attempts);

@@ -7,6 +7,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -38,12 +39,14 @@ async fn attach(
     Ok((status, Json(AttachmentResponse::new(&attachment))))
 }
 
-/// An attachment as the listing shows it: with the state of its blob.
+/// An attachment as the listing shows it: with the state of its blob, and
+/// when the job that was to finish the blob died, if it did.
 #[derive(Debug, Serialize)]
 pub struct AttachmentListItem {
     #[serde(flatten)]
     pub attachment: AttachmentResponse,
     pub blob_state: BlobState,
+    pub blob_failed_at: Option<Timestamp>,
 }
 
 #[derive(Debug, Serialize)]
@@ -82,6 +85,7 @@ async fn list_attachments(
             .map(|listed| AttachmentListItem {
                 attachment: AttachmentResponse::new(&listed.attachment),
                 blob_state: listed.blob_state,
+                blob_failed_at: listed.blob_failed_at,
             })
             .collect(),
         next_cursor: page.next_cursor,

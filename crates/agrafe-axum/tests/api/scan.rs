@@ -396,6 +396,43 @@ async fn clamd_down() {
     assert!(failed.is_some());
     assert!(locked.is_some(), "a dead job keeps its lock");
     assert!(!run_scan_job(&app).await, "never claimed again");
+
+    // The blob records the death too, where it outlives the pruned job:
+    // in its metadata, in the failed listing, and on the record's side.
+    let blob = get_blob(&app, id).await;
+    assert_eq!(blob["state"], "uploaded");
+    assert!(blob["failed_at"].is_string(), "{blob}");
+    assert!(
+        blob["last_error"].as_str().unwrap().contains("clamd"),
+        "{blob}"
+    );
+    let (status, body) = call(&app.private, req(Method::GET, "/blobs?failed=true")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["items"].as_array().unwrap().len(), 1);
+    assert_eq!(body["items"][0]["id"], id);
+    let (status, body) = call(&app.private, req(Method::GET, "/blobs?failed=false")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["items"].as_array().unwrap().len(), 0);
+    let (status, body) = call(
+        &app.private,
+        json_req(
+            Method::POST,
+            &format!("/blobs/{id}/attachments"),
+            json!({"record_type": "Dossier", "record_id": "1", "name": "piece"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = call(
+        &app.private,
+        req(Method::GET, &format!("/attachments?blob_id={id}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["items"][0]["blob_state"], "uploaded");
+    assert!(body["items"][0]["blob_failed_at"].is_string(), "{body}");
+
+    // A fresh job for the blob clears the verdict: something will finish it.
     let inserted = agrafe::jobs::enqueue(
         pool,
         agrafe::jobs::JobKind::Scan,
@@ -407,4 +444,7 @@ async fn clamd_down() {
     .await
     .unwrap();
     assert!(inserted, "the dead job does not hold the pending slot");
+    let blob = get_blob(&app, id).await;
+    assert!(blob["failed_at"].is_null(), "{blob}");
+    assert!(blob["last_error"].is_null(), "{blob}");
 }
