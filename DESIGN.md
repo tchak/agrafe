@@ -1056,8 +1056,8 @@ Errors are a `FetchError` with an `is_permanent`, like `BuildError`:
   size or type mismatch; a body over the cap; a host that does not
   resolve; a TLS failure; a redirect to a refused destination, or too many
   of them; a URL refused by the policy below.
-- Transient, retried through the backoff: a 5xx; 408, 425, 429; connect
-  and read timeouts; a reset; a body shorter than `Content-Length`; the
+- Transient, retried through the backoff: a 5xx; 408, 425, 429; connect,
+  read and whole-response timeouts; a reset; a body shorter than `Content-Length`; the
   row found `uploading`; a bucket or database error.
 
 `Retry-After` on 429 and 503 is honoured, as delta seconds or an HTTP
@@ -1114,8 +1114,12 @@ retrofit:
   than a dead job.
 - Redirects: at most `fetch.max_redirects` (default five), every hop
   through the same checks, `https` only.
-- `fetch.connect_timeout` and `fetch.timeout` (whole response); the size
-  is bounded by the pipeline's counter.
+- `fetch.connect_timeout`; `fetch.read_timeout` (default thirty seconds)
+  on every wait for the next bytes, which is what stops a remote that
+  trickles from holding one of the few fetch workers, and what lets a
+  large file on a slow link run as long as it keeps flowing;
+  `fetch.timeout` (default six hours) on the whole response as a backstop.
+  The size is bounded by the pipeline's counter.
 - `fetch.allow_private_networks` (default `false`) lifts the scheme and
   address rules for local development and the integration tests, which
   serve fixtures from an in-process listener on localhost over plain

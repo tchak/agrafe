@@ -186,8 +186,9 @@ impl Resolve for Resolver {
 }
 
 /// The HTTP client fetches run through: the network policy, the
-/// timeouts, a fixed `User-Agent`, no cookies, no proxy, redirects bounded
-/// and checked hop by hop. One per process, built from `[fetch]`.
+/// timeouts (connect, a stalled read, and the whole response as a
+/// backstop), a fixed `User-Agent`, no cookies, no proxy, redirects
+/// bounded and checked hop by hop. One per process, built from `[fetch]`.
 #[derive(Clone)]
 pub struct Client {
     inner: reqwest::Client,
@@ -210,6 +211,7 @@ impl Client {
         let inner = reqwest::Client::builder()
             .user_agent(&config.user_agent)
             .connect_timeout(config.connect_timeout)
+            .read_timeout(config.read_timeout)
             .timeout(config.timeout)
             .redirect(policy)
             .referer(false)

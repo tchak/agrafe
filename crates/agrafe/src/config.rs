@@ -419,8 +419,14 @@ pub struct FetchConfig {
     /// The TCP connect and the TLS handshake.
     #[serde(with = "humantime_serde", default = "default_fetch_connect_timeout")]
     pub connect_timeout: Duration,
-    /// The whole response, headers and body. A fetch that runs past it
-    /// fails the attempt and is retried from the start.
+    /// The longest a read of the response may wait for the next bytes. The
+    /// stall detector: a remote that trickles cannot hold a fetch worker,
+    /// while a large file on a slow link gets as long as it keeps flowing.
+    #[serde(with = "humantime_serde", default = "default_fetch_read_timeout")]
+    pub read_timeout: Duration,
+    /// The whole response, headers and body: a backstop behind
+    /// `read_timeout`, generous enough for the largest file. A fetch that
+    /// runs past it fails the attempt and is retried from the start.
     #[serde(with = "humantime_serde", default = "default_fetch_timeout")]
     pub timeout: Duration,
     /// Redirects followed at most, every hop under the same checks.
@@ -443,8 +449,11 @@ pub struct FetchConfig {
 fn default_fetch_connect_timeout() -> Duration {
     Duration::from_secs(10)
 }
+fn default_fetch_read_timeout() -> Duration {
+    Duration::from_secs(30)
+}
 fn default_fetch_timeout() -> Duration {
-    Duration::from_secs(3600)
+    Duration::from_secs(6 * 3600)
 }
 fn default_max_redirects() -> usize {
     5
@@ -460,6 +469,7 @@ impl Default for FetchConfig {
     fn default() -> Self {
         Self {
             connect_timeout: default_fetch_connect_timeout(),
+            read_timeout: default_fetch_read_timeout(),
             timeout: default_fetch_timeout(),
             max_redirects: default_max_redirects(),
             max_retry_after: default_max_retry_after(),
@@ -670,6 +680,7 @@ mod tests {
             assert_eq!(config.signing.current_key, "k1");
             assert_eq!(config.jobs.concurrency_for(JobKind::Scan), 4);
             assert_eq!(config.jobs.concurrency_for(JobKind::Fetch), 2);
+            assert_eq!(config.fetch.read_timeout.as_secs(), 30);
             assert_eq!(config.fetch.max_redirects, 5);
             assert_eq!(config.fetch.max_retry_after.as_secs(), 15 * 60);
             assert!(!config.fetch.allow_private_networks);

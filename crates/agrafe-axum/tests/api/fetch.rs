@@ -540,6 +540,45 @@ async fn a_body_cut_short_is_retried_and_one_over_the_cap_is_not() {
     assert!(stored_objects(&app).await.is_empty());
 }
 
+/// A remote that answers and then goes quiet mid-body is cut off by the
+/// read timeout, well before the whole-response one, and retried: it must
+/// not hold a fetch worker for as long as it cares to stall.
+#[tokio::test]
+async fn a_stalled_body_is_cut_off_and_retried() {
+    let clamd = fake_clamd().await;
+    let app = setup_tuned(clamd, |c| {
+        c.fetch.allow_private_networks = true;
+        c.fetch.read_timeout = Duration::from_secs(1);
+    })
+    .await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        while let Ok((mut sock, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf).await;
+                let head = short(5000, &png_bytes(1000));
+                let _ = sock.write_all(&head).await;
+                // Hold the connection open, sending nothing more.
+                tokio::time::sleep(Duration::from_secs(60)).await;
+            });
+        }
+    });
+
+    let created = create(&app, url_blob(&format!("{base}/stalls"))).await;
+    let id = id_of(&created);
+    let started = std::time::Instant::now();
+    assert!(run_job(&app, JobKind::Fetch).await);
+    assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+    let (attempts, dead, error) = fetch_job(&app, id).await;
+    assert_eq!((attempts, dead), (1, false), "{error}");
+    assert!(!error.contains("stalls"), "the URL stays out: {error}");
+    let got = get_blob(&app, id).await;
+    assert_eq!(got["state"], "created", "handed back: {got}");
+    assert!(stored_objects(&app).await.is_empty(), "nothing stored");
+}
+
 #[tokio::test]
 async fn a_url_blob_takes_no_put_parts_or_finish() {
     let app = setup_fetching().await;
