@@ -274,6 +274,7 @@ async fn creation_rules(pool: PgPool) {
 async fn manifest_rejections(pool: PgPool) {
     let app = setup_tuned(pool, fake_clamd().await, |c| {
         c.document.max_workspace_size = bytesize::ByteSize::kib(2);
+        c.document.max_files = 5;
     })
     .await;
     let good = ready_blob(&app, &png_bytes(500)).await;
@@ -362,6 +363,16 @@ async fn manifest_rejections(pool: PgPool) {
                 from_blob("d.png", g),
             ]),
             "document.max_workspace_size",
+        ),
+        (
+            // Five with the one already accepted: bytes do not bound it.
+            "too many files",
+            manifest(
+                &(0..5)
+                    .map(|i| text(&format!("{i}"), ""))
+                    .collect::<Vec<_>>(),
+            ),
+            "document.max_files",
         ),
     ];
     let created = create(&app, document_blob("bad.pdf")).await;

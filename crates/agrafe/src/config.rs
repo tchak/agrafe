@@ -454,16 +454,28 @@ pub struct DocumentConfig {
     /// written to the worker's disk.
     #[serde(default = "default_document_max_workspace_size")]
     pub max_workspace_size: ByteSize,
+    /// Upper bound on the files of a workspace, the manifest's lines across
+    /// its parts, checked at accept time and again by the build. Bytes
+    /// alone do not bound a workspace: an empty file costs none, and a
+    /// manifest of a few million of them costs the worker as many files
+    /// on disk.
+    #[serde(default = "default_document_max_files")]
+    pub max_files: u64,
 }
 
 fn default_document_max_workspace_size() -> ByteSize {
     ByteSize::mib(256)
 }
 
+fn default_document_max_files() -> u64 {
+    10_000
+}
+
 impl Default for DocumentConfig {
     fn default() -> Self {
         Self {
             max_workspace_size: default_document_max_workspace_size(),
+            max_files: default_document_max_files(),
         }
     }
 }

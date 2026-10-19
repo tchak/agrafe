@@ -115,8 +115,12 @@ pub struct Accept {
     max_part: u64,
     /// `document.max_workspace_size`.
     max_workspace: u64,
+    /// `document.max_files`.
+    max_files: u64,
     /// The workspace's bytes as the parts before this one left them.
     before: u64,
+    /// Its files, likewise: the manifest's lines so far.
+    files_before: u64,
     lines: Lines,
     pending: Vec<Pending>,
     /// Paths taken in this part: a path twice in a part is refused here,
@@ -134,7 +138,9 @@ impl Accept {
         Self {
             max_part: config.upload.max_size.as_u64(),
             max_workspace: config.document.max_workspace_size.as_u64(),
+            max_files: config.document.max_files,
             before: blob.workspace_size.max(0) as u64,
+            files_before: blob.source_rows.max(0) as u64,
             state,
             lines: Lines::new(),
             pending: Vec::with_capacity(LOOKUP_BATCH),
@@ -200,6 +206,9 @@ impl Tap for Accept {
         self.lines.push(chunk);
         while let Some((line, bytes)) = self.lines.next_line()? {
             let entry = parse_line(&bytes).map_err(|reason| LineError { line, reason })?;
+            if self.files_before + self.rows >= self.max_files {
+                return Err(UploadError::TooManyFiles(self.max_files));
+            }
             if !self.taken.insert(entry.path.clone()) {
                 return Err(LineError {
                     line,

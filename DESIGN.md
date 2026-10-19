@@ -1156,8 +1156,12 @@ Per line, at accept:
   `document.max_workspace_size` (default 256 MiB) as the manifest is
   accepted, then again by the build. A limit of its own: `upload.max_size`
   is sized for one request, and the workspace is written to the worker's
-  disk. The PDF's size is unknown until it is built, so unlike an
-  archive's, a document's `size` is null until it is `ready`.
+  disk. The files are bounded too, by `document.max_files` (default
+  10 000), since bytes alone bound nothing: an empty inline file costs
+  none, and a manifest of a few million of them would cost the worker as
+  many files and directories on disk. The PDF's size is unknown until it
+  is built, so unlike an archive's, a document's `size` is null until it
+  is `ready`.
 - Nothing checks that the manifest holds the main file: it may come in a
   later part, and a workspace without it fails to compile with the
   compiler's own "file not found".

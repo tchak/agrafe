@@ -91,9 +91,10 @@ impl Assemble for Document {
 }
 
 /// Every file of the manifest under `root`, within
-/// `document.max_workspace_size`.
+/// `document.max_workspace_size` and `document.max_files`.
 async fn write_workspace(state: &Agrafe, blob: &Blob, root: &Path) -> Result<(), BuildError> {
-    let max = state.config().document.max_workspace_size.as_u64();
+    let config = &state.config().document;
+    let max = config.max_workspace_size.as_u64();
     let mut source = Source::new(state, blob);
     let mut layout = Layout::default();
     let mut total = 0u64;
@@ -101,6 +102,12 @@ async fn write_workspace(state: &Agrafe, blob: &Blob, root: &Path) -> Result<(),
     while let Some(line) = source.next_line().await? {
         let entry =
             parse_line(&line.bytes).map_err(|reason| source.malformed(line.line, reason))?;
+        if layout.files.len() as u64 >= config.max_files {
+            return Err(BuildError::Workspace(format!(
+                "the workspace exceeds the maximum of {} files (document.max_files)",
+                config.max_files
+            )));
+        }
         layout
             .place(&entry.path)
             .map_err(|reason| source.malformed(line.line, reason))?;

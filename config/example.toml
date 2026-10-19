@@ -121,6 +121,10 @@ max_size = "100 GiB"
 # the build, which writes the workspace to the worker's disk for the
 # compiler.
 max_workspace_size = "256 MiB"
+# Upper bound on the files of a workspace, the manifest's lines across its
+# parts: bytes alone do not bound what an empty file costs the worker's
+# disk.
+max_files = 10000
 
 [fetch]
 # How `url` blobs are fetched: the service downloads the file from the URL

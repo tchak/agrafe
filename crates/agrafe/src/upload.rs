@@ -176,6 +176,8 @@ pub enum UploadError {
     ArchiveTooLarge(u64),
     #[error("the workspace would exceed the maximum of {0} bytes (document.max_workspace_size)")]
     WorkspaceTooLarge(u64),
+    #[error("the workspace would exceed the maximum of {0} files (document.max_files)")]
+    TooManyFiles(u64),
     /// The body stream failed; the boxed error is the caller's own.
     #[error(transparent)]
     Body(BoxError),
