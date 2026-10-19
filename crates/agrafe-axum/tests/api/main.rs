@@ -11,6 +11,7 @@ mod attachments;
 mod blobs;
 mod cache;
 mod fetch;
+mod hosts;
 mod jobs;
 mod original;
 mod races;

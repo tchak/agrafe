@@ -71,6 +71,16 @@ impl Config {
                 "server.public_base_url must not end with a slash".into(),
             ));
         }
+        if let Some(host) = self
+            .server
+            .private_hosts
+            .iter()
+            .find(|h| h.is_empty() || h.contains('/') || h.contains("://"))
+        {
+            return Err(ConfigError::Invalid(format!(
+                "server.private_hosts: {host:?} is not a host and port, like agrafe.internal:8080"
+            )));
+        }
         if self.jobs.kinds.as_ref().is_some_and(Vec::is_empty) {
             return Err(ConfigError::Invalid(
                 "jobs.kinds must name at least one kind, or be omitted for all".into(),
@@ -110,6 +120,13 @@ pub struct ServerConfig {
     pub public_base_url: String,
     #[serde(default)]
     pub role: Role,
+    /// The names and ports the private interface is reached under
+    /// (`agrafe.internal:8080`). Set, a private request whose `Host` is
+    /// none of them is refused, which is what stops DNS rebinding from
+    /// turning a browser on the trusted network into a client of the
+    /// port; see DESIGN.md, "Dashboard". Empty, no check.
+    #[serde(default)]
+    pub private_hosts: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]

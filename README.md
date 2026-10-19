@@ -427,7 +427,10 @@ the filters, so a view can be pasted; `?refresh=5` on the jobs page makes
 it reload every five seconds. A form a browser marks as another site's is
 refused, on the dashboard and on the private API's `POST` routes alike,
 which is what keeps a page the operator visits elsewhere from submitting
-them. Both keys are off by default.
+them. Set `server.private_hosts` to the names the port is reached under
+as well, so that a page cannot re-point its own name at the port (DNS
+rebinding) and read it from the operator's browser. Both dashboard keys
+are off by default.
 
 A host application nests `agrafe_dashboard::dashboard_router` wherever it
 likes, behind its own authentication; the pages find their prefix from

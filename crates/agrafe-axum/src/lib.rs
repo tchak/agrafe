@@ -7,6 +7,7 @@ pub mod attachments;
 pub mod body;
 pub mod error;
 pub mod extract;
+pub mod host;
 pub mod jobs;
 pub mod json;
 pub mod origin;
@@ -40,6 +41,10 @@ pub fn private_router(state: Agrafe) -> Router {
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
         .layer(middleware::from_fn(origin::refuse_cross_site))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            host::refuse_unknown_host,
+        ))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }

@@ -158,10 +158,18 @@ async fn serve(config: Config) -> Result<(), Error> {
         let mut private_app = api::private_router(state.clone());
         if state.config().dashboard.enabled {
             tracing::info!(addr = %cfg.private_addr, "dashboard at /dashboard");
-            private_app = private_app.nest(
-                "/dashboard",
-                agrafe_dashboard::dashboard_router(state.clone()),
+            if cfg.private_hosts.is_empty() {
+                tracing::warn!(
+                    "dashboard enabled without server.private_hosts: a browser on the \
+                     trusted network is exposed to DNS rebinding, see DESIGN.md"
+                );
+            }
+            // Nested after the private router's layers, so it gets the host
+            // check of its own; the cross-site check is its extractor's.
+            let dashboard = agrafe_dashboard::dashboard_router(state.clone()).layer(
+                axum::middleware::from_fn_with_state(state.clone(), api::host::refuse_unknown_host),
             );
+            private_app = private_app.nest("/dashboard", dashboard);
         }
         let public_app = api::public_router(state.clone());
         let s = shutdown.clone();

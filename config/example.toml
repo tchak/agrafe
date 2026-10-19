@@ -15,6 +15,13 @@ public_base_url = "http://127.0.0.1:8081"
 # Which parts of the service this process runs: "api", "worker" or "all".
 # The --role flag on the command line takes precedence.
 role = "all"
+# The names and ports the private interface is reached under. Set, a
+# private request whose Host is none of them is refused (403), except on
+# /healthz and /metrics, which probes reach by address. This is what stops
+# DNS rebinding: a web page an operator visits cannot otherwise re-point its
+# own name at this address and read the private API from their browser. Set
+# it whenever a browser uses the port, which the dashboard implies.
+# private_hosts = ["agrafe.internal:8080", "127.0.0.1:8080"]
 
 [database]
 url = "postgres://localhost/agrafe_dev"

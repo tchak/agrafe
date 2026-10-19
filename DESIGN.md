@@ -235,11 +235,25 @@ backend, and goes through: a browser never sends a `POST` without
 `Origin`. Stateless, no token and no session, which the private port does
 not have. A refused action is a `403` page on the dashboard, a `forbidden`
 error on the API, and the dashboard checks it before the actions flag, so
-nothing is learnt from a read-only dashboard either. What the check does
-not cover is DNS rebinding, where the attacker's page is same-origin in
-the browser's eyes; that is the general weakness of an unauthenticated
-internal port, and the remedy, a `Host` allowlist on the private listener,
-is not specific to the dashboard.
+nothing is learnt from a read-only dashboard either.
+
+What that check cannot see is DNS rebinding: a page on `evil.test`, served
+on the private port's number, has its name re-pointed at the private
+address once loaded, and the browser then treats `evil.test:PORT` as
+same-origin, sends `Sec-Fetch-Site: same-origin`, reads the answers, and
+can mint signed URLs for any blob. The header that gives it away is
+`Host`, which carries the rebound name. So `server.private_hosts` lists
+the names and ports the private interface is reached under, and when it
+is set every private request, whatever its method, has to name one of
+them or is a `403` (`agrafe_axum::host`); `/healthz` and `/metrics` are
+exempt, since probes and scrapers address a pod by its address and
+neither says anything a rebinder wants. The list is applied inside the
+private router and again around the nested dashboard, since a layer on a
+router does not reach routes nested after it. Unset, nothing is checked,
+so an existing deployment keeps working on upgrade, and the server warns
+at startup when the dashboard is enabled without it: a dashboard is what
+puts a browser on the port. Neither check is authentication; a dashboard
+in daily use belongs behind a proxy that has some.
 
 The notice an action leaves is a code in the query (`?notice=job_retried`),
 and the page holds the sentences: a pasted link cannot make the dashboard
