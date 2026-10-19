@@ -51,10 +51,23 @@ struct ReceiverState {
     file: Vec<u8>,
 }
 
-async fn receive(State(st): State<ReceiverState>, headers: HeaderMap, raw: String) -> StatusCode {
+/// Failures answer with a body far past what `last_error` keeps.
+const FAILURE_BODY_SIZE: usize = 1 << 20;
+
+async fn receive(
+    State(st): State<ReceiverState>,
+    headers: HeaderMap,
+    raw: String,
+) -> (StatusCode, String) {
     let body = serde_json::from_str(&raw).unwrap_or(Value::Null);
     let _ = st.hits.send(Hit { headers, body, raw });
-    StatusCode::from_u16(st.status.load(Ordering::SeqCst)).unwrap()
+    let status = StatusCode::from_u16(st.status.load(Ordering::SeqCst)).unwrap();
+    let body = if status.is_success() {
+        String::new()
+    } else {
+        "é".repeat(FAILURE_BODY_SIZE / 2)
+    };
+    (status, body)
 }
 
 async fn file(State(st): State<ReceiverState>) -> (StatusCode, Vec<u8>) {
@@ -305,9 +318,15 @@ async fn a_failing_receiver_leaves_a_dead_job_the_retry_revives() {
             .last_error
             .as_deref()
             .unwrap()
-            .starts_with("webhook: the receiver answered 500"),
+            .starts_with("webhook: the receiver answered 500: éé"),
         "{:?}",
         shown.last_error
+    );
+    let kept = shown.last_error.as_deref().unwrap();
+    assert!(
+        kept.len() < 1100 && kept.chars().filter(|c| *c == 'é').count() >= 400,
+        "the head of the body, {} bytes",
+        kept.len()
     );
     assert!(!run_job(&app, JobKind::Notify).await, "backing off");
 

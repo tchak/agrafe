@@ -201,16 +201,26 @@ impl Client {
         if status.is_success() {
             return Ok(());
         }
-        let body = response.text().await.unwrap_or_default();
-        let mut end = body.len().min(MAX_ERROR_BODY);
-        while !body.is_char_boundary(end) {
-            end -= 1;
-        }
         Err(WebhookError::Status {
             status: status.as_u16(),
-            body: body[..end].to_string(),
+            body: head_of(response).await,
         })
     }
+}
+
+/// The first `MAX_ERROR_BODY` bytes of a response's body as text, read
+/// chunk by chunk so a receiver answering with a page the size of a disk
+/// costs no more than that. Whatever was read when a chunk fails is kept.
+async fn head_of(mut response: reqwest::Response) -> String {
+    let mut bytes = Vec::new();
+    while bytes.len() < MAX_ERROR_BODY {
+        match response.chunk().await {
+            Ok(Some(chunk)) => bytes.extend_from_slice(&chunk),
+            Ok(None) | Err(_) => break,
+        }
+    }
+    bytes.truncate(MAX_ERROR_BODY);
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 /// The `webhook-signature` of a delivery: `v1,` and the base64 of the
