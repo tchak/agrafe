@@ -2,9 +2,9 @@
 
 use std::path::Path;
 
-use crate::helpers::{self, Helper};
+use crate::helpers;
 use crate::vips::{self, Fit, Input};
-use crate::{Config, Error};
+use crate::{Config, Error, Rejection, Verdict};
 
 /// Why a worker may not start: its tools do not work on files known to be
 /// good.
@@ -16,8 +16,14 @@ pub enum ProbeError {
         vips: String,
         source: Error,
     },
+    #[error("rendering {what} with `{vips}`: {rejection}")]
+    Rejected {
+        what: &'static str,
+        vips: String,
+        rejection: Rejection,
+    },
     #[error("`{command}` {what}; is media.render_text_command the agrafe-render-text helper?")]
-    Helper { command: String, what: &'static str },
+    Helper { command: String, what: String },
     #[error(transparent)]
     Run(#[from] Error),
     #[error("temporary files: {0}")]
@@ -40,9 +46,9 @@ pub async fn probe(config: &Config, tmp_dir: Option<&Path>) -> Result<(), ProbeE
     tokio::fs::write(&sample, b"agrafe\n").await?;
     let page = workdir.path().join("page.pgm");
     let what = match helpers::render_text(config, &sample, &page, fit).await? {
-        Helper::Produced => None,
-        Helper::Declined => Some("declined a text sample"),
-        Helper::Failed => Some("failed on a text sample"),
+        Verdict::Rendered(()) => None,
+        Verdict::Declined => Some("declined a text sample".to_string()),
+        Verdict::Rejected(rejection) => Some(format!("failed on a text sample: {rejection}")),
     };
     if let Some(what) = what {
         return Err(ProbeError::Helper {
@@ -60,13 +66,21 @@ pub async fn probe(config: &Config, tmp_dir: Option<&Path>) -> Result<(), ProbeE
         ("a PDF page", &pdf, Input::Page),
         ("a text page", &page, Input::Raster),
     ] {
-        vips::to_webp(config, input, kind, &output, fit)
+        let vips = config.vips_command.clone();
+        let verdict = vips::to_webp(config, input, kind, &output, fit)
             .await
             .map_err(|source| ProbeError::Render {
                 what,
-                vips: config.vips_command.clone(),
+                vips: vips.clone(),
                 source,
             })?;
+        if let Verdict::Rejected(rejection) = verdict {
+            return Err(ProbeError::Rejected {
+                what,
+                vips,
+                rejection,
+            });
+        }
     }
     Ok(())
 }

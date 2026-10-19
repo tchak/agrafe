@@ -54,8 +54,9 @@ the server links none of their parsers: `lopdf`, `zip`, `quick-xml` and
 read no configuration and write no logs. A deployment ships the three
 binaries together. A renderer with a dependency tree of its own gets a
 helper crate the same way, turning the file into a raster that vips then
-fits into the box; the `Source` enum and the ordered match in the render
-job are where it plugs in.
+fits into the box; a `Source` or `Fallback` variant, a row in the plan
+table (`agrafe_render::plan`) and a driver in `agrafe_render::helpers`
+are where it plugs in.
 
 The library knows nothing of HTTP. Its operations are methods on the
 `Agrafe` handle (`create_blob`, `list_blobs`, `find_blob`, `delete_blob`,
@@ -1123,15 +1124,21 @@ bytes it pulls out of a PDF, since a `DCTDecode` stream holds whatever its
 author put there. `VIPS_BLOCK_UNTRUSTED` would not do: it also blocks the
 PDF, SVG, JPEG 2000 and PNM loaders.
 
-One `render` job produces both representations, whatever is `pending` on
-the row. The preview is rendered first; the thumbnail is the preview fitted
-into the thumbnail box. The original is therefore fetched, decrypted and
-decoded once, the two pictures agree, and a thumbnail regenerated on its
-own (its object gone) is made from the stored preview without touching the
-original. A preview verdict from the current variant version stands: a
-`failed` preview gives a `failed` thumbnail, an `unavailable` one leaves
-the thumbnail to its fallback (the text sample, the first page of a PDF)
-or the icon; a preview from another version, or whose object is gone, is
+Each content type has a plan (`agrafe_render::plan`): the sources of its
+**picture**, the file rendered as a whole, tried in order, and what the
+thumbnail falls back to when no source yields one. The preview is the
+picture in the preview box. One `render` job produces both
+representations, whatever is `pending` on the row. The preview is rendered
+first; the thumbnail is the preview fitted into the thumbnail box. The
+original is therefore fetched, decrypted and decoded once, the two pictures
+agree, and a thumbnail regenerated on its own (its object gone) is made
+from the stored preview without touching the original. A preview verdict
+from the current variant version stands: a `failed` or `unavailable`
+preview leaves the thumbnail to the plan's fallback (the text sample, the
+first page of a PDF), and without one the thumbnail is `failed` or the
+icon respectively. A PDF whose embedded image is broken thus still shows
+its first page, since the page renderer is not the extractor that gave up
+on it. A preview from another version, or whose object is gone, is
 rendered again first. The thumbnail thus appears after the preview rather
 than alongside it, a few seconds for a large image, which the icon
 placeholder and `wait` cover.

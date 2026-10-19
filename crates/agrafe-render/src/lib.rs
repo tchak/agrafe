@@ -119,17 +119,10 @@ impl Default for EmbeddedImage {
     }
 }
 
+/// A failure of ours, which the caller may retry: the sandbox, the work
+/// directory. The file's own faults are a [`Verdict::Rejected`].
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// The bytes are not a format the renderer may load: the file's fault.
-    #[error("the file is not in a format the renderer may load")]
-    Unsupported,
-    /// The renderer could not make sense of the file: the file's fault.
-    #[error("the renderer rejected the file ({status}): {stderr}")]
-    Rejected { status: String, stderr: String },
-    /// The file took too long: also the file's fault.
-    #[error("the renderer exceeded the time limit")]
-    TimedOut,
     #[error(transparent)]
     Sandbox(#[from] agrafe_sandbox::Error),
     #[error("reading the file to render: {0}")]
@@ -138,13 +131,60 @@ pub enum Error {
     Output(std::io::Error),
 }
 
-impl Error {
-    /// Whether the input is to blame, so that trying again is pointless.
-    pub fn is_input_fault(&self) -> bool {
-        matches!(
-            self,
-            Error::Unsupported | Error::Rejected { .. } | Error::TimedOut
-        )
+/// How an attempt at rendering ended. Anything that is not a failure of
+/// ours is a verdict on the file, and trying the same bytes again would
+/// end the same way.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Verdict<T> {
+    Rendered(T),
+    /// The file's fault: the tool rejected it, crashed on it, or ran out of
+    /// time.
+    Rejected(Rejection),
+    /// Nothing to render: no embedded image, a sample that is not text.
+    Declined,
+}
+
+impl<T> Verdict<T> {
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Verdict<U> {
+        match self {
+            Verdict::Rendered(value) => Verdict::Rendered(f(value)),
+            Verdict::Rejected(rejection) => Verdict::Rejected(rejection),
+            Verdict::Declined => Verdict::Declined,
+        }
+    }
+
+    /// What was rendered, if anything was.
+    pub fn rendered(self) -> Option<T> {
+        match self {
+            Verdict::Rendered(value) => Some(value),
+            Verdict::Rejected(_) | Verdict::Declined => None,
+        }
+    }
+}
+
+/// Why a tool would not render a file.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum Rejection {
+    #[error("the file is not in a format the renderer may load")]
+    Unsupported,
+    #[error("the tool failed ({status}): {stderr}")]
+    Failed { status: String, stderr: String },
+    #[error("the tool exceeded the time limit")]
+    TimedOut,
+}
+
+impl Rejection {
+    /// The verdict on a sandboxed tool that ran to completion; `None` when
+    /// it succeeded.
+    pub(crate) fn of(outcome: &agrafe_sandbox::Outcome) -> Option<Self> {
+        match outcome {
+            agrafe_sandbox::Outcome::Success => None,
+            agrafe_sandbox::Outcome::Failed { status, stderr } => Some(Rejection::Failed {
+                status: status.clone(),
+                stderr: stderr.clone(),
+            }),
+            agrafe_sandbox::Outcome::TimedOut => Some(Rejection::TimedOut),
+        }
     }
 }
 
@@ -156,8 +196,9 @@ pub fn workdir(tmp_dir: Option<&Path>) -> std::io::Result<tempfile::TempDir> {
         .tempdir_in(tmp_dir.map_or_else(std::env::temp_dir, Path::to_path_buf))
 }
 
-/// Where a representation of a file can come from. A file lists its sources
-/// in the order they are tried.
+/// Where the picture of a file comes from: the file rendered as a whole,
+/// which is the preview, and the thumbnail fitted from it. A file lists
+/// its sources in the order they are tried.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
     /// The file is an image: decode and transcode it.
@@ -167,22 +208,7 @@ pub enum Source {
     EmbeddedImage,
 }
 
-/// The preview sources for a content type, in order; the thumbnail is
-/// derived from the preview. Empty when the file cannot be rendered as a
-/// whole, in which case there is no preview and the thumbnail comes from
-/// [`thumbnail_fallback`] or is an icon. Image types are an allowlist of
-/// what libvips loads natively: everything else would go through
-/// ImageMagick, which is more attack surface than it is worth.
-pub fn sources(content_type: &str) -> &'static [Source] {
-    match sniff::canonical(content_type) {
-        "image/jpeg" | "image/png" | "image/gif" | "image/webp" | "image/tiff" | "image/heif"
-        | "image/avif" | "image/svg+xml" | "image/bmp" | "image/jp2" => &[Source::Image],
-        classify::PDF | DOCX | ODT => &[Source::EmbeddedImage],
-        _ => &[],
-    }
-}
-
-/// Where a thumbnail comes from for a file that has no preview: a hint of
+/// Where a thumbnail comes from when the file has no picture: a hint of
 /// what the file is, not a way to read it, which is why neither is a
 /// preview.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,19 +219,56 @@ pub enum Fallback {
     FirstPage,
 }
 
-/// The thumbnail fallback for a content type: a text sample for the `text`
-/// category plus CSV and TSV, which classify as spreadsheets; the first
-/// page for PDF.
-pub fn thumbnail_fallback(content_type: &str) -> Option<Fallback> {
+/// What renders for a content type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Plan {
+    /// The sources of the file's picture, in order. Empty when the file
+    /// cannot be rendered as a whole: then there is no preview, and the
+    /// thumbnail comes from the fallback or is an icon.
+    pub picture: &'static [Source],
+    /// What the thumbnail falls back to when no source yields a picture.
+    pub fallback: Option<Fallback>,
+}
+
+impl Plan {
+    const NONE: Plan = Plan {
+        picture: &[],
+        fallback: None,
+    };
+}
+
+/// The plan for a content type. Image types are an allowlist of what
+/// libvips loads natively: everything else would go through ImageMagick,
+/// which is more attack surface than it is worth. A PDF or an office file
+/// that wraps one picture is rendered from it; otherwise a PDF gets its
+/// first page as a thumbnail and an office file the icon. The `text`
+/// category, plus CSV and TSV, which classify as spreadsheets, get a text
+/// sample as a thumbnail.
+pub fn plan(content_type: &str) -> Plan {
     let canonical = sniff::canonical(content_type);
-    if matches!(canonical, classify::CSV | "text/tab-separated-values")
-        || classify::classify(canonical) == Category::Text
-    {
-        Some(Fallback::TextSample)
-    } else if canonical == classify::PDF {
-        Some(Fallback::FirstPage)
-    } else {
-        None
+    match canonical {
+        "image/jpeg" | "image/png" | "image/gif" | "image/webp" | "image/tiff" | "image/heif"
+        | "image/avif" | "image/svg+xml" | "image/bmp" | "image/jp2" => Plan {
+            picture: &[Source::Image],
+            fallback: None,
+        },
+        classify::PDF => Plan {
+            picture: &[Source::EmbeddedImage],
+            fallback: Some(Fallback::FirstPage),
+        },
+        DOCX | ODT => Plan {
+            picture: &[Source::EmbeddedImage],
+            fallback: None,
+        },
+        classify::CSV | "text/tab-separated-values" => Plan {
+            picture: &[],
+            fallback: Some(Fallback::TextSample),
+        },
+        _ if classify::classify(canonical) == Category::Text => Plan {
+            picture: &[],
+            fallback: Some(Fallback::TextSample),
+        },
+        _ => Plan::NONE,
     }
 }
 
@@ -214,34 +277,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sources_by_type() {
-        assert_eq!(sources("image/jpg"), &[Source::Image]);
-        assert_eq!(sources("image/heic"), &[Source::Image]);
-        assert_eq!(sources(classify::PDF), &[Source::EmbeddedImage]);
-        assert_eq!(sources(DOCX), &[Source::EmbeddedImage]);
-        assert!(sources("image/vnd.adobe.photoshop").is_empty());
-        assert!(sources("text/plain").is_empty());
-        assert!(sources(classify::XLSX).is_empty());
+    fn plans_by_type() {
+        for image in ["image/jpg", "image/heic", "image/svg+xml"] {
+            assert_eq!(plan(image).picture, &[Source::Image], "{image}");
+            assert_eq!(plan(image).fallback, None, "{image}");
+        }
+        assert_eq!(
+            plan(classify::PDF),
+            Plan {
+                picture: &[Source::EmbeddedImage],
+                fallback: Some(Fallback::FirstPage),
+            }
+        );
+        for office in [DOCX, ODT] {
+            assert_eq!(plan(office).picture, &[Source::EmbeddedImage], "{office}");
+            assert_eq!(plan(office).fallback, None, "{office}");
+        }
         for text in [
             "text/plain",
             "application/json",
             classify::CSV,
             "text/tab-separated-values",
         ] {
-            assert_eq!(
-                thumbnail_fallback(text),
-                Some(Fallback::TextSample),
-                "{text}"
-            );
+            assert!(plan(text).picture.is_empty(), "{text}");
+            assert_eq!(plan(text).fallback, Some(Fallback::TextSample), "{text}");
         }
-        assert_eq!(thumbnail_fallback(classify::PDF), Some(Fallback::FirstPage));
         for other in [
             classify::XLSX,
-            DOCX,
-            "image/png",
+            "image/vnd.adobe.photoshop",
             "application/octet-stream",
         ] {
-            assert_eq!(thumbnail_fallback(other), None, "{other}");
+            assert_eq!(plan(other), Plan::NONE, "{other}");
         }
     }
 }

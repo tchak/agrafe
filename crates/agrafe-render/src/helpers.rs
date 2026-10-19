@@ -6,21 +6,10 @@
 
 use std::path::Path;
 
-use agrafe_sandbox::{self as sandbox, Outcome};
+use agrafe_sandbox as sandbox;
 
 use crate::vips::Fit;
-use crate::{Config, Error};
-
-/// How a helper run ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Helper {
-    /// It wrote its output.
-    Produced,
-    /// It found nothing to do: no embedded image, a sample that is not text.
-    Declined,
-    /// It crashed or ran out of time, which the file takes the blame for.
-    Failed,
-}
+use crate::{Config, Error, Rejection, Verdict};
 
 /// Run `agrafe-extract` on `original`, writing the embedded image, if there
 /// is one, to `output`.
@@ -29,7 +18,7 @@ pub async fn extract(
     content_type: &str,
     original: &Path,
     output: &Path,
-) -> Result<Helper, Error> {
+) -> Result<Verdict<()>, Error> {
     let mut command = sandbox::command(&config.extract_command);
     command
         .arg("--input")
@@ -44,7 +33,7 @@ pub async fn extract(
         .arg(config.embedded_image.max_text_chars.to_string())
         .arg("--max-output")
         .arg(config.sandbox.max_output_size.as_u64().to_string());
-    run(config, command, output, "extraction").await
+    run(config, command, output).await
 }
 
 /// Run `agrafe-render-text` on `sample`, drawing at twice the box so the
@@ -55,7 +44,7 @@ pub async fn render_text(
     sample: &Path,
     output: &Path,
     fit: Fit,
-) -> Result<Helper, Error> {
+) -> Result<Verdict<()>, Error> {
     let mut command = sandbox::command(&config.render_text_command);
     command
         .arg("--input")
@@ -66,30 +55,25 @@ pub async fn render_text(
         .arg((fit.width * 2).to_string())
         .arg("--height")
         .arg((fit.height * 2).to_string());
-    run(config, command, output, "text").await
+    run(config, command, output).await
 }
 
+/// `Rendered` when the helper wrote `output`, `Declined` when it exited
+/// cleanly without, `Rejected` when it crashed or ran out of time.
 async fn run(
     config: &Config,
     command: tokio::process::Command,
     output: &Path,
-    what: &str,
-) -> Result<Helper, Error> {
-    match sandbox::run(command, &config.sandbox).await? {
-        Outcome::Success => Ok(
-            if tokio::fs::try_exists(output).await.map_err(Error::Output)? {
-                Helper::Produced
-            } else {
-                Helper::Declined
-            },
-        ),
-        Outcome::Failed { status, stderr } => {
-            tracing::warn!(status, stderr, "the {what} helper failed");
-            Ok(Helper::Failed)
-        }
-        Outcome::TimedOut => {
-            tracing::warn!("the {what} helper timed out");
-            Ok(Helper::Failed)
-        }
+) -> Result<Verdict<()>, Error> {
+    let outcome = sandbox::run(command, &config.sandbox).await?;
+    if let Some(rejection) = Rejection::of(&outcome) {
+        return Ok(Verdict::Rejected(rejection));
     }
+    Ok(
+        if tokio::fs::try_exists(output).await.map_err(Error::Output)? {
+            Verdict::Rendered(())
+        } else {
+            Verdict::Declined
+        },
+    )
 }

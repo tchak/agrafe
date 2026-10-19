@@ -8,11 +8,11 @@
 
 use std::path::Path;
 
-use agrafe_sandbox::{self as sandbox, Outcome};
+use agrafe_sandbox as sandbox;
 use agrafe_types::sniff::{LOADER_SNIFF_LEN, loader_for};
 use tokio::io::AsyncReadExt;
 
-use crate::{Config, Error};
+use crate::{Config, Error, Rejection, Verdict};
 
 /// Threads per vips process. Parallelism comes from running several
 /// renders at once (`jobs.concurrency`), so each one is kept narrow: the
@@ -70,15 +70,18 @@ impl Input {
 
 /// Render `input` into `output` as a WebP fitting `fit`, and return its
 /// bytes. `output` must not contain `[`, which vips reads as options, and
-/// its directory is where vips spills intermediates.
+/// its directory is where vips spills intermediates. vips never declines:
+/// the verdict is `Rendered` or `Rejected`.
 pub async fn to_webp(
     config: &Config,
     input: &Path,
     kind: Input,
     output: &Path,
     fit: Fit,
-) -> Result<Vec<u8>, Error> {
-    let loader = loader_for(&head(input).await.map_err(Error::Input)?).ok_or(Error::Unsupported)?;
+) -> Result<Verdict<Vec<u8>>, Error> {
+    let Some(loader) = loader_for(&head(input).await.map_err(Error::Input)?) else {
+        return Ok(Verdict::Rejected(Rejection::Unsupported));
+    };
     tracing::debug!(loader, "rendering");
     let size = match kind {
         Input::Raster => "down",
@@ -99,10 +102,12 @@ pub async fn to_webp(
         .args(["--size", size])
         .args(["--output-profile", "srgb"])
         .args(["--fail-on", "error"]);
-    match sandbox::run(command, &config.sandbox).await? {
-        Outcome::Success => tokio::fs::read(output).await.map_err(Error::Output),
-        Outcome::Failed { status, stderr } => Err(Error::Rejected { status, stderr }),
-        Outcome::TimedOut => Err(Error::TimedOut),
+    let outcome = sandbox::run(command, &config.sandbox).await?;
+    match Rejection::of(&outcome) {
+        None => Ok(Verdict::Rendered(
+            tokio::fs::read(output).await.map_err(Error::Output)?,
+        )),
+        Some(rejection) => Ok(Verdict::Rejected(rejection)),
     }
 }
 

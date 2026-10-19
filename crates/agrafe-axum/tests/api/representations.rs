@@ -361,13 +361,16 @@ async fn a_crashing_helper_fails_the_file_not_the_job() {
         assert_eq!(blob["thumbnail_state"], "failed", "{name}");
         assert_eq!(jobs_for(&app, id).await, Vec::<String>::new(), "{name}");
     }
-    // A PDF has no other preview source, and a failed preview is not
-    // replaced by the first-page thumbnail: the file is at fault.
+    // A PDF has no other preview source, so the preview is failed; the
+    // thumbnail falls back to the first page, which vips renders without
+    // the helper.
     let scan = ready_file(&app, "scan.pdf", "application/pdf", &fixture("image.pdf")).await;
     render_all(&app).await;
-    let blob = get_blob(&app, id_of(&scan)).await;
+    let id = id_of(&scan);
+    let blob = get_blob(&app, id).await;
     assert_eq!(blob["preview_state"], "failed");
-    assert_eq!(blob["thumbnail_state"], "failed");
+    assert_eq!(blob["thumbnail_state"], "ready");
+    rendered(&app, &format!("/blobs/{id}/thumbnail/scan.pdf")).await;
 }
 
 #[tokio::test]
