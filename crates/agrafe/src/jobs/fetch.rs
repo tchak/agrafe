@@ -152,7 +152,9 @@ struct Resolver {
 }
 
 /// Why a name gave no usable address. Found in the chain of the request
-/// error it causes, to tell a refused host from a network blip.
+/// error it causes, to tell a refused host, permanent, from a name that
+/// did not resolve, which is as often the resolver's bad minute as a typo
+/// and is retried.
 #[derive(Debug, thiserror::Error)]
 enum ResolveError {
     #[error("host {0} does not resolve: {1}")]
@@ -277,9 +279,13 @@ pub enum FetchError {
     ContentLength { len: u64, declared: u64 },
     #[error("Content-Length {len} exceeds the maximum of {max} bytes")]
     TooLarge { len: u64, max: u64 },
-    /// The host does not resolve, or resolves to a refused address.
+    /// The host resolves to a refused address.
     #[error("{0}")]
-    Resolve(String),
+    Refused(String),
+    /// The host did not resolve, or had no address: as likely the
+    /// resolver's bad minute as a typo, so retried.
+    #[error("{0}")]
+    Unresolved(String),
     #[error("tls: {0}")]
     Tls(String),
     /// A connect or read timeout, a reset, a body cut short: the network.
@@ -302,9 +308,10 @@ impl FetchError {
             | FetchError::RetryAfterTooLong { .. }
             | FetchError::ContentLength { .. }
             | FetchError::TooLarge { .. }
-            | FetchError::Resolve(_)
+            | FetchError::Refused(_)
             | FetchError::Tls(_) => true,
             FetchError::Uploading
+            | FetchError::Unresolved(_)
             | FetchError::Unavailable { .. }
             | FetchError::Request(_)
             | FetchError::Db(_) => false,
@@ -333,15 +340,20 @@ impl FetchError {
     }
 }
 
-/// Sort a request error: the policy's own refusals and a name that does
-/// not resolve are found in the error's chain and are permanent, a TLS
-/// failure is permanent, everything else is the network and is retried.
+/// Sort a request error: the policy's own refusals, found in the error's
+/// chain, and a TLS failure are permanent; a name that did not resolve and
+/// everything else is the network and is retried.
 fn classify(err: reqwest::Error) -> FetchError {
     if let Some(policy) = find_in_chain::<PolicyError>(&err) {
         return FetchError::Policy(policy.clone());
     }
     if let Some(resolve) = find_in_chain::<ResolveError>(&err) {
-        return FetchError::Resolve(resolve.to_string());
+        return match resolve {
+            ResolveError::Refused(_) => FetchError::Refused(resolve.to_string()),
+            ResolveError::Unresolved(..) | ResolveError::NoAddress(_) => {
+                FetchError::Unresolved(resolve.to_string())
+            }
+        };
     }
     let tls = find_in_chain::<rustls::Error>(&err).is_some();
     let message = err.without_url().to_string();
@@ -605,7 +617,8 @@ mod tests {
     fn permanence() {
         assert!(FetchError::Status(StatusCode::NOT_FOUND).is_permanent());
         assert!(FetchError::Policy(PolicyError::Scheme).is_permanent());
-        assert!(FetchError::Resolve("x".into()).is_permanent());
+        assert!(FetchError::Refused("x".into()).is_permanent());
+        assert!(!FetchError::Unresolved("x".into()).is_permanent());
         assert!(FetchError::Tls("x".into()).is_permanent());
         assert!(
             FetchError::ContentLength {

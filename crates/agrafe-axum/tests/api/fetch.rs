@@ -209,7 +209,11 @@ async fn a_url_blob_is_fetched_by_a_job() {
     );
     assert_eq!(got["checksum_md5"], md5_of(&bytes));
     assert_eq!(got["size"], bytes.len());
-    assert_eq!(got["url"], json!(null), "a presigned secret, cleared once the bytes are in");
+    assert_eq!(
+        got["url"],
+        json!(null),
+        "a presigned secret, cleared once the bytes are in"
+    );
     assert!(got["uploaded_at"].is_string());
     assert_eq!(jobs_for(&app, id).await, ["render"]);
     assert_eq!(stored_plaintext(&app, id).await, bytes);
@@ -444,8 +448,9 @@ async fn redirects_are_followed_under_the_same_checks() {
 }
 
 /// Without `allow_private_networks`, a literal private address is refused
-/// at creation, and a name that resolves to one, or does not resolve,
-/// kills the fetch at once.
+/// at creation, and a name that resolves to one kills the fetch at once.
+/// A name that does not resolve is retried: the resolver may be the one
+/// having a bad minute.
 #[tokio::test]
 async fn the_network_policy_refuses_private_addresses() {
     let app = setup().await;
@@ -494,15 +499,15 @@ async fn the_network_policy_refuses_private_addresses() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 
     // A name is checked when it resolves: localhost does, to loopback.
-    for (url, says) in [
-        ("https://localhost:1/a", "refused address"),
-        ("https://no-such-host.invalid/a", "does not resolve"),
+    for (url, says, permanent) in [
+        ("https://localhost:1/a", "refused address", true),
+        ("https://no-such-host.invalid/a", "does not resolve", false),
     ] {
         let created = create(&app, url_blob(url)).await;
         let id = id_of(&created);
         assert!(run_job(&app, JobKind::Fetch).await);
         let (attempts, dead, error) = fetch_job(&app, id).await;
-        assert_eq!((attempts, dead), (1, true), "{url}: {error}");
+        assert_eq!((attempts, dead), (1, permanent), "{url}: {error}");
         assert!(error.contains(says), "{url}: {error}");
         assert_eq!(get_blob(&app, id).await["state"], "created");
     }
@@ -570,7 +575,11 @@ async fn a_stalled_body_is_cut_off_and_retried() {
     let id = id_of(&created);
     let started = std::time::Instant::now();
     assert!(run_job(&app, JobKind::Fetch).await);
-    assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
     let (attempts, dead, error) = fetch_job(&app, id).await;
     assert_eq!((attempts, dead), (1, false), "{error}");
     assert!(!error.contains("stalls"), "the URL stays out: {error}");

@@ -1053,12 +1053,14 @@ blob that is not `uploaded`.
 Errors are a `FetchError` with an `is_permanent`, like `BuildError`:
 
 - Permanent, dead at once: a 4xx other than 408, 425 and 429; a checksum,
-  size or type mismatch; a body over the cap; a host that does not
-  resolve; a TLS failure; a redirect to a refused destination, or too many
-  of them; a URL refused by the policy below.
-- Transient, retried through the backoff: a 5xx; 408, 425, 429; connect,
-  read and whole-response timeouts; a reset; a body shorter than `Content-Length`; the
-  row found `uploading`; a bucket or database error.
+  size or type mismatch; a body over the cap; a host that resolves to a
+  refused address; a TLS failure; a redirect to a refused destination, or
+  too many of them; a URL refused by the policy below.
+- Transient, retried through the backoff: a 5xx; 408, 425, 429; a host
+  that does not resolve, since a resolver's bad minute looks the same as a
+  typo and a migration batch must not die of one; connect, read and
+  whole-response timeouts; a reset; a body shorter than `Content-Length`;
+  the row found `uploading`; a bucket or database error.
 
 `Retry-After` on 429 and 503 is honoured, as delta seconds or an HTTP
 date: the job carries the requested delay and `fail` schedules the retry
