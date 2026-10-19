@@ -72,12 +72,17 @@ pub fn first_line(value: &Option<String>, _: &dyn askama::Values) -> askama::Res
 }
 
 /// A state as a coloured badge: the colour says at a glance whether the
-/// thing is waiting, under way, done or wrong. States are enum names, so
-/// nothing in the markup needs escaping.
+/// thing is waiting, under way, done or wrong. The value is escaped here,
+/// since the template takes the result as `safe`.
 #[askama::filter_fn]
 pub fn badge(value: &dyn Display, _: &dyn askama::Values) -> askama::Result<String> {
-    let state = value.to_string();
-    let colour = match state.as_str() {
+    let state = askama::filters::escape(value, askama::filters::Html)?.to_string();
+    Ok(badge_html(&state))
+}
+
+/// The markup of a badge around `state`, already escaped.
+fn badge_html(state: &str) -> String {
+    let colour = match state {
         "ready" | "clean" => "badge-success",
         "due" | "uploaded" => "badge-info",
         "running" | "uploading" | "created" => "badge-primary",
@@ -85,9 +90,7 @@ pub fn badge(value: &dyn Display, _: &dyn askama::Values) -> askama::Result<Stri
         "dead" | "infected" | "failed" => "badge-error",
         _ => "badge-ghost",
     };
-    Ok(format!(
-        r#"<span class="badge badge-soft badge-sm {colour}">{state}</span>"#
-    ))
+    format!(r#"<span class="badge badge-soft badge-sm {colour}">{state}</span>"#)
 }
 
 /// `None` as nothing, `Some` as itself.
@@ -111,6 +114,15 @@ mod tests {
         assert_eq!(format_age(192.0), "3m 12s");
         assert_eq!(format_age(7500.0), "2h 05m");
         assert_eq!(format_age(100_000.0), "1d 3h");
+    }
+
+    #[test]
+    fn a_badge_escapes_its_value() {
+        let html = askama::filters::escape("<b>", askama::filters::Html)
+            .map(|s| badge_html(&s.to_string()))
+            .unwrap();
+        assert!(html.contains(">&#60;b&#62;<"), "{html}");
+        assert!(html.contains("badge-ghost"), "{html}");
     }
 
     #[test]

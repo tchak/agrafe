@@ -10,6 +10,7 @@ use axum::Router;
 use axum::extract::State;
 use axum::response::Redirect;
 use axum::routing::{get, post};
+use futures::TryFutureExt;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -26,7 +27,7 @@ use crate::error::DashboardError;
 use crate::filters;
 use crate::jobs::{ActionsEnabled, JobView};
 use crate::layout::{
-    Base, Id, Layout, Notice, Opt, Query, bool_options, empty_to_none, href, options,
+    Base, Id, Layout, Notice, Opt, Query, ShowQuery, bool_options, empty_to_none, href, options,
 };
 use crate::origin::SameOrigin;
 
@@ -81,8 +82,6 @@ pub struct BlobsQuery {
         skip_serializing_if = "Option::is_none"
     )]
     pub cursor: Option<Uuid>,
-    #[serde(default, skip_serializing)]
-    pub notice: Option<String>,
 }
 
 impl BlobsQuery {
@@ -156,8 +155,7 @@ async fn list(
         .collect();
     let next = page.next_cursor.map(|c| query.next(&base.0, c));
     Ok(BlobsPage {
-        layout: Layout::new(&base, agrafe.config().dashboard.actions, "blobs")
-            .notice(query.notice.clone()),
+        layout: Layout::new(&base, "blobs"),
         categories: options(Category::ALL, query.category),
         states: options(BlobState::ALL, query.state),
         scan_states: options(ScanState::ALL, query.scan_state),
@@ -167,11 +165,6 @@ async fn list(
         blobs,
         next,
     })
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ShowQuery {
-    pub notice: Option<String>,
 }
 
 #[derive(Template, WebTemplate)]
@@ -194,27 +187,26 @@ async fn show(
     Id(id): Id<Uuid>,
     Query(q): Query<ShowQuery>,
 ) -> Result<BlobPage, DashboardError> {
-    let blob = agrafe
-        .find_blob(id)
-        .await?
-        .ok_or(DashboardError::NotFound)?;
-    let attachments = agrafe.attachments_for(&[id]).await?;
-    let jobs = agrafe
-        .list_jobs(&jobs::ListParams {
-            blob_id: Some(id),
-            limit: jobs::DEFAULT_LIMIT,
-            ..Default::default()
-        })
-        .await?;
-    let actions = agrafe.config().dashboard.actions;
+    let params = jobs::ListParams {
+        blob_id: Some(id),
+        limit: jobs::DEFAULT_LIMIT,
+        ..Default::default()
+    };
+    let ids = [id];
+    let (blob, attachments, jobs) = futures::try_join!(
+        agrafe.find_blob(id).map_err(DashboardError::from),
+        agrafe.attachments_for(&ids).map_err(DashboardError::from),
+        agrafe.list_jobs(&params).map_err(DashboardError::from),
+    )?;
+    let blob = blob.ok_or(DashboardError::NotFound)?;
     let thumbnail = format!(
         "{}/blobs/{id}/thumbnail/{}",
         base.api(),
         encode_segment(&blob.filename)
     );
     Ok(BlobPage {
-        layout: Layout::new(&base, actions, "blobs").notice(q.notice),
-        can_retry: actions && blob.failed_at.is_some(),
+        layout: Layout::new(&base, "blobs").notice(q.notice),
+        can_retry: agrafe.config().dashboard.actions && blob.failed_at.is_some(),
         view: BlobView {
             state: blob.state_at(Timestamp::now()),
             attached: !attachments.is_empty(),
@@ -229,22 +221,20 @@ async fn show(
 async fn retry(
     State(agrafe): State<Agrafe>,
     base: Base,
-    _: ActionsEnabled,
     _: SameOrigin,
+    _: ActionsEnabled,
     Id(id): Id<Uuid>,
 ) -> Result<Redirect, DashboardError> {
     let notice = match agrafe.retry_blob(id).await {
-        Ok(_) => "Retry queued: the blob is waiting on its job again.".to_string(),
+        Ok(_) => Notice::BlobRetried,
+        Err(RetryError::Terminal(_)) => Notice::BlobTerminal,
+        Err(RetryError::Nothing(_)) => Notice::BlobNothing,
+        Err(RetryError::Pending) => Notice::BlobPending,
         Err(RetryError::NotFound) => return Err(DashboardError::NotFound),
         Err(RetryError::Db(e)) => return Err(DashboardError::internal(e)),
-        Err(err @ (RetryError::Terminal(_) | RetryError::Nothing(_) | RetryError::Pending)) => {
-            format!("Nothing queued: {err}.")
-        }
     };
-    let url = href(
-        &base.0,
-        &format!("/blobs/{id}"),
-        &Notice { notice: &notice },
-    );
-    Ok(Redirect::to(&url))
+    let q = ShowQuery {
+        notice: Some(notice),
+    };
+    Ok(Redirect::to(&href(&base.0, &format!("/blobs/{id}"), &q)))
 }

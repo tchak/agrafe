@@ -8,6 +8,7 @@ use axum::extract::{FromRequestParts, State};
 use axum::http::request::Parts;
 use axum::response::Redirect;
 use axum::routing::{get, post};
+use futures::TryFutureExt;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -16,7 +17,9 @@ use agrafe::jobs::{self, Action, Count, Job, JobKind, JobState, ListParams, Prio
 
 use crate::error::DashboardError;
 use crate::filters;
-use crate::layout::{Base, Id, Layout, Notice, Opt, Query, empty_to_none, href, options};
+use crate::layout::{
+    Base, Id, Layout, Notice, Opt, Query, ShowQuery, empty_to_none, href, options,
+};
 use crate::origin::SameOrigin;
 
 pub fn routes() -> Router<Agrafe> {
@@ -68,8 +71,14 @@ pub struct JobsQuery {
         skip_serializing_if = "Option::is_none"
     )]
     pub refresh: Option<u32>,
-    #[serde(default, skip_serializing)]
-    pub notice: Option<String>,
+    /// What an action that redirected here has to say; the links the
+    /// page builds drop it.
+    #[serde(
+        default,
+        deserialize_with = "Notice::lenient",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub notice: Option<Notice>,
 }
 
 impl JobsQuery {
@@ -89,6 +98,7 @@ impl JobsQuery {
         let q = JobsQuery {
             state,
             cursor: None,
+            notice: None,
             ..self.clone()
         };
         href(base, "/jobs", &q)
@@ -97,6 +107,7 @@ impl JobsQuery {
     fn next(&self, base: &str, cursor: i64) -> String {
         let q = JobsQuery {
             cursor: Some(cursor),
+            notice: None,
             ..self.clone()
         };
         href(base, "/jobs", &q)
@@ -223,9 +234,12 @@ async fn list(
     base: Base,
     Query(query): Query<JobsQuery>,
 ) -> Result<JobsPage, DashboardError> {
-    let counts = agrafe.job_counts().await?;
+    let params = query.params();
+    let (counts, page) = futures::try_join!(
+        agrafe.job_counts().map_err(DashboardError::from),
+        agrafe.list_jobs(&params).map_err(DashboardError::from),
+    )?;
     let census = Census::from_counts(&counts);
-    let page = agrafe.list_jobs(&query.params()).await?;
     let all = Tab {
         label: "all".to_string(),
         href: query.tab(&base.0, None),
@@ -242,8 +256,8 @@ async fn list(
         .collect();
     let next = page.next_cursor.map(|c| query.next(&base.0, c));
     Ok(JobsPage {
-        layout: Layout::new(&base, agrafe.config().dashboard.actions, "jobs")
-            .notice(query.notice.clone())
+        layout: Layout::new(&base, "jobs")
+            .notice(query.notice)
             .refresh(query.refresh),
         kinds: options(JobKind::ALL, query.kind),
         priorities: options(Priority::ALL, query.priority),
@@ -253,11 +267,6 @@ async fn list(
         jobs: JobView::many(&agrafe, page.items),
         next,
     })
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ShowQuery {
-    pub notice: Option<String>,
 }
 
 #[derive(Template, WebTemplate)]
@@ -278,17 +287,17 @@ async fn show(
 ) -> Result<JobPage, DashboardError> {
     let job = agrafe.find_job(id).await?.ok_or(DashboardError::NotFound)?;
     let view = JobView::new(&agrafe, job);
-    let actions = agrafe.config().dashboard.actions;
     Ok(JobPage {
-        layout: Layout::new(&base, actions, "jobs").notice(q.notice),
+        layout: Layout::new(&base, "jobs").notice(q.notice),
         payload: serde_json::to_string_pretty(&view.job.payload).unwrap_or_default(),
-        can_act: actions && view.state == JobState::Dead,
+        can_act: agrafe.config().dashboard.actions && view.state == JobState::Dead,
         view,
     })
 }
 
-/// On every action route: `404` unless the configuration shows the
-/// buttons, so a read-only dashboard has no action to be made to take.
+/// On every action route, after the origin check: `404` unless the
+/// configuration shows the buttons, so a read-only dashboard has no action
+/// to be made to take.
 pub struct ActionsEnabled;
 
 impl FromRequestParts<Agrafe> for ActionsEnabled {
@@ -306,60 +315,43 @@ impl FromRequestParts<Agrafe> for ActionsEnabled {
 async fn retry(
     State(agrafe): State<Agrafe>,
     base: Base,
-    _: ActionsEnabled,
     _: SameOrigin,
+    _: ActionsEnabled,
     Id(id): Id<i64>,
 ) -> Result<Redirect, DashboardError> {
     let notice = match agrafe.retry_job(id).await? {
-        Action::Done(_) => "Job queued again.".to_string(),
-        Action::NotDead(job) => not_dead(&agrafe, &job),
-        Action::Duplicate(job) => format!(
-            "A {} job is already pending for this blob; nothing to retry.",
-            job.kind
-        ),
+        Action::Done(_) => Notice::JobRetried,
+        Action::NotDead(_) => Notice::JobNotDead,
+        Action::Duplicate(_) => Notice::JobDuplicate,
         Action::Missing => return Err(DashboardError::NotFound),
     };
-    Ok(back_to_job(&base, id, &notice))
+    Ok(back_to_job(&base, id, notice))
 }
 
 async fn discard(
     State(agrafe): State<Agrafe>,
     base: Base,
-    _: ActionsEnabled,
     _: SameOrigin,
+    _: ActionsEnabled,
     Id(id): Id<i64>,
 ) -> Result<Redirect, DashboardError> {
     match agrafe.discard_job(id).await? {
         Action::Done(_) => {
             let q = JobsQuery {
                 state: Some(JobState::Dead),
-                notice: None,
+                notice: Some(Notice::JobDiscarded),
                 ..Default::default()
             };
-            let notice = Notice {
-                notice: &format!("Job {id} discarded."),
-            };
-            let url = format!(
-                "{}&{}",
-                href(&base.0, "/jobs", &q),
-                serde_urlencoded::to_string(notice).unwrap_or_default()
-            );
-            Ok(Redirect::to(&url))
+            Ok(Redirect::to(&href(&base.0, "/jobs", &q)))
         }
-        Action::NotDead(job) | Action::Duplicate(job) => {
-            Ok(back_to_job(&base, id, &not_dead(&agrafe, &job)))
-        }
+        Action::NotDead(_) | Action::Duplicate(_) => Ok(back_to_job(&base, id, Notice::JobNotDead)),
         Action::Missing => Err(DashboardError::NotFound),
     }
 }
 
-fn not_dead(agrafe: &Agrafe, job: &Job) -> String {
-    format!(
-        "Job is {}; only a dead job can be retried or discarded.",
-        agrafe.job_state(job)
-    )
-}
-
-fn back_to_job(base: &Base, id: i64, notice: &str) -> Redirect {
-    Redirect::to(&href(&base.0, &format!("/jobs/{id}"), &Notice { notice }))
+fn back_to_job(base: &Base, id: i64, notice: Notice) -> Redirect {
+    let q = ShowQuery {
+        notice: Some(notice),
+    };
+    Redirect::to(&href(&base.0, &format!("/jobs/{id}"), &q))
 }

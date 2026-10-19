@@ -55,8 +55,6 @@ pub struct AttachmentsQuery {
         skip_serializing_if = "Option::is_none"
     )]
     pub cursor: Option<Uuid>,
-    #[serde(default, skip_serializing)]
-    pub notice: Option<String>,
 }
 
 impl AttachmentsQuery {
@@ -86,7 +84,8 @@ pub struct AttachmentsPage {
     pub layout: Layout,
     pub query: AttachmentsQuery,
     /// The values `record_type` and `name` take, as selects: a backend has
-    /// a handful of each.
+    /// a handful of each, and `Agrafe::attachment_facets` finds them
+    /// without reading the table.
     pub record_types: Vec<Opt>,
     pub names: Vec<Opt>,
     pub attachments: Vec<Listed>,
@@ -102,8 +101,7 @@ async fn list(
     let facets = agrafe.attachment_facets().await?;
     let next = page.next_cursor.map(|c| query.next(&base.0, c));
     Ok(AttachmentsPage {
-        layout: Layout::new(&base, agrafe.config().dashboard.actions, "attachments")
-            .notice(query.notice.clone()),
+        layout: Layout::new(&base, "attachments"),
         record_types: options_of(&facets.record_types, query.record_type.as_deref()),
         names: options_of(&facets.names, query.name.as_deref()),
         query,
@@ -129,7 +127,7 @@ async fn show(
         .await?
         .ok_or(DashboardError::NotFound)?;
     Ok(AttachmentPage {
-        layout: Layout::new(&base, agrafe.config().dashboard.actions, "attachments"),
+        layout: Layout::new(&base, "attachments"),
         attachment,
     })
 }

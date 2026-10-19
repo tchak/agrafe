@@ -46,7 +46,7 @@
   </div>
 </header>
 <main class="container">
-{% if let Some(notice) = layout.notice %}<div role="alert" class="alert alert-info alert-soft mb-6"><span>{{ notice }}</span></div>{% endif %}
+{% if let Some(notice) = layout.notice %}<div role="alert" class="alert alert-info alert-soft mb-6"><span>{{ notice.message() }}</span></div>{% endif %}
 {% block content %}{% endblock %}
 </main>
 </body>

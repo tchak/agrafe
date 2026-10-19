@@ -424,9 +424,10 @@ actions = true   # the retry and discard buttons; off, the pages are read-only
 a tab per state, then the blobs and the attachments with the filters of
 the JSON routes, every row linking to the related objects. The URL holds
 the filters, so a view can be pasted; `?refresh=5` on the jobs page makes
-it reload every five seconds. The action forms are accepted only from the
-dashboard's own origin, which is what keeps a page the operator visits
-elsewhere from submitting them. Both keys are off by default.
+it reload every five seconds. A form a browser marks as another site's is
+refused, on the dashboard and on the private API's `POST` routes alike,
+which is what keeps a page the operator visits elsewhere from submitting
+them. Both keys are off by default.
 
 A host application nests `agrafe_dashboard::dashboard_router` wherever it
 likes, behind its own authentication; the pages find their prefix from

@@ -51,34 +51,28 @@ impl<S: Send + Sync> FromRequestParts<S> for Base {
     }
 }
 
-/// The chrome of a page: the mount point its links start from, the API
-/// prefix its thumbnails come from, the notice an action left, the
-/// auto-refresh an operator asked for, and whether the action buttons
-/// show.
+/// The chrome of a page: the mount point its links start from, the notice
+/// an action left, and the auto-refresh an operator asked for.
 #[derive(Debug, Clone)]
 pub struct Layout {
     pub base: String,
-    pub api: String,
     pub section: &'static str,
-    pub notice: Option<String>,
+    pub notice: Option<Notice>,
     pub refresh: Option<u32>,
-    pub actions: bool,
 }
 
 impl Layout {
-    pub fn new(base: &Base, actions: bool, section: &'static str) -> Self {
+    pub fn new(base: &Base, section: &'static str) -> Self {
         Self {
             base: base.0.clone(),
-            api: base.api().to_string(),
             section,
             notice: None,
             refresh: None,
-            actions,
         }
     }
 
-    pub fn notice(mut self, notice: Option<String>) -> Self {
-        self.notice = notice.filter(|n| !n.is_empty());
+    pub fn notice(mut self, notice: Option<Notice>) -> Self {
+        self.notice = notice;
         self
     }
 
@@ -86,6 +80,63 @@ impl Layout {
         self.refresh = seconds.filter(|s| *s > 0);
         self
     }
+}
+
+/// What an action tells the page it redirects to, as a code in the query.
+/// The page holds the sentences, so a pasted link cannot make the
+/// dashboard say anything of its own; a code the page does not know is
+/// ignored rather than echoed in an error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Notice {
+    JobRetried,
+    JobDiscarded,
+    JobNotDead,
+    JobDuplicate,
+    BlobRetried,
+    BlobTerminal,
+    BlobNothing,
+    BlobPending,
+}
+
+impl Notice {
+    pub fn message(self) -> &'static str {
+        match self {
+            Notice::JobRetried => "Job queued again.",
+            Notice::JobDiscarded => "Job discarded.",
+            Notice::JobNotDead => {
+                "Nothing done: only a dead job can be retried or discarded, and this one is not dead."
+            }
+            Notice::JobDuplicate => {
+                "Nothing to retry: a job of this kind is already pending for the blob."
+            }
+            Notice::BlobRetried => "Retry queued: the blob is waiting on its job again.",
+            Notice::BlobTerminal => {
+                "Nothing queued: the blob is expired, deleted or infected, and nothing will finish it."
+            }
+            Notice::BlobNothing => "Nothing queued: the blob is not waiting on a job.",
+            Notice::BlobPending => "Nothing queued: a job is already pending for this blob.",
+        }
+    }
+}
+
+impl Notice {
+    /// `deserialize_with` for a query field: an unknown code is `None`.
+    pub fn lenient<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Self>, D::Error> {
+        let raw = Option::<String>::deserialize(deserializer)?;
+        Ok(raw.and_then(|s| serde_plain::from_str(&s).ok()))
+    }
+}
+
+/// The query of a detail page, and what an action redirects to one with.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct ShowQuery {
+    #[serde(
+        default,
+        deserialize_with = "Notice::lenient",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub notice: Option<Notice>,
 }
 
 /// What a failure shows: the status and its reason as the title, the
@@ -141,12 +192,6 @@ pub fn options_of(values: &[String], current: Option<&str>) -> Vec<Opt> {
 /// `yes` / `no` as `true` / `false`.
 pub fn bool_options(current: Option<bool>) -> Vec<Opt> {
     options(&[true, false], current)
-}
-
-/// The query an action redirects with: the one-line notice.
-#[derive(Debug, Serialize)]
-pub struct Notice<'a> {
-    pub notice: &'a str,
 }
 
 /// A link under the mount point with `query` encoded after it, nothing

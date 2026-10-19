@@ -109,7 +109,7 @@ pub async fn render(base: Base, req: Request, next: Next) -> Response {
         return res;
     };
     let page = ErrorPage {
-        layout: Layout::new(&base, false, ""),
+        layout: Layout::new(&base, ""),
         status: failure.status.as_u16(),
         reason: failure.status.canonical_reason().unwrap_or("Error"),
         message: failure.message,

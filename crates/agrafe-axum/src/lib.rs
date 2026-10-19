@@ -9,6 +9,7 @@ pub mod error;
 pub mod extract;
 pub mod jobs;
 pub mod json;
+pub mod origin;
 pub mod original;
 pub mod private;
 pub mod public;
@@ -19,6 +20,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::{Request, header};
+use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use tower_http::trace::TraceLayer;
@@ -37,6 +39,7 @@ pub fn private_router(state: Agrafe) -> Router {
         .merge(jobs::routes())
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
+        .layer(middleware::from_fn(origin::refuse_cross_site))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }

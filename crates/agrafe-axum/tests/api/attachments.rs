@@ -576,3 +576,49 @@ async fn a_detach_that_lost_the_race_finds_nothing() {
         json!([])
     );
 }
+
+/// The facets are the distinct record types and names, sorted, each name
+/// once however many types use it, from a walk capped at `MAX_FACETS`
+/// pairs.
+#[tokio::test]
+async fn facets_walk_the_distinct_pairs() {
+    use agrafe::attachment::MAX_FACETS;
+
+    let app = setup().await;
+    let facets = app.state.attachment_facets().await.unwrap();
+    assert!(facets.record_types.is_empty() && facets.names.is_empty());
+
+    let a = create(&app, raw_blob()).await;
+    let b = create(&app, raw_blob()).await;
+    for (blob, record_type, record_id, name) in [
+        (&a, "User", "1", "avatar"),
+        (&a, "Dossier", "1", "piece"),
+        (&b, "Dossier", "2", "piece"),
+        (&b, "Dossier", "2", "avatar"),
+        (&b, "Message", "9", "attachment"),
+    ] {
+        let (status, got) =
+            attach(&app, id_of(blob), attachment(record_type, record_id, name)).await;
+        assert_eq!(status, StatusCode::CREATED, "{got}");
+    }
+    let facets = app.state.attachment_facets().await.unwrap();
+    assert_eq!(facets.record_types, ["Dossier", "Message", "User"]);
+    assert_eq!(facets.names, ["attachment", "avatar", "piece"]);
+
+    // One type with more names than the cap: the walk stops at the cap,
+    // in order, and the types after it are not seen.
+    sqlx::query(
+        "INSERT INTO attachments (id, blob_id, record_type, record_id, name) \
+         SELECT gen_random_uuid(), $1, 'Bulk', '1', 'n' || lpad(i::text, 4, '0') \
+         FROM generate_series(1, $2) AS i",
+    )
+    .bind(parse_id(id_of(&a)))
+    .bind(MAX_FACETS as i32 + 10)
+    .execute(app.state.pool())
+    .await
+    .unwrap();
+    let facets = app.state.attachment_facets().await.unwrap();
+    assert_eq!(facets.record_types, ["Bulk"]);
+    assert_eq!(facets.names.len(), MAX_FACETS);
+    assert_eq!(facets.names[0], "n0001");
+}

@@ -530,7 +530,6 @@ async fn a_cross_site_action_is_refused() {
             ("origin", "http://agrafe.internal:8080"),
         ],
         vec![("origin", "null")],
-        vec![],
     ] {
         let (status, body, _) = send(&app, post(&uri, &headers)).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{headers:?}:\n{body}");
@@ -552,6 +551,45 @@ async fn a_cross_site_action_is_refused() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+    // And before the actions flag: a read-only dashboard refuses the same.
+    drop(app);
+    let app = setup(false).await;
+    let (status, _, _) = send(
+        &app,
+        post(
+            "/dashboard/jobs/999999/retry",
+            &[("origin", "http://evil.test")],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+/// A pasted link names a notice by code; an unknown code is ignored, and
+/// nothing a link says reaches the page.
+#[tokio::test]
+async fn a_notice_is_a_code() {
+    let app = setup(true).await;
+    let (status, body) = get(&app, "/dashboard/jobs?notice=job_retried").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("Job queued again."), "{body}");
+    let (status, body) = get(&app, "/dashboard/jobs?notice=Click%20here").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(!body.contains("Click here"), "{body}");
+    assert!(!body.contains("alert"), "no notice at all:\n{body}");
+}
+
+/// A request with no browser marks at all is a non-browser client on the
+/// trusted network, and goes through: `curl` can retry a job.
+#[tokio::test]
+async fn an_unmarked_post_is_accepted() {
+    let app = setup(true).await;
+    let blob = create_blob(&app, "a.png").await;
+    let dead = dead_job(&app, blob).await;
+    let (status, _, _) = send(&app, post(&format!("/dashboard/jobs/{dead}/retry"), &[])).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let job = app.state.find_job(dead).await.unwrap().unwrap();
+    assert_eq!(app.state.job_state(&job), JobState::Due);
 }
 
 #[tokio::test]
@@ -622,7 +660,7 @@ async fn a_retry_redirects_and_the_job_is_due_again() {
     .await;
     assert_eq!(status, StatusCode::SEE_OTHER);
     let body = page(&app, &location.unwrap(), &format!("Job {dead}")).await;
-    assert!(body.contains("Job is due; only a dead job"), "{body}");
+    assert!(body.contains("Nothing done: only a dead job"), "{body}");
 
     // The blob's side: a created blob waits on no job, and the retry says
     // so rather than queueing anything.
@@ -637,7 +675,7 @@ async fn a_retry_redirects_and_the_job_is_due_again() {
     assert_eq!(status, StatusCode::SEE_OTHER);
     let body = page(&app, &location.unwrap(), "Blob a.png").await;
     assert!(
-        body.contains("Nothing queued: nothing to retry: a created blob"),
+        body.contains("Nothing queued: the blob is not waiting on a job."),
         "{body}"
     );
 
@@ -657,12 +695,9 @@ async fn a_retry_redirects_and_the_job_is_due_again() {
     .await;
     assert_eq!(status, StatusCode::SEE_OTHER);
     let location = location.unwrap();
-    assert!(
-        location.starts_with("/dashboard/jobs?state=dead&notice="),
-        "{location}"
-    );
+    assert_eq!(location, "/dashboard/jobs?state=dead&notice=job_discarded");
     let body = page(&app, &location, "Jobs").await;
-    assert!(body.contains(&format!("Job {dead} discarded.")), "{body}");
+    assert!(body.contains("Job discarded."), "{body}");
     assert!(app.state.find_job(dead).await.unwrap().is_none());
     let (status, _, _) = send(
         &app,

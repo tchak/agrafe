@@ -36,11 +36,13 @@ pub use layout::Base;
 /// The layout utilities the pages add on top are in `base.html`.
 const STYLESHEET: &str = include_str!("../assets/daisyui.css");
 
-/// The dashboard with its state applied, to nest under a prefix or to
-/// merge at the root. Its links are built from the prefix it finds itself
-/// under, and the thumbnails it embeds are the private API's, assumed one
-/// segment up (`/dashboard` under `/`, `/internal/dashboard` under
-/// `/internal`).
+/// The dashboard with its state applied, to nest under a prefix (it has a
+/// fallback, so it cannot be merged into a router that has one). Its links
+/// are built from the prefix it finds itself under, and the thumbnails it
+/// embeds are the private API's, assumed one segment up (`/dashboard`
+/// under `/`, `/internal/dashboard` under `/internal`). It traces its own
+/// requests: a host's `TraceLayer` applied before the nest does not reach
+/// routes nested after it.
 pub fn dashboard_router(state: Agrafe) -> Router {
     Router::new()
         .route("/", get(home))

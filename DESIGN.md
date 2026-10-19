@@ -45,7 +45,7 @@ into a server process. Dependencies point downwards only.
 | `agrafe-render` | Which files render and from what, `vips thumbnail`, the icons, the drivers that spawn the helpers, the startup probe, the `[media]` tool config | `agrafe-types`, `agrafe-sandbox` |
 | `agrafe` | The library: config, database, blobs, upload pipeline, the fetch client, encryption, signing, storage, ClamAV, jobs, metrics, URL minting, and the `Agrafe` handle whose methods are the private API | `agrafe-crypto`, `agrafe-types`, `agrafe-render`, `sqlx`, `object_store`, `reqwest` |
 | `agrafe-axum` | The two HTTP interfaces as axum routers, the extractors, `ApiError` and the mapping of the library's errors onto status codes | `agrafe`, `axum` |
-| `agrafe-dashboard` | The HTML dashboard as an axum router: the queue census, the listings and details of jobs, blobs and attachments, the retry and discard forms; compiled templates and a vendored stylesheet | `agrafe`, `axum`, `askama` |
+| `agrafe-dashboard` | The HTML dashboard as an axum router: the queue census, the listings and details of jobs, blobs and attachments, the retry and discard forms; compiled templates and a vendored stylesheet | `agrafe`, `agrafe-axum` (the origin check), `axum`, `askama` |
 | `agrafe-server` | The clap entry point: `serve`, `migrate`. Produces the binary named `agrafe` | `agrafe`, `agrafe-axum`, `agrafe-dashboard` |
 
 The helpers are separate binaries, not subcommands of the server, so that
@@ -169,9 +169,9 @@ It is a second presentation of the `Agrafe` handle, in its own crate,
 presentation dependency, and a host that nests the public router or calls
 the private API in Rust should not compile templates and a stylesheet it
 never serves. The dashboard answers with HTML pages, not `ApiError`
-bodies, so it shares no code with `agrafe-axum` anyway. The library
-changed only to expose the queue census through the handle,
-`Agrafe::job_counts`, which `/metrics` reads too.
+bodies; the one thing it takes from `agrafe-axum` is the cross-site check
+below. The library changed only to expose the queue census through the
+handle, `Agrafe::job_counts`, which `/metrics` reads too.
 
 `dashboard_router(state)` is one router with its state applied, like the
 other two. `agrafe-server` nests it under `/dashboard` on the private
@@ -192,8 +192,14 @@ JavaScript, no build step. Filters are `GET` forms whose fields
 mirror the list query structs, so the URL is the state and a filtered view
 is a link an operator can paste. An enum filter is a select; so are the
 `record_type` and `name` of attachments, fed by `Agrafe::attachment_facets`,
-the distinct values of each (a backend has a handful, and both lead an
-index), with the value a pasted link names still offered when it is gone. Pagination is the existing cursor, a
+the distinct values of each, with the value a pasted link names still
+offered when it is gone. A backend has a handful of each, but the table can
+hold a billion rows and Postgres has no loose index scan, so `SELECT
+DISTINCT` would read them all on every page view; the facets come instead
+from a recursive CTE that walks the distinct `(record_type, name)` pairs
+along `attachments_type_name_idx`, one index probe per pair, capped at
+`MAX_FACETS` pairs. No cache: the walk costs less than rendering the page,
+and a cache would only add a staleness window. Pagination is the existing cursor, a
 "next" link. Actions are `POST` forms that redirect (`303`) to the page
 they came from with a one-line notice in the query. The queue page takes
 `?refresh=5` and reloads itself through `<meta http-equiv="refresh">`.
@@ -216,15 +222,28 @@ Actions and cross-site requests. The private port has no authentication
 because only trusted networks reach it. A browser breaks that assumption:
 an operator with the dashboard open on an internal address can be made to
 submit a form to it by any page they visit, since a cross-origin form
-`POST` goes through without a preflight. The JSON API has no such
-exposure: `PUT`, `DELETE` and JSON bodies are preflighted. The action
-routes therefore accept a request only when `Sec-Fetch-Site` is
-`same-origin` or `none`, and when that header is absent, only when
-`Origin` matches `Host`. Stateless, no token and no session, which the
-private port does not have. A refused action is a `403` page. The check
-applies whether or not actions are enabled, so a future action inherits
-it; with `dashboard.actions` off the action routes answer `404` and the
-buttons do not render.
+`POST` goes through without a preflight. The JSON API has the same
+exposure on its body-less `POST`s (`retry`, `finish`, `urls`; `PUT`,
+`DELETE` and JSON bodies are preflighted), so the check is one function,
+`agrafe_axum::origin::check`, and the private router applies it to every
+unsafe request; the dashboard applies it to its action routes as an
+extractor, so it keeps it wherever a host nests it. A request is refused
+when the browser marks it as another site's: `Sec-Fetch-Site` other than
+`same-origin` or `none`, or, without that header, an `Origin` that is not
+the `Host`. A request with neither header is a non-browser client, the
+backend, and goes through: a browser never sends a `POST` without
+`Origin`. Stateless, no token and no session, which the private port does
+not have. A refused action is a `403` page on the dashboard, a `forbidden`
+error on the API, and the dashboard checks it before the actions flag, so
+nothing is learnt from a read-only dashboard either. What the check does
+not cover is DNS rebinding, where the attacker's page is same-origin in
+the browser's eyes; that is the general weakness of an unauthenticated
+internal port, and the remedy, a `Host` allowlist on the private listener,
+is not specific to the dashboard.
+
+The notice an action leaves is a code in the query (`?notice=job_retried`),
+and the page holds the sentences: a pasted link cannot make the dashboard
+say anything of its own, and an unknown code is ignored.
 
 Both flags are off by default: an existing deployment does not grow an
 interface by upgrading. Considered and not done: a module of
@@ -234,7 +253,7 @@ this size); `minijinja` for hot reload (loses the type checking, the
 wrong trade for a page that changes rarely); htmx or a JSON-driven front
 end (nothing needs partial updates, and the JSON API exists for anything
 programmatic); a CSRF token (the `Sec-Fetch-Site` / `Origin` check covers
-the threat without a session store).
+cross-site forms without a session store).
 
 ## Signed URLs
 

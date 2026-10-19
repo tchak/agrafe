@@ -811,3 +811,68 @@ async fn the_blob_verdict_tracks_the_live_job() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["items"].as_array().unwrap().len(), 0, "{body}");
 }
+
+/// The body-less `POST`s of the private API are what a cross-site form
+/// can reach without a preflight; the router refuses those a browser
+/// marks as another site's, and only those.
+#[tokio::test]
+async fn a_cross_site_form_post_is_refused() {
+    use axum::body::Body;
+    use axum::http::{Method, Request, header};
+
+    let app = setup().await;
+    let created = create(&app, raw_blob()).await;
+    let id = id_of(&created);
+    let form = |method: Method, uri: &str, headers: &[(&str, &str)]| {
+        let mut req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::HOST, "agrafe.internal:8080")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded");
+        for (name, value) in headers {
+            req = req.header(*name, *value);
+        }
+        req.body(Body::empty()).unwrap()
+    };
+
+    for uri in [
+        format!("/blobs/{id}/retry"),
+        format!("/blobs/{id}/finish"),
+        format!("/blobs/{id}/urls"),
+        "/jobs/1/retry".to_string(),
+    ] {
+        for headers in [
+            vec![("origin", "http://evil.test")],
+            vec![("sec-fetch-site", "cross-site")],
+            vec![
+                ("sec-fetch-site", "same-site"),
+                ("origin", "http://agrafe.internal:8080"),
+            ],
+        ] {
+            let (status, body) = call(&app.private, form(Method::POST, &uri, &headers)).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{uri} {headers:?}: {body}");
+            assert_eq!(body["error"]["code"], "forbidden", "{body}");
+        }
+    }
+    // A read is never refused, whoever asks.
+    let (status, _) = call(
+        &app.private,
+        form(Method::GET, "/jobs", &[("origin", "http://evil.test")]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    // The dashboard's own forms, and the backend with no browser headers,
+    // reach the handler: this blob is `created`, so the retry is a `409`.
+    for headers in [
+        vec![],
+        vec![("sec-fetch-site", "same-origin")],
+        vec![("origin", "http://agrafe.internal:8080")],
+    ] {
+        let (status, body) = call(
+            &app.private,
+            form(Method::POST, &format!("/blobs/{id}/retry"), &headers),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{headers:?}: {body}");
+    }
+}

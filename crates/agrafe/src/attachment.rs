@@ -8,6 +8,8 @@
 //! transaction, so the expiry and the attachments change together, and
 //! the reaper's expiry update waits on the same lock.
 
+use std::collections::BTreeSet;
+
 use jiff::Timestamp;
 use jiff_sqlx::ToSqlx;
 use serde::Deserialize;
@@ -106,23 +108,42 @@ impl Agrafe {
     }
 
     /// The distinct `record_type` and `name` values in the table, sorted,
-    /// at most `MAX_FACETS` of each: a backend has a handful of record
-    /// types and a handful of attachment names per type, and both are the
-    /// leading column of an index, so a filter can offer them as a list.
+    /// so a filter can offer them as a list. A backend has a handful of
+    /// record types and a handful of names per type, but the table can
+    /// hold a billion rows, and `SELECT DISTINCT` reads all of them: there
+    /// is no loose index scan in Postgres. So the distinct `(record_type,
+    /// name)` pairs are walked by hand along `attachments_type_name_idx`,
+    /// one index probe per pair, in a recursive CTE, and both facets come
+    /// from the pairs; at most `MAX_FACETS` pairs are walked.
     pub async fn attachment_facets(&self) -> sqlx::Result<Facets> {
-        let limit = MAX_FACETS as i64;
-        let record_types =
-            sqlx::query_scalar("SELECT DISTINCT record_type FROM attachments ORDER BY 1 LIMIT $1")
-                .bind(limit)
-                .fetch_all(self.pool())
-                .await?;
-        let names = sqlx::query_scalar("SELECT DISTINCT name FROM attachments ORDER BY 1 LIMIT $1")
-            .bind(limit)
-            .fetch_all(self.pool())
-            .await?;
+        let pairs: Vec<(String, String)> = sqlx::query_as(
+            "WITH RECURSIVE pairs AS ( \
+                 (SELECT record_type, name FROM attachments \
+                  ORDER BY record_type, name LIMIT 1) \
+                 UNION ALL \
+                 SELECT next.record_type, next.name \
+                 FROM pairs, LATERAL ( \
+                     SELECT record_type, name FROM attachments \
+                     WHERE (record_type, name) > (pairs.record_type, pairs.name) \
+                     ORDER BY record_type, name LIMIT 1 \
+                 ) next \
+             ) \
+             SELECT record_type, name FROM pairs LIMIT $1",
+        )
+        .bind(MAX_FACETS as i64)
+        .fetch_all(self.pool())
+        .await?;
+        let mut record_types = Vec::new();
+        let mut names = BTreeSet::new();
+        for (record_type, name) in pairs {
+            if record_types.last() != Some(&record_type) {
+                record_types.push(record_type);
+            }
+            names.insert(name);
+        }
         Ok(Facets {
             record_types,
-            names,
+            names: names.into_iter().collect(),
         })
     }
 
@@ -221,7 +242,7 @@ pub struct Facets {
     pub names: Vec<String>,
 }
 
-/// Values of each facet returned at most.
+/// Distinct `(record_type, name)` pairs walked at most for the facets.
 pub const MAX_FACETS: usize = 500;
 
 pub struct Page {
