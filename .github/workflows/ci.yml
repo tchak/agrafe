@@ -19,6 +19,8 @@ jobs:
   lint:
     name: Format and Clippy
     runs-on: ubuntu-24.04
+    # Under a minute warm; a cold cache rebuilds every dependency.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -31,6 +33,9 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-24.04
+    # Two to three minutes warm. nextest kills a stuck test after a minute;
+    # this bounds the rest, a build or a service that never answers.
+    timeout-minutes: 30
     # The renderer passes `vips thumbnail --output-profile`, which needs
     # libvips 8.17 or newer: Ubuntu 24.04 ships 8.15, Debian trixie 8.16.
     container: debian:forky
@@ -70,6 +75,7 @@ jobs:
   msrv:
     name: MSRV (1.94)
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.94
