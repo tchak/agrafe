@@ -406,7 +406,8 @@ secret = "whsec_…"   # echo "whsec_$(openssl rand -base64 24)", or AGRAFE_WEBH
 Each delivery is a JSON body with the event, when it happened, the
 attempt number and the blob exactly as `GET /blobs/:id` answers at that
 moment, attachments and URLs included, so a late or repeated delivery
-tells the backend what is, not what was:
+tells the backend what is, not what was. Two deliveries of one blob can
+cross, so apply `blob.state`, not the event name:
 
 ```json
 {

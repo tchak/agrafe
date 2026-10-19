@@ -1857,7 +1857,11 @@ job is pending per blob, the unique index on pending jobs, and a second
 event raised while the first is still undelivered replaces it: the newest
 event, its attempts started over, with the state behind it at delivery.
 The backend then hears `expired` rather than a `ready` that is no longer
-true, and `ready` after a `failed` the retry already mended. A blob pruned
+true, and `ready` after a `failed` the retry already mended. A job that
+is running holds no pending slot, so an event raised meanwhile gets a job
+of its own and the two deliveries can cross: the receiver applies the
+`blob` it is handed, its `state` and `updated_at`, and treats `event` as
+the reason it was called, never as the state to record. A blob pruned
 before its delivery (`blobs.keep_purged`) takes its jobs with it.
 
 The headers follow [Standard Webhooks](https://www.standardwebhooks.com/):
