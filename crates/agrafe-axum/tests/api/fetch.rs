@@ -622,10 +622,18 @@ async fn a_url_blob_takes_no_put_parts_or_finish() {
 
 /// A fetch finding the row `uploading` has met itself, cut short on a
 /// crashed worker and not yet reset by the reaper: it is retried, not
-/// dropped, so the blob is never left with no job at all.
+/// dropped, so the blob is never left with no job at all, and the retry
+/// is due once the reaper has had the time to reset the row, so one
+/// attempt covers the wait.
 #[tokio::test]
 async fn an_uploading_blob_is_a_transient_failure() {
-    let app = setup_fetching().await;
+    let clamd = fake_clamd().await;
+    let app = setup_tuned(clamd, |c| {
+        c.fetch.allow_private_networks = true;
+        c.upload.stale_after = Duration::from_secs(600);
+        c.jobs.reap_interval = Duration::from_secs(60);
+    })
+    .await;
     let created = create(&app, url_blob("http://127.0.0.1:1/a")).await;
     let id = id_of(&created);
     sqlx::query(
@@ -640,6 +648,11 @@ async fn an_uploading_blob_is_a_transient_failure() {
     let (attempts, dead, error) = fetch_job(&app, id).await;
     assert_eq!((attempts, dead), (1, false), "{error}");
     assert!(error.contains("uploading"), "{error}");
+    let due = fetch_due_in(&app, id).await;
+    assert!(
+        (650.0..=660.0).contains(&due),
+        "stale_after + reap_interval: {due}"
+    );
 
     // Any other state is nothing to do.
     sqlx::query("UPDATE blobs SET state = 'ready' WHERE id = $1")

@@ -1042,13 +1042,17 @@ A `fetch` job kind with its own worker pool (`jobs.concurrency.fetch`,
 default two), so a migration batch cannot take a scan or render worker.
 The handler: find the blob, open the URL, claim the row, hand the body
 stream to the pipeline. On a blob that is not `created`: `uploading` is a
-transient error, retried through the backoff, not a quiet success. The
-lease timeout and the stale-upload timeout are both ten minutes, so after
-a crash mid-fetch the job can be reclaimed before the reaper has handed
-the row back to `created`; a handler that gave up quietly there would be
-deleted as done and leave the blob with no job at all. Any other state
-(`uploaded`, `ready`, terminal) is "nothing to do", like the scan job on a
-blob that is not `uploaded`.
+transient error, not a quiet success. The lease timeout and the
+stale-upload timeout are both ten minutes, so after a crash mid-fetch the
+job can be reclaimed before the reaper has handed the row back to
+`created`; a handler that gave up quietly there would be deleted as done
+and leave the blob with no job at all. The retry is scheduled for when
+the reaper will have reset the row, `upload.stale_after` past its last
+heartbeat plus one `jobs.reap_interval`, rather than through the backoff,
+so one crash costs the job two attempts (the one that crashed and the one
+that waited) and not the whole budget. Any other state (`uploaded`,
+`ready`, terminal), expiry included, is "nothing to do", like the scan
+job on a blob that is not `uploaded`.
 
 Errors are a `FetchError` with an `is_permanent`, like `BuildError`:
 

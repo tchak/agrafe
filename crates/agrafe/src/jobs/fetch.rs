@@ -259,8 +259,10 @@ pub enum FetchError {
     /// The row is `uploading`: this fetch, or an attempt before it that
     /// was cut short and that the reaper has not reset yet. Not a quiet
     /// success: a job that gave up here would leave the blob with no job.
+    /// `retry_in` is when the reaper will have reset the row, so a single
+    /// attempt covers the wait instead of the backoff eating the budget.
     #[error("blob is uploading: a fetch is in flight or was cut short")]
-    Uploading,
+    Uploading { retry_in: Duration },
     /// A status another attempt would get again: a 4xx other than 408,
     /// 425 and 429.
     #[error("the remote answered {0}")]
@@ -310,7 +312,7 @@ impl FetchError {
             | FetchError::TooLarge { .. }
             | FetchError::Refused(_)
             | FetchError::Tls(_) => true,
-            FetchError::Uploading
+            FetchError::Uploading { .. }
             | FetchError::Unresolved(_)
             | FetchError::Unavailable { .. }
             | FetchError::Request(_)
@@ -331,10 +333,12 @@ impl FetchError {
         }
     }
 
-    /// What the remote asked to wait before the next attempt.
+    /// What to wait before the next attempt, when the failure knows: the
+    /// remote's `Retry-After`, or the stale reset of a row left `uploading`.
     pub fn retry_after(&self) -> Option<Duration> {
         match self {
             FetchError::Unavailable { after, .. } => *after,
+            FetchError::Uploading { retry_in } => Some(*retry_in),
             _ => None,
         }
     }
@@ -412,7 +416,7 @@ pub async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
     }
     match blob.state {
         BlobState::Created => {}
-        BlobState::Uploading => return Err(FetchError::Uploading.into()),
+        BlobState::Uploading => return Err(uploading(state, &blob).into()),
         other => {
             tracing::info!(state = %other, "blob is not waiting for a fetch");
             return Ok(());
@@ -420,6 +424,27 @@ pub async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
     }
     fetch(state, blob).await?;
     Ok(())
+}
+
+/// The failure for a row found `uploading`, due again once the reaper has
+/// had the time to reset it: `upload.stale_after` past its last heartbeat,
+/// plus one `jobs.reap_interval` for the reaper to come round. The
+/// backoff applies when that is sooner.
+fn uploading(state: &Agrafe, blob: &Blob) -> FetchError {
+    let config = state.config();
+    let heartbeat = blob
+        .upload_heartbeat_at
+        .or(blob.upload_started_at)
+        .unwrap_or_else(Timestamp::now);
+    let reset_by = heartbeat
+        .checked_add(config.upload.stale_after)
+        .and_then(|at| at.checked_add(config.jobs.reap_interval))
+        .unwrap_or(heartbeat);
+    let retry_in = reset_by
+        .duration_since(Timestamp::now())
+        .try_into()
+        .unwrap_or(Duration::ZERO);
+    FetchError::Uploading { retry_in }
 }
 
 /// Open the URL, claim the row, and feed the body to the pipeline.
@@ -460,7 +485,7 @@ async fn fetch(state: &Agrafe, blob: Blob) -> Result<(), FetchError> {
     let blob = match upload::begin(state, &blob).await? {
         Transition::Done(blob) => blob,
         Transition::Conflict(current) if current.state == BlobState::Uploading => {
-            return Err(FetchError::Uploading);
+            return Err(uploading(state, &current));
         }
         Transition::Conflict(current) => {
             tracing::info!(state = %current.state, "blob changed state before the fetch began");
@@ -631,7 +656,11 @@ mod tests {
         assert!(FetchError::Upload(UploadError::Md5Mismatch).is_permanent());
         assert!(FetchError::Upload(UploadError::SizeMismatch).is_permanent());
         assert!(FetchError::Upload(UploadError::BodyTooLarge(1)).is_permanent());
-        assert!(!FetchError::Uploading.is_permanent());
+        let uploading = FetchError::Uploading {
+            retry_in: Duration::from_secs(660),
+        };
+        assert!(!uploading.is_permanent());
+        assert_eq!(uploading.retry_after(), Some(Duration::from_secs(660)));
         assert!(!FetchError::Request("reset".into()).is_permanent());
         assert!(
             !FetchError::Unavailable {
@@ -654,7 +683,6 @@ mod tests {
             after: Some(Duration::from_secs(7)),
         };
         assert_eq!(after.retry_after(), Some(Duration::from_secs(7)));
-        assert_eq!(FetchError::Uploading.retry_after(), None);
     }
 
     #[test]
