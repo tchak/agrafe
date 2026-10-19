@@ -79,19 +79,39 @@ impl std::fmt::Debug for Error {
     }
 }
 
+/// The crates under the fetch client, which log request targets at debug
+/// and trace. A fetched URL is a presigned secret.
+const HTTP_TARGETS: [&str; 4] = ["hyper", "hyper_util", "h2", "reqwest"];
+
+/// Hold the HTTP stack at `info` whatever the global level says, unless
+/// the filter names one of those crates itself: then the operator asked
+/// and gets it. The check is on the filter string, since a directive added
+/// on a target replaces the one the filter already had on it; a directive
+/// on a module below, `hyper::proto=trace`, is more specific and wins over
+/// the cap on its own.
+fn cap_http_targets(filter: EnvFilter, env: &str) -> EnvFilter {
+    HTTP_TARGETS
+        .into_iter()
+        .filter(|target| !names_target(env, target))
+        .fold(filter, |filter, target| {
+            filter.add_directive(format!("{target}=info").parse().expect("a valid directive"))
+        })
+}
+
+/// Whether a filter string has a directive on exactly `target`:
+/// `hyper=debug`, `hyper[span]=trace`, or a bare `hyper`.
+fn names_target(env: &str, target: &str) -> bool {
+    env.split(',')
+        .map(str::trim)
+        .any(|directive| directive.split(['=', '[']).next() == Some(target))
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     let cli = Cli::parse();
+    let env = std::env::var(EnvFilter::DEFAULT_ENV).unwrap_or_default();
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
-    // The HTTP stack under the fetch client logs request targets at debug
-    // and trace, and a fetched URL is a presigned secret: those crates stay
-    // at info whatever the filter says, unless it names them itself.
-    let filter =
-        ["hyper", "hyper_util", "h2", "reqwest"]
-            .into_iter()
-            .fold(filter, |filter, target| {
-                filter.add_directive(format!("{target}=info").parse().expect("a valid directive"))
-            });
+    let filter = cap_http_targets(filter, &env);
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
     if let Some(path) = &cli.config
@@ -212,4 +232,30 @@ async fn shutdown_signal() {
         let _ = ctrl_c.await;
     }
     tracing::info!("shutdown signal received");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_http_stack_is_capped_unless_named() {
+        assert!(!names_target("debug", "hyper"));
+        assert!(!names_target("hyper_util=trace", "hyper"), "another crate");
+        assert!(
+            !names_target("hyper::proto=trace", "hyper"),
+            "a module below"
+        );
+        assert!(names_target("info,hyper=debug", "hyper"));
+        assert!(names_target("hyper[span]=trace", "hyper"));
+        assert!(names_target(" hyper ", "hyper"));
+
+        let capped = cap_http_targets(EnvFilter::new("debug"), "debug").to_string();
+        assert!(capped.contains("hyper=info"), "{capped}");
+        assert!(capped.contains("reqwest=info"), "{capped}");
+        let asked = cap_http_targets(EnvFilter::new("hyper=trace"), "hyper=trace").to_string();
+        assert!(asked.contains("hyper=trace"), "{asked}");
+        assert!(!asked.contains("hyper=info"), "{asked}");
+        assert!(asked.contains("hyper_util=info"), "{asked}");
+    }
 }
