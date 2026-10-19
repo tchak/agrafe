@@ -43,6 +43,11 @@ See "Crates" in `DESIGN.md` for the dependency graph.
   needs a fresh database (`DROP SCHEMA public CASCADE; CREATE SCHEMA
   public;`), since sqlx checksums applied migrations.
 - `config/example.toml` — documented configuration reference.
+- `docs/` — the user documentation, an mdBook (`mdbook build docs`,
+  `mdbook serve docs`), deployed to GitHub Pages by
+  `.github/workflows/docs.yml` on push to `main`. Update it with the
+  README when a feature lands or a route, key or error changes; the
+  configuration reference includes `config/example.toml` verbatim.
 
 ## Local development
 

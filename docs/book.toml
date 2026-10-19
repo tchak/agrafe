@@ -1,0 +1,17 @@
+[book]
+title = "agrafe"
+description = "Encrypted, virus-scanned file storage with previews, thumbnails and generated files."
+authors = ["Paul Chavard"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+
+[output.html]
+site-url = "/agrafe/"
+git-repository-url = "https://github.com/tchak/agrafe"
+edit-url-template = "https://github.com/tchak/agrafe/edit/main/docs/{path}"
+
+[output.html.search]
+limit-results = 30

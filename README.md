@@ -1,6 +1,7 @@
 # agrafe
 
 [![CI](https://github.com/tchak/agrafe/actions/workflows/ci.yml/badge.svg)](https://github.com/tchak/agrafe/actions/workflows/ci.yml)
+[![Docs](https://github.com/tchak/agrafe/actions/workflows/docs.yml/badge.svg)](https://tchak.github.io/agrafe/)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![Rust 1.94+](https://img.shields.io/badge/rust-1.94%2B-orange.svg)](https://www.rust-lang.org)
 [![Edition 2024](https://img.shields.io/badge/edition-2024-orange.svg)](https://doc.rust-lang.org/edition-guide/rust-2024/)
@@ -20,8 +21,10 @@ It runs as a standalone service (the `agrafe` binary), or inside another
 the service as a library with a Rust private API, and `agrafe-axum`
 provides its two HTTP interfaces as routers to nest.
 
-See [DESIGN.md](DESIGN.md) for the architecture and the reasoning behind
-every decision.
+The documentation, a guide and a reference for the configuration, both
+HTTP APIs and the errors, is at <https://tchak.github.io/agrafe/>, built
+from `docs/`. See [DESIGN.md](DESIGN.md) for the architecture and the
+reasoning behind every decision.
 
 ## Features
 
