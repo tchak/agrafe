@@ -139,7 +139,13 @@ storage.
 The `:filename` segment of representation routes must match the blob's
 filename (percent-decoded), otherwise `404`. It exists so browsers get a
 sensible download name and so a URL cannot be made to look like it serves a
-different file than it does.
+different file than it does. It is the blob's own filename on every route,
+previews and thumbnails included, even though those serve WebP: the segment
+names the file the representation is of, and the download name comes from
+`Content-Disposition`, which for a representation is the filename with a
+`.webp` extension in place of its own (`photo.jpg` → `photo.webp`, `README`
+→ `README.webp`). Browsers take the header over the URL, so a saved
+preview is never a WebP file with a `.jpg` name.
 
 ### Errors
 
