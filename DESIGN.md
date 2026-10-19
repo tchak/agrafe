@@ -1861,8 +1861,12 @@ true, and `ready` after a `failed` the retry already mended. A blob pruned
 before its delivery (`blobs.keep_purged`) takes its jobs with it.
 
 The headers follow [Standard Webhooks](https://www.standardwebhooks.com/):
-`webhook-id` is the job id, stable across the retries of one delivery so
-the receiver can deduplicate on it, `webhook-timestamp` the Unix seconds
+`webhook-id` is an id minted when the event is enqueued, stable across the
+retries of one delivery so the receiver can deduplicate on it, and new when
+a later event replaces the pending job: the job id would be the same for
+both, and a receiver that took the first delivery while its response was
+lost on the way back would drop the second as a repeat. `webhook-timestamp`
+is the Unix seconds
 at sending, and `webhook-signature` is `v1,` followed by the base64 of the
 HMAC-SHA256 of `id.timestamp.body` under the secret. The receiver checks
 the signature over the raw body, then rejects a stale timestamp. The

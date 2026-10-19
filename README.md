@@ -417,7 +417,7 @@ tells the backend what is, not what was:
 ```
 
 The headers follow [Standard Webhooks](https://www.standardwebhooks.com/):
-`webhook-id` (the job id, the same on every attempt of one delivery),
+`webhook-id` (the delivery's id, the same on every attempt of one event),
 `webhook-timestamp` (Unix seconds) and `webhook-signature`, `v1,` and the
 base64 of an HMAC-SHA256 over `id.timestamp.body` with the secret. Any of
 the standard's libraries verifies it; by hand, in Ruby:

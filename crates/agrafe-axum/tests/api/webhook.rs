@@ -166,13 +166,13 @@ async fn ready_is_delivered_signed_with_the_metadata() {
     // The inline scan: `uploading` to `ready` in the PUT itself.
     let blob = ready_blob(&app, &png_bytes(1024)).await;
     let id = id_of(&blob);
-    let (job, payload) = notify_job(&app, id).await.expect("a notify job");
+    let (_, payload) = notify_job(&app, id).await.expect("a notify job");
     assert_eq!(payload["event"], "ready");
     assert!(payload["occurred_at"].is_string());
 
     assert!(run_job(&app, JobKind::Notify).await);
     let hit = receiver.hit();
-    assert_eq!(verify(&hit), job.to_string());
+    assert_eq!(verify(&hit), payload["id"].as_str().unwrap());
     assert_eq!(hit.body["event"], "ready");
     assert_eq!(hit.body["attempt"], 1);
     assert_eq!(hit.body["occurred_at"], payload["occurred_at"]);
@@ -291,7 +291,8 @@ async fn a_failing_receiver_leaves_a_dead_job_the_retry_revives() {
 
     let blob = ready_blob(&app, &png_bytes(1024)).await;
     let id = id_of(&blob);
-    let (job, _) = notify_job(&app, id).await.unwrap();
+    let (job, payload) = notify_job(&app, id).await.unwrap();
+    let delivery = payload["id"].as_str().unwrap().to_string();
 
     // The attempt fails and backs off, the response body in last_error.
     assert!(run_job(&app, JobKind::Notify).await);
@@ -340,7 +341,7 @@ async fn a_failing_receiver_leaves_a_dead_job_the_retry_revives() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(run_job(&app, JobKind::Notify).await);
     let hit = receiver.hit();
-    assert_eq!(verify(&hit), job.to_string(), "the id is the delivery's");
+    assert_eq!(verify(&hit), delivery, "the id is the delivery's");
     assert_eq!(hit.body["event"], "ready");
     assert_eq!(hit.body["attempt"], 1, "the attempts started over");
     assert!(notify_job(&app, id).await.is_none());
@@ -419,9 +420,10 @@ async fn a_newer_event_replaces_the_pending_one() {
     assert_eq!(payload["event"], "ready");
     set_expired(&app, id).await;
     reap::reap(&app.state, Timestamp::now()).await.unwrap();
-    let (job, payload) = notify_job(&app, id).await.unwrap();
+    let (job, replaced) = notify_job(&app, id).await.unwrap();
     assert_eq!(job, first, "the same row");
-    assert_eq!(payload["event"], "expired");
+    assert_eq!(replaced["event"], "expired");
+    assert_ne!(replaced["id"], payload["id"], "a new delivery id");
     assert_eq!(jobs_for(&app, id).await, ["notify", "purge", "render"]);
 
     assert!(run_job(&app, JobKind::Notify).await);

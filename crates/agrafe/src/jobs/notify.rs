@@ -66,6 +66,11 @@ impl Event {
 /// What a notify job carries in `jobs.payload`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Payload {
+    /// The delivery's `webhook-id`: minted when the event is enqueued,
+    /// the same on every attempt of it, a new one when a newer event
+    /// replaces it, so a receiver deduplicating on the header never
+    /// mistakes the replacement for the delivery it already took.
+    pub id: Uuid,
     pub event: Event,
     /// When the transition was recorded.
     pub occurred_at: Timestamp,
@@ -94,6 +99,7 @@ pub async fn enqueue(
     now: Timestamp,
 ) -> sqlx::Result<bool> {
     let payload = serde_json::to_value(Payload {
+        id: Uuid::now_v7(),
         event,
         occurred_at: now,
     })
@@ -176,7 +182,7 @@ impl Client {
     }
 
     /// `POST` `body` as delivery `id`, signed over the timestamp of now.
-    pub async fn deliver(&self, id: i64, body: String) -> Result<(), WebhookError> {
+    pub async fn deliver(&self, id: &str, body: String) -> Result<(), WebhookError> {
         let timestamp = Timestamp::now().as_second();
         let signature = sign(&self.key, id, timestamp, &body);
         let response = self
@@ -210,9 +216,9 @@ impl Client {
 /// The `webhook-signature` of a delivery: `v1,` and the base64 of the
 /// HMAC-SHA256 of `id.timestamp.body` under `key`, as Standard Webhooks
 /// specifies.
-pub fn sign(key: &[u8], id: i64, timestamp: i64, body: &str) -> String {
+pub fn sign(key: &[u8], id: &str, timestamp: i64, body: &str) -> String {
     let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("hmac accepts any key length");
-    mac.update(id.to_string().as_bytes());
+    mac.update(id.as_bytes());
     mac.update(b".");
     mac.update(timestamp.to_string().as_bytes());
     mac.update(b".");
@@ -255,7 +261,7 @@ pub async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
     };
     let body = serde_json::to_string(&body)
         .map_err(|err| WebhookError::Payload(format!("encoding the body: {err}")))?;
-    let result = client.deliver(job.id, body).await;
+    let result = client.deliver(&payload.id.to_string(), body).await;
     state
         .metrics()
         .webhook_delivery(payload.event, result.is_ok());
@@ -274,12 +280,12 @@ mod tests {
     fn signs_like_standard_webhooks() {
         // The worked example of the specification's documentation.
         let key = STANDARD.decode("MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw").unwrap();
-        let signature = sign(&key, 2524, 1614265330, r#"{"test": 2432232314}"#);
+        let signature = sign(&key, "2524", 1614265330, r#"{"test": 2432232314}"#);
         assert!(signature.starts_with("v1,"));
-        let again = sign(&key, 2524, 1614265330, r#"{"test": 2432232314}"#);
+        let again = sign(&key, "2524", 1614265330, r#"{"test": 2432232314}"#);
         assert_eq!(signature, again);
         assert_ne!(
-            sign(&key, 2525, 1614265330, r#"{"test": 2432232314}"#),
+            sign(&key, "2525", 1614265330, r#"{"test": 2432232314}"#),
             signature
         );
     }
