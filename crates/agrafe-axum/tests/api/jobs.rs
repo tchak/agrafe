@@ -130,7 +130,7 @@ async fn running_job_keeps_its_lease() {
             .await
             .unwrap()
     });
-    received.notified().await;
+    within("clamd to receive the stream", received.notified()).await;
     let locked_at = || async {
         let at: jiff_sqlx::Timestamp =
             sqlx::query_scalar("SELECT locked_at FROM jobs WHERE kind = 'scan'")
@@ -155,7 +155,7 @@ async fn running_job_keeps_its_lease() {
     assert!(stolen.is_none(), "another worker took the job: {stolen:?}");
 
     release.notify_one();
-    assert!(job.await.unwrap());
+    assert!(within("the scan job", job).await.unwrap());
     assert_eq!(get_blob(&app, id).await["state"], "ready");
 }
 

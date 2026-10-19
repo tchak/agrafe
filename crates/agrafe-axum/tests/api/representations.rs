@@ -922,7 +922,7 @@ async fn waiting_for_a_pending_representation() {
     assert_eq!(state_of(&headers), "ready");
     assert_eq!(webp_size(&body), (256, 128));
     assert!(started.elapsed() >= Duration::from_millis(400));
-    assert!(job.await.unwrap());
+    assert!(within("the render job", job).await.unwrap());
 
     // Without `wait`, the placeholder comes back at once.
     let blob = ready_file(&app, "other.jpg", "image/jpeg", &fixture("photo.jpg")).await;

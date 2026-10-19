@@ -362,7 +362,7 @@ async fn delete_during_upload() {
         .unwrap();
     drop(tx);
 
-    let (status, body) = upload.await.unwrap();
+    let (status, body) = within("the upload", upload).await.unwrap();
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert!(
         body["error"]["message"]

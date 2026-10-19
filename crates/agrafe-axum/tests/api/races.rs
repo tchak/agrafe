@@ -159,7 +159,7 @@ async fn upload_that_loses_its_row_before_the_end_stores_nothing() {
         let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
         let id = id_of(&created).to_string();
         let put = spawn_put(&app, format!("/blobs/{id}"), bytes);
-        received.notified().await;
+        within("clamd to receive the stream", received.notified()).await;
         match change {
             "deleted" => assert_eq!(delete(&app, &id).await, StatusCode::NO_CONTENT),
             _ => sql(&app, REMOVE, &id).await,
@@ -191,7 +191,7 @@ async fn heartbeat_stops_an_upload_that_lost_its_row() {
     let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
     let id = id_of(&created);
     let put = spawn_put(&app, format!("/blobs/{id}"), bytes);
-    received.notified().await;
+    within("clamd to receive the stream", received.notified()).await;
     sql(&app, TAKE_OVER, id).await;
     // clamd is never released: only the heartbeat can end the upload.
     let (status, body) = tokio::time::timeout(Duration::from_secs(5), put)
@@ -295,7 +295,7 @@ async fn build_whose_row_changes_as_it_completes() {
             _ => sql(&app, BUILT, &id).await,
         }
         hold.release();
-        assert!(job.await.unwrap(), "{change}");
+        assert!(within("the job", job).await.unwrap(), "{change}");
         assert_eq!(stored(&app, &original).await, kept, "{change}");
     }
 }

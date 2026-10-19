@@ -524,7 +524,7 @@ async fn attach_waits_for_the_expiry_lock_and_sees_its_outcome() {
     assert_eq!(expired, vec![id]);
     tx.commit().await.unwrap();
 
-    let err = attaching.await.unwrap().unwrap_err();
+    let err = within("the attach", attaching).await.unwrap().unwrap_err();
     assert!(
         matches!(
             err,
@@ -570,7 +570,10 @@ async fn a_detach_that_lost_the_race_finds_nothing() {
         .unwrap();
     tx.commit().await.unwrap();
 
-    assert!(!detaching.await.unwrap().unwrap(), "nothing left to detach");
+    assert!(
+        !within("the detach", detaching).await.unwrap().unwrap(),
+        "nothing left to detach"
+    );
     assert_eq!(
         get_blob(&app, id_of(&created)).await["attachments"],
         json!([])

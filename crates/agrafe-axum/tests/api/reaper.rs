@@ -345,7 +345,7 @@ async fn a_slow_upload_is_not_a_stale_one() {
         .await
         .unwrap();
     drop(tx);
-    let (status, body) = response.await.unwrap();
+    let (status, body) = within("the upload", response).await.unwrap();
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["state"], "ready");
 }
@@ -396,7 +396,7 @@ async fn an_upload_that_lost_its_blob_stops() {
         .send(Ok(bytes::Bytes::copy_from_slice(&bytes[1000..])))
         .await;
     drop(tx);
-    let (status, body) = stalled.await.unwrap();
+    let (status, body) = within("the stalled upload", stalled).await.unwrap();
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
 
     // The newcomer's blob is untouched and its bytes are the ones stored.

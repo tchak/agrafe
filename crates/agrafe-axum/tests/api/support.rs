@@ -19,10 +19,13 @@ use figment::providers::{Format, Toml};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::future::Future;
+use std::io::Write as _;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -34,6 +37,52 @@ static LOCK: Mutex<()> = Mutex::const_new(());
 /// Set once the migrations have run in this process; read under `LOCK`.
 static MIGRATED: AtomicBool = AtomicBool::new(false);
 
+/// How long a test waits for something it set in motion: a notification,
+/// a held store operation, a spawned task. Far above any honest wait, so a
+/// regression fails the test instead of hanging it, and with it every test
+/// queued behind it on `LOCK`.
+pub const DEADLINE: Duration = Duration::from_secs(10);
+
+/// How long a test may hold the database before the process is aborted:
+/// the backstop for a wait no `within` covers, such as a query stuck on a
+/// row lock. The slowest test takes a few seconds.
+const BACKSTOP: Duration = Duration::from_secs(120);
+
+/// `fut`, or a panic at the caller naming `what` once `DEADLINE` passes.
+#[track_caller]
+pub fn within<F: Future>(what: &'static str, fut: F) -> impl Future<Output = F::Output> {
+    let caller = std::panic::Location::caller();
+    async move {
+        tokio::time::timeout(DEADLINE, fut)
+            .await
+            .unwrap_or_else(|_| panic!("{caller}: {what}, still waiting after {DEADLINE:?}"))
+    }
+}
+
+/// Aborts the process if the returned sender is not dropped within
+/// `BACKSTOP`: a hung test fails the run, naming itself, instead of
+/// holding `LOCK` forever. A panic cannot be raised in another thread,
+/// and the test's own thread is the one stuck.
+fn watchdog() -> mpsc::Sender<()> {
+    let (tx, rx) = mpsc::channel::<()>();
+    let test = std::thread::current()
+        .name()
+        .unwrap_or("a test")
+        .to_string();
+    std::thread::spawn(move || {
+        if let Err(mpsc::RecvTimeoutError::Timeout) = rx.recv_timeout(BACKSTOP) {
+            // Straight to stderr: the test harness captures `eprintln!`,
+            // and the capture is lost with the process.
+            let _ = writeln!(
+                std::io::stderr(),
+                "{test} held the test database for over {BACKSTOP:?}; aborting"
+            );
+            std::process::abort();
+        }
+    });
+    tx
+}
+
 pub struct TestApp {
     pub private: Router,
     pub public: Router,
@@ -41,6 +90,7 @@ pub struct TestApp {
     /// Holds an operation of the store in its tracks.
     pub gate: Gate,
     storage: PathBuf,
+    _watchdog: mpsc::Sender<()>,
     _guard: MutexGuard<'static, ()>,
 }
 
@@ -161,6 +211,7 @@ pub async fn setup_with(clamd: SocketAddr) -> TestApp {
 /// `setup_with`, with `tune` applied to the configuration first.
 pub async fn setup_tuned(clamd: SocketAddr, tune: impl FnOnce(&mut Config)) -> TestApp {
     let guard = LOCK.lock().await;
+    let watchdog = watchdog();
     let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
         let user = std::env::var("USER").unwrap_or_else(|_| "postgres".to_string());
         format!("postgres://{user}@localhost/agrafe_test")
@@ -241,6 +292,7 @@ pub async fn setup_tuned(clamd: SocketAddr, tune: impl FnOnce(&mut Config)) -> T
         state,
         gate,
         storage,
+        _watchdog: watchdog,
         _guard: guard,
     }
 }

@@ -4,6 +4,7 @@
 //! a bug costs.
 
 use std::fmt;
+use std::future::Future;
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
@@ -37,8 +38,12 @@ pub struct Hold {
 }
 
 impl Hold {
-    pub async fn reached(&self) {
-        self.reached.notified().await;
+    #[track_caller]
+    pub fn reached(&self) -> impl Future<Output = ()> {
+        super::within(
+            "the store operation to reach the hold",
+            self.reached.notified(),
+        )
     }
 
     pub fn release(&self) {

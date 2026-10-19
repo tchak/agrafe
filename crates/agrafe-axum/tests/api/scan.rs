@@ -194,10 +194,10 @@ async fn delete_during_scan() {
             .await
             .unwrap()
     });
-    received.notified().await;
+    within("clamd to receive the stream", received.notified()).await;
     assert_eq!(delete(&app, id).await, StatusCode::NO_CONTENT);
     release.notify_one();
-    assert!(job.await.unwrap(), "the job ran");
+    assert!(within("the scan job", job).await.unwrap(), "the job ran");
 
     let got = get_blob(&app, id).await;
     assert_eq!(got["state"], "deleted", "{got}");
