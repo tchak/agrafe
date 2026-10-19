@@ -11,7 +11,7 @@ use uuid::Uuid;
 use super::body;
 use super::extract::{Json, Path, Query};
 use super::json::PublicBlobResponse;
-use super::original::{self, Origin, OriginalQuery};
+use super::original::{self, Original, OriginalQuery};
 use super::representation::{self, Port, RepresentationQuery};
 use super::signed::Signed;
 use agrafe::Agrafe;
@@ -88,11 +88,11 @@ async fn get_original(
     headers: HeaderMap,
 ) -> ApiResult<Response> {
     // Sealed: the envelope is the row, and nothing is looked up.
-    let (blob, origin) = match query.e.as_deref().map(decode_envelope).transpose()? {
-        Some(envelope) => (envelope.head(id, &filename), Origin::Envelope),
-        None => (find_visible(&state, id).await?, Origin::Row),
+    let blob = match query.e.as_deref().map(decode_envelope).transpose()? {
+        Some(envelope) => Original::from_envelope(id, filename, envelope)?,
+        None => Original::from_row(find_visible(&state, id).await?, &filename)?,
     };
-    original::serve(&state, blob, &filename, query, &method, &headers, origin).await
+    original::serve(&state, blob, query, &method, &headers).await
 }
 
 /// An envelope that does not decode is a minter's mistake: the URL was

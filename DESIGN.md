@@ -168,8 +168,18 @@ message = METHOD "\n" expires_unix "\n" path_and_query_after_token
   reordered or re-encoded. The server is the only minter, so both sides use the
   same encoder.
 - `HEAD` is verified as `GET`.
-- `expires_unix = 0` means never expires, allowed only when
-  `signing.allow_permanent = true`.
+- There are no permanent URLs. `signing.ttl.max` (default seven days) caps
+  every TTL in config and the `ttl` a mint may ask for, and verification
+  refuses a token whose expiry lies further than one window plus the cap
+  in the future (`403`), so the ceiling holds for anyone minting with the
+  key, not only for this server. Such a token is not void: it becomes
+  valid once its expiry comes within reach, and still dies at it, so no
+  token works for longer than a window plus the cap at a stretch. The
+  bound is checked against the running config, so lowering `signing.ttl.max`
+  or `signing.window` cuts off URLs in flight that were minted under the
+  old values. `expires_unix = 0` is simply expired. A link that must stay
+  stable is a backend route that re-mints on each hit; the rounding below
+  makes that cheap.
 - Several keys live in config. One is current for minting, all are valid for
   verification. The key id in the token selects the key. This makes rotation
   possible without invalidating URLs in flight. Ids are restricted to
@@ -179,10 +189,11 @@ message = METHOD "\n" expires_unix "\n" path_and_query_after_token
   All URLs minted for the same blob inside one window are identical, so
   browsers and CDNs can cache them. The window is one setting,
   `signing.window`; the TTL is per operation (`signing.ttl.upload`,
-  `metadata`, `read`), and `POST /blobs/:id/urls` may override the read TTL
-  or ask for a permanent URL.
-- HMAC compared in constant time. Bad signature is `403`, expired is `410`, a
-  valid signature on a missing blob is `404`.
+  `metadata`, `read`), and `POST /blobs/:id/urls` may override the read and
+  metadata TTLs with one `ttl`, up to `signing.ttl.max`.
+- HMAC compared in constant time. Bad signature is `403`, expired is `410`,
+  valid but too far in the future is `403` with a message that names no
+  config, a valid signature on a missing blob is `404`.
 - The scheme is pinned by `fixtures/signing-vectors.json`: tokens, expiries,
   path segments and query strings computed by the server from fixed inputs,
   checked by a test here and by any minter elsewhere, a backend holding the
@@ -234,8 +245,8 @@ the row up as before.
   objects (the reaper's interval plus `upload.purge_delay`) or the URL
   expires, whichever comes first; the row-backed routes hide it at once.
   URLs the server mints for a blob with an `expires_at` expire no later
-  than the blob, unless `permanent` was asked for. A backend minting its
-  own picks the TTL it stands behind.
+  than the blob. A backend minting its own picks the TTL it stands behind,
+  within `signing.ttl.max`.
 - An envelope that does not decode is `400`: the URL was signed, so it is
   the minter's mistake, not a forgery.
 

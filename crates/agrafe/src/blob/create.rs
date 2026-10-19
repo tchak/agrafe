@@ -100,6 +100,8 @@ pub struct NewBlob {
 }
 
 pub const MAX_FILENAME_LEN: usize = 255;
+/// Longest `content_type` accepted, in bytes.
+pub const MAX_CONTENT_TYPE_LEN: usize = 255;
 
 pub fn validate(
     req: CreateBlobRequest,
@@ -242,6 +244,11 @@ pub(crate) fn validate_filename(filename: &str) -> Result<String, CreateError> {
 /// error is a message; callers pick the status (422 on create, 400 as a
 /// list filter).
 pub fn normalize_content_type(raw: &str) -> Result<String, &'static str> {
+    // Registered types are far shorter; the bound keeps the value fit for
+    // a header and for the envelope's length-prefixed fields.
+    if raw.len() > MAX_CONTENT_TYPE_LEN {
+        return Err("content_type is too long");
+    }
     let mime: mime::Mime = raw
         .trim()
         .parse()
@@ -393,6 +400,8 @@ mod tests {
         assert_eq!(normalize_content_type("text/csv").unwrap(), "text/csv");
         assert!(normalize_content_type("image/*").is_err());
         assert!(normalize_content_type("not a type").is_err());
+        let long = format!("text/{}", "x".repeat(MAX_CONTENT_TYPE_LEN));
+        assert!(normalize_content_type(&long).is_err());
     }
 
     fn req(input_type: InputType, content_type: &str) -> CreateBlobRequest {

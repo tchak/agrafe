@@ -11,10 +11,8 @@ use agrafe::signing::SignatureError;
 
 /// Proof that the request carried a valid, unexpired signature for its exact
 /// method and request target. Put it first in a handler's argument list.
-#[derive(Debug, Clone)]
-pub struct Signed {
-    pub token: String,
-}
+#[derive(Debug, Clone, Copy)]
+pub struct Signed;
 
 impl<S> FromRequestParts<S> for Signed
 where
@@ -38,11 +36,14 @@ where
             .signer()
             .verify(token, &parts.method, &tail, SystemTime::now())
         {
-            Ok(()) => Ok(Signed {
-                token: token.to_string(),
-            }),
+            Ok(()) => Ok(Signed),
             Err(SignatureError::Invalid) => Err(ApiError::Forbidden("invalid signature".into())),
             Err(SignatureError::Expired) => Err(ApiError::Gone("signature expired".into())),
+            // The minter's mistake, or a cap lowered since; neither is the
+            // client's business, and no config name goes to the public port.
+            Err(SignatureError::TooLong) => {
+                Err(ApiError::Forbidden("signature not valid yet".into()))
+            }
         }
     }
 }

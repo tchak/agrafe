@@ -15,7 +15,6 @@ use uuid::Uuid;
 use super::envelope::Envelope;
 use super::{Blob, create, repo};
 use crate::app::Agrafe;
-use crate::signing::PERMANENT;
 
 /// Longest a representation request may `wait` for a pending render.
 pub const MAX_WAIT: Duration = Duration::from_secs(30);
@@ -40,15 +39,12 @@ impl Agrafe {
 
     /// URLs with `opts`, checked against the configuration.
     pub async fn mint_urls(&self, id: Uuid, opts: &MintOptions) -> Result<BlobUrls, MintError> {
-        if opts.permanent && !self.signer().allow_permanent() {
-            return Err(MintError::Invalid(
-                "permanent URLs are disabled (signing.allow_permanent)".into(),
-            ));
-        }
-        if opts.permanent && opts.ttl.is_some() {
-            return Err(MintError::Invalid(
-                "ttl and permanent are mutually exclusive".into(),
-            ));
+        let max = self.signer().max_ttl();
+        if opts.ttl.is_some_and(|ttl| ttl > max) {
+            return Err(MintError::Invalid(format!(
+                "ttl must be at most {}s (signing.ttl.max)",
+                max.as_secs()
+            )));
         }
         validate_query(&opts.query)?;
         let blob = repo::find(self.pool(), id)
@@ -78,7 +74,7 @@ pub struct BlobUrls {
     pub original: String,
     pub preview: String,
     pub thumbnail: String,
-    /// Unix timestamp the read URLs expire at, `0` for never.
+    /// Unix timestamp the read URLs expire at.
     pub expires_at: u64,
 }
 
@@ -86,12 +82,10 @@ pub struct BlobUrls {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MintOptions {
-    /// Overrides the configured read TTL.
+    /// Overrides the configured read and metadata TTLs, up to
+    /// `signing.ttl.max`.
     #[serde(default, with = "humantime_serde")]
     pub ttl: Option<Duration>,
-    /// Never expire. Requires `signing.allow_permanent`.
-    #[serde(default)]
-    pub permanent: bool,
     /// Signed query parameters appended to the representation URLs.
     #[serde(default)]
     pub query: BTreeMap<String, String>,
@@ -155,27 +149,18 @@ pub const ENVELOPE_PARAM: &str = "e";
 pub fn mint(state: &Agrafe, blob: &Blob, opts: &MintOptions, now: SystemTime) -> BlobUrls {
     let signer = state.signer();
     let ttl = &state.config().signing.ttl;
-    let mut read_expires = if opts.permanent {
-        PERMANENT
-    } else {
-        signer.expiry_for(opts.ttl.unwrap_or(ttl.read), now)
-    };
-    let metadata_expires = if opts.permanent {
-        PERMANENT
-    } else {
-        signer.expiry_for(opts.ttl.unwrap_or(ttl.metadata), now)
-    };
+    let mut read_expires = signer.expiry_for(opts.ttl.unwrap_or(ttl.read), now);
+    let metadata_expires = signer.expiry_for(opts.ttl.unwrap_or(ttl.metadata), now);
 
     let envelope = Timestamp::try_from(now)
         .ok()
         .and_then(|now| Envelope::from_head(&blob.head(), now))
         .map(|e| e.encode());
     if envelope.is_some()
-        && !opts.permanent
         && let Some(at) = blob.expires_at
     {
         // Nothing on the sealed path checks the row, so the URL carries
-        // the expiry. A permanent URL was asked for as such.
+        // the expiry.
         read_expires = read_expires.min(at.as_second().max(0) as u64);
     }
 

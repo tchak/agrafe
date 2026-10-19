@@ -79,6 +79,14 @@ impl Config {
                 humantime_serde::re::humantime::format_duration(BlobsConfig::MIN_EXPIRES_IN)
             )));
         }
+        if self.media.variant_version < 1 {
+            // Zero stands for "none" in the envelope, so a zero version
+            // would never match and every sealed representation would fall
+            // back to the row.
+            return Err(ConfigError::Invalid(
+                "media.variant_version must be at least 1".into(),
+            ));
+        }
         if self.archive.max_size.as_u64() > ArchiveConfig::MAX_SIZE_LIMIT {
             return Err(ConfigError::Invalid(format!(
                 "archive.max_size must be at most {} bytes: the build writes 32 MiB parts, \
@@ -206,8 +214,6 @@ pub struct SigningConfig {
     #[serde(with = "humantime_serde", default = "default_window")]
     pub window: Duration,
     #[serde(default)]
-    pub allow_permanent: bool,
-    #[serde(default)]
     pub ttl: SigningTtl,
 }
 
@@ -223,6 +229,11 @@ pub struct SigningTtl {
     pub metadata: Duration,
     #[serde(with = "humantime_serde", default = "default_read_ttl")]
     pub read: Duration,
+    /// The longest any URL may live: a ceiling on the TTLs above, on the
+    /// override `POST /blobs/:id/urls` accepts, and on the expiry of any
+    /// token presented to the public port.
+    #[serde(with = "humantime_serde", default = "default_max_ttl")]
+    pub max: Duration,
 }
 
 fn default_upload_ttl() -> Duration {
@@ -231,6 +242,9 @@ fn default_upload_ttl() -> Duration {
 fn default_read_ttl() -> Duration {
     Duration::from_secs(24 * 3600)
 }
+fn default_max_ttl() -> Duration {
+    Duration::from_secs(7 * 24 * 3600)
+}
 
 impl Default for SigningTtl {
     fn default() -> Self {
@@ -238,6 +252,7 @@ impl Default for SigningTtl {
             upload: default_upload_ttl(),
             metadata: default_read_ttl(),
             read: default_read_ttl(),
+            max: default_max_ttl(),
         }
     }
 }

@@ -33,7 +33,8 @@ every decision.
 - **Public port** for browsers, where every URL carries an HMAC signature
   bound to the method, the path and the query string.
 - **Signed URLs** with key rotation, rounded expiries so URLs minted in the
-  same window are identical and cacheable, and optional permanent URLs.
+  same window are identical and cacheable, and a global ceiling on how long
+  any URL may live; there are no permanent URLs.
 - **Signed query parameters** let the backend choose `disposition`
   (`inline` or `attachment`), a download `filename`, and `wait` to hold a
   request until a representation is ready.
@@ -273,7 +274,8 @@ curl -s localhost:8080/blobs \
 
 ### Mint download URLs
 
-Choose the lifetime and the signed query parameters per call.
+Choose the lifetime, up to `signing.ttl.max`, and the signed query
+parameters per call.
 
 ```sh
 curl -s "localhost:8080/blobs/$ID/urls" \

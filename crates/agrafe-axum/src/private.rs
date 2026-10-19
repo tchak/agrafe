@@ -183,16 +183,8 @@ async fn get_original(
     headers: HeaderMap,
 ) -> ApiResult<Response> {
     let blob = agrafe.find_blob_head(id).await?.ok_or(ApiError::NotFound)?;
-    original::serve(
-        &agrafe,
-        blob,
-        &filename,
-        query,
-        &method,
-        &headers,
-        original::Origin::Row,
-    )
-    .await
+    let blob = original::Original::from_row(blob, &filename)?;
+    original::serve(&agrafe, blob, query, &method, &headers).await
 }
 
 async fn get_preview(

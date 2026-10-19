@@ -22,15 +22,17 @@ type HmacSha256 = Hmac<Sha256>;
 
 const VERSION: &str = "v1";
 
-/// `expires_unix` value meaning "never".
-pub const PERMANENT: u64 = 0;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SignatureError {
     #[error("invalid signature")]
     Invalid,
     #[error("signature expired")]
     Expired,
+    /// Signed by a known key, but for longer than `signing.ttl.max` allows:
+    /// the minter's mistake, refused so that the ceiling holds for every
+    /// holder of the key.
+    #[error("signature outlives signing.ttl.max")]
+    TooLong,
 }
 
 #[derive(Clone)]
@@ -38,7 +40,7 @@ pub struct Signer {
     keys: HashMap<String, Vec<u8>>,
     current: String,
     window: Duration,
-    allow_permanent: bool,
+    max_ttl: Duration,
 }
 
 impl Signer {
@@ -47,6 +49,22 @@ impl Signer {
         let invalid = ConfigError::Invalid;
         if config.window.is_zero() {
             return Err(invalid("signing.window must be positive".into()));
+        }
+        let ttl = &config.ttl;
+        if ttl.max.is_zero() {
+            return Err(invalid("signing.ttl.max must be positive".into()));
+        }
+        for (name, value) in [
+            ("upload", ttl.upload),
+            ("metadata", ttl.metadata),
+            ("read", ttl.read),
+        ] {
+            if value > ttl.max {
+                return Err(invalid(format!(
+                    "signing.ttl.{name} ({value:?}) exceeds signing.ttl.max ({:?})",
+                    ttl.max
+                )));
+            }
         }
         let mut keys = HashMap::new();
         for (id, secret) in &config.keys {
@@ -81,12 +99,13 @@ impl Signer {
             keys,
             current: config.current_key.clone(),
             window: config.window,
-            allow_permanent: config.allow_permanent,
+            max_ttl: config.ttl.max,
         })
     }
 
-    pub fn allow_permanent(&self) -> bool {
-        self.allow_permanent
+    /// The longest a URL may live, `signing.ttl.max`.
+    pub fn max_ttl(&self) -> Duration {
+        self.max_ttl
     }
 
     /// Expiry for a URL minted now: rounded up to the next window boundary,
@@ -100,12 +119,11 @@ impl Signer {
 
     /// Produce a token for `method` on `tail` valid until `expires`.
     pub fn sign(&self, method: &Method, expires: u64, tail: &str) -> String {
-        let key = &self.keys[&self.current];
-        let mac = compute(key, method, expires, tail);
+        let mac = mac(&self.keys[&self.current], method, expires, tail);
         format!(
             "{VERSION}.{}.{expires}.{}",
             self.current,
-            URL_SAFE_NO_PAD.encode(mac)
+            URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
         )
     }
 
@@ -126,22 +144,24 @@ impl Signer {
             .decode(parsed.signature)
             .map_err(|_| SignatureError::Invalid)?;
 
-        let mut mac = HmacSha256::new_from_slice(key).expect("hmac accepts any key length");
-        mac.update(message(method, parsed.expires, tail).as_bytes());
-        mac.verify_slice(&sig)
+        mac(key, method, parsed.expires, tail)
+            .verify_slice(&sig)
             .map_err(|_| SignatureError::Invalid)?;
 
         // Only after the signature is known good do we reason about expiry,
         // so a forged token never learns anything from a 410.
-        if parsed.expires == PERMANENT {
-            return if self.allow_permanent {
-                Ok(())
-            } else {
-                Err(SignatureError::Invalid)
-            };
-        }
-        if parsed.expires < unix(now) {
+        let now = unix(now);
+        if parsed.expires < now {
             return Err(SignatureError::Expired);
+        }
+        // The ceiling is checked here too, not only when minting, so a
+        // backend holding the key cannot mint around it. The window's
+        // rounding is part of a legitimate expiry.
+        let limit = now
+            .saturating_add(self.window.as_secs())
+            .saturating_add(self.max_ttl.as_secs());
+        if parsed.expires > limit {
+            return Err(SignatureError::TooLong);
         }
         Ok(())
     }
@@ -178,19 +198,43 @@ impl<'a> Token<'a> {
     }
 }
 
-fn message(method: &Method, expires: u64, tail: &str) -> String {
+/// The MAC of `METHOD "\n" expires "\n" tail`, fed in parts: this runs on
+/// every public request, so the message is never assembled.
+fn mac(key: &[u8], method: &Method, expires: u64, tail: &str) -> HmacSha256 {
     let method = if *method == Method::HEAD {
-        Method::GET
+        &Method::GET
     } else {
-        method.clone()
+        method
     };
-    format!("{method}\n{expires}\n{tail}")
+    let mut mac = HmacSha256::new_from_slice(key).expect("hmac accepts any key length");
+    mac.update(method.as_str().as_bytes());
+    mac.update(b"\n");
+    mac.update(decimal(expires).as_bytes());
+    mac.update(b"\n");
+    mac.update(tail.as_bytes());
+    mac
 }
 
-fn compute(key: &[u8], method: &Method, expires: u64, tail: &str) -> Vec<u8> {
-    let mut mac = HmacSha256::new_from_slice(key).expect("hmac accepts any key length");
-    mac.update(message(method, expires, tail).as_bytes());
-    mac.finalize().into_bytes().to_vec()
+/// `n` in decimal, on the stack.
+fn decimal(mut n: u64) -> impl std::ops::Deref<Target = str> {
+    struct Digits([u8; 20], usize);
+    impl std::ops::Deref for Digits {
+        type Target = str;
+        fn deref(&self) -> &str {
+            std::str::from_utf8(&self.0[self.1..]).expect("ascii digits")
+        }
+    }
+    let mut buf = [0u8; 20];
+    let mut start = buf.len();
+    loop {
+        start -= 1;
+        buf[start] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    Digits(buf, start)
 }
 
 fn unix(t: SystemTime) -> u64 {
@@ -203,7 +247,7 @@ fn unix(t: SystemTime) -> u64 {
 mod tests {
     use super::*;
 
-    fn signer(allow_permanent: bool) -> Signer {
+    fn signer() -> Signer {
         let mut keys = HashMap::new();
         keys.insert("k1".to_string(), vec![1u8; 32]);
         keys.insert("k2".to_string(), vec![2u8; 32]);
@@ -211,7 +255,7 @@ mod tests {
             keys,
             current: "k1".to_string(),
             window: Duration::from_secs(3600),
-            allow_permanent,
+            max_ttl: Duration::from_secs(7 * 24 * 3600),
         }
     }
 
@@ -229,6 +273,19 @@ mod tests {
             .unwrap();
             Signer::from_config(&config).map(drop)
         };
+        let with_ttl = |ttl: serde_json::Value| {
+            let config: SigningConfig = serde_json::from_value(serde_json::json!({
+                "current_key": "k1", "keys": {"k1": good}, "ttl": ttl
+            }))
+            .unwrap();
+            Signer::from_config(&config).map(drop)
+        };
+        assert!(with_ttl(serde_json::json!({"max": "7d"})).is_ok());
+        assert!(with_ttl(serde_json::json!({"max": "0s"})).is_err());
+        assert!(with_ttl(serde_json::json!({"read": "8d"})).is_err());
+        assert!(with_ttl(serde_json::json!({"metadata": "8d"})).is_err());
+        assert!(with_ttl(serde_json::json!({"upload": "8d"})).is_err());
+        assert!(with_ttl(serde_json::json!({"read": "8d", "max": "30d"})).is_ok());
         assert!(build("k1", serde_json::json!({"k1": good}), "1h").is_ok());
         assert!(build("k2", serde_json::json!({"k1": good}), "1h").is_err());
         assert!(build("k1", serde_json::json!({"k1": good}), "0s").is_err());
@@ -241,18 +298,19 @@ mod tests {
 
     #[test]
     fn round_trip() {
-        let s = signer(false);
+        let s = signer();
         let tail = "/abc/original/photo.jpg?disposition=attachment";
         let token = s.sign(&Method::GET, 2_000_000_000, tail);
         assert!(token.starts_with("v1.k1.2000000000."));
-        assert_eq!(s.verify(&token, &Method::GET, tail, at(1_000)), Ok(()));
+        let now = at(2_000_000_000 - 1_000);
+        assert_eq!(s.verify(&token, &Method::GET, tail, now), Ok(()));
         // HEAD is verified as GET.
-        assert_eq!(s.verify(&token, &Method::HEAD, tail, at(1_000)), Ok(()));
+        assert_eq!(s.verify(&token, &Method::HEAD, tail, now), Ok(()));
     }
 
     #[test]
     fn rejects_tampering() {
-        let s = signer(false);
+        let s = signer();
         let tail = "/abc/original/photo.jpg";
         let token = s.sign(&Method::GET, 2_000_000_000, tail);
         assert_eq!(
@@ -280,7 +338,7 @@ mod tests {
 
     #[test]
     fn expiry() {
-        let s = signer(false);
+        let s = signer();
         let token = s.sign(&Method::GET, 1_000, "/abc");
         assert_eq!(s.verify(&token, &Method::GET, "/abc", at(1_000)), Ok(()));
         assert_eq!(
@@ -290,24 +348,35 @@ mod tests {
     }
 
     #[test]
-    fn permanent_requires_opt_in() {
-        let token = signer(false).sign(&Method::GET, PERMANENT, "/abc");
+    fn expiry_is_capped_at_verification() {
+        let s = signer();
+        let week = 7 * 24 * 3600;
+        // What a mint at `now` could yield at most: the next window, then
+        // the maximum TTL.
+        let token = s.sign(&Method::GET, 3_600 + week, "/abc");
+        assert_eq!(s.verify(&token, &Method::GET, "/abc", at(0)), Ok(()));
+        let token = s.sign(&Method::GET, 3_600 + week + 1, "/abc");
         assert_eq!(
-            signer(false).verify(&token, &Method::GET, "/abc", at(5)),
-            Err(SignatureError::Invalid)
+            s.verify(&token, &Method::GET, "/abc", at(0)),
+            Err(SignatureError::TooLong)
         );
+        // A token minted past the ceiling becomes valid once enough time
+        // has passed, and is never permanent.
+        assert_eq!(s.verify(&token, &Method::GET, "/abc", at(1)), Ok(()));
+        let token = s.sign(&Method::GET, 0, "/abc");
         assert_eq!(
-            signer(true).verify(&token, &Method::GET, "/abc", at(5)),
-            Ok(())
+            s.verify(&token, &Method::GET, "/abc", at(1)),
+            Err(SignatureError::Expired)
         );
     }
 
     #[test]
     fn other_keys_verify() {
-        let mut s = signer(false);
+        let mut s = signer();
         let token = s.sign(&Method::GET, 2_000_000_000, "/abc");
         s.current = "k2".to_string();
-        assert_eq!(s.verify(&token, &Method::GET, "/abc", at(0)), Ok(()));
+        let now = at(2_000_000_000 - 1);
+        assert_eq!(s.verify(&token, &Method::GET, "/abc", now), Ok(()));
         let token2 = s.sign(&Method::GET, 2_000_000_000, "/abc");
         assert!(token2.starts_with("v1.k2."));
         assert_ne!(token, token2);
@@ -315,7 +384,7 @@ mod tests {
 
     #[test]
     fn expiry_is_rounded_to_window() {
-        let s = signer(false);
+        let s = signer();
         let ttl = Duration::from_secs(600);
         let a = s.expiry_for(ttl, at(3_601));
         let b = s.expiry_for(ttl, at(7_199));

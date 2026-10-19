@@ -97,7 +97,10 @@ async fn a_bad_envelope_is_the_minters_mistake() {
     let id = id_of(&blob);
     // Signed, so not a forgery; it just does not decode.
     let tail = format!("/{id}/original/photo.jpg?e=bogus");
-    let token = app.state.signer().sign(&Method::GET, 4_000_000_000, &tail);
+    let token = app
+        .state
+        .signer()
+        .sign(&Method::GET, unix_now() + 3600, &tail);
     let (status, body) = call(
         &app.public,
         req(Method::GET, &format!("/blobs/{token}{tail}")),

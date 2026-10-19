@@ -43,8 +43,6 @@ current_key = "k1"
 # Mint expiries are rounded up to the next window boundary before the TTL is
 # added, so URLs minted inside one window are identical and cacheable.
 window = "1h"
-# Allow tokens with expires = 0 (never expire).
-allow_permanent = false
 
 [signing.keys]
 # Key ids appear in URL tokens: letters, digits, `-` and `_` only.
@@ -55,6 +53,11 @@ k1 = "REPLACE_ME_WITH_32_RANDOM_BYTES_IN_BASE64_____"
 upload = "1h"
 metadata = "24h"
 read = "24h"
+# The longest any URL may live. Caps the three above, the `ttl` a backend
+# may ask for when minting, and the expiry of any token the public port
+# accepts, so a holder of the signing key cannot mint around it. There are
+# no permanent URLs: a stable link is a backend route that re-mints.
+max = "7d"
 
 [upload]
 # Hard cap on any upload.
@@ -134,7 +137,8 @@ connect_timeout = "5s"
 max_inline_scans = 4
 
 [media]
-# Bump to regenerate every derived representation on next request.
+# Bump to regenerate every derived representation on next request. At
+# least 1: zero means "none" inside sealed URLs.
 variant_version = 1
 # The libvips command line tool, run as a sandboxed subprocess for every
 # render. Debian: libvips-tools; macOS: brew install vips. A build with

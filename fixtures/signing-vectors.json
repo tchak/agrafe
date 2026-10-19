@@ -103,13 +103,6 @@
       "url": "https://files.example/blobs/v1.k1.2000000000.JRkV0zEVaL5zYHrE9vss5pwX6NuU4vXcR088c1cF0KA/0199f6a0-5b2c-7c3d-8e4f-0a1b2c3d4e5f/original/photo.jpg"
     },
     {
-      "expires": 0,
-      "method": "GET",
-      "tail": "/0199f6a0-5b2c-7c3d-8e4f-0a1b2c3d4e5f/original/photo.jpg",
-      "token": "v1.k1.0.BiDL818e-b311VlcsEekUAsP248YLExDtHtk9sBarzM",
-      "url": "https://files.example/blobs/v1.k1.0.BiDL818e-b311VlcsEekUAsP248YLExDtHtk9sBarzM/0199f6a0-5b2c-7c3d-8e4f-0a1b2c3d4e5f/original/photo.jpg"
-    },
-    {
       "expires": 2000000000,
       "method": "GET",
       "tail": "/0199f6a0-5b2c-7c3d-8e4f-0a1b2c3d4e5f/original/photo%20%C3%A9t%C3%A9.jpg?disposition=attachment",

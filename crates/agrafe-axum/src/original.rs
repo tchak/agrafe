@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use agrafe::Agrafe;
 use agrafe::blob::BlobHead;
+use agrafe::blob::envelope::Envelope;
 use agrafe::blob::read::{ReadError, Reader, Stored};
 use agrafe::blob::urls::disposition_kind;
 
@@ -40,28 +41,67 @@ pub enum Origin {
     Envelope,
 }
 
-/// Serve `blob`'s original. `filename` is the path segment, which must match
-/// the blob's filename so a URL cannot pretend to serve another file.
+/// What serving an original needs of a blob, from either origin.
+pub struct Original {
+    pub id: Uuid,
+    pub filename: String,
+    pub content_type: String,
+    pub uploaded_at: Option<Timestamp>,
+    pub stored: Stored,
+    pub origin: Origin,
+}
+
+impl Original {
+    /// From a row. `filename` is the path segment, which must match the
+    /// blob's filename so a URL cannot pretend to serve another file; the
+    /// blob must be `ready`.
+    pub fn from_row(blob: BlobHead, filename: &str) -> ApiResult<Self> {
+        if filename != blob.filename {
+            return Err(ApiError::NotFound);
+        }
+        let now = Timestamp::now();
+        if !blob.is_readable(now) {
+            return Err(ApiError::Conflict(format!(
+                "blob is {} and not readable",
+                blob.state_at(now)
+            )));
+        }
+        let stored = Stored::from_head(&blob).map_err(ApiError::internal)?;
+        Ok(Self {
+            id: blob.id,
+            filename: blob.filename,
+            content_type: blob.content_type,
+            uploaded_at: blob.uploaded_at,
+            stored,
+            origin: Origin::Row,
+        })
+    }
+
+    /// From the envelope of a sealed URL: the filename is the signed path
+    /// segment, and the envelope only exists for a `ready` blob.
+    pub fn from_envelope(id: Uuid, filename: String, envelope: Envelope) -> ApiResult<Self> {
+        let stored = Stored::from_envelope(id, &envelope).map_err(ApiError::internal)?;
+        Ok(Self {
+            id,
+            filename,
+            content_type: envelope.content_type,
+            uploaded_at: envelope.uploaded_at,
+            stored,
+            origin: Origin::Envelope,
+        })
+    }
+}
+
+/// Serve the original `blob` describes.
 pub async fn serve(
     state: &Agrafe,
-    blob: BlobHead,
-    filename: &str,
+    blob: Original,
     query: OriginalQuery,
     method: &Method,
     headers: &HeaderMap,
-    origin: Origin,
 ) -> ApiResult<Response> {
-    if filename != blob.filename {
-        return Err(ApiError::NotFound);
-    }
-    let now = Timestamp::now();
-    if !blob.is_readable(now) {
-        return Err(ApiError::Conflict(format!(
-            "blob is {} and not readable",
-            blob.state_at(now)
-        )));
-    }
-    let stored = Stored::from_head(&blob).map_err(ApiError::internal)?;
+    let stored = &blob.stored;
+    let origin = blob.origin;
     let etag = etag(&stored.checksum);
 
     let mut response = Response::new(Body::empty());
@@ -154,7 +194,7 @@ pub async fn serve(
         return Ok(response);
     }
 
-    let mut reader = Reader::open(state, &stored, span).await.map_err(|e| {
+    let mut reader = Reader::open(state, stored, span).await.map_err(|e| {
         if origin == Origin::Envelope && e.is_not_found() {
             ApiError::NotFound
         } else {

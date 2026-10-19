@@ -41,7 +41,6 @@ fn signer() -> Signer {
         "current_key": "k1",
         "keys": {"k1": STANDARD.encode(KEY)},
         "window": "1h",
-        "allow_permanent": true,
     }))
     .unwrap();
     Signer::from_config(&config).unwrap()
@@ -61,8 +60,7 @@ fn signing_vectors() -> Value {
     let signer = signer();
     let envelope = sample_envelope().encode();
 
-    // Tokens: method, expiry and tail, with HEAD signing as GET and 0 as
-    // the permanent expiry.
+    // Tokens: method, expiry and tail, with HEAD signing as GET.
     let tails = [
         format!("/{BLOB_ID}"),
         format!("/{BLOB_ID}/original/photo.jpg"),
@@ -75,7 +73,6 @@ fn signing_vectors() -> Value {
         (Method::PUT, 2_000_000_000, &tails[0]),
         (Method::GET, 2_000_000_000, &tails[1]),
         (Method::HEAD, 2_000_000_000, &tails[1]),
-        (Method::GET, 0, &tails[1]),
         (Method::GET, 2_000_000_000, &tails[2]),
         (Method::GET, 1_800_000_000, &tails[3]),
     ] {
@@ -239,13 +236,14 @@ fn signing_vectors_hold() {
     let actual = signing_vectors();
     assert_eq!(actual, expected, "the signing scheme changed; see the file");
     // And every token in the file verifies, for its method and tail, with
-    // HEAD accepted for GET.
+    // HEAD accepted for GET. Shortly before it expires: the server also
+    // refuses a token that outlives `signing.ttl.max`.
     let signer = signer();
     for case in expected["sign"].as_array().unwrap() {
         let method: Method = case["method"].as_str().unwrap().parse().unwrap();
         let tail = case["tail"].as_str().unwrap();
         let token = case["token"].as_str().unwrap();
-        let now = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let now = UNIX_EPOCH + Duration::from_secs(case["expires"].as_u64().unwrap() - 60);
         assert_eq!(signer.verify(token, &method, tail, now), Ok(()), "{tail}");
         if method == Method::GET {
             assert_eq!(signer.verify(token, &Method::HEAD, tail, now), Ok(()));

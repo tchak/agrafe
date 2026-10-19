@@ -17,6 +17,7 @@ use object_store::path::Path as ObjectPath;
 use object_store::{GetOptions, GetRange, ObjectStoreExt};
 use uuid::Uuid;
 
+use super::envelope::Envelope;
 use super::{Blob, BlobHead};
 use crate::app::Agrafe;
 use crate::encryption::UnwrapError;
@@ -103,6 +104,26 @@ impl Stored {
             chunk_size: blob.chunk_size,
             checksum_sha256: blob.checksum_sha256.as_deref(),
             size: blob.size,
+        })
+    }
+
+    /// From the envelope of a sealed URL, which already carries each field
+    /// parsed; nothing is looked up and nothing is re-validated.
+    pub fn from_envelope(blob_id: Uuid, envelope: &Envelope) -> Result<Self, ReadError> {
+        let layout =
+            Layout::new(envelope.chunk_size as usize).map_err(|_| ReadError::Incomplete {
+                blob_id,
+                what: "valid chunk size",
+            })?;
+        Ok(Self {
+            blob_id,
+            storage_key: crate::upload::object_key(blob_id),
+            kek_id: envelope.kek_id.clone(),
+            wrapped_key: envelope.wrapped_key.clone(),
+            header: envelope.header.clone(),
+            layout,
+            checksum: envelope.checksum.to_vec(),
+            size: envelope.size,
         })
     }
 

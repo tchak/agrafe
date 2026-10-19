@@ -102,7 +102,7 @@ async fn private_only_blobs_get_no_public_upload() {
     let token = app
         .state
         .signer()
-        .sign(&Method::PUT, 4_000_000_000, &format!("/{id}"));
+        .sign(&Method::PUT, unix_now() + 3600, &format!("/{id}"));
     let (status, body) = call(
         &app.public,
         req(Method::PUT, &format!("/blobs/{token}/{id}")),
@@ -165,13 +165,29 @@ async fn public_signed_metadata() {
     let tok = app
         .state
         .signer()
-        .sign(&Method::GET, 4_000_000_000, &format!("/{other}"));
+        .sign(&Method::GET, unix_now() + 3600, &format!("/{other}"));
     let (status, _) = call(
         &app.public,
         req(Method::GET, &format!("/blobs/{tok}/{other}")),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Signed with the key, but for longer than signing.ttl.max allows:
+    // refused, so the ceiling binds whoever holds the key.
+    let tok = app
+        .state
+        .signer()
+        .sign(&Method::GET, unix_now() + 9 * 24 * 3600, &format!("/{id}"));
+    let (status, body) = call(&app.public, req(Method::GET, &format!("/blobs/{tok}/{id}"))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("not valid yet"),
+        "{body}"
+    );
 }
 
 #[tokio::test]
@@ -300,16 +316,26 @@ async fn mint_urls_with_options() {
     let (status, _) = call(&app.public, req(Method::GET, &public_path(original))).await;
     assert_eq!(status, StatusCode::CONFLICT);
 
+    // The TTL is capped by signing.ttl.max, seven days by default, and
+    // there is no way to ask for a permanent URL.
+    for opts in [json!({"ttl": "8d"}), json!({"permanent": true})] {
+        let (status, body) = call(
+            &app.private,
+            json_req(Method::POST, &format!("/blobs/{id}/urls"), opts.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{opts}: {body}");
+    }
     let (status, body) = call(
         &app.private,
         json_req(
             Method::POST,
             &format!("/blobs/{id}/urls"),
-            json!({"permanent": true}),
+            json!({"ttl": "7d"}),
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(status, StatusCode::OK, "{body}");
 
     // Query parameters are checked when minted, so a signed URL never
     // answers a client error for its own query.
@@ -347,51 +373,6 @@ async fn mint_urls_with_options() {
     )
     .await;
     assert_eq!(a, b);
-}
-
-#[tokio::test]
-async fn permanent_urls_when_allowed() {
-    let clamd = fake_clamd().await;
-    let app = setup_tuned(clamd, |c| c.signing.allow_permanent = true).await;
-    let blob = ready_blob(&app, &png_bytes(1500)).await;
-    let id = id_of(&blob);
-
-    let (status, body) = call(
-        &app.private,
-        json_req(
-            Method::POST,
-            &format!("/blobs/{id}/urls"),
-            json!({"permanent": true}),
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["expires_at"], 0);
-    let original = public_path(body["original"].as_str().unwrap());
-    assert!(
-        original.contains(".0."),
-        "expires is 0 in the token: {original}"
-    );
-    let (status, _) = call(&app.public, req(Method::GET, &original)).await;
-    assert_eq!(status, StatusCode::OK);
-
-    let (status, body) = call(
-        &app.private,
-        json_req(
-            Method::POST,
-            &format!("/blobs/{id}/urls"),
-            json!({"permanent": true, "ttl": "1h"}),
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
-    assert!(
-        body["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("mutually exclusive"),
-        "{body}"
-    );
 }
 
 #[tokio::test]
