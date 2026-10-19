@@ -18,7 +18,7 @@ env:
 jobs:
   lint:
     name: Format and Clippy
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # Under a minute warm; a cold cache rebuilds every dependency.
     timeout-minutes: 20
     steps:
@@ -32,13 +32,10 @@ jobs:
 
   test:
     name: Test
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # Two to three minutes warm. nextest kills a stuck test after a minute;
     # this bounds the rest, a build or a service that never answers.
     timeout-minutes: 30
-    # The renderer passes `vips thumbnail --output-profile`, which needs
-    # libvips 8.17 or newer: Ubuntu 24.04 ships 8.15, Debian trixie 8.16.
-    container: debian:forky
     services:
       postgres:
         image: postgres:17
@@ -46,19 +43,20 @@ jobs:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: agrafe_test
+        ports:
+          - 5432:5432
         options: >-
           --health-cmd pg_isready
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
     env:
-      DATABASE_URL: postgres://postgres:postgres@postgres:5432/agrafe_test
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/agrafe_test
     steps:
-      - name: Install libvips and a toolchain's prerequisites
+      - name: Install libvips
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            libvips-tools build-essential ca-certificates curl git
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libvips-tools
           vips --version
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -74,7 +72,7 @@ jobs:
 
   msrv:
     name: MSRV (1.94)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5

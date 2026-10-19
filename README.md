@@ -171,11 +171,21 @@ every decision.
 
 ## Quick start
 
-You need Postgres, [libvips](https://www.libvips.org/) 8.17 or newer with
+You need Postgres, [libvips](https://www.libvips.org/) 8.15 or newer with
 its `vips` command on the `PATH`, and a reachable `clamd` for virus
-scanning. On macOS, `brew install vips clamav`. Debian trixie and Ubuntu
-24.04 ship older versions; Debian forky has a recent enough
-`libvips-tools`.
+scanning. On macOS, `brew install vips clamav`; on Debian and Ubuntu,
+`apt install libvips-tools clamav-daemon` (Ubuntu 24.04 and Debian trixie
+and later ship a recent enough libvips).
+
+8.15 is what the renderer's options need, not what is safe to expose to
+uploads: libvips decodes untrusted files, and the TIFF, EXIF and PDF
+loaders it is handed have had heap overflows fixed as late as 8.18.3. In
+production, run upstream 8.18.3 or newer, or a distribution build that
+backports the fixes, such as Debian trixie's with its security updates.
+The version number alone does not tell: Debian's patched build still says
+8.16.1, while Ubuntu 26.04's 8.18.0 is in universe and has none of the
+fixes. See the [libvips security
+advisories](https://github.com/libvips/libvips/security/advisories).
 
 ```sh
 createdb agrafe_dev

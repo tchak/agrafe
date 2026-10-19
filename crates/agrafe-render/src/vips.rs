@@ -100,7 +100,9 @@ pub async fn to_webp(
         .arg(fit.width.to_string())
         .args(["--height", &fit.height.to_string()])
         .args(["--size", size])
-        .args(["--output-profile", "srgb"])
+        // The name before 8.17, kept since as an alias of `--output-profile`:
+        // it works from 8.15 on, which `keep=none` needs anyway.
+        .args(["--export-profile", "srgb"])
         .args(["--fail-on", "error"]);
     let outcome = sandbox::run(command, &config.sandbox).await?;
     match Rejection::of(&outcome) {
