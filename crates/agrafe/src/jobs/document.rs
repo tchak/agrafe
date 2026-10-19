@@ -117,31 +117,30 @@ async fn write_workspace(state: &Agrafe, blob: &Blob, root: &Path) -> Result<(),
                 .await
                 .map_err(BuildError::Io)?;
         }
-        let member = match &entry.content {
+        match &entry.content {
             Content::Inline(bytes) => {
-                total += bytes.len() as u64;
-                None
-            }
-            Content::Blob(id) => {
-                let stored = find_member(state, &entry.path, *id, now).await?;
-                total += stored.size;
-                Some(stored)
-            }
-        };
-        if total > max {
-            return Err(BuildError::Workspace(format!(
-                "the workspace exceeds the maximum of {max} bytes (document.max_workspace_size)"
-            )));
-        }
-        match (&entry.content, member) {
-            (Content::Inline(bytes), _) => {
+                charge(&mut total, bytes.len() as u64, max)?;
                 tokio::fs::write(&path, bytes)
                     .await
                     .map_err(BuildError::Io)?;
             }
-            (Content::Blob(_), Some(stored)) => copy_member(state, &stored, &path).await?,
-            (Content::Blob(_), None) => unreachable!("a blob entry was looked up"),
+            Content::Blob(id) => {
+                let stored = find_member(state, &entry.path, *id, now).await?;
+                charge(&mut total, stored.size, max)?;
+                copy_member(state, &stored, &path).await?;
+            }
         }
+    }
+    Ok(())
+}
+
+/// Count `bytes` towards the workspace, within `max`.
+fn charge(total: &mut u64, bytes: u64, max: u64) -> Result<(), BuildError> {
+    *total += bytes;
+    if *total > max {
+        return Err(BuildError::Workspace(format!(
+            "the workspace exceeds the maximum of {max} bytes (document.max_workspace_size)"
+        )));
     }
     Ok(())
 }

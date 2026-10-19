@@ -467,7 +467,12 @@ async fn templates_are_confined_to_the_workspace(pool: PgPool) {
         (
             "escape",
             "#include \"../../etc/passwd\"\n",
-            "does not compile",
+            "would escape the project root",
+        ),
+        (
+            "escape through the root",
+            "#image(\"/../../etc/passwd\")\n",
+            "would escape the project root",
         ),
         (
             "missing include",
