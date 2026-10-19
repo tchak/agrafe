@@ -365,12 +365,51 @@ async fn a_crashing_helper_fails_the_file_not_the_job() {
     // thumbnail falls back to the first page, which vips renders without
     // the helper.
     let scan = ready_file(&app, "scan.pdf", "application/pdf", &fixture("image.pdf")).await;
+    // The same PDF with only a thumbnail asked for follows the same rule
+    // from its own attempt at the picture.
+    let mut thumbnail_only = blob_for(&fixture("image.pdf"), "application/pdf", "raw");
+    thumbnail_only["filename"] = json!("thumb.pdf");
+    thumbnail_only["skip_virus_scan"] = json!(true);
+    thumbnail_only["representations"] = json!(["thumbnail"]);
+    let thumbnail_only = create(&app, thumbnail_only).await;
+    let (status, body) = put_private(&app, id_of(&thumbnail_only), fixture("image.pdf")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    render_all(&app).await;
+    for (blob, name, preview) in [
+        (&scan, "scan.pdf", "failed"),
+        (&thumbnail_only, "thumb.pdf", "disabled"),
+    ] {
+        let id = id_of(blob);
+        let blob = get_blob(&app, id).await;
+        assert_eq!(blob["preview_state"], preview, "{name}");
+        assert_eq!(blob["thumbnail_state"], "ready", "{name}");
+        rendered(&app, &format!("/blobs/{id}/thumbnail/{name}")).await;
+    }
+}
+
+/// A file that exhausts a tool's time limit is not handed to the next one
+/// for as long again: the PDF's first page is not tried once the
+/// extractor timed out on it, and both representations are failed.
+#[tokio::test]
+async fn a_timed_out_helper_fails_both_representations() {
+    use std::os::unix::fs::PermissionsExt;
+    let slow = std::env::temp_dir().join(format!("agrafe-slow-extract-{}", uuid::Uuid::now_v7()));
+    std::fs::write(&slow, "#!/bin/sh\nsleep 5\n").unwrap();
+    std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let clamd = fake_clamd().await;
+    let app = setup_tuned(clamd, |c| {
+        c.media.render.extract_command = slow.to_string_lossy().into_owned();
+        c.media.render.sandbox.timeout = std::time::Duration::from_millis(300);
+    })
+    .await;
+    let scan = ready_file(&app, "scan.pdf", "application/pdf", &fixture("image.pdf")).await;
     render_all(&app).await;
     let id = id_of(&scan);
     let blob = get_blob(&app, id).await;
     assert_eq!(blob["preview_state"], "failed");
-    assert_eq!(blob["thumbnail_state"], "ready");
-    rendered(&app, &format!("/blobs/{id}/thumbnail/scan.pdf")).await;
+    assert_eq!(blob["thumbnail_state"], "failed");
+    assert_eq!(jobs_for(&app, id).await, Vec::<String>::new());
+    std::fs::remove_file(&slow).unwrap();
 }
 
 #[tokio::test]

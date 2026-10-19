@@ -1138,7 +1138,11 @@ preview leaves the thumbnail to the plan's fallback (the text sample, the
 first page of a PDF), and without one the thumbnail is `failed` or the
 icon respectively. A PDF whose embedded image is broken thus still shows
 its first page, since the page renderer is not the extractor that gave up
-on it. A preview from another version, or whose object is gone, is
+on it. A thumbnail rendered on its own, the preview disabled, follows the
+same rule from its own attempt at the picture. The exception is a
+timeout: a file that exhausted one tool's time limit is not handed to a
+second for as long again, and the thumbnail is `failed` with the
+preview. A preview from another version, or whose object is gone, is
 rendered again first. The thumbnail thus appears after the preview rather
 than alongside it, a few seconds for a large image, which the icon
 placeholder and `wait` cover.

@@ -10,7 +10,8 @@
 //! pictures agree, and a thumbnail regenerated on its own is made from the
 //! stored preview without touching the original. A file with no picture,
 //! or whose picture failed, gets a thumbnail from the plan's fallback when
-//! there is one: a text sample, or the first page of a PDF.
+//! there is one: a text sample, or the first page of a PDF. A file that
+//! timed out a tool is not handed to another, see [`NoPicture`].
 //!
 //! A file the renderer rejects, or that crashes a helper, leaves the
 //! representation `failed` and the job done: trying the same bytes again
@@ -23,7 +24,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use agrafe_render::vips::{self, Fit, Input};
-use agrafe_render::{Fallback, Plan, Source, Verdict, helpers, plan};
+use agrafe_render::{Fallback, Plan, Rejection, Source, Verdict, helpers, plan};
 use agrafe_types::text::SAMPLE_LEN as TEXT_SAMPLE_LEN;
 use tokio::io::AsyncWriteExt;
 
@@ -70,10 +71,43 @@ enum Preview {
     /// A WebP in the work directory, rendered now or decrypted from the
     /// store.
     Ready(PathBuf),
-    Failed,
-    Unavailable,
+    /// There is none, and why: the thumbnail comes from the fallback.
+    Missing(NoPicture),
     /// Turned off at creation: the thumbnail is rendered on its own.
     Disabled,
+}
+
+/// Why the picture is missing, which decides what the thumbnail may do
+/// without it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NoPicture {
+    /// Every source declined, or the file is too large: the fallback, else
+    /// the icon.
+    Declined,
+    /// A source rejected the file: the fallback, else `failed`, since the
+    /// file is at fault and the icon would say otherwise.
+    Rejected,
+    /// A tool ran out of time on the file: `failed`, without handing the
+    /// same bytes to a second tool for as long again.
+    TimedOut,
+}
+
+impl NoPicture {
+    fn rejected(rejection: &Rejection) -> Self {
+        match rejection {
+            Rejection::TimedOut => NoPicture::TimedOut,
+            Rejection::Unsupported | Rejection::Failed { .. } => NoPicture::Rejected,
+        }
+    }
+
+    /// The stored verdict of a preview rendered by an earlier job, which
+    /// does not say whether a rejection was a timeout.
+    fn stored(state: RepresentationState) -> Self {
+        match state {
+            RepresentationState::Failed => NoPicture::Rejected,
+            _ => NoPicture::Declined,
+        }
+    }
 }
 
 /// The state a verdict leaves a representation in.
@@ -133,8 +167,9 @@ impl<'a> Render<'a> {
                 Some(path) => Preview::Ready(path),
                 None => return self.fresh_preview().await,
             },
-            (RepresentationState::Failed, true) => Preview::Failed,
-            (RepresentationState::Unavailable, true) => Preview::Unavailable,
+            (state @ (RepresentationState::Failed | RepresentationState::Unavailable), true) => {
+                Preview::Missing(NoPicture::stored(state))
+            }
             _ => return self.fresh_preview().await,
         })
     }
@@ -148,8 +183,8 @@ impl<'a> Render<'a> {
             .await?;
         let preview = match &verdict {
             Verdict::Rendered(_) => Preview::Ready(output),
-            Verdict::Rejected(_) => Preview::Failed,
-            Verdict::Declined => Preview::Unavailable,
+            Verdict::Rejected(rejection) => Preview::Missing(NoPicture::rejected(rejection)),
+            Verdict::Declined => Preview::Missing(NoPicture::Declined),
         };
         let state = state_of(&verdict);
         let (bytes, source) = verdict.rendered().unzip();
@@ -159,23 +194,47 @@ impl<'a> Render<'a> {
     }
 
     /// The thumbnail from `preview`: the preview fitted into the thumbnail
-    /// box, or the fallback when there is no preview. A failed preview with
-    /// nothing to fall back to leaves the thumbnail failed too: the file is
-    /// at fault.
+    /// box, the picture fitted straight into it when the preview is
+    /// disabled, or else whatever the file gets without a picture.
     async fn thumbnail(&mut self, preview: &Preview) -> Result<(), JobError> {
         let fit = Fit::thumbnail(&self.media().render);
         let output = self.path(THUMBNAIL);
-        let verdict = match preview {
-            Preview::Ready(path) => self.fit(path, Input::Raster, fit, &output).await?,
-            Preview::Failed | Preview::Unavailable => self.thumbnail_fallback().await?,
-            Preview::Disabled => self.thumbnail_from_picture().await?,
+        let (state, bytes) = match preview {
+            Preview::Ready(path) => {
+                let verdict = self.fit(path, Input::Raster, fit, &output).await?;
+                (state_of(&verdict), verdict.rendered())
+            }
+            Preview::Missing(why) => self.thumbnail_without_picture(*why).await?,
+            Preview::Disabled => match self.picture(fit, &output).await? {
+                Verdict::Rendered((bytes, _)) => (RepresentationState::Ready, Some(bytes)),
+                Verdict::Rejected(rejection) => {
+                    self.thumbnail_without_picture(NoPicture::rejected(&rejection))
+                        .await?
+                }
+                Verdict::Declined => self.thumbnail_without_picture(NoPicture::Declined).await?,
+            },
         };
-        let state = match (preview, &verdict) {
-            (Preview::Failed, Verdict::Declined) => RepresentationState::Failed,
+        self.finish(Representation::Thumbnail, state, bytes, None)
+            .await
+    }
+
+    /// The thumbnail when the file has no picture: the plan's fallback, and
+    /// the state it leaves, which `why` decides when the fallback yields
+    /// nothing, see [`NoPicture`].
+    async fn thumbnail_without_picture(
+        &mut self,
+        why: NoPicture,
+    ) -> Result<(RepresentationState, Option<Vec<u8>>), JobError> {
+        if why == NoPicture::TimedOut {
+            tracing::info!("the picture timed out, not trying the fallback");
+            return Ok((RepresentationState::Failed, None));
+        }
+        let verdict = self.thumbnail_fallback().await?;
+        let state = match (why, &verdict) {
+            (NoPicture::Rejected, Verdict::Declined) => RepresentationState::Failed,
             _ => state_of(&verdict),
         };
-        self.finish(Representation::Thumbnail, state, verdict.rendered(), None)
-            .await
+        Ok((state, verdict.rendered()))
     }
 
     /// The picture, from the first source of the plan that yields one,
@@ -218,10 +277,7 @@ impl<'a> Render<'a> {
             };
             match self.fit(&input, kind, fit, output).await? {
                 Verdict::Rendered(bytes) => return Ok(Verdict::Rendered((bytes, from))),
-                Verdict::Rejected(rejection) => {
-                    tracing::warn!(?source, %rejection, "rendering failed");
-                    rejected = Some(rejection);
-                }
+                Verdict::Rejected(rejection) => rejected = Some(rejection),
                 Verdict::Declined => {}
             }
         }
@@ -230,7 +286,8 @@ impl<'a> Render<'a> {
         Ok(rejected.map_or(Verdict::Declined, Verdict::Rejected))
     }
 
-    /// `input` fitted into `fit`, written to `output`.
+    /// `input` fitted into `fit`, written to `output`. A rejection is
+    /// logged here, once, whatever is being fitted.
     async fn fit(
         &self,
         input: &Path,
@@ -238,18 +295,12 @@ impl<'a> Render<'a> {
         fit: Fit,
         output: &Path,
     ) -> Result<Verdict<Vec<u8>>, JobError> {
-        Ok(vips::to_webp(&self.media().render, input, kind, output, fit).await?)
-    }
-
-    /// A thumbnail for a blob whose preview is disabled: the picture fitted
-    /// straight into the thumbnail box, then the fallback.
-    async fn thumbnail_from_picture(&mut self) -> Result<Verdict<Vec<u8>>, JobError> {
-        let fit = Fit::thumbnail(&self.media().render);
-        let output = self.path(THUMBNAIL);
-        match self.picture(fit, &output).await? {
-            Verdict::Declined => self.thumbnail_fallback().await,
-            verdict => Ok(verdict.map(|(bytes, _)| bytes)),
+        let verdict = vips::to_webp(&self.media().render, input, kind, output, fit).await?;
+        if let Verdict::Rejected(rejection) = &verdict {
+            let input = input.file_name().unwrap_or_default().to_string_lossy();
+            tracing::warn!(%input, ?kind, %rejection, "rendering failed");
         }
+        Ok(verdict)
     }
 
     /// A thumbnail for a file with no picture, from the plan's fallback:
@@ -261,13 +312,8 @@ impl<'a> Render<'a> {
             Some(Fallback::FirstPage) if !self.too_large() => {
                 let fit = Fit::thumbnail(&self.media().render);
                 let original = self.whole_original().await?;
-                let verdict = self
-                    .fit(&original, Input::Page, fit, &self.path(THUMBNAIL))
-                    .await?;
-                if let Verdict::Rejected(rejection) = &verdict {
-                    tracing::warn!(%rejection, "rendering the first page failed");
-                }
-                Ok(verdict)
+                self.fit(&original, Input::Page, fit, &self.path(THUMBNAIL))
+                    .await
             }
             _ => Ok(Verdict::Declined),
         }
