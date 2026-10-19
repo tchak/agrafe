@@ -536,6 +536,10 @@ pub struct WebhookConfig {
     pub timeout: Duration,
     /// The events delivered; every event when omitted.
     pub events: Option<Vec<Event>>,
+    /// Accept an `http` URL. The body carries a `url` blob's presigned
+    /// source and the blob's envelope, so the default is `https` only.
+    #[serde(default)]
+    pub allow_insecure: bool,
 }
 
 impl WebhookConfig {
@@ -578,10 +582,21 @@ impl WebhookConfig {
         };
         let parsed = url::Url::parse(url)
             .map_err(|err| ConfigError::Invalid(format!("webhook.url is not a URL: {err}")))?;
-        if !matches!(parsed.scheme(), "http" | "https") {
-            return Err(ConfigError::Invalid(
-                "webhook.url must be http or https".into(),
-            ));
+        match parsed.scheme() {
+            "https" => {}
+            "http" if self.allow_insecure => {}
+            "http" => {
+                return Err(ConfigError::Invalid(
+                    "webhook.url must be https: the body carries secrets; set \
+                     webhook.allow_insecure = true to post over http"
+                        .into(),
+                ));
+            }
+            _ => {
+                return Err(ConfigError::Invalid(
+                    "webhook.url must be http or https".into(),
+                ));
+            }
         }
         self.key()?;
         if self.events.as_ref().is_some_and(Vec::is_empty) {
@@ -604,6 +619,7 @@ impl Default for WebhookConfig {
             secret: None,
             timeout: default_webhook_timeout(),
             events: None,
+            allow_insecure: false,
         }
     }
 }
@@ -852,6 +868,12 @@ mod tests {
             jail.set_env("AGRAFE_WEBHOOK__URL", "ftp://backend.example/events");
             let err = load(&example()).unwrap_err().to_string();
             assert!(err.contains("http or https"), "{err}");
+
+            jail.set_env("AGRAFE_WEBHOOK__URL", "http://backend.example/events");
+            let err = load(&example()).unwrap_err().to_string();
+            assert!(err.contains("must be https"), "{err}");
+            jail.set_env("AGRAFE_WEBHOOK__ALLOW_INSECURE", "true");
+            assert!(load(&example())?.webhook.wants(Event::Infected));
             Ok(())
         });
     }

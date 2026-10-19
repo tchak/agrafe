@@ -96,6 +96,7 @@ impl Receiver {
     fn configure(&self, config: &mut Config) {
         config.webhook.url = Some(self.url.clone());
         config.webhook.secret = Some(SECRET.to_string().into());
+        config.webhook.allow_insecure = true;
         config.fetch.allow_private_networks = true;
     }
 

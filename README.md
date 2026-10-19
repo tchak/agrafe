@@ -400,6 +400,7 @@ reaper recorded it, so an attached blob whose upload never came).
 url = "https://backend.example/agrafe/events"
 secret = "whsec_…"   # echo "whsec_$(openssl rand -base64 24)", or AGRAFE_WEBHOOK__SECRET
 # events = ["ready", "failed"]
+# allow_insecure = true   # for an http URL, in development only
 ```
 
 Each delivery is a JSON body with the event, when it happened, the

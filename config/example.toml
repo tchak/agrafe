@@ -261,6 +261,10 @@ secret = ""
 timeout = "10s"
 # Which events to send; every event when omitted.
 # events = ["ready", "infected", "failed", "expired"]
+# The URL must be https: the body carries a url blob's presigned source and
+# the blob's envelope. Set to true to post over plain http, on a trusted
+# network or in development.
+allow_insecure = false
 
 [dashboard]
 # Serve the HTML dashboard under /dashboard on the private interface: the

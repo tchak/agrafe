@@ -1877,7 +1877,11 @@ not double as a shared secret with the backend. A `2xx` within
 `webhook.timeout` (default ten seconds) is delivered. Anything else, a
 timeout or a connection error fails the attempt and goes through the
 backoff, the head of a non-`2xx` body in `last_error`. No redirect is
-followed: the URL is the operator's and is taken as given.
+followed: the URL is the operator's and is taken as given. It must be
+`https` unless `webhook.allow_insecure` says otherwise: the body carries
+the presigned source of a `url` blob and the blob's envelope, as `GET
+/blobs/:id` does, and the private port's cleartext is at least confined to
+the trusted network where the webhook's is not.
 
 One URL per deployment, not a per-blob callback URL at creation: there is
 one backend, and a per-blob URL is an SSRF primitive handed to whoever
