@@ -59,10 +59,11 @@ pub enum PolicyError {
 /// Parse `raw` and check it against the policy, host literals included.
 /// A host name is resolved and checked when the fetch runs.
 pub fn check_url(raw: &str, config: &FetchConfig) -> Result<Url, PolicyError> {
+    let raw = raw.trim();
     if raw.len() > MAX_URL_LEN {
         return Err(PolicyError::TooLong);
     }
-    let url = Url::parse(raw.trim()).map_err(|_| PolicyError::Invalid)?;
+    let url = Url::parse(raw).map_err(|_| PolicyError::Invalid)?;
     check(&url, config.allow_private_networks)?;
     Ok(url)
 }
@@ -605,6 +606,12 @@ mod tests {
         );
         let long = format!("https://files.example/{}", "a".repeat(MAX_URL_LEN));
         assert_eq!(check_url(&long, &strict), Err(PolicyError::TooLong));
+        let padded = format!("https://files.example/{}", "a".repeat(MAX_URL_LEN - 22));
+        assert_eq!(padded.len(), MAX_URL_LEN);
+        assert!(
+            check_url(&format!("  {padded}  "), &strict).is_ok(),
+            "measured trimmed"
+        );
 
         // Host names are checked when they resolve, not here.
         assert!(check_url("https://localhost/a", &strict).is_ok());
