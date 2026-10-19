@@ -24,11 +24,14 @@ pub struct BlobResponse {
     pub input_type: InputType,
     pub checksum: Option<String>,
     /// MD5 of the bytes, base64: the `checksum` of an Active Storage blob,
-    /// for a backend keeping records in both systems. Set once the bytes
-    /// are in, computed by the service, never checked. See DESIGN.md,
+    /// for a backend keeping records in both systems. As declared, or
+    /// computed by the service once the bytes are in. See DESIGN.md,
     /// "Creation".
     pub checksum_md5: Option<String>,
     pub size: Option<i64>,
+    /// Where a `url` blob is fetched from. Private metadata only: a
+    /// presigned URL is a secret.
+    pub url: Option<String>,
     pub skip_virus_scan: bool,
     pub public_upload_allowed: bool,
     pub expires_at: Option<Timestamp>,
@@ -70,7 +73,7 @@ pub struct BlobResponse {
 
 impl BlobResponse {
     pub fn new(blob: &Blob, attachments: &[Attachment], urls: BlobUrls) -> Self {
-        let generated = !blob.input_type.is_direct();
+        let generated = blob.input_type.is_generated();
         Self {
             id: blob.id,
             state: blob.state,
@@ -81,6 +84,7 @@ impl BlobResponse {
             checksum: blob.checksum_sha256.as_deref().map(|c| STANDARD.encode(c)),
             checksum_md5: blob.checksum_md5.as_deref().map(|c| STANDARD.encode(c)),
             size: blob.size,
+            url: blob.url.clone(),
             skip_virus_scan: blob.skip_virus_scan,
             public_upload_allowed: blob.public_upload_allowed(),
             expires_at: blob.expires_at,

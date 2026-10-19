@@ -196,13 +196,16 @@ impl From<UploadError> for ApiError {
             // The operation does not fit the blob's shape or state.
             UploadError::Conflict(_)
             | UploadError::Generated(_)
+            | UploadError::Fetched(_)
             | UploadError::NotGenerated(_)
             | UploadError::PartSequence { .. }
             | UploadError::NoParts => ApiError::Conflict(err.to_string()),
             UploadError::PartTooLarge(_) => ApiError::PayloadTooLarge(err.to_string()),
             UploadError::Undeclared
             | UploadError::SizeMismatch
+            | UploadError::BodyTooLarge(_)
             | UploadError::ChecksumMismatch
+            | UploadError::Md5Mismatch
             | UploadError::TypeMismatch { .. }
             | UploadError::TooManyParts(_)
             | UploadError::Line { .. }

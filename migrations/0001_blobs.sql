@@ -8,13 +8,20 @@ CREATE TABLE blobs (
     category          text NOT NULL
                       CHECK (category IN ('image', 'document', 'spreadsheet', 'presentation', 'archive', 'audio', 'video', 'text', 'other')),
     input_type        text NOT NULL
-                      CHECK (input_type IN ('raw', 'multipart', 'rows', 'archive')),
+                      CHECK (input_type IN ('raw', 'multipart', 'url', 'rows', 'archive')),
+    -- Declared at creation for raw and multipart, optionally for url, and
+    -- written by the upload or the build otherwise.
     checksum_sha256   bytea CHECK (checksum_sha256 IS NULL OR octet_length(checksum_sha256) = 32),
-    -- MD5 of the same bytes, computed on the way in and only reported, in the
-    -- form Active Storage keeps as `checksum`. Never checked against anything.
+    -- MD5 of the same bytes, in the form Active Storage keeps as `checksum`:
+    -- declared optionally, checked against the bytes when it was, and
+    -- computed on the way in otherwise. See DESIGN.md, "Creation".
     checksum_md5      bytea CHECK (checksum_md5 IS NULL OR octet_length(checksum_md5) = 16),
     size              bigint CHECK (size IS NULL OR size >= 0),
     skip_virus_scan   boolean NOT NULL DEFAULT false,
+    -- Where a `url` blob's bytes are fetched from, kept for the retries. A
+    -- presigned URL is a secret with an expiry: private metadata only, never
+    -- in an error or a log. See DESIGN.md, "Fetched blobs".
+    url               text,
     expires_at        timestamptz,
     -- Where the blob's jobs go in their kind's queue, as the rank the claim
     -- orders on: 1 high, 0 normal, -1 low. Copied onto every job enqueued

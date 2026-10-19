@@ -115,7 +115,7 @@ impl Agrafe {
 /// Whether `blob` can take part `n` at `now`. Run by the HTTP layer before
 /// it reads the body, and again by `upload_part`.
 pub fn prepare_part(blob: &Blob, n: u32, now: Timestamp) -> Result<(), UploadError> {
-    if blob.input_type.is_direct() {
+    if !blob.input_type.is_generated() {
         return Err(UploadError::NotGenerated(blob.input_type));
     }
     if !blob.accepts_upload(now) {
@@ -142,7 +142,7 @@ fn part_refusal(current: &Blob, n: u32, now: Timestamp) -> UploadError {
 /// Whether `blob` can be finished at `now`: a generated blob, still
 /// `created`, holding at least one part.
 fn finish_refusal(blob: &Blob, now: Timestamp) -> Result<(), UploadError> {
-    if blob.input_type.is_direct() {
+    if !blob.input_type.is_generated() {
         return Err(UploadError::NotGenerated(blob.input_type));
     }
     if blob.state_at(now) != BlobState::Created {
@@ -172,7 +172,7 @@ async fn store_part(
     let tap = match blob.input_type {
         InputType::Archive => SourceTap::Archive(archive::Accept::new(state.clone(), &blob)),
         InputType::Rows => SourceTap::Rows(rows::Accept::new(&state, &mut blob)?),
-        InputType::Raw | InputType::Multipart => {
+        InputType::Raw | InputType::Multipart | InputType::Url => {
             unreachable!("prepare_part admits generated blobs only")
         }
     };

@@ -278,7 +278,7 @@ async fn job_queue_mechanics() {
     // Failing unlocks with backoff; the next retry needs the lease to pass or
     // the backoff to elapse.
     let mut conn = pool.acquire().await.unwrap();
-    let Failure::Retry(at) = jobs::fail(&mut conn, &again, "boom", false, now)
+    let Failure::Retry(at) = jobs::fail(&mut conn, &again, "boom", false, None, now)
         .await
         .unwrap()
     else {
@@ -315,7 +315,7 @@ async fn job_queue_mechanics() {
         .unwrap()
     );
     assert_eq!(
-        jobs::fail(&mut conn, &held, "boom", false, now)
+        jobs::fail(&mut conn, &held, "boom", false, None, now)
             .await
             .unwrap(),
         Failure::Superseded
@@ -755,7 +755,7 @@ async fn the_blob_verdict_tracks_the_live_job() {
         .unwrap();
     assert!(enqueue().await.unwrap());
     assert_eq!(
-        jobs::fail(&mut conn, &first, "boom", true, now)
+        jobs::fail(&mut conn, &first, "boom", true, None, now)
             .await
             .unwrap(),
         Failure::Dead
@@ -791,7 +791,7 @@ async fn the_blob_verdict_tracks_the_live_job() {
         .unwrap()
         .unwrap();
     assert_eq!(
-        jobs::fail(&mut conn, &alone, "boom", true, now)
+        jobs::fail(&mut conn, &alone, "boom", true, None, now)
             .await
             .unwrap(),
         Failure::Dead

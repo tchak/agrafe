@@ -42,6 +42,8 @@ pub struct Config {
     pub archive: ArchiveConfig,
     #[serde(default)]
     pub blobs: BlobsConfig,
+    #[serde(default)]
+    pub fetch: FetchConfig,
 }
 
 impl Config {
@@ -411,6 +413,62 @@ impl Default for ArchiveConfig {
     }
 }
 
+/// How `url` blobs are fetched. See DESIGN.md, "Fetched blobs".
+#[derive(Debug, Clone, Deserialize)]
+pub struct FetchConfig {
+    /// The TCP connect and the TLS handshake.
+    #[serde(with = "humantime_serde", default = "default_fetch_connect_timeout")]
+    pub connect_timeout: Duration,
+    /// The whole response, headers and body. A fetch that runs past it
+    /// fails the attempt and is retried from the start.
+    #[serde(with = "humantime_serde", default = "default_fetch_timeout")]
+    pub timeout: Duration,
+    /// Redirects followed at most, every hop under the same checks.
+    #[serde(default = "default_max_redirects")]
+    pub max_redirects: usize,
+    /// A `Retry-After` beyond this is not waited for: the fetch is dead at
+    /// once rather than parked.
+    #[serde(with = "humantime_serde", default = "default_max_retry_after")]
+    pub max_retry_after: Duration,
+    /// Allow URLs on loopback, private, link-local and the other refused
+    /// ranges, and plain `http`: for local development and the tests,
+    /// never in production.
+    #[serde(default)]
+    pub allow_private_networks: bool,
+    /// The `User-Agent` sent with every fetch.
+    #[serde(default = "default_user_agent")]
+    pub user_agent: String,
+}
+
+fn default_fetch_connect_timeout() -> Duration {
+    Duration::from_secs(10)
+}
+fn default_fetch_timeout() -> Duration {
+    Duration::from_secs(3600)
+}
+fn default_max_redirects() -> usize {
+    5
+}
+fn default_max_retry_after() -> Duration {
+    Duration::from_secs(15 * 60)
+}
+fn default_user_agent() -> String {
+    concat!("agrafe/", env!("CARGO_PKG_VERSION")).to_string()
+}
+
+impl Default for FetchConfig {
+    fn default() -> Self {
+        Self {
+            connect_timeout: default_fetch_connect_timeout(),
+            timeout: default_fetch_timeout(),
+            max_redirects: default_max_redirects(),
+            max_retry_after: default_max_retry_after(),
+            allow_private_networks: false,
+            user_agent: default_user_agent(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct EncryptionConfig {
     #[serde(default)]
@@ -533,7 +591,7 @@ impl JobsConfig {
         }
         match kind {
             JobKind::Scan | JobKind::Render | JobKind::Purge => 4,
-            JobKind::Rows => 2,
+            JobKind::Fetch | JobKind::Rows => 2,
             JobKind::Archive | JobKind::Reap => 1,
         }
     }
@@ -611,6 +669,11 @@ mod tests {
             assert_eq!(config.server.role, Role::All);
             assert_eq!(config.signing.current_key, "k1");
             assert_eq!(config.jobs.concurrency_for(JobKind::Scan), 4);
+            assert_eq!(config.jobs.concurrency_for(JobKind::Fetch), 2);
+            assert_eq!(config.fetch.max_redirects, 5);
+            assert_eq!(config.fetch.max_retry_after.as_secs(), 15 * 60);
+            assert!(!config.fetch.allow_private_networks);
+            assert!(config.fetch.user_agent.starts_with("agrafe/"));
             Ok(())
         });
     }

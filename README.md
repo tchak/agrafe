@@ -57,6 +57,11 @@ every decision.
   upload URL is worthless after the first upload and originals can be
   served `immutable`.
 - **Raw or multipart** bodies, from a backend or straight from a browser.
+- **Fetched from a URL**: a `url` blob is downloaded by a job from a
+  presigned URL the backend gives at creation, through the same pipeline,
+  with no bytes through the backend. Made for migrating from another
+  store; checksums and size are optional and checked when given, and the
+  network policy keeps fetches off private addresses.
 - **Expiry** by timestamp or duration, enforced on every read rather than
   whenever the reaper runs. Every blob starts with one, a day by default,
   long enough for a direct upload to be attached when the form is
@@ -135,11 +140,11 @@ every decision.
 
 - **Postgres job queue** with `SKIP LOCKED` and `LISTEN/NOTIFY`, enqueued
   in the same transaction as the state change it follows.
-- **Per-kind worker pools** for scan, render, rows, archive, purge and reap,
-  so a slow kind never holds up another, with retries with backoff and
-  dead-job inspection.
+- **Per-kind worker pools** for fetch, scan, render, rows, archive, purge
+  and reap, so a slow kind never holds up another, with retries with
+  backoff and dead-job inspection.
 - **Per-blob priorities** (`high`, `normal`, `low`) ordering the blob's
-  scan, render and build jobs within their kind.
+  fetch, scan, render and build jobs within their kind.
 - **Split roles**: run `api`, `worker` or `all` per process, and pick which
   job kinds a worker runs, without code changes.
 - **Prometheus metrics** for queue depth and the age of the oldest due job,
@@ -211,6 +216,34 @@ ID=$(curl -s localhost:8080/blobs \
 
 curl -s -X PUT "localhost:8080/blobs/$ID" --data-binary "@$FILE" | jq .state
 ```
+
+### Fetch it from a URL
+
+For a file that already sits behind a URL, such as an Active Storage blob
+on S3 during a migration, let the service download it. The backend
+presigns the URL and sends no bytes; `checksum_md5` takes the record's
+`checksum` as it is, and `size` its `byte_size`. Both are optional and
+checked when given.
+
+```sh
+ID=$(curl -s localhost:8080/blobs \
+  -H 'content-type: application/json' \
+  -d "{\"filename\": \"$FILE\", \"content_type\": \"application/pdf\",
+       \"input_type\": \"url\", \"url\": \"$PRESIGNED_URL\",
+       \"checksum_md5\": \"$MD5\", \"size\": $SIZE, \"priority\": \"low\",
+       \"attachment\": {\"record_type\": \"Dossier\", \"record_id\": \"42\",
+                      \"name\": \"piece_justificative\"}}" | jq -r .id)
+
+curl -s "localhost:8080/blobs/$ID" | jq .state
+```
+
+The blob is `created` until the fetch job has run, then `uploaded` or
+`ready` like an upload. A fetch that gives up, on a `404` or a checksum
+mismatch at once, on a `5xx` after a few retries, leaves `failed_at` and
+`last_error` on the blob, and `POST /blobs/:id/retry` enqueues a new
+fetch, with a fresh URL on the row if the backend created a new blob. See
+[DESIGN.md](DESIGN.md#fetched-blobs) for the policy and the failure
+handling.
 
 ### Let a browser upload it
 
@@ -358,8 +391,8 @@ curl -s -X POST "localhost:8080/jobs/$JOB_ID/retry"
 curl -s localhost:8080/metrics
 ```
 
-A blob whose scan, build or render ran out of attempts records it as
-`failed_at` and `last_error` in its metadata, and as `blob_failed_at` on
+A blob whose fetch, scan, build or render ran out of attempts records it
+as `failed_at` and `last_error` in its metadata, and as `blob_failed_at` on
 the attachments listing, for as long as it stays stuck; the dead job itself
 is pruned after a week. Find them and give them another go from the blob's
 side, whichever job that takes:

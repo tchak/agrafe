@@ -12,6 +12,7 @@ use crate::blob::cache::HeadCache;
 use crate::clamav::Clamd;
 use crate::config::{Config, ConfigError};
 use crate::encryption::Keks;
+use crate::jobs::fetch;
 use crate::metrics::Metrics;
 use crate::signing::Signer;
 use crate::storage::{self, Store};
@@ -23,6 +24,8 @@ pub enum InitError {
     Storage(#[from] storage::Error),
     #[error(transparent)]
     Config(#[from] ConfigError),
+    #[error("building the fetch client: {0}")]
+    Fetch(#[from] reqwest::Error),
 }
 
 /// A cheap-to-clone handle on one agrafe instance.
@@ -36,6 +39,7 @@ struct Inner {
     signer: Signer,
     keks: Keks,
     clamd: Clamd,
+    fetcher: fetch::Client,
     heads: HeadCache,
     metrics: Metrics,
 }
@@ -51,6 +55,7 @@ impl Agrafe {
         let signer = Signer::from_config(&config.signing)?;
         let keks = Keks::from_config(&config.encryption)?;
         let clamd = Clamd::from_config(&config.clamav);
+        let fetcher = fetch::Client::from_config(&config.fetch)?;
         let heads = HeadCache::from_config(&config.blobs);
         Ok(Self(Arc::new(Inner {
             config,
@@ -59,6 +64,7 @@ impl Agrafe {
             signer,
             keks,
             clamd,
+            fetcher,
             heads,
             metrics: Metrics::new(),
         })))
@@ -86,6 +92,11 @@ impl Agrafe {
 
     pub fn clamd(&self) -> &Clamd {
         &self.0.clamd
+    }
+
+    /// The client `url` blobs are fetched through.
+    pub fn fetcher(&self) -> &fetch::Client {
+        &self.0.fetcher
     }
 
     /// The rows the read routes served lately.

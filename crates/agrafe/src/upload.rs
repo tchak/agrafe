@@ -1,13 +1,14 @@
-//! The upload pipeline for `raw` and `multipart` input, and the core the
-//! source parts of a generated blob (see `source`) share with it.
+//! The upload pipeline for `raw` and `multipart` input, which the fetch of
+//! a `url` blob (see `jobs::fetch`) runs too, and the core the source
+//! parts of a generated blob (see `source`) share with it.
 //!
-//! Bytes flow once through a size counter, a SHA-256 hasher, the magic-byte
-//! sniffer, clamd when the file is small enough to scan inline, the streaming
-//! encryptor and a multipart upload to the object store. Any failed check
-//! aborts the multipart upload and hands the blob back to the state it came
-//! from; nothing partial is ever visible. An infected file is not a failed
-//! check: it is stored and the blob becomes `infected`, exactly as a deferred
-//! scan would leave it.
+//! Bytes flow once through a size counter, SHA-256 and MD5 hashers, the
+//! magic-byte sniffer, clamd when the file is small enough to scan inline,
+//! the streaming encryptor and a multipart upload to the object store. Any
+//! failed check aborts the multipart upload and hands the blob back to the
+//! state it came from; nothing partial is ever visible. An infected file is
+//! not a failed check: it is stored and the blob becomes `infected`, exactly
+//! as a deferred scan would leave it.
 //!
 //! The checks are a [`Tap`] on the plaintext; the encryptor, the multipart
 //! upload, the heartbeat on the row and the abort on failure are the same
@@ -57,27 +58,55 @@ pub fn body_limit(config: &UploadConfig) -> usize {
         .unwrap_or(usize::MAX)
 }
 
-/// What the bytes must turn out to be.
+/// What the bytes must turn out to be. A `raw` or `multipart` blob
+/// declares its SHA-256 and size; a `url` blob may declare either, and an
+/// MD5 besides, or nothing at all. What is declared is checked; what is
+/// not is computed and written to the row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Declared {
-    pub checksum: Vec<u8>,
-    pub size: u64,
+    pub checksum: Option<Vec<u8>>,
+    pub checksum_md5: Option<Vec<u8>>,
+    /// The exact size, when declared.
+    pub size: Option<u64>,
+    /// The most bytes the body may hold: the declared size, or
+    /// `upload.max_size` when none was.
+    pub cap: u64,
 }
 
-/// Check that `blob` can take an upload at `now`, and what its bytes must
-/// turn out to be. `raw` and `multipart` blobs always declare both; a
-/// generated blob does not, and does not go through this pipeline.
+impl Declared {
+    /// What a `url` blob declared, with `upload.max_size` as the cap when
+    /// it gave no size.
+    pub(crate) fn fetched(blob: &Blob, upload: &UploadConfig) -> Self {
+        let size = blob.size.map(|s| s as u64);
+        Self {
+            checksum: blob.checksum_sha256.clone(),
+            checksum_md5: blob.checksum_md5.clone(),
+            size,
+            cap: size.unwrap_or(upload.max_size.as_u64()),
+        }
+    }
+}
+
+/// Check that `blob` can take a `PUT` at `now`, and what its bytes must
+/// turn out to be. `raw` and `multipart` blobs always declare a checksum
+/// and a size; a generated blob is accepted as a source instead, and a
+/// `url` blob is fetched by a job: neither takes a file here.
 pub fn prepare(blob: &Blob, now: Timestamp) -> Result<Declared, UploadError> {
     if !blob.accepts_upload(now) {
         return Err(UploadError::Conflict(blob.state_at(now)));
     }
-    if !blob.input_type.is_direct() {
+    if blob.input_type.is_generated() {
         return Err(UploadError::Generated(blob.input_type));
+    }
+    if blob.input_type.is_fetched() {
+        return Err(UploadError::Fetched(blob.input_type));
     }
     match (&blob.checksum_sha256, blob.size) {
         (Some(c), Some(s)) => Ok(Declared {
-            checksum: c.clone(),
-            size: s as u64,
+            checksum: Some(c.clone()),
+            checksum_md5: blob.checksum_md5.clone(),
+            size: Some(s as u64),
+            cap: s as u64,
         }),
         _ => Err(UploadError::Undeclared),
     }
@@ -115,8 +144,12 @@ pub enum UploadError {
     /// `PUT` body is a source, which goes through `source` instead.
     #[error("a {0} blob is built from a source, not uploaded as a file")]
     Generated(InputType),
+    /// A `url` blob was handed a `PUT`: its bytes are fetched by a job
+    /// from the URL given at creation.
+    #[error("a {0} blob is fetched by the service from its url, not uploaded")]
+    Fetched(InputType),
     /// Parts and finish apply to generated blobs only.
-    #[error("a {0} blob is uploaded as a file: parts and finish apply to rows and archive blobs")]
+    #[error("parts and finish apply to rows and archive blobs, not to a {0} blob")]
     NotGenerated(InputType),
     #[error("blob has no declared checksum and size")]
     Undeclared,
@@ -145,8 +178,13 @@ pub enum UploadError {
     Body(BoxError),
     #[error("body size does not match the declared size")]
     SizeMismatch,
+    /// No size was declared and the body ran past `upload.max_size`.
+    #[error("body exceeds the maximum of {0} bytes")]
+    BodyTooLarge(u64),
     #[error("body checksum does not match the declared checksum")]
     ChecksumMismatch,
+    #[error("body MD5 does not match the declared checksum_md5")]
+    Md5Mismatch,
     #[error("content looks like `{sniffed}`, not `{declared}`")]
     TypeMismatch {
         declared: String,
@@ -184,19 +222,23 @@ async fn run<S>(
 where
     S: Stream<Item = Result<Bytes, BoxError>> + Unpin,
 {
-    let blob = {
-        let mut conn = state.pool().acquire().await?;
-        match repo::begin_upload(&mut conn, &blob).await? {
-            Transition::Done(blob) => blob,
-            Transition::Conflict(blob) => return Err(UploadError::Conflict(blob.state)),
-            Transition::Missing => return Err(UploadError::NotFound),
-        }
+    let blob = match begin(state, &blob).await? {
+        Transition::Done(blob) => blob,
+        Transition::Conflict(blob) => return Err(UploadError::Conflict(blob.state)),
+        Transition::Missing => return Err(UploadError::NotFound),
     };
     let state = state.clone();
     feed(body, move |fed| {
         store_and_complete(state, blob, declared, fed)
     })
     .await
+}
+
+/// Claim the row: `created` to `uploading`. The one way in for a `PUT`
+/// and for a fetch alike.
+pub(crate) async fn begin(state: &Agrafe, blob: &Blob) -> sqlx::Result<Transition> {
+    let mut conn = state.pool().acquire().await?;
+    repo::begin_upload(&mut conn, blob).await
 }
 
 /// Pump `body` into the channel `task` reads from, in this future, while
@@ -232,12 +274,15 @@ pub(crate) type Fed = ReceiverStream<Result<Bytes, BoxError>>;
 /// the reaper gave up on, whose blob a later `PUT` may own by now, stops
 /// rather than finishing on top of its successor, and leaves the row to
 /// whoever has it.
-async fn store_and_complete(
+pub(crate) async fn store_and_complete<S>(
     state: Agrafe,
     blob: Blob,
     declared: Declared,
-    body: Fed,
-) -> Result<Blob, UploadError> {
+    body: S,
+) -> Result<Blob, UploadError>
+where
+    S: Stream<Item = Result<Bytes, BoxError>> + Unpin + Send,
+{
     let started = blob
         .upload_started_at
         .expect("begin_upload sets upload_started_at");
@@ -272,9 +317,9 @@ async fn store_and_complete(
         wrapped_key: envelope.wrapped,
         encryption_header: header,
         chunk_size: layout.segment_size() as i32,
-        checksum_sha256: declared.checksum,
+        checksum_sha256: checked.sha256,
         checksum_md5: checked.md5,
-        size: declared.size as i64,
+        size: checked.received as i64,
         scan: checked.scan,
     };
     match repo::complete_upload(state.pool(), &blob, started, &completed).await? {
@@ -343,7 +388,7 @@ async fn inline_scanner(state: &Agrafe, blob: &Blob, declared: &Declared) -> Sca
     if blob.skip_virus_scan {
         return Scanner::Skipped;
     }
-    if declared.size > state.config().upload.inline_scan_max_size.as_u64() {
+    if declared.cap > state.config().upload.inline_scan_max_size.as_u64() {
         return Scanner::Deferred;
     }
     match state.clamd().begin_inline().await {
@@ -490,9 +535,10 @@ where
     Ok(verdict)
 }
 
-/// The checks on a file: size against the declaration, SHA-256 against the
-/// checksum, magic bytes against the content type, and the inline scan.
-/// Along the way, the MD5 of the bytes, which is only ever reported.
+/// The checks on a file: size against the declaration or the cap, SHA-256
+/// and MD5 against the checksums when declared, magic bytes against the
+/// content type, and the inline scan. What was not declared is computed
+/// for the row.
 struct Checks {
     declared: Declared,
     content_type: String,
@@ -522,7 +568,9 @@ impl Checks {
 /// What the checks hand over once the whole body passed them.
 struct Checked {
     scan: ScanOutcome,
+    sha256: Vec<u8>,
     md5: Vec<u8>,
+    received: u64,
 }
 
 impl Tap for Checks {
@@ -530,8 +578,11 @@ impl Tap for Checks {
 
     async fn chunk(&mut self, chunk: &Bytes) -> Result<(), UploadError> {
         self.received += chunk.len() as u64;
-        if self.received > self.declared.size {
-            return Err(UploadError::SizeMismatch);
+        if self.received > self.declared.cap {
+            return Err(match self.declared.size {
+                Some(_) => UploadError::SizeMismatch,
+                None => UploadError::BodyTooLarge(self.declared.cap),
+            });
         }
         self.hasher.update(chunk);
         self.md5.update(chunk);
@@ -555,14 +606,29 @@ impl Tap for Checks {
     /// The scan verdict is read last, after the cheap checks have passed: a
     /// mismatched checksum is a `422` whatever clamd would have said.
     async fn end(self) -> Result<Checked, UploadError> {
-        if self.received != self.declared.size {
+        if self.declared.size.is_some_and(|size| self.received != size) {
             return Err(UploadError::SizeMismatch);
         }
         if !self.sniffed {
             check_type(&self.content_type, &self.head)?;
         }
-        if self.hasher.finalize().as_slice() != self.declared.checksum.as_slice() {
+        let sha256 = self.hasher.finalize().to_vec();
+        if self
+            .declared
+            .checksum
+            .as_ref()
+            .is_some_and(|c| *c != sha256)
+        {
             return Err(UploadError::ChecksumMismatch);
+        }
+        let md5 = self.md5.finalize().to_vec();
+        if self
+            .declared
+            .checksum_md5
+            .as_ref()
+            .is_some_and(|c| *c != md5)
+        {
+            return Err(UploadError::Md5Mismatch);
         }
         let scan = match self.scanner {
             Scanner::Skipped => ScanOutcome::Skipped,
@@ -578,7 +644,9 @@ impl Tap for Checks {
         };
         Ok(Checked {
             scan,
-            md5: self.md5.finalize().to_vec(),
+            sha256,
+            md5,
+            received: self.received,
         })
     }
 }

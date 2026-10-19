@@ -170,7 +170,7 @@ async fn delete_blob(State(agrafe): State<Agrafe>, Path(id): Path<Uuid>) -> ApiR
 }
 
 /// Enqueue whatever the blob is waiting on: the repair for a blob whose
-/// scan, build or render died, from the blob's side. `202`: the job is
+/// fetch, scan, build or render died, from the blob's side. `202`: the job is
 /// queued, the blob is not finished yet.
 async fn retry_blob(
     State(agrafe): State<Agrafe>,

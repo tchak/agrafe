@@ -10,6 +10,7 @@ mod archive;
 mod attachments;
 mod blobs;
 mod cache;
+mod fetch;
 mod jobs;
 mod original;
 mod races;

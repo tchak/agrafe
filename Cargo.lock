@@ -88,6 +88,8 @@ dependencies = [
  "object_store",
  "percent-encoding",
  "prometheus",
+ "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -98,6 +100,7 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "unicode-normalization",
+ "url",
  "uuid",
  "zip",
 ]

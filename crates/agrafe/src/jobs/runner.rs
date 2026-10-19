@@ -14,7 +14,7 @@ use tokio::task::JoinSet;
 use tracing::Instrument as _;
 use uuid::Uuid;
 
-use super::{Failure, Job, JobError, JobKind, archive, purge, reap, render, rows, scan};
+use super::{Failure, Job, JobError, JobKind, archive, fetch, purge, reap, render, rows, scan};
 use crate::app::Agrafe;
 use crate::metrics::Outcome;
 
@@ -136,7 +136,17 @@ async fn run_claimed(state: &Agrafe, job: &Job, worker: &str) -> sqlx::Result<()
             let mut conn = state.pool().acquire().await?;
             let error = err.to_string();
             let permanent = err.is_permanent();
-            match super::fail(&mut conn, job, &error, permanent, Timestamp::now()).await? {
+            let retry_after = err.retry_after();
+            match super::fail(
+                &mut conn,
+                job,
+                &error,
+                permanent,
+                retry_after,
+                Timestamp::now(),
+            )
+            .await?
+            {
                 Failure::Retry(at) => {
                     tracing::warn!(error, retry_at = %at, "job failed");
                     Outcome::Retry
@@ -158,6 +168,7 @@ async fn run_claimed(state: &Agrafe, job: &Job, worker: &str) -> sqlx::Result<()
 
 async fn handle(state: &Agrafe, job: &Job) -> Result<(), JobError> {
     match job.kind {
+        JobKind::Fetch => fetch::run(state, job).await,
         JobKind::Scan => scan::run(state, job).await,
         JobKind::Render => render::run(state, job).await,
         JobKind::Rows => rows::run(state, job).await,

@@ -38,8 +38,8 @@ pub enum RetryError {
     /// Expired, deleted or infected: nothing is going to finish it.
     #[error("blob is {0}")]
     Terminal(BlobState),
-    /// The blob is not waiting on a job: `created`, or `ready` with its
-    /// representations settled.
+    /// The blob is not waiting on a job: `created` and not fetched, or
+    /// `ready` with its representations settled.
     #[error("nothing to retry: a {0} blob waits on no job")]
     Nothing(BlobState),
     /// The job it waits on is queued or running already.
@@ -95,7 +95,7 @@ impl Agrafe {
         Ok(repo::list(self.pool(), &params).await?)
     }
 
-    /// Enqueue whatever the blob is waiting on, the scan, build or render
+    /// Enqueue whatever the blob is waiting on, the fetch, scan, build or render
     /// its state calls for, superseding a dead job of that kind and
     /// clearing the failure recorded on the row. The repair for a stuck
     /// blob, from the blob's side; works after the dead job is pruned.
@@ -170,12 +170,16 @@ impl BlobState {
     }
 }
 
-/// Shape of the `PUT` body.
+/// Where the bytes come from: the shape of the `PUT` body, or, for `url`,
+/// a download the service performs instead of a `PUT`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InputType {
     Raw,
     Multipart,
+    /// Fetched by a job from the URL given at creation. See DESIGN.md,
+    /// "Fetched blobs".
+    Url,
     Rows,
     Archive,
 }
@@ -183,15 +187,27 @@ pub enum InputType {
 agrafe_types::str_enum!(InputType {
     Raw => "raw",
     Multipart => "multipart",
+    Url => "url",
     Rows => "rows",
     Archive => "archive",
 });
 
 impl InputType {
-    /// `raw` and `multipart` carry the file itself and need a declared
-    /// checksum and size. `rows` and `archive` are generated server side.
+    /// `raw` and `multipart` carry the file itself in the `PUT` body and
+    /// need a declared checksum and size.
     pub fn is_direct(self) -> bool {
         matches!(self, InputType::Raw | InputType::Multipart)
+    }
+
+    /// `rows` and `archive` are generated server side from a source sent
+    /// in parts.
+    pub fn is_generated(self) -> bool {
+        matches!(self, InputType::Rows | InputType::Archive)
+    }
+
+    /// A `url` blob's bytes are fetched by a job; there is no `PUT`.
+    pub fn is_fetched(self) -> bool {
+        matches!(self, InputType::Url)
     }
 }
 
@@ -359,12 +375,15 @@ pub struct Blob {
     #[sqlx(try_from = "String")]
     pub input_type: InputType,
     pub checksum_sha256: Option<Vec<u8>>,
-    /// MD5 of the same bytes, computed by the upload or the build; the
-    /// checksum Active Storage would hold for the file. Reported, never
-    /// checked.
+    /// MD5 of the same bytes, the checksum Active Storage would hold for
+    /// the file: declared at creation and checked when the backend gave
+    /// it, computed by the upload or the build otherwise.
     pub checksum_md5: Option<Vec<u8>>,
     pub size: Option<i64>,
     pub skip_virus_scan: bool,
+    /// Where a `url` blob is fetched from. Private metadata only: a
+    /// presigned URL is a secret, and it never goes into an error or a log.
+    pub url: Option<String>,
     #[sqlx(try_from = "crate::db::NullableTimestamp")]
     pub expires_at: Option<Timestamp>,
     /// Copied onto every job enqueued for the blob. Stored as its rank,
@@ -648,8 +667,19 @@ mod tests {
         assert!(public_upload_allowed(false, InputType::Raw));
         assert!(public_upload_allowed(false, InputType::Multipart));
         assert!(!public_upload_allowed(true, InputType::Raw));
+        assert!(!public_upload_allowed(false, InputType::Url));
         assert!(!public_upload_allowed(false, InputType::Rows));
         assert!(!public_upload_allowed(false, InputType::Archive));
+    }
+
+    #[test]
+    fn input_types_are_direct_fetched_or_generated() {
+        for t in InputType::ALL {
+            let classes = [t.is_direct(), t.is_fetched(), t.is_generated()];
+            assert_eq!(classes.iter().filter(|c| **c).count(), 1, "{t}");
+        }
+        assert!(InputType::Url.is_fetched());
+        assert!(InputType::Rows.is_generated());
     }
 
     #[test]

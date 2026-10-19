@@ -4,6 +4,7 @@
 
 pub mod archive;
 pub mod build;
+pub mod fetch;
 pub mod purge;
 pub mod reap;
 pub mod render;
@@ -89,6 +90,8 @@ pub enum JobError {
     Purge(#[from] purge::PurgeError),
     #[error("build: {0}")]
     Build(#[from] build::BuildError),
+    #[error("fetch: {0}")]
+    Fetch(#[from] fetch::FetchError),
 }
 
 impl JobError {
@@ -101,7 +104,18 @@ impl JobError {
             JobError::NoBlob(_) | JobError::Unhandled(_) => true,
             JobError::Purge(purge::PurgeError::NotTerminal(_)) => true,
             JobError::Build(err) => err.is_permanent(),
+            JobError::Fetch(err) => err.is_permanent(),
             _ => false,
+        }
+    }
+
+    /// A delay the failure asks for before the next attempt, when the
+    /// world said so: a remote's `Retry-After`. `fail` waits at least this
+    /// long on top of its own backoff.
+    pub fn retry_after(&self) -> Option<Duration> {
+        match self {
+            JobError::Fetch(err) => err.retry_after(),
+            _ => None,
         }
     }
 }
@@ -116,6 +130,8 @@ const BACKOFF_MAX: Duration = Duration::from_secs(3600);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JobKind {
+    /// Download the bytes of a `url` blob.
+    Fetch,
     Scan,
     /// Thumbnail and preview, whichever is pending.
     Render,
@@ -128,6 +144,7 @@ pub enum JobKind {
 }
 
 agrafe_types::str_enum!(JobKind {
+    Fetch => "fetch",
     Scan => "scan",
     Render => "render",
     Rows => "rows",
@@ -155,14 +172,15 @@ agrafe_types::str_enum!(Priority {
 });
 
 impl JobKind {
-    /// Whether a job of this kind is what moves its blob along: the scan
-    /// or the build that takes it out of `uploaded`, the render that fills
-    /// its representations. Its death is recorded on the blob; a purge or a
+    /// Whether a job of this kind is what moves its blob along: the fetch
+    /// that takes a `url` blob out of `created`, the scan or the build that
+    /// takes it out of `uploaded`, the render that fills its
+    /// representations. Its death is recorded on the blob; a purge or a
     /// reap is housekeeping and leaves the blob's row alone.
     pub fn finishes_blob(self) -> bool {
         matches!(
             self,
-            JobKind::Scan | JobKind::Render | JobKind::Rows | JobKind::Archive
+            JobKind::Fetch | JobKind::Scan | JobKind::Render | JobKind::Rows | JobKind::Archive
         )
     }
 }
@@ -560,11 +578,14 @@ pub enum Failure {
 /// Record a failed attempt: retry with exponential backoff while attempts
 /// remain, otherwise mark the job dead. A `permanent` failure is one a
 /// retry cannot mend, see `JobError::is_permanent`; the job is dead at once.
+/// A `retry_after` the failure asks for, a remote's `Retry-After`, is
+/// honoured when it is longer than the backoff.
 pub async fn fail(
     conn: &mut PgConnection,
     job: &Job,
     error: &str,
     permanent: bool,
+    retry_after: Option<Duration>,
     now: Timestamp,
 ) -> sqlx::Result<Failure> {
     let error = truncate(error);
@@ -594,7 +615,12 @@ pub async fn fail(
         }
         return Ok(Failure::Dead);
     }
-    let run_at = now + backoff(job.attempts);
+    let wait = retry_after
+        .and_then(|d| SignedDuration::try_from(d).ok())
+        .map_or(backoff(job.attempts), |asked| {
+            asked.max(backoff(job.attempts))
+        });
+    let run_at = now + wait;
     let result = sqlx::query(
         "UPDATE jobs SET locked_at = NULL, locked_by = NULL, run_at = $2, last_error = $3 \
          WHERE id = $1",

@@ -34,7 +34,7 @@ enum Command {
         #[arg(long)]
         role: Option<Role>,
         /// Overrides jobs.kinds: the job kinds this process runs workers
-        /// for, comma separated (scan, render, rows, archive, purge, reap).
+        /// for, comma separated (fetch, scan, render, rows, archive, purge, reap).
         #[arg(long, value_delimiter = ',')]
         kinds: Option<Vec<JobKind>>,
     },
@@ -82,9 +82,17 @@ impl std::fmt::Debug for Error {
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     let cli = Cli::parse();
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
-        .init();
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
+    // The HTTP stack under the fetch client logs request targets at debug
+    // and trace, and a fetched URL is a presigned secret: those crates stay
+    // at info whatever the filter says, unless it names them itself.
+    let filter =
+        ["hyper", "hyper_util", "h2", "reqwest"]
+            .into_iter()
+            .fold(filter, |filter, target| {
+                filter.add_directive(format!("{target}=info").parse().expect("a valid directive"))
+            });
+    tracing_subscriber::fmt().with_env_filter(filter).init();
 
     if let Some(path) = &cli.config
         && !path.exists()

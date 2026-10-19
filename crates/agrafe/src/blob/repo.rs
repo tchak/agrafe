@@ -35,9 +35,9 @@ pub async fn insert(exec: impl PgExecutor<'_>, new: &NewBlob) -> sqlx::Result<Bl
         INSERT INTO blobs (
             id, state, filename, content_type, category, input_type,
             checksum_sha256, size, skip_virus_scan, expires_at, scan_state, priority,
-            source_columns, thumbnail_state, preview_state
+            source_columns, thumbnail_state, preview_state, checksum_md5, url
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
         RETURNING *
         "#,
     )
@@ -56,6 +56,8 @@ pub async fn insert(exec: impl PgExecutor<'_>, new: &NewBlob) -> sqlx::Result<Bl
     .bind(new.source_columns.as_ref().map(sqlx::types::Json))
     .bind(initial(Representation::Thumbnail).as_str())
     .bind(initial(Representation::Preview).as_str())
+    .bind(&new.checksum_md5)
+    .bind(&new.url)
     .fetch_one(exec)
     .await
 }
@@ -545,11 +547,11 @@ pub async fn finish_scan(pool: &PgPool, id: Uuid, verdict: &Verdict) -> sqlx::Re
     Ok(Transition::Done(updated))
 }
 
-/// What a blob that just changed state needs done: while it waits in
-/// `uploaded`, a scan for a file or the build for a source; the
-/// representations once it is `ready`, unless both were disabled at
-/// creation; nothing otherwise.
-async fn enqueue_next(conn: &mut PgConnection, blob: &Blob) -> sqlx::Result<()> {
+/// What a blob that just changed state needs done: the fetch of a `url`
+/// blob while it is `created`; while it waits in `uploaded`, a scan for a
+/// file or the build for a source; the representations once it is
+/// `ready`, unless both were disabled at creation; nothing otherwise.
+pub(crate) async fn enqueue_next(conn: &mut PgConnection, blob: &Blob) -> sqlx::Result<()> {
     enqueue_kinds(conn, blob, next_kinds(blob)).await?;
     Ok(())
 }
@@ -559,7 +561,10 @@ async fn enqueue_next(conn: &mut PgConnection, blob: &Blob) -> sqlx::Result<()> 
 fn next_kinds(blob: &Blob) -> &'static [JobKind] {
     let pending = |kind| blob.representation_state(kind) == RepresentationState::Pending;
     match (blob.state, blob.input_type) {
-        (BlobState::Uploaded, InputType::Raw | InputType::Multipart) => &[JobKind::Scan],
+        (BlobState::Created, InputType::Url) => &[JobKind::Fetch],
+        (BlobState::Uploaded, InputType::Raw | InputType::Multipart | InputType::Url) => {
+            &[JobKind::Scan]
+        }
         (BlobState::Uploaded, InputType::Rows) => &[JobKind::Rows],
         (BlobState::Uploaded, InputType::Archive) => &[JobKind::Archive],
         (BlobState::Ready, _)
@@ -610,9 +615,9 @@ pub enum Retry {
     Missing,
 }
 
-/// Enqueue whatever the blob is waiting on, from the blob's side: the scan
-/// or the build of an `uploaded` blob, the render of a `ready` one with a
-/// representation `pending`. Dead jobs of those kinds for the blob are
+/// Enqueue whatever the blob is waiting on, from the blob's side: the
+/// fetch of a `created` `url` blob, the scan or the build of an `uploaded`
+/// blob, the render of a `ready` one with a representation `pending`. Dead jobs of those kinds for the blob are
 /// removed on the way, superseded; a pending one is left to do the work.
 /// The row is locked so a concurrent transition cannot slip in between
 /// the reading of its state and the enqueue.

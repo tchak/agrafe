@@ -108,6 +108,27 @@ read_cache_entries = 100000
 # margin on top of the estimate.
 max_size = "100 GiB"
 
+[fetch]
+# How `url` blobs are fetched: the service downloads the file from the URL
+# given at creation, through a job, instead of receiving it through a PUT.
+# The TCP connect and the TLS handshake.
+connect_timeout = "10s"
+# The whole response, headers and body; a fetch past it fails the attempt
+# and starts over at the next.
+timeout = "1h"
+# Redirects followed at most, each hop under the same checks as the first.
+max_redirects = 5
+# A 429 or 503 may say when to come back; a Retry-After beyond this is not
+# waited for and the fetch is dead at once.
+max_retry_after = "15m"
+# URLs must be https, without credentials, and must not lead to loopback,
+# private, link-local or cloud metadata addresses, as literals or through
+# DNS. Setting this lifts those two rules, for local development and the
+# tests. Never in production.
+allow_private_networks = false
+# Sent with every fetch.
+# user_agent = "agrafe/0.1.0"
+
 [encryption]
 current_kek = "kek1"
 # Streaming AEAD segment size, at most 16 MiB: a segment is held in memory
@@ -201,11 +222,12 @@ keep_failed = "7d"
 # A worker process dedicated to archive builds would say ["archive"]. Every
 # kind must be handled by some process of the deployment. The --kinds flag
 # takes precedence.
-# kinds = ["scan", "render", "rows", "archive", "purge", "reap"]
+# kinds = ["fetch", "scan", "render", "rows", "archive", "purge", "reap"]
 
 # Workers per job kind; these are the defaults. Each kind has its own pool,
 # which is what keeps slow archive builds from holding up scans and renders.
 [jobs.concurrency]
+fetch = 2
 scan = 4
 render = 4
 rows = 2

@@ -43,7 +43,7 @@ into a server process. Dependencies point downwards only.
 | `agrafe-extract` | The `agrafe-extract` helper: pulls the one image out of a PDF, DOCX or ODT. Library plus binary | `agrafe-types`, `lopdf`, `zip`, `quick-xml` |
 | `agrafe-render-text` | The `agrafe-render-text` helper: rasterises a text sample. Library plus binary | `agrafe-types`, `ab_glyph` |
 | `agrafe-render` | Which files render and from what, `vips thumbnail`, the icons, the drivers that spawn the helpers, the startup probe, the `[media]` tool config | `agrafe-types`, `agrafe-sandbox` |
-| `agrafe` | The library: config, database, blobs, upload pipeline, encryption, signing, storage, ClamAV, jobs, metrics, URL minting, and the `Agrafe` handle whose methods are the private API | `agrafe-crypto`, `agrafe-types`, `agrafe-render`, `sqlx`, `object_store` |
+| `agrafe` | The library: config, database, blobs, upload pipeline, the fetch client, encryption, signing, storage, ClamAV, jobs, metrics, URL minting, and the `Agrafe` handle whose methods are the private API | `agrafe-crypto`, `agrafe-types`, `agrafe-render`, `sqlx`, `object_store`, `reqwest` |
 | `agrafe-axum` | The two HTTP interfaces as axum routers, the extractors, `ApiError` and the mapping of the library's errors onto status codes | `agrafe`, `axum` |
 | `agrafe-server` | The clap entry point: `serve`, `migrate`. Produces the binary named `agrafe` | `agrafe`, `agrafe-axum` |
 
@@ -90,7 +90,7 @@ No signature. Reachable only from trusted networks.
 | `POST` | `/blobs` | Create a blob (metadata only, no bytes yet) |
 | `GET` | `/blobs` | List blobs, cursor paginated, filterable |
 | `GET` | `/blobs/:id` | Full metadata, attachments, ready-made signed public URLs and, once `ready`, the envelope |
-| `PUT` | `/blobs/:id` | Upload bytes (all input types), once |
+| `PUT` | `/blobs/:id` | Upload bytes, once: the file of a `raw` or `multipart` blob, the whole source of a `rows` or `archive` one |
 | `PUT` | `/blobs/:id/parts/:n` | Append part `n` of a `rows` or `archive` source |
 | `POST` | `/blobs/:id/finish` | Seal a source sent in parts and enqueue its build |
 | `DELETE` | `/blobs/:id` | Soft delete of an unattached blob, bucket objects purged asynchronously |
@@ -262,13 +262,15 @@ the row up as before.
 |---|---|---|
 | `filename` | yes | Trimmed, then stored and used in URLs and `Content-Disposition`. At most 255 bytes, not `.` or `..`, no path separators, control characters or bidirectional formatting characters (which can disguise an extension) |
 | `content_type` | yes | Normalised to `type/subtype`, classified into a category |
-| `input_type` | yes | `raw`, `multipart`, `rows`, `archive` |
-| `checksum` | for `raw`, `multipart` | SHA-256 of the bytes, base64 |
-| `size` | for `raw`, `multipart` | Declared size in bytes, enforced on upload |
+| `input_type` | yes | `raw`, `multipart`, `url`, `rows`, `archive` |
+| `url` | for `url` | Where to fetch the bytes from: `https`, no credentials, no private address. See "Fetched blobs" |
+| `checksum` | for `raw`, `multipart`; optional for `url` | SHA-256 of the bytes, base64. Checked when given; for `url`, computed and written to the row otherwise |
+| `checksum_md5` | no, for `raw`, `multipart`, `url` | MD5 of the bytes, base64: the `checksum` of an Active Storage blob. Checked when given |
+| `size` | for `raw`, `multipart`; optional for `url` | Declared size in bytes, enforced on upload; a `url` blob without one is bounded by `upload.max_size` |
 | `columns` | for `rows`, or `sheets` | The columns of the one sheet, in order: a list of `{"name": "...", "type": "..."}`, `type` optional. See "Rows" |
 | `sheets` | for `rows`, or `columns` | The sheets of an XLSX or ODS workbook, in order: a list of `{"name": "...", "columns": [...]}`. See "Rows" |
 | `skip_virus_scan` | no, default `false` | Private-only, backend vouches for the source |
-| `priority` | no, default `normal` | `high`, `normal` or `low`: where the blob's scan, render and build jobs go in their kind's queue, see "Jobs" |
+| `priority` | no, default `normal` | `high`, `normal` or `low`: where the blob's fetch, scan, render and build jobs go in their kind's queue, see "Jobs" |
 | `representations` | no, default both | The representations to render, among `thumbnail` and `preview`. `[]` renders nothing, for files nobody will look at through the service. The others are `disabled` for good, see "Derived representations" |
 | `expires_at` or `expires_in` | no, default `blobs.default_expires_in` | Absolute timestamp or duration such as `7d`, in the future. Refused together with `attachment`, and cleared by the first attachment, see "Attachments" |
 | `attachment` | no | `record_type`, `record_id` and `name`: attach in the same transaction as the creation, see "Attachments" |
@@ -276,13 +278,16 @@ the row up as before.
 Checksum is SHA-256 because browsers compute it cheaply with
 `crypto.subtle.digest`, and S3 understands it natively.
 
-The metadata also carries `checksum_md5`, the base64 MD5 of the same bytes,
-once they are in: the `checksum` an Active Storage blob record holds. It is
-there for a backend that keeps records in both systems while it migrates,
-so it can fill in or reconcile the legacy column without reading the file
-back. The service computes it in the upload pipeline and in the build, next
-to the SHA-256; nothing declares it, nothing checks it, and nothing in the
-service depends on it.
+The metadata also carries `checksum_md5`, the base64 MD5 of the same bytes:
+the `checksum` an Active Storage blob record holds, in the same encoding
+as our SHA-256 field, so a record's value pastes straight in. It is there
+for a backend that keeps records in both systems while it migrates, in
+both directions: declared at creation, it is checked against the bytes
+like the SHA-256, so a fetched or uploaded file is known to be the one
+the record describes; left out, the service computes it in the upload
+pipeline and in the build, next to the SHA-256, so the backend can fill in
+or reconcile the legacy column without reading the file back. Nothing in
+the service depends on it.
 
 The request body is capped at 16 MiB, enough for the widest single sheet's
 `columns`: 16 384 of them with a kilobyte of name each. The cap is on the
@@ -291,18 +296,21 @@ refused with `413`.
 
 ### Input types
 
-The name describes the shape of the `PUT` body.
+The name describes the shape of the `PUT` body, or, for `url`, that there
+is none.
 
 | Input type | Body | Produces |
 |---|---|---|
 | `raw` | The file bytes | The file |
 | `multipart` | `multipart/form-data` with one part named `file` holding the bytes; the part's own filename, if any, is ignored | The file |
+| `url` | No `PUT`: the service downloads the bytes from the `url` given at creation, in a job (see "Fetched blobs") | The file |
 | `rows` | JSONL, one array of cell values per line, positional against the columns of the current sheet; an object line `{"sheet": "..."}` switches to a later sheet | CSV, XLSX or ODS per the blob content type, built by a job after the request (see "Generated blobs") |
 | `archive` | JSONL, one `{"path": "...", "blob_id": "..."}` per line | ZIP containing the referenced blobs, built by a job after the request (see "Generated blobs") |
 
-`rows` and `archive` are **private-only**. An `archive` upload reads other
-blobs, so letting a browser drive it would be a confused-deputy path into files
-the uploader does not own.
+`url`, `rows` and `archive` are **private-only**. An `archive` upload reads
+other blobs, so letting a browser drive it would be a confused-deputy path
+into files the uploader does not own, and a `url` blob makes the service
+fetch from the network on the creator's say-so.
 
 ### Write-once
 
@@ -349,8 +357,8 @@ any unattached ──► deleted
 
 | State | Meaning |
 |---|---|
-| `created` | Row exists, no original. `PUT` allowed. A generated blob holds its source parts here between requests. |
-| `uploading` | A `PUT` is in flight. Concurrent `PUT` gets `409`. Rows left behind by a crashed process are reset by the reaper (see below). |
+| `created` | Row exists, no original. `PUT` allowed. A generated blob holds its source parts here between requests; a `url` blob waits here for its fetch. |
+| `uploading` | A `PUT`, or the fetch of a `url` blob, is in flight. Concurrent `PUT` gets `409`. Rows left behind by a crashed process are reset by the reaper (see below). |
 | `uploaded` | What the client sent is in the bucket, encrypted. A job finishes the blob: the scan, or the build of a generated blob. Not readable. |
 | `ready` | Scan passed or skipped, or the build done. Readable. |
 | `infected` | Scan failed. Never readable. Objects kept for forensics until the blob is deleted or passes its `expires_at`. |
@@ -481,8 +489,8 @@ with the row.
 **Abandoned blobs.** An attachment at creation promises that the blob is
 in use; it does not promise that its bytes will arrive. A browser that
 never sends the `PUT`, a backend whose upload keeps failing, or a fetch
-that gave up, once there are fetched blobs, leave a blob `created`, attached, with
-no job and no expiry, and nothing of its own would ever move it. The
+that gave up leave a blob `created`, attached, with no job and no expiry,
+and nothing of its own would ever move it. The
 reaper therefore treats a `created` blob that has been attached and
 untouched for `upload.abandoned_after` (default one day, by its
 `updated_at`) the way it treats a source nobody finished: it is expired,
@@ -571,12 +579,15 @@ The mapping table lives in code (`classify.rs`). PDF is a `document`.
 Bytes flow once through a chain of consumers:
 
 1. Size counter, rejects on exceeding the declared size, itself capped at
-   `upload.max_size` when declared. The HTTP body limit on the upload routes
+   `upload.max_size` when declared, or `upload.max_size` itself for a
+   `url` blob that declared none. The HTTP body limit on the upload routes
    is `max_size` plus slack for multipart framing, a backstop that the
    counter normally reaches first. A `raw` body whose `Content-Length`
-   disagrees with the declared size is refused before it is read.
-2. SHA-256 hasher, compared against the declared checksum at the end, and
-   an MD5 hasher whose result is only recorded (see "Creation").
+   disagrees with the declared size is refused before it is read, and so
+   is a fetched response's.
+2. SHA-256 and MD5 hashers, each compared against its declared checksum
+   at the end when there is one, and written to the row otherwise (see
+   "Creation").
 3. Magic-byte sniffer on the first 8 KiB, compared against the declared
    content type.
 4. ClamAV `INSTREAM` when the blob is not `skip_virus_scan` and the declared
@@ -962,6 +973,174 @@ database error while reading a source is ours and fails the attempt, which
 retries; an archive must never come out incomplete because of a transient
 error of ours.
 
+## Fetched blobs
+
+A `url` blob is one the service downloads instead of receiving through a
+`PUT`: the backend gives the URL at creation and sends no bytes. The first
+use is migration from another storage service (Active Storage on S3, a
+CDN): one `POST /blobs` per record, with a presigned URL, and the files
+move between the two stores without passing through the backend.
+
+### A fetch is an upload the service performs
+
+No accept phase, no `PUT`, no new blob state. A `url` blob is created with
+its URL and a `fetch` job enqueued in the same transaction. The job is an
+uploader: it claims the row `created → uploading` the way the `PUT`
+handler does, feeds the HTTP response body into the existing pipeline
+(size counter, SHA-256 and MD5 hashers, sniffer, inline clamd, encryption,
+multipart store) and lands on `uploaded` or `ready` like any other upload.
+Write-once, the heartbeat, the stale-upload reset, the hand-back to
+`created` on failure and the type checks all apply unchanged. The claim is
+taken once the remote has answered, so the row is `uploading` for the
+body alone, not for a slow connect.
+
+Why not parts and finish: that contract exists because a `rows` or
+`archive` source is large and arrives over time. A URL is one line and
+arrives with the creation. `uploaded` would also be false for it, since
+nothing of the client's is in the bucket. `created` means "no original
+yet", which is true of a blob waiting for its fetch.
+
+`PUT /blobs/:id`, parts and finish answer `409` for a `url` blob, as parts
+do for a `raw` one. `url` is private-only and `public_upload_allowed` is
+false for it: the private API leaves the upload URL out of the creation
+response.
+
+### Creation
+
+`input_type: "url"` plus a required `url` field. The rest of the
+declaration is the usual one; `priority` is what a migration batch sets
+`low`, so a fetch a user is waiting on goes first. Checksums and size:
+
+| Field | `url` | `raw`, `multipart` |
+|---|---|---|
+| `checksum` (SHA-256, base64) | optional, checked when given; the computed value is written to the row otherwise | required |
+| `checksum_md5` (MD5, base64) | optional, checked when given | optional, checked when given |
+| `size` | optional; enforced when given, `upload.max_size` otherwise; a `Content-Length` that disagrees is refused before the body is read | required |
+
+Active Storage's `checksum` is the base64 of the raw MD5 digest, the same
+encoding as our SHA-256 field, so a record's value pastes straight into
+`checksum_md5`. The pipeline already computes MD5 next to SHA-256; the
+change is a compare in the checker and a declaration with optional digests
+and an optional size. A response that carries a `Content-Length` and no
+declared size takes it as the size: hyper fails the body if it falls short
+of it, and the inline-scan decision is made on it as on a declaration.
+
+The URL is stored on the row, since retries need it, and reported in
+private metadata only. It never appears in `last_error`, logs or public
+metadata: migration URLs are presigned, so they are secrets with an
+expiry. The HTTP client's errors carry the URL and are stripped of it
+before they are written anywhere, and the server caps the client's own
+crates (`reqwest`, `hyper`) at `info` in its log filter, since they
+name request targets at `debug` and below. Their expiry is one more
+reason the retry window stays short.
+
+### The fetch job
+
+A `fetch` job kind with its own worker pool (`jobs.concurrency.fetch`,
+default two), so a migration batch cannot take a scan or render worker.
+The handler: find the blob, open the URL, claim the row, hand the body
+stream to the pipeline. On a blob that is not `created`: `uploading` is a
+transient error, retried through the backoff, not a quiet success. The
+lease timeout and the stale-upload timeout are both ten minutes, so after
+a crash mid-fetch the job can be reclaimed before the reaper has handed
+the row back to `created`; a handler that gave up quietly there would be
+deleted as done and leave the blob with no job at all. Any other state
+(`uploaded`, `ready`, terminal) is "nothing to do", like the scan job on a
+blob that is not `uploaded`.
+
+Errors are a `FetchError` with an `is_permanent`, like `BuildError`:
+
+- Permanent, dead at once: a 4xx other than 408, 425 and 429; a checksum,
+  size or type mismatch; a body over the cap; a host that does not
+  resolve; a TLS failure; a redirect to a refused destination, or too many
+  of them; a URL refused by the policy below.
+- Transient, retried through the backoff: a 5xx; 408, 425, 429; connect
+  and read timeouts; a reset; a body shorter than `Content-Length`; the
+  row found `uploading`; a bucket or database error.
+
+`Retry-After` on 429 and 503 is honoured, as delta seconds or an HTTP
+date: the job carries the requested delay and `fail` schedules the retry
+at `max(backoff, retry_after)`. A value past `fetch.max_retry_after`
+(default fifteen minutes) is treated as permanent rather than parking the
+job. With the existing backoff (30 s doubling) and `max_attempts`, a fetch
+gives up after roughly eight minutes end to end, which is the intent: not
+very long.
+
+Out of attempts, the blob stays `created` and the machinery that already
+exists for a dead scan, build or render takes over (see "Jobs"): the
+runner writes `failed_at` and `last_error` on the blob row, since `fetch`
+is a kind that finishes its blob, so private `GET /blobs/:id` shows them,
+the attachments listing shows `blob_failed_at`, and `GET
+/blobs?failed=true` finds them after the dead job itself is pruned.
+Nothing fetch-specific is reported from the job row.
+
+Repair is `POST /blobs/:id/retry`: a `created` blob with `input_type:
+url` waits on a `fetch`, so the retry enqueues one, deletes the dead fetch
+job and clears the failure, like for the other kinds. It is the backend's
+call whether that is useful: a presigned URL has an expiry, and a retry a
+day later usually needs a new blob with a fresh URL instead. `POST
+/jobs/:id/retry` works too while the dead job is around.
+
+Lifetime: an unattached `url` blob expires on its own. An attached one (a
+migration creates with `attachment`, which clears the expiry) whose fetch
+gave up is caught by the abandoned rule: a `created`, attached blob with
+no parts untouched for `upload.abandoned_after` (default one day, by
+`updated_at`) is expired by the reaper, attachments kept, so the record's
+side sees `blob_state: expired` (see "Attachments"). The dead fetch's
+write of `failed_at` touches the row, so the day counts from the failure,
+which gives the backend a day to see the failure before the blob goes. A
+migration therefore has two queries for its failures: `GET
+/blobs?failed=true` within the day, `GET /attachments?record_type=…` with
+`blob_state` after it.
+
+### Network policy
+
+The private port is trusted, but the policy is cheap now and hard to
+retrofit:
+
+- `https` only; no credentials in the URL; a fixed `User-Agent`; no
+  cookies, no forwarded headers, no proxy.
+- The host is resolved by the service, loopback, private, link-local and
+  cloud metadata ranges are refused (the full list is `jobs::fetch::refused`:
+  it includes shared address space, the IPv6 unique-local and link-local
+  blocks, and an IPv4 address mapped into IPv6), and the connection is
+  made to the resolved addresses, so a DNS rebinding cannot swap it between
+  the check and the connect: the client's resolver is ours, and a name that
+  answers with one refused address among several is refused whole. A
+  literal address in the URL never reaches a resolver and is checked on
+  its own, at creation already, so a backend mistake is a `422` rather
+  than a dead job.
+- Redirects: at most `fetch.max_redirects` (default five), every hop
+  through the same checks, `https` only.
+- `fetch.connect_timeout` and `fetch.timeout` (whole response); the size
+  is bounded by the pipeline's counter.
+- `fetch.allow_private_networks` (default `false`) lifts the scheme and
+  address rules for local development and the integration tests, which
+  serve fixtures from an in-process listener on localhost over plain
+  `http`.
+
+The declared `content_type` is what the blob gets; the response's
+`Content-Type` is ignored and the sniffer checks the bytes, as for any
+upload.
+
+`reqwest` is already in the dependency tree through `object_store`'s S3
+support, with rustls like sqlx, so no new TLS stack. The client is built
+once per process from `[fetch]`.
+
+### What a migration looks like
+
+For each Active Storage blob: `POST /blobs` with `input_type: "url"`, the
+presigned URL, `filename`, `content_type`, `checksum_md5` from the
+record's `checksum`, `size` from `byte_size`, `skip_virus_scan` if the
+backend vouches for the source, `priority: "low"` and the `attachment`.
+Then poll `GET /blobs/:id`, or sweep `GET /blobs?failed=true` and `GET
+/attachments?record_type=…&name=…` for `blob_state` of `expired`.
+
+Out of scope for now: `url` on the public port; authenticated fetches
+(headers, tokens), since the backend presigns instead; resuming a partial
+download (`Range`) across attempts, every attempt starts over, like a
+build; a per-host allowlist beyond the address policy.
+
 ## Encryption at rest
 
 **Envelope encryption with a chunked streaming AEAD.** Not age: its
@@ -1343,7 +1522,8 @@ workers, or dead-tuple churn on `jobs` that autovacuum settings do not
 absorb. The enqueue function stays the seam; the table would become the
 outbox.
 
-Job kinds: `scan`, `render` (thumbnail and preview, whichever is pending),
+Job kinds: `fetch` (download the bytes of a `url` blob, see "Fetched
+blobs"), `scan`, `render` (thumbnail and preview, whichever is pending),
 `rows` and `archive` (generate a blob of that input type from its stored
 source, see "Generated blobs"), `purge`
 (delete the objects under a blob's prefix) and `reap`, the periodic
@@ -1389,7 +1569,8 @@ worker's job gets picked up. A live worker renews its lease every third of
 it while the handler runs, so a scan longer than the lease is not handed to
 a second worker; only a dead one lets the lease lapse. Success deletes the
 row. Failure, a handler panic included, unlocks it with exponential backoff
-(30 s, doubling, capped at an hour) until `max_attempts` (5), then sets
+(30 s, doubling, capped at an hour, or longer when the failure asks for
+it: a remote's `Retry-After`) until `max_attempts` (5), then sets
 `failed_at` and leaves it locked: never run again, not holding the one
 pending slot per kind and blob, and still there to read. A failure another
 attempt would repeat (a job without its blob, a purge of a live blob, a
@@ -1398,8 +1579,8 @@ backoff. A failing
 job whose twin was enqueued while it was locked is dropped in favour of the
 newer one.
 
-A dead job that was to finish its blob, a scan, a build or a render,
-leaves its verdict on the blob as well: `failed_at` and `last_error` on
+A dead job that was to finish its blob, a fetch, a scan, a build or a
+render, leaves its verdict on the blob as well: `failed_at` and `last_error` on
 the row, in private metadata, as `blob_failed_at` on the attachments
 listing, and behind `GET /blobs?failed=true`. Why twice: the dead job is
 pruned after `jobs.keep_failed`, the blob it left in `uploaded`, or
@@ -1416,15 +1597,16 @@ dead purge says nothing on the blob: it is housekeeping of a terminal
 blob, and the dead job itself is the evidence of the bug that enqueued it.
 
 The repair is `POST /blobs/:id/retry`: it enqueues whatever the blob's
-state calls for, the scan or the build of an `uploaded` blob, the render
-of a `ready` one with a representation `pending`, at the blob's priority,
+state calls for, the fetch of a `created` `url` blob, the scan or the
+build of an `uploaded` blob, the render of a `ready` one with a
+representation `pending`, at the blob's priority,
 deleting the dead jobs of those kinds for the blob on the way, and
 answers `202` with the metadata, the failure cleared. It needs no job id,
 so it works after the dead job is pruned, and it is the only way to get a
 render going again for a `pending` representation whose job died, which
 the read path's repair, keyed on a version or a missing object, does not
-see. `409` when the blob waits on no job (`created`, or `ready` with its
-representations settled), when the job it waits on is pending or running
+see. `409` when the blob waits on no job (`created` and not fetched, or `ready`
+with its representations settled), when the job it waits on is pending or running
 already, which does the work as for `POST /jobs/:id/retry`, or when the
 blob is `infected`; `410` for an expired or deleted one. The row is
 locked for the operation, so a transition racing it lands on one side or
@@ -1434,16 +1616,16 @@ dead jobs; the blob's retry is for the backend looking at its records.
 `enqueue` calls `pg_notify` in the same statement, so the notification
 travels with the commit. One listener per process wakes the pollers of that
 kind; `jobs.poll_interval` is the fallback for a missed wakeup. Concurrency is
-per kind in `jobs.concurrency` (defaults: `scan` 4, `render` 4, `rows` 2,
-`archive` 1, `purge` 4, `reap` 1): rendering is CPU bound, scanning waits on
-clamd, a build on the network, and one reaper per process is plenty since a
-row is pending at a time anyway.
+per kind in `jobs.concurrency` (defaults: `fetch` 2, `scan` 4, `render` 4,
+`rows` 2, `archive` 1, `purge` 4, `reap` 1): rendering is CPU bound,
+scanning waits on clamd, a build and a fetch on the network, and one
+reaper per process is plenty since a row is pending at a time anyway.
 
 Isolation is by kind. Every kind has its own workers, so however many slow
 jobs of one kind are queued, the others keep flowing; that is the property
 production relies on and the reason there is no priority across kinds.
 Priority orders within a kind: `high`, `normal` or `low`, set on the blob
-at creation and copied onto its scan, render and build jobs. Purges and
+at creation and copied onto its fetch, scan, render and build jobs. Purges and
 blob-less jobs run `normal` whatever the blob says: they are housekeeping
 nobody waits on. It orders, it does not reserve: a kind fed `high` jobs
 without end runs its `low` ones never, which is the point for an archive
@@ -1499,6 +1681,7 @@ is redacted so a dumped config cannot leak them. See `config/example.toml`.
 | HTTP | `axum` on `tokio`, two routers sharing state, two listeners |
 | Database | Postgres via `sqlx`, migrations in `migrations/` |
 | Object store | `object_store`, local filesystem or S3 |
+| Fetching `url` blobs | `reqwest` with rustls, a resolver of our own enforcing the address policy |
 | Config | `figment` with TOML and env providers |
 | Signing | `hmac` + `sha2` |
 | Encryption | `aes-gcm` + `hkdf`, Tink streaming format, own crate (`agrafe-crypto`) |

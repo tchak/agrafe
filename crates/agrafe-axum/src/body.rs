@@ -1,7 +1,8 @@
 //! Turning a `PUT` request into the stream of bytes the upload pipeline
 //! consumes, according to the blob's input type, and handing it to the
 //! `Agrafe` handle: the file itself for `raw` and `multipart`, a source for
-//! `rows` and `archive`, whole or one part at a time.
+//! `rows` and `archive`, whole or one part at a time. A `url` blob takes
+//! no `PUT` at all: its bytes are fetched by a job.
 
 use axum::RequestExt;
 use axum::extract::multipart::Multipart;
@@ -24,7 +25,7 @@ pub const FILE_PART: &str = "file";
 /// same checks again; they run here first so that a blob which cannot take
 /// an upload is refused before any of the body is read.
 pub async fn upload(state: &Agrafe, blob: Blob, req: Request) -> ApiResult<Blob> {
-    if !blob.input_type.is_direct() {
+    if blob.input_type.is_generated() {
         // The whole source in one request: part one and the finish.
         source::prepare_part(&blob, 1, Timestamp::now())?;
         let body = req
@@ -39,11 +40,11 @@ pub async fn upload(state: &Agrafe, blob: Blob, req: Request) -> ApiResult<Blob>
             // A body whose length is already known not to match is refused
             // before a byte is read or the blob is touched.
             if let Some(len) = content_length(&req)
-                && len != declared.size
+                && Some(len) != declared.size
             {
                 return Err(ApiError::Unprocessable(format!(
                     "Content-Length {len} does not match the declared size {}",
-                    declared.size
+                    declared.cap
                 )));
             }
             // `into_limited_body` applies the route's `DefaultBodyLimit`,
@@ -73,6 +74,7 @@ pub async fn upload(state: &Agrafe, blob: Blob, req: Request) -> ApiResult<Blob>
             Ok(state.upload(blob, body).await?)
         }
         InputType::Rows | InputType::Archive => unreachable!("handled above"),
+        InputType::Url => unreachable!("refused by prepare"),
     }
 }
 
