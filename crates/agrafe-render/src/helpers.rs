@@ -1,6 +1,7 @@
 //! The sandboxed helpers: `agrafe-extract` pulls the embedded image out of
-//! a document, `agrafe-render-text` rasterises a text sample. Each is a
-//! separate binary with its own parsers, so none of that code is linked
+//! a document, `agrafe-render-text` rasterises a text sample,
+//! `agrafe-render-document` compiles a typst workspace into a PDF. Each is
+//! a separate binary with its own parsers, so none of that code is linked
 //! into the process that calls it. A helper that succeeds without writing
 //! its output found nothing to do.
 
@@ -55,6 +56,27 @@ pub async fn render_text(
         .arg((fit.width * 2).to_string())
         .arg("--height")
         .arg((fit.height * 2).to_string());
+    run(config, command, output).await
+}
+
+/// Run `agrafe-render-document` on the `workspace` directory, compiling
+/// `main`, a path relative to it, into the PDF at `output`. A document
+/// that does not compile is a `Rejected` whose stderr holds the
+/// diagnostics.
+pub async fn render_document(
+    config: &Config,
+    workspace: &Path,
+    main: &str,
+    output: &Path,
+) -> Result<Verdict<()>, Error> {
+    let mut command = sandbox::command(&config.render_document_command);
+    command
+        .arg("--workspace")
+        .arg(workspace)
+        .arg("--main")
+        .arg(main)
+        .arg("--output")
+        .arg(output);
     run(config, command, output).await
 }
 

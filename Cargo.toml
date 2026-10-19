@@ -7,6 +7,7 @@ members = [
     "crates/agrafe-dashboard",
     "crates/agrafe-extract",
     "crates/agrafe-render",
+    "crates/agrafe-render-document",
     "crates/agrafe-render-text",
     "crates/agrafe-sandbox",
     "crates/agrafe-server",

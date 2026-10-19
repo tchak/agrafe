@@ -34,8 +34,8 @@ enum Command {
         #[arg(long)]
         role: Option<Role>,
         /// Overrides jobs.kinds: the job kinds this process runs workers
-        /// for, comma separated (fetch, scan, render, rows, archive, purge, reap,
-        /// notify).
+        /// for, comma separated (fetch, scan, render, rows, archive,
+        /// document, purge, reap, notify).
         #[arg(long, value_delimiter = ',')]
         kinds: Option<Vec<JobKind>>,
     },

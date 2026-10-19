@@ -504,6 +504,7 @@ impl Tap for Accept {
                 index: self.current as u32,
                 rows: self.sheet_rows,
             }),
+            workspace: 0,
         })
     }
 }

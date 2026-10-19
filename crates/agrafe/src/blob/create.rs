@@ -15,6 +15,7 @@ use crate::attachment::{self, AttachmentRequest, NewAttachment};
 use crate::classify::{self, Category};
 use crate::config::{BlobsConfig, FetchConfig, UploadConfig};
 use crate::jobs::{self, JobKind, Priority, fetch};
+use crate::source::document;
 use crate::source::rows::{self, Column, Sheet};
 use crate::text::is_bidi_control;
 
@@ -90,6 +91,9 @@ pub struct CreateBlobRequest {
     /// The sheets of the workbook, in order, each with its columns. For
     /// `rows` to XLSX or ODS; a CSV holds one sheet.
     pub sheets: Option<Vec<Sheet>>,
+    /// The entry file of a `document` workspace, a path relative to its
+    /// root; `main.typ` by default. Refused on any other input type.
+    pub main: Option<String>,
     #[serde(default)]
     pub skip_virus_scan: bool,
     pub expires_at: Option<Timestamp>,
@@ -122,6 +126,8 @@ pub struct NewBlob {
     pub url: Option<String>,
     /// The sheets of a `rows` blob.
     pub source_columns: Option<Vec<Sheet>>,
+    /// The entry file of a `document` blob.
+    pub source_main: Option<String>,
     pub skip_virus_scan: bool,
     /// `None` only for a blob created attached.
     pub expires_at: Option<Timestamp>,
@@ -166,10 +172,11 @@ pub fn validate(
             req.checksum.as_deref().map(decode_checksum).transpose()?,
             req.size.map(|s| validate_size(s, upload)).transpose()?,
         ),
-        InputType::Rows | InputType::Archive => {
+        InputType::Rows | InputType::Archive | InputType::Document => {
             if req.checksum.is_some() || req.checksum_md5.is_some() || req.size.is_some() {
                 return Err(unprocessable(
-                    "checksum, checksum_md5 and size must be omitted for rows and archive input",
+                    "checksum, checksum_md5 and size must be omitted for generated input \
+                     (rows, archive, document)",
                 ));
             }
             validate_generated_content_type(req.input_type, &content_type)?;
@@ -209,6 +216,14 @@ pub fn validate(
             return Err(unprocessable("sheets apply to rows input only"));
         }
         (_, None, None) => None,
+    };
+    let source_main = match (req.input_type, req.main) {
+        (InputType::Document, Some(main)) => Some(
+            document::normalize_path(&main).map_err(|msg| unprocessable(format!("main: {msg}")))?,
+        ),
+        (InputType::Document, None) => Some(document::DEFAULT_MAIN.to_string()),
+        (_, Some(_)) => return Err(unprocessable("main applies to document input only")),
+        (_, None) => None,
     };
 
     let expires_at = match (req.expires_at, req.expires_in) {
@@ -264,6 +279,7 @@ pub fn validate(
         size,
         url,
         source_columns,
+        source_main,
         // A generated file holds only what the service wrote, from scanned
         // members or from scalar values: skipped by construction.
         skip_virus_scan: req.skip_virus_scan || req.input_type.is_generated(),
@@ -442,6 +458,7 @@ fn validate_generated_content_type(
     let ok = match input_type {
         InputType::Rows => matches!(content_type, classify::CSV | classify::XLSX | classify::ODS),
         InputType::Archive => content_type == classify::ZIP,
+        InputType::Document => content_type == classify::PDF,
         InputType::Raw | InputType::Multipart | InputType::Url => true,
     };
     if ok {
@@ -492,6 +509,7 @@ mod tests {
                 }]
             }),
             sheets: None,
+            main: None,
             skip_virus_scan: false,
             expires_at: None,
             expires_in: None,
@@ -593,6 +611,60 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn documents_are_pdfs_with_a_main_file() {
+        let now = Timestamp::now();
+        let b = validate(
+            req(InputType::Document, classify::PDF),
+            &cfg(),
+            &blobs(),
+            &fetch(),
+            now,
+        )
+        .unwrap();
+        assert_eq!(b.source_main.as_deref(), Some("main.typ"));
+        assert!(b.skip_virus_scan);
+        let mut r = req(InputType::Document, classify::PDF);
+        r.main = Some("src/facture.typ".into());
+        let b = validate(r, &cfg(), &blobs(), &fetch(), now).unwrap();
+        assert_eq!(b.source_main.as_deref(), Some("src/facture.typ"));
+        for bad in ["", "/main.typ", "../main.typ", "a\\b.typ"] {
+            let mut r = req(InputType::Document, classify::PDF);
+            r.main = Some(bad.into());
+            let err = validate(r, &cfg(), &blobs(), &fetch(), now).unwrap_err();
+            assert!(err.to_string().starts_with("main:"), "{bad:?}: {err}");
+        }
+        for other in ["image/png", classify::ZIP, "text/plain"] {
+            assert!(
+                validate(
+                    req(InputType::Document, other),
+                    &cfg(),
+                    &blobs(),
+                    &fetch(),
+                    now
+                )
+                .is_err(),
+                "{other}"
+            );
+        }
+        let mut r = req(InputType::Archive, classify::ZIP);
+        r.main = Some("main.typ".into());
+        let err = validate(r, &cfg(), &blobs(), &fetch(), now).unwrap_err();
+        assert!(err.to_string().contains("document input only"), "{err}");
+        let mut r = req(InputType::Raw, "application/pdf");
+        r.main = Some("main.typ".into());
+        assert!(validate(r, &cfg(), &blobs(), &fetch(), now).is_err());
+        let b = validate(
+            req(InputType::Raw, "application/pdf"),
+            &cfg(),
+            &blobs(),
+            &fetch(),
+            now,
+        )
+        .unwrap();
+        assert_eq!(b.source_main, None);
     }
 
     #[test]

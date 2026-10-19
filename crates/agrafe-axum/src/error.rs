@@ -209,7 +209,8 @@ impl From<UploadError> for ApiError {
             | UploadError::TypeMismatch { .. }
             | UploadError::TooManyParts(_)
             | UploadError::Line { .. }
-            | UploadError::ArchiveTooLarge(_) => ApiError::Unprocessable(err.to_string()),
+            | UploadError::ArchiveTooLarge(_)
+            | UploadError::WorkspaceTooLarge(_) => ApiError::Unprocessable(err.to_string()),
             UploadError::Infected(name) => ApiError::Infected(Some(name)),
             // The body stream is ours (`body.rs`), so the box holds an
             // `ApiError` with the right status; anything else is a plain

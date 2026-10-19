@@ -170,6 +170,7 @@ async fn create_blob(app: &App, filename: &str) -> Uuid {
         url: None,
         columns: None,
         sheets: None,
+        main: None,
         skip_virus_scan: false,
         expires_at: None,
         expires_in: None,

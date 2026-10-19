@@ -4,6 +4,7 @@
 
 pub mod archive;
 pub mod build;
+pub mod document;
 pub mod fetch;
 pub mod notify;
 pub mod purge;
@@ -151,6 +152,8 @@ pub enum JobKind {
     Rows,
     /// Build an `archive` blob from its stored source.
     Archive,
+    /// Build a `document` blob from its stored source.
+    Document,
     Purge,
     Reap,
     /// Deliver one event of a blob to the webhook. See `notify`.
@@ -163,6 +166,7 @@ agrafe_types::str_enum!(JobKind {
     Render => "render",
     Rows => "rows",
     Archive => "archive",
+    Document => "document",
     Purge => "purge",
     Reap => "reap",
     Notify => "notify",
@@ -196,7 +200,12 @@ impl JobKind {
     pub fn finishes_blob(self) -> bool {
         matches!(
             self,
-            JobKind::Fetch | JobKind::Scan | JobKind::Render | JobKind::Rows | JobKind::Archive
+            JobKind::Fetch
+                | JobKind::Scan
+                | JobKind::Render
+                | JobKind::Rows
+                | JobKind::Archive
+                | JobKind::Document
         )
     }
 }

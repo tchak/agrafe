@@ -37,9 +37,9 @@ pub async fn insert(exec: impl PgExecutor<'_>, new: &NewBlob) -> sqlx::Result<Bl
         INSERT INTO blobs (
             id, state, filename, content_type, category, input_type,
             checksum_sha256, size, skip_virus_scan, expires_at, scan_state, priority,
-            source_columns, thumbnail_state, preview_state, checksum_md5, url
+            source_columns, thumbnail_state, preview_state, checksum_md5, url, source_main
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
         RETURNING *
         "#,
     )
@@ -60,6 +60,7 @@ pub async fn insert(exec: impl PgExecutor<'_>, new: &NewBlob) -> sqlx::Result<Bl
     .bind(initial(Representation::Preview).as_str())
     .bind(&new.checksum_md5)
     .bind(&new.url)
+    .bind(&new.source_main)
     .fetch_one(exec)
     .await
 }
@@ -394,6 +395,8 @@ pub struct PartAccepted {
     /// Where the part left a `rows` source: the sheet it is filling and the
     /// lines in it so far. `None` leaves the row as it is.
     pub sheet: Option<SheetPosition>,
+    /// What the part adds to the workspace of a `document` blob, in bytes.
+    pub workspace: u64,
 }
 
 /// The position of a `rows` source within its workbook, carried across
@@ -423,6 +426,7 @@ pub async fn complete_part(
              size = CASE WHEN $7::bigint IS NULL THEN size ELSE COALESCE(size, 0) + $7 END, \
              source_sheet = COALESCE($9, source_sheet), \
              source_sheet_rows = COALESCE($10, source_sheet_rows), \
+             workspace_size = workspace_size + $11, \
              source_updated_at = now() \
          WHERE id = $1 AND state = $3 AND upload_started_at = $8 RETURNING *",
     )
@@ -436,6 +440,7 @@ pub async fn complete_part(
     .bind(started.to_sqlx())
     .bind(accepted.sheet.map(|p| p.index as i32))
     .bind(accepted.sheet.map(|p| p.rows as i64))
+    .bind(accepted.workspace as i64)
     .fetch_optional(&mut *conn)
     .await?;
     match updated {
@@ -464,7 +469,13 @@ pub async fn finish_source(
     .bind(id)
     .bind(BlobState::Uploaded.as_str())
     .bind(BlobState::Created.as_str())
-    .bind([InputType::Rows.as_str(), InputType::Archive.as_str()])
+    .bind(
+        InputType::ALL
+            .iter()
+            .filter(|t| t.is_generated())
+            .map(|t| t.as_str())
+            .collect::<Vec<_>>(),
+    )
     .fetch_optional(&mut *tx)
     .await?;
     let Some(updated) = updated else {
@@ -596,6 +607,7 @@ fn next_kinds(blob: &Blob) -> &'static [JobKind] {
         }
         (BlobState::Uploaded, InputType::Rows) => &[JobKind::Rows],
         (BlobState::Uploaded, InputType::Archive) => &[JobKind::Archive],
+        (BlobState::Uploaded, InputType::Document) => &[JobKind::Document],
         (BlobState::Ready, _)
             if pending(Representation::Thumbnail) || pending(Representation::Preview) =>
         {

@@ -30,9 +30,10 @@ See "Crates" in `DESIGN.md` for the dependency graph.
 - `crates/agrafe-types` — content types, classification, sniffing, the
   text-sample contract, `str_enum!`. Pure; shared by every other crate.
 - `crates/agrafe-sandbox` — subprocesses with resource limits.
-- `crates/agrafe-extract`, `crates/agrafe-render-text` — the sandboxed
-  helpers, each a library plus a binary of the same name. The server does
-  not link them; it finds the binaries on `PATH`.
+- `crates/agrafe-extract`, `crates/agrafe-render-text`,
+  `crates/agrafe-render-document` — the sandboxed helpers, each a library
+  plus a binary of the same name. The server does not link them; it finds
+  the binaries on `PATH`. The last one embeds the typst compiler.
 - `crates/agrafe-render` — what renders and how: `vips`, the helper
   drivers, the icons, the probe, the `[media]` tool config.
 - `fixtures/` — sample files for tests, with the `make.py` that builds them.
@@ -52,8 +53,8 @@ See "Crates" in `DESIGN.md` for the dependency graph.
   `cargo run --bin agrafe -- --config config/agrafe.toml serve` (the
   workspace has several binaries, so `--bin` is needed). The workers need the
   helper binaries: `cargo build --workspace` and point
-  `media.extract_command` and `media.render_text_command` at
-  `target/debug/agrafe-extract` and `target/debug/agrafe-render-text`, or
+  `media.extract_command`, `media.render_text_command` and
+  `media.render_document_command` at the binaries under `target/debug`, or
   put `target/debug` on `PATH`.
 - Tests need a `agrafe_test` database reachable as the current OS user, or
   `DATABASE_URL`, and `vips` on the `PATH` (`brew install vips`). Run
@@ -64,7 +65,8 @@ See "Crates" in `DESIGN.md` for the dependency graph.
 - Test fixtures and the renderer probe files in
   `crates/agrafe-render/assets/probe` come from `fixtures/make.py`
   (Pillow), the thumbnail icons from `scripts/icons.sh`; regenerate rather
-  than edit the outputs.
+  than edit the outputs. The probe's typst workspace under
+  `probe/document` is hand-written text and is edited directly.
 - `cargo coverage` (an alias in `.cargo/config.toml`, needs cargo-llvm-cov)
   reports line coverage; add `--show-missing-lines` to see what is uncovered.
 

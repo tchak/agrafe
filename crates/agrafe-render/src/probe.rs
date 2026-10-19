@@ -22,8 +22,13 @@ pub enum ProbeError {
         vips: String,
         rejection: Rejection,
     },
-    #[error("`{command}` {what}; is media.render_text_command the agrafe-render-text helper?")]
-    Helper { command: String, what: String },
+    #[error("`{command}` {what}; is media.{setting} the {helper} helper?")]
+    Helper {
+        command: String,
+        setting: &'static str,
+        helper: &'static str,
+        what: String,
+    },
     #[error(transparent)]
     Run(#[from] Error),
     #[error("temporary files: {0}")]
@@ -32,6 +37,24 @@ pub enum ProbeError {
 
 const PROBE_PNG: &[u8] = include_bytes!("../assets/probe/pixel.png");
 const PROBE_PDF: &[u8] = include_bytes!("../assets/probe/page.pdf");
+
+/// The probe's typst workspace: a template importing a file, reading
+/// data and placing an image, as templates do.
+const PROBE_DOCUMENT: &[(&str, &[u8])] = &[
+    (
+        "main.typ",
+        include_bytes!("../assets/probe/document/main.typ"),
+    ),
+    (
+        "lib/header.typ",
+        include_bytes!("../assets/probe/document/lib/header.typ"),
+    ),
+    (
+        "data.json",
+        include_bytes!("../assets/probe/document/data.json"),
+    ),
+    ("pixel.png", PROBE_PNG),
+];
 
 /// Render a text sample, a one-pixel PNG and a one-page PDF through the
 /// exact command lines the jobs use. vips exits non-zero for a bad file and
@@ -53,6 +76,8 @@ pub async fn probe(config: &Config, tmp_dir: Option<&Path>) -> Result<(), ProbeE
     if let Some(what) = what {
         return Err(ProbeError::Helper {
             command: config.render_text_command.clone(),
+            setting: "render_text_command",
+            helper: "agrafe-render-text",
             what,
         });
     }
@@ -81,6 +106,38 @@ pub async fn probe(config: &Config, tmp_dir: Option<&Path>) -> Result<(), ProbeE
                 rejection,
             });
         }
+    }
+    Ok(())
+}
+
+/// Compile the probe workspace through the exact command line the
+/// `document` build uses, before a worker takes documents: templates are
+/// written against a compiler version, and a `render_document_command`
+/// that is not the helper, or a helper that cannot read its workspace,
+/// would kill every document job instead of failing the deployment.
+pub async fn probe_document(config: &Config, tmp_dir: Option<&Path>) -> Result<(), ProbeError> {
+    let workdir = crate::workdir(tmp_dir)?;
+    let workspace = workdir.path().join("workspace");
+    for (path, bytes) in PROBE_DOCUMENT {
+        let path = workspace.join(path);
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        tokio::fs::write(&path, bytes).await?;
+    }
+    let output = workdir.path().join("probe.pdf");
+    let what = match helpers::render_document(config, &workspace, "main.typ", &output).await? {
+        Verdict::Rendered(()) => None,
+        Verdict::Declined => Some("wrote nothing for the probe template".to_string()),
+        Verdict::Rejected(rejection) => Some(format!("failed on the probe template: {rejection}")),
+    };
+    if let Some(what) = what {
+        return Err(ProbeError::Helper {
+            command: config.render_document_command.clone(),
+            setting: "render_document_command",
+            helper: "agrafe-render-document",
+            what,
+        });
     }
     Ok(())
 }

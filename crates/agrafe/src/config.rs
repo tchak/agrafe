@@ -42,6 +42,8 @@ pub struct Config {
     #[serde(default)]
     pub archive: ArchiveConfig,
     #[serde(default)]
+    pub document: DocumentConfig,
+    #[serde(default)]
     pub blobs: BlobsConfig,
     #[serde(default)]
     pub fetch: FetchConfig,
@@ -442,6 +444,30 @@ impl Default for ArchiveConfig {
     }
 }
 
+/// Limits on generated documents. See DESIGN.md, "Documents".
+#[derive(Debug, Clone, Deserialize)]
+pub struct DocumentConfig {
+    /// Upper bound on the bytes a document's workspace takes once written
+    /// out for the compiler, the members' sizes plus the inline files,
+    /// checked at accept time and again by the build. A limit of its own:
+    /// `upload.max_size` is sized for one request, and the workspace is
+    /// written to the worker's disk.
+    #[serde(default = "default_document_max_workspace_size")]
+    pub max_workspace_size: ByteSize,
+}
+
+fn default_document_max_workspace_size() -> ByteSize {
+    ByteSize::mib(256)
+}
+
+impl Default for DocumentConfig {
+    fn default() -> Self {
+        Self {
+            max_workspace_size: default_document_max_workspace_size(),
+        }
+    }
+}
+
 /// How `url` blobs are fetched. See DESIGN.md, "Fetched blobs".
 #[derive(Debug, Clone, Deserialize)]
 pub struct FetchConfig {
@@ -692,7 +718,8 @@ pub struct MediaConfig {
     pub tmp_dir: Option<PathBuf>,
     /// The tools, boxes and sandbox limits, owned by the render crate and
     /// read from the same `[media]` table: `vips_command`,
-    /// `extract_command`, `render_text_command`, `thumbnail`, `preview`,
+    /// `extract_command`, `render_text_command`,
+    /// `render_document_command`, `thumbnail`, `preview`,
     /// `embedded_image`, `sandbox`.
     #[serde(flatten)]
     pub render: agrafe_render::Config,
@@ -746,7 +773,7 @@ impl JobsConfig {
         }
         match kind {
             JobKind::Scan | JobKind::Render | JobKind::Purge | JobKind::Notify => 4,
-            JobKind::Fetch | JobKind::Rows => 2,
+            JobKind::Fetch | JobKind::Rows | JobKind::Document => 2,
             JobKind::Archive | JobKind::Reap => 1,
         }
     }

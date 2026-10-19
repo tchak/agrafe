@@ -42,6 +42,7 @@ into a server process. Dependencies point downwards only.
 | `agrafe-sandbox` | Running a subprocess with `setrlimit` bounds and a timeout; the `Limits` config | `tokio`, `libc` |
 | `agrafe-extract` | The `agrafe-extract` helper: pulls the one image out of a PDF, DOCX or ODT. Library plus binary | `agrafe-types`, `lopdf`, `zip`, `quick-xml` |
 | `agrafe-render-text` | The `agrafe-render-text` helper: rasterises a text sample. Library plus binary | `agrafe-types`, `ab_glyph` |
+| `agrafe-render-document` | The `agrafe-render-document` helper: compiles a typst workspace into a PDF. Library plus binary | `typst`, `typst-pdf`, `typst-assets` |
 | `agrafe-render` | Which files render and from what, `vips thumbnail`, the icons, the drivers that spawn the helpers, the startup probe, the `[media]` tool config | `agrafe-types`, `agrafe-sandbox` |
 | `agrafe` | The library: config, database, blobs, upload pipeline, the fetch client, the webhook, encryption, signing, storage, ClamAV, jobs, metrics, URL minting, and the `Agrafe` handle whose methods are the private API | `agrafe-crypto`, `agrafe-types`, `agrafe-render`, `sqlx`, `object_store`, `reqwest` |
 | `agrafe-axum` | The two HTTP interfaces as axum routers, the extractors, `ApiError` and the mapping of the library's errors onto status codes | `agrafe`, `axum` |
@@ -49,11 +50,12 @@ into a server process. Dependencies point downwards only.
 | `agrafe-server` | The clap entry point: `serve`, `migrate`. Produces the binary named `agrafe` | `agrafe`, `agrafe-axum`, `agrafe-dashboard` |
 
 The helpers are separate binaries, not subcommands of the server, so that
-the server links none of their parsers: `lopdf`, `zip`, `quick-xml` and
-`ab_glyph` exist only in processes the sandbox bounds. They are found on
-`PATH` by default (`media.extract_command`, `media.render_text_command`),
-read no configuration and write no logs. A deployment ships the three
-binaries together. A renderer with a dependency tree of its own gets a
+the server links none of their parsers: `lopdf`, `zip`, `quick-xml`,
+`ab_glyph` and `typst` exist only in processes the sandbox bounds. They
+are found on `PATH` by default (`media.extract_command`,
+`media.render_text_command`, `media.render_document_command`), read no
+configuration and write no logs. A deployment ships the four binaries
+together. A renderer with a dependency tree of its own gets a
 helper crate the same way, turning the file into a raster that vips then
 fits into the box; a `Source` or `Fallback` variant, a row in the plan
 table (`agrafe_render::plan`) and a driver in `agrafe_render::helpers`
@@ -91,8 +93,8 @@ No signature. Reachable only from trusted networks.
 | `POST` | `/blobs` | Create a blob (metadata only, no bytes yet) |
 | `GET` | `/blobs` | List blobs, cursor paginated, filterable |
 | `GET` | `/blobs/:id` | Full metadata, attachments, ready-made signed public URLs and, once `ready`, the envelope |
-| `PUT` | `/blobs/:id` | Upload bytes, once: the file of a `raw` or `multipart` blob, the whole source of a `rows` or `archive` one |
-| `PUT` | `/blobs/:id/parts/:n` | Append part `n` of a `rows` or `archive` source |
+| `PUT` | `/blobs/:id` | Upload bytes, once: the file of a `raw` or `multipart` blob, the whole source of a `rows`, `archive` or `document` one |
+| `PUT` | `/blobs/:id/parts/:n` | Append part `n` of a `rows`, `archive` or `document` source |
 | `POST` | `/blobs/:id/finish` | Seal a source sent in parts and enqueue its build |
 | `DELETE` | `/blobs/:id` | Soft delete of an unattached blob, bucket objects purged asynchronously |
 | `POST` | `/blobs/:id/retry` | Enqueue whatever the blob is waiting on, superseding a dead job (see "Jobs") |
@@ -378,13 +380,14 @@ the row up as before.
 |---|---|---|
 | `filename` | yes | Trimmed, then stored and used in URLs and `Content-Disposition`. At most 255 bytes, not `.` or `..`, no path separators, control characters or bidirectional formatting characters (which can disguise an extension) |
 | `content_type` | yes | Normalised to `type/subtype`, classified into a category |
-| `input_type` | yes | `raw`, `multipart`, `url`, `rows`, `archive` |
+| `input_type` | yes | `raw`, `multipart`, `url`, `rows`, `archive`, `document` |
 | `url` | for `url` | Where to fetch the bytes from: `https`, no credentials, no private address. See "Fetched blobs" |
 | `checksum` | for `raw`, `multipart`; optional for `url` | SHA-256 of the bytes, base64. Checked when given; for `url`, computed and written to the row otherwise |
 | `checksum_md5` | no, for `raw`, `multipart`, `url` | MD5 of the bytes, base64: the `checksum` of an Active Storage blob. Checked when given |
 | `size` | for `raw`, `multipart`; optional for `url` | Declared size in bytes, enforced on upload; a `url` blob without one is bounded by `upload.max_size` |
 | `columns` | for `rows`, or `sheets` | The columns of the one sheet, in order: a list of `{"name": "...", "type": "..."}`, `type` optional. See "Rows" |
 | `sheets` | for `rows`, or `columns` | The sheets of an XLSX or ODS workbook, in order: a list of `{"name": "...", "columns": [...]}`. See "Rows" |
+| `main` | no, for `document` | The entry file of the workspace, a relative path; `main.typ` by default. See "Documents" |
 | `skip_virus_scan` | no, default `false` | Private-only, backend vouches for the source |
 | `priority` | no, default `normal` | `high`, `normal` or `low`: where the blob's fetch, scan, render and build jobs go in their kind's queue, see "Jobs" |
 | `representations` | no, default both | The representations to render, among `thumbnail` and `preview`. `[]` renders nothing, for files nobody will look at through the service. The others are `disabled` for good, see "Derived representations" |
@@ -422,11 +425,13 @@ is none.
 | `url` | No `PUT`: the service downloads the bytes from the `url` given at creation, in a job (see "Fetched blobs") | The file |
 | `rows` | JSONL, one array of cell values per line, positional against the columns of the current sheet; an object line `{"sheet": "..."}` switches to a later sheet | CSV, XLSX or ODS per the blob content type, built by a job after the request (see "Generated blobs") |
 | `archive` | JSONL, one `{"path": "...", "blob_id": "..."}` per line | ZIP containing the referenced blobs, built by a job after the request (see "Generated blobs") |
+| `document` | JSONL, one workspace file per line: `{"path": "...", "blob_id": "..."}` for a file taken from a blob, `{"path": "...", "json": ...}` or `{"path": "...", "text": "..."}` for one given inline | PDF compiled by typst from the workspace, built by a job after the request (see "Documents") |
 
-`url`, `rows` and `archive` are **private-only**. An `archive` upload reads
-other blobs, so letting a browser drive it would be a confused-deputy path
-into files the uploader does not own, and a `url` blob makes the service
-fetch from the network on the creator's say-so.
+`url`, `rows`, `archive` and `document` are **private-only**. An `archive`
+or `document` upload reads other blobs, so letting a browser drive it
+would be a confused-deputy path into files the uploader does not own, and
+a `url` blob makes the service fetch from the network on the creator's
+say-so.
 
 ### Write-once
 
@@ -576,7 +581,7 @@ a triple already attached returns the existing attachment. Refused for a
 blob in a terminal state, or past its `expires_at` whether or not the reaper
 has recorded it (`410` for an expired or deleted blob, `409` for an infected
 one). A blob may be attached in `created`, before its bytes: a backend
-creating a `rows` or `archive` blob knows its record at creation, and
+creating a `rows`, `archive` or `document` blob knows its record at creation, and
 `POST /blobs` takes an optional `attachment` to do both in one transaction.
 
 **Detach.** `DELETE /attachments/:id`. Works on a blob in any state; the last
@@ -753,9 +758,10 @@ under the same `<blob id>/` prefix, which is what a purge deletes.
 
 ## Generated blobs
 
-`rows` and `archive` blobs are generated by the service rather than
-uploaded: the `PUT` carries a description, JSONL in both cases, and the
-file is built afterwards by a job. The request accepts; it does not build.
+`rows`, `archive` and `document` blobs are generated by the service rather
+than uploaded: the `PUT` carries a description, JSONL in every case, and
+the file is built afterwards by a job. The request accepts; it does not
+build.
 
 Why: an archive of a hundred thousand entries and a hundred gigabytes takes
 between a quarter of an hour and a few hours to assemble, bounded by the
@@ -817,9 +823,9 @@ reason; the part is discarded and the blob returns to `created` with the
 parts it already had, like any failed upload: a failed part leaves nothing
 of itself. A finish on a blob with no parts, or an uploaded part out of
 sequence, answers `409`, as do parts and finish on a `raw` or `multipart`
-blob. The finish moves the blob to `uploaded` with its build job, `rows` or
-`archive` after the input type, enqueued in the same transaction,
-unreadable until the job is done.
+blob. The finish moves the blob to `uploaded` with its build job, `rows`,
+`archive` or `document` after the input type, enqueued in the same
+transaction, unreadable until the job is done.
 
 This is the one place a blob holds objects before it is `uploaded`, so
 `created` means "no original, maybe parts", not an empty prefix. The
@@ -846,7 +852,9 @@ attached `created` blob with no parts that nothing has touched, see
 ### Build
 
 The build job streams the generated file into the bucket as it produces
-it: nothing touches local disk and nothing is held whole in memory. The
+it: nothing is held whole in memory, and nothing touches local disk but
+the workspace a `document` build hands to its compiler (see
+"Documents"). The
 bytes go through the same encryptor and multipart upload as an uploaded
 file, with 32 MiB parts (S3 allows 10 000 parts per upload; the default
 5 MiB would cap an archive at 50 GB), to `<blob id>/original`, written
@@ -873,9 +881,10 @@ cut short in transit, is retried. Out of attempts, the blob is stuck in
 already means that what the client sent is in the bucket and a job has to
 finish the blob. The source is purged with the rest of the prefix.
 
-Builds are two job kinds, `rows` and `archive`, each with its own worker
-pool: `jobs.concurrency.rows` (default two) and `jobs.concurrency.archive`
-(default one). A kind's workers are the only thing that runs it, so a batch
+Builds are three job kinds, `rows`, `archive` and `document`, each with
+its own worker pool: `jobs.concurrency.rows` (default two),
+`jobs.concurrency.archive` (default one) and `jobs.concurrency.document`
+(default two). A kind's workers are the only thing that runs it, so a batch
 of exports cannot take a scan or render worker, and a hundred-gigabyte
 archive cannot hold up a rows export of a hundred lines. An archive build
 saturates a network interface, hence one at a time per process; a process
@@ -1090,6 +1099,143 @@ failure an hour later. Why only for sources that are gone: a bucket or
 database error while reading a source is ours and fails the attempt, which
 retries; an archive must never come out incomplete because of a transient
 error of ours.
+
+
+### Documents
+
+A `document` blob is declared `application/pdf`; anything else is refused
+at creation. It is a PDF compiled by [typst](https://typst.app) from a
+workspace of files: a template, its includes, its images and its fonts,
+most of them blobs the backend already holds, plus the data of the one
+document, inline. An optional `main` at creation names the entry file,
+`main.typ` by default, as a path under the manifest's rules below; the row
+keeps it as `source_main` for the build.
+
+**Templates are blobs, registration is attachment.** No template registry,
+no configuration entry, no `template` flag on blobs. A backend uploads
+`facture.typ` as an ordinary `raw` blob, attaches it to its own `Template`
+record and remembers the id. A new version of the template is a new blob,
+attached in place of the old one, which expires on its own: the write-once
+rule and the Active Storage swap, nothing new. Why not configuration:
+templates change with the product, not the deployment. Why not a registry
+API: it would duplicate the storage, encryption, listing and lifetime that
+blobs already provide.
+
+**One manifest, no custom protocol.** The source is a workspace manifest,
+JSONL like the other generated types: the archive's line shape, plus one
+form for inline files.
+
+```jsonl
+{"path": "main.typ",       "blob_id": "…"}
+{"path": "lib/header.typ", "blob_id": "…"}
+{"path": "logo.png",       "blob_id": "…"}
+{"path": "Marianne.ttf",   "blob_id": "…"}
+{"path": "data.json",      "json": {"nom": "…", "lignes": []}}
+```
+
+Per line, at accept:
+
+- The path follows the archive's rules without the ZIP particulars: NFC,
+  `/` separated, relative, no empty, `.` or `..` component, no backslash,
+  control or bidirectional formatting character, at most 1 024 bytes with
+  no component beyond 255, which is what the worker's file system takes.
+  A path given twice in one part is refused at its line. Twice across
+  parts, or a path that is a file on one line and a directory on another
+  (`lib` and `lib/a.typ`), is the build's to refuse, since only the build
+  sees every part: carrying the set of paths on the row would buy a `422`
+  a few seconds earlier for a manifest of a handful of lines that the
+  build reads whole anyway.
+- A `blob_id` line is a file taken from a blob: the archive's batched
+  lookup, and the blob must exist and be `ready`.
+- A `json` or `text` line is an inline file, bounded by the one-megabyte
+  line rule; larger data becomes a blob first. The JSON reaches the
+  workspace exactly as written, key order and formatting included, and a
+  `null` is a value. A line takes exactly one of the three.
+- The workspace's size, the members' sizes plus the inline bytes, is
+  accumulated on the row (`workspace_size`) and bounded by
+  `document.max_workspace_size` (default 256 MiB) as the manifest is
+  accepted, then again by the build. A limit of its own: `upload.max_size`
+  is sized for one request, and the workspace is written to the worker's
+  disk. The PDF's size is unknown until it is built, so unlike an
+  archive's, a document's `size` is null until it is `ready`.
+- Nothing checks that the manifest holds the main file: it may come in a
+  later part, and a workspace without it fails to compile with the
+  compiler's own "file not found".
+
+The template is plain typst: `#let d = json("data.json")`, `#include
+"lib/header.typ"`, `#image("logo.png")`. Paths are relative to the
+workspace root; escaping it is refused by typst's own virtual paths, which
+the helper resolves every file through. Fonts: every `.ttf` and `.otf` in
+the workspace is registered in the font book, in path order, plus the
+compiler's embedded fonts (Libertinus Serif, New Computer Modern, DejaVu
+Sans Mono), so a template works with nothing declared; a shared
+`media.fonts_dir` can come later. Packages (`@preview/...`) are refused
+with an explicit error: the sandbox has no network, and the workspace is
+meant to hold every file a document uses. `datetime.today()` is the UTC
+date, since the sandbox has no local time zone.
+
+Template, data, assets and includes are all just files; which ones are
+reused across documents is the backend's business. Accept, parts and
+finish are reused unchanged. `document` is private-only, like `rows` and
+`archive`: it reads other blobs on the creator's say-so.
+
+**No JSON schema.** The backend owns both the template and the data; typst
+fails loudly on a missing key and the job reports the diagnostic, file,
+line, column and message, as its error. A schema would only turn a dead
+job into a `422` a few seconds earlier, and there is nowhere natural to
+hang it without a registry. Additive later, as one more inline file with a
+declared role, if ever needed.
+
+**Embedded compiler, inside a helper binary.** The crate
+`agrafe-render-document`, a library plus a binary like `agrafe-extract`,
+links the `typst` library with a `World` of its own over the workspace
+directory. The server never links it; the `document` job runs the binary
+through `agrafe_sandbox` with the usual limits and timeout. Why not
+`typst-cli`: its world is the real file system under `--root`, a weak
+jail, its fonts come from system discovery, its `@preview` imports fetch
+from the network, and the custom world is what makes the workspace model
+work. Why not in-process: `typst` pulls in image decoders, SVG and font
+parsers, exactly what "nothing decodes user files in the API process"
+forbids.
+
+The plumbing matches the other helpers: `agrafe-render-document --workspace
+<dir> --main <path> --output <file>`, stdin null, a clean environment, no
+configuration and no logs; what it writes on stderr is the compiler's
+diagnostics. The job writes the workspace into a fresh directory under
+`media.tmp_dir`, inline files as they are and members decrypted through
+the usual reader, runs the helper on it, and streams the PDF it wrote
+through the same encryptor and multipart upload as the other builds. This
+is the one build that touches local disk; the directory goes with the job.
+
+**Build semantics** follow `rows` and `archive`: a `document` job kind with
+its own worker pool, `jobs.concurrency.document` (default two: a compile
+is CPU bound and the sandbox bounds it), no scan (`skip_virus_scan` forced,
+the members were `ready`), the blob's priority ordering the queue. Dead at
+once rather than through the backoff: a document that does not compile,
+the diagnostics as the error, one per line as `path:line:column: error:
+message`, warnings before errors since the sandbox keeps the tail of
+stderr; a referenced blob gone between accept and build, which unlike an
+archive's cannot be skipped, since a template cannot do without a file; a
+path twice or both file and directory; a workspace over the limit; a
+compile the sandbox had to kill at the time limit, since the same template
+would take as long again. Retried: the sandbox failing to start the
+helper, the temporary directory, the bucket, the database. Out of
+attempts, the blob is stuck in `uploaded` with `failed_at` and
+`last_error`, like any build. Once `ready` the PDF gets its preview and
+thumbnail through the existing PDF path: the first page as its thumbnail,
+no preview unless it is a wrapped image.
+
+**Probe.** A worker that handles `document` jobs compiles a probe workspace
+through the exact command line the job uses before it starts, as the
+renderer probes vips and the text helper: a template importing a file,
+reading JSON and placing an image. Templates are written against a
+compiler version, pinned in the helper (typst 0.15), and a
+`render_document_command` that is not the helper, or a helper that cannot
+read its workspace, must fail the deployment rather than every document.
+
+Out of scope for now: a template registry or schema validation, typst
+packages, PNG or SVG output (which the content type could select later),
+a shared fonts directory.
 
 ## Fetched blobs
 
@@ -1619,9 +1765,10 @@ is not `ready` answers `409` as the original does.
 
 Decoders and renderers are the most attackable code in the service. They run
 in a subprocess, never in the API process: `vips` for rendering, the
-`agrafe-extract` and `agrafe-render-text` binaries for container parsing
-and text rasterising, each its own crate so that the server links none of
-their parsers (see "Crates"). Each child gets a clean environment (`PATH` and `HOME`
+`agrafe-extract`, `agrafe-render-text` and `agrafe-render-document`
+binaries for container parsing, text rasterising and document compiling,
+each its own crate so that the server links none of their parsers (see
+"Crates"). Each child gets a clean environment (`PATH` and `HOME`
 only, no secrets; vips also gets `TMPDIR`, `VIPS_CONCURRENCY` and `VIPS_WARNING=0`, and a coverage
 build alone passes `LLVM_PROFILE_FILE` through), `setrlimit` bounds on
 address space and data (`media.sandbox.memory`, default 1 GiB), CPU time and
@@ -1657,8 +1804,8 @@ outbox.
 
 Job kinds: `fetch` (download the bytes of a `url` blob, see "Fetched
 blobs"), `scan`, `render` (thumbnail and preview, whichever is pending),
-`rows` and `archive` (generate a blob of that input type from its stored
-source, see "Generated blobs"), `purge`
+`rows`, `archive` and `document` (generate a blob of that input type from
+its stored source, see "Generated blobs"), `purge`
 (delete the objects under a blob's prefix), `reap`, the periodic
 housekeeping, and `notify` (deliver one event of a blob to the webhook,
 see "Webhooks"). One reap, in one transaction, in this order: record
@@ -1751,10 +1898,10 @@ dead jobs; the blob's retry is for the backend looking at its records.
 travels with the commit. One listener per process wakes the pollers of that
 kind; `jobs.poll_interval` is the fallback for a missed wakeup. Concurrency is
 per kind in `jobs.concurrency` (defaults: `fetch` 2, `scan` 4, `render` 4,
-`rows` 2, `archive` 1, `purge` 4, `reap` 1, `notify` 4): rendering is CPU
-bound, scanning waits on clamd, a build, a fetch and a delivery on the
-network, and one reaper per process is plenty since a row is pending at a
-time anyway.
+`rows` 2, `archive` 1, `document` 2, `purge` 4, `reap` 1, `notify` 4):
+rendering and compiling are CPU bound, scanning waits on clamd, a rows or
+archive build, a fetch and a delivery on the network, and one reaper per
+process is plenty since a row is pending at a time anyway.
 
 Isolation is by kind. Every kind has its own workers, so however many slow
 jobs of one kind are queued, the others keep flowing; that is the property
@@ -1810,8 +1957,8 @@ The backend is told when a blob reaches a state it waits for: agrafe
 `POST`s to one URL it configures once, `webhook.url`. Polling `GET
 /blobs/:id` stays as the fallback and the webhook takes it out of the
 normal path, where the backend would otherwise run a polling job per blob
-it is waiting on: every blob finished by a job (a deferred scan, a `rows`
-or `archive` build, a fetch), every dead job, and every record whose
+it is waiting on: every blob finished by a job (a deferred scan, a `rows`,
+`archive` or `document` build, a fetch), every dead job, and every record whose
 upload the user walked away from.
 
 Four events. `ready`: the original became readable, the scan passed or was
@@ -1928,5 +2075,6 @@ is redacted so a dumped config cannot leak them. See `config/example.toml`.
 | Embedded images | `lopdf`, `zip`, `quick-xml` in the sandboxed `agrafe-extract` helper |
 | Generated ZIP, XLSX, ODS | Own streaming ZIP writer (`jobs::build::zip`), `flate2` for the deflated sheet XML, XML written by hand |
 | Text thumbnails | `ab_glyph` with an embedded DejaVu Sans Mono, in the sandboxed `agrafe-render-text` helper |
+| Generated PDF documents | `typst` and `typst-pdf` with the embedded fonts of `typst-assets`, in the sandboxed `agrafe-render-document` helper |
 | Ids | UUID v7 |
 | Time | `jiff`. `Timestamp` throughout the model; `jiff-sqlx` wrappers only at the SQL boundary |

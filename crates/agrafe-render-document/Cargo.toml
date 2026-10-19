@@ -1,0 +1,22 @@
+[package]
+name = "agrafe-render-document"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Sandboxed helper: compiles a typst workspace into a PDF"
+
+[lints]
+workspace = true
+
+[dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
+jiff = "0.2.38"
+thiserror = "2.0.21"
+typst = "0.15.1"
+typst-assets = { version = "0.15.1", features = ["fonts"] }
+typst-layout = "0.15.1"
+typst-pdf = "0.15.1"
+
+[dev-dependencies]
+tempfile = "3.27.0"

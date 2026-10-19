@@ -183,6 +183,9 @@ pub enum InputType {
     Url,
     Rows,
     Archive,
+    /// A PDF compiled by typst from a workspace of files. See DESIGN.md,
+    /// "Documents".
+    Document,
 }
 
 agrafe_types::str_enum!(InputType {
@@ -191,6 +194,7 @@ agrafe_types::str_enum!(InputType {
     Url => "url",
     Rows => "rows",
     Archive => "archive",
+    Document => "document",
 });
 
 impl InputType {
@@ -200,10 +204,13 @@ impl InputType {
         matches!(self, InputType::Raw | InputType::Multipart)
     }
 
-    /// `rows` and `archive` are generated server side from a source sent
-    /// in parts.
+    /// `rows`, `archive` and `document` are generated server side from a
+    /// source sent in parts.
     pub fn is_generated(self) -> bool {
-        matches!(self, InputType::Rows | InputType::Archive)
+        matches!(
+            self,
+            InputType::Rows | InputType::Archive | InputType::Document
+        )
     }
 
     /// A `url` blob's bytes are fetched by a job; there is no `PUT`.
@@ -403,10 +410,11 @@ pub struct Blob {
     /// Object key of the original, `<id>/original`.
     pub storage_key: Option<String>,
 
-    /// Source parts accepted so far, for a `rows` or `archive` blob; the
-    /// next one must be `source_parts + 1`. Always zero for a direct blob.
+    /// Source parts accepted so far, for a generated blob; the next one
+    /// must be `source_parts + 1`. Always zero for a direct blob.
     pub source_parts: i32,
-    /// Lines across the parts: manifest entries for an archive.
+    /// Lines across the parts: manifest entries for an archive or a
+    /// document.
     pub source_rows: i64,
     /// Bytes of source across the parts.
     pub source_size: i64,
@@ -425,6 +433,13 @@ pub struct Blob {
     /// because they were gone by then.
     pub archive_entries: Option<i64>,
     pub archive_errors: Option<i64>,
+    /// The entry file of a `document` blob's workspace, relative to its
+    /// root: declared at creation, read by the build.
+    pub source_main: Option<String>,
+    /// Bytes the workspace of a `document` blob takes once written out,
+    /// accumulated by accept and bounded by `document.max_workspace_size`.
+    /// Zero for anything else.
+    pub workspace_size: i64,
 
     pub kek_id: Option<String>,
     pub wrapped_key: Option<Vec<u8>>,
@@ -672,6 +687,7 @@ mod tests {
         assert!(!public_upload_allowed(false, InputType::Url));
         assert!(!public_upload_allowed(false, InputType::Rows));
         assert!(!public_upload_allowed(false, InputType::Archive));
+        assert!(!public_upload_allowed(false, InputType::Document));
     }
 
     #[test]
@@ -682,6 +698,7 @@ mod tests {
         }
         assert!(InputType::Url.is_fetched());
         assert!(InputType::Rows.is_generated());
+        assert!(InputType::Document.is_generated());
     }
 
     #[test]

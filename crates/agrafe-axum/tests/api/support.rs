@@ -217,6 +217,7 @@ pub async fn setup_tuned(clamd: SocketAddr, tune: impl FnOnce(&mut Config)) -> T
     // to keep the fixtures small.
     config.media.render.extract_command = helper("agrafe-extract");
     config.media.render.render_text_command = helper("agrafe-render-text");
+    config.media.render.render_document_command = helper("agrafe-render-document");
     config.media.render.preview.max_dimension = 400;
     tune(&mut config);
 
@@ -563,7 +564,15 @@ pub fn helper(name: &str) -> String {
     if !path.exists() {
         BUILT.call_once(|| {
             let status = std::process::Command::new(env!("CARGO"))
-                .args(["build", "-p", "agrafe-extract", "-p", "agrafe-render-text"])
+                .args([
+                    "build",
+                    "-p",
+                    "agrafe-extract",
+                    "-p",
+                    "agrafe-render-text",
+                    "-p",
+                    "agrafe-render-document",
+                ])
                 .arg("--target-dir")
                 .arg(dir.parent().unwrap())
                 .status()

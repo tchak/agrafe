@@ -1,8 +1,8 @@
 //! Turning a `PUT` request into the stream of bytes the upload pipeline
 //! consumes, according to the blob's input type, and handing it to the
 //! `Agrafe` handle: the file itself for `raw` and `multipart`, a source for
-//! `rows` and `archive`, whole or one part at a time. A `url` blob takes
-//! no `PUT` at all: its bytes are fetched by a job.
+//! `rows`, `archive` and `document`, whole or one part at a time. A `url`
+//! blob takes no `PUT` at all: its bytes are fetched by a job.
 
 use axum::RequestExt;
 use axum::extract::multipart::Multipart;
@@ -73,7 +73,9 @@ pub async fn upload(state: &Agrafe, blob: Blob, req: Request) -> ApiResult<Blob>
             let body = field.map_err(|e| BoxError::from(multipart_error(e)));
             Ok(state.upload(blob, body).await?)
         }
-        InputType::Rows | InputType::Archive => unreachable!("handled above"),
+        InputType::Rows | InputType::Archive | InputType::Document => {
+            unreachable!("handled above")
+        }
         InputType::Url => unreachable!("refused by prepare"),
     }
 }

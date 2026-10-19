@@ -8,7 +8,7 @@ CREATE TABLE blobs (
     category          text NOT NULL
                       CHECK (category IN ('image', 'document', 'spreadsheet', 'presentation', 'archive', 'audio', 'video', 'text', 'other')),
     input_type        text NOT NULL
-                      CHECK (input_type IN ('raw', 'multipart', 'url', 'rows', 'archive')),
+                      CHECK (input_type IN ('raw', 'multipart', 'url', 'rows', 'archive', 'document')),
     -- Declared at creation for raw and multipart, optionally for url, and
     -- written by the upload or the build otherwise.
     checksum_sha256   bytea CHECK (checksum_sha256 IS NULL OR octet_length(checksum_sha256) = 32),
@@ -39,12 +39,12 @@ CREATE TABLE blobs (
     -- storage: blobs are write-once, the original lives at `<id>/original`
     storage_key       text,
 
-    -- generated blobs: a `rows` or `archive` blob is built from a source
-    -- that arrives in parts, stored under `<id>/source/<n>` while the blob
-    -- is still `created`. See DESIGN.md, "Generated blobs".
+    -- generated blobs: a `rows`, `archive` or `document` blob is built
+    -- from a source that arrives in parts, stored under `<id>/source/<n>`
+    -- while the blob is still `created`. See DESIGN.md, "Generated blobs".
     -- Parts accepted so far; the next one must be source_parts + 1.
     source_parts      integer NOT NULL DEFAULT 0 CHECK (source_parts >= 0),
-    -- Lines across the parts: manifest entries for an archive.
+    -- Lines across the parts: manifest entries for an archive or a document.
     source_rows       bigint  NOT NULL DEFAULT 0 CHECK (source_rows >= 0),
     -- Bytes of source across the parts.
     source_size       bigint  NOT NULL DEFAULT 0 CHECK (source_size >= 0),
@@ -65,6 +65,14 @@ CREATE TABLE blobs (
     -- because they were gone by then (listed in the archive's ERRORS.txt).
     archive_entries   bigint CHECK (archive_entries IS NULL OR archive_entries >= 0),
     archive_errors    bigint CHECK (archive_errors IS NULL OR archive_errors >= 0),
+    -- The entry file of a `document` blob's workspace, relative to its
+    -- root, declared at creation (`main.typ` by default). See DESIGN.md,
+    -- "Documents".
+    source_main       text,
+    -- Bytes the workspace of a `document` blob takes once written out, the
+    -- members' sizes plus the inline files, accumulated part by part and
+    -- bounded by document.max_workspace_size.
+    workspace_size    bigint  NOT NULL DEFAULT 0 CHECK (workspace_size >= 0),
 
     -- encryption (envelope: data key wrapped by the KEK named kek_id). The
     -- streaming AEAD header is cached on the row so a range request needs

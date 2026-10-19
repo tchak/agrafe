@@ -1,6 +1,6 @@
-//! Sources of generated blobs: the parts a `rows` or `archive` description
-//! arrives in, and the finish that seals them and enqueues the build. See
-//! DESIGN.md, "Generated blobs".
+//! Sources of generated blobs: the parts a `rows`, `archive` or `document`
+//! description arrives in, and the finish that seals them and enqueues the
+//! build. See DESIGN.md, "Generated blobs".
 //!
 //! A part goes through the same pipeline as a file (`upload`), with a
 //! [`Tap`] that parses it line by line instead of checking a checksum, to
@@ -13,6 +13,7 @@
 //! the same way.
 
 pub mod archive;
+pub mod document;
 pub mod rows;
 
 use agrafe_crypto::Key;
@@ -20,6 +21,7 @@ use agrafe_crypto::streaming::Layout;
 use bytes::{Buf, Bytes, BytesMut};
 use futures::Stream;
 use jiff::Timestamp;
+use unicode_normalization::{UnicodeNormalization, is_nfc};
 use uuid::Uuid;
 
 use crate::app::Agrafe;
@@ -27,6 +29,7 @@ use crate::blob::read::{ReadError, Reader};
 use crate::blob::repo::{self, PartAccepted, Transition};
 use crate::blob::{Blob, BlobState, InputType};
 use crate::encryption::Envelope;
+use crate::text::is_bidi_control;
 use crate::upload::{self, BoxError, Fed, Tap, UploadError};
 
 /// A source has at most this many parts.
@@ -172,6 +175,7 @@ async fn store_part(
     let tap = match blob.input_type {
         InputType::Archive => SourceTap::Archive(archive::Accept::new(state.clone(), &blob)),
         InputType::Rows => SourceTap::Rows(rows::Accept::new(&state, &mut blob)?),
+        InputType::Document => SourceTap::Document(document::Accept::new(state.clone(), &blob)),
         InputType::Raw | InputType::Multipart | InputType::Url => {
             unreachable!("prepare_part admits generated blobs only")
         }
@@ -214,6 +218,7 @@ async fn store_part(
 enum SourceTap {
     Archive(archive::Accept),
     Rows(rows::Accept),
+    Document(document::Accept),
 }
 
 impl Tap for SourceTap {
@@ -223,6 +228,7 @@ impl Tap for SourceTap {
         match self {
             SourceTap::Archive(tap) => tap.chunk(chunk).await,
             SourceTap::Rows(tap) => tap.chunk(chunk).await,
+            SourceTap::Document(tap) => tap.chunk(chunk).await,
         }
     }
 
@@ -230,8 +236,48 @@ impl Tap for SourceTap {
         match self {
             SourceTap::Archive(tap) => tap.end().await,
             SourceTap::Rows(tap) => tap.end().await,
+            SourceTap::Document(tap) => tap.end().await,
         }
     }
+}
+
+/// A path as a manifest names a file: NFC, `/` as the separator, relative,
+/// no empty, `.` or `..` component (so no trailing slash either), no
+/// backslash, control or bidirectional formatting character (the filename
+/// rule), and at most `max_len` bytes. What an archive entry and a
+/// workspace file have in common; each adds its own rules.
+pub fn normalize_relative_path(raw: &str, max_len: usize) -> Result<String, String> {
+    let path: String = if is_nfc(raw) {
+        raw.to_string()
+    } else {
+        raw.nfc().collect()
+    };
+    if path.is_empty() {
+        return Err("path must not be empty".into());
+    }
+    if path.len() > max_len {
+        return Err(format!("path is longer than {max_len} bytes"));
+    }
+    if path.starts_with('/') {
+        return Err("path must be relative".into());
+    }
+    if path
+        .chars()
+        .any(|c| c == '\\' || c.is_control() || is_bidi_control(c))
+    {
+        return Err(
+            "path must not contain backslashes, control or bidirectional formatting characters"
+                .into(),
+        );
+    }
+    for component in path.split('/') {
+        match component {
+            "" => return Err("path must not contain empty components or end with a slash".into()),
+            "." | ".." => return Err("path must not contain `.` or `..` components".into()),
+            _ => {}
+        }
+    }
+    Ok(path)
 }
 
 /// Why a stored source could not be read back.

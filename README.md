@@ -6,8 +6,8 @@
 [![Edition 2024](https://img.shields.io/badge/edition-2024-orange.svg)](https://doc.rust-lang.org/edition-guide/rust-2024/)
 
 A file storage service: encrypted at rest, virus scanned, with WebP previews
-and thumbnails, and server-side generation of spreadsheets and ZIP archives.
-Rust, Postgres, and any S3-compatible object store.
+and thumbnails, and server-side generation of spreadsheets, ZIP archives and
+PDF documents. Rust, Postgres, and any S3-compatible object store.
 
 agrafe sits between your backend and a bucket. Your backend creates a blob,
 hands the browser a signed upload URL, and gets back signed URLs for the
@@ -96,7 +96,7 @@ every decision.
   or when clamd is unreachable. Nothing is rendered or served before it is
   clean.
 - **Sandboxed rendering**: no user file is ever decoded in the server
-  process. `vips` and the two helper binaries run as subprocesses with
+  process. `vips` and the three helper binaries run as subprocesses with
   resource limits and a timeout, and the file parsers are not even linked
   into the server.
 - **Safe serving**: originals carry `nosniff` and a `sandbox` CSP, so an
@@ -131,6 +131,10 @@ every decision.
   those blobs, with path normalisation and collision-safe deduplication. A
   member deleted before the build reaches it is skipped and listed in an
   `ERRORS.txt` at the archive's root.
+- **PDF documents**: send a workspace, a [typst](https://typst.app)
+  template and its assets by blob id and the document's data inline, and
+  get the compiled PDF back, from a compiler embedded in a sandboxed
+  helper with its own fonts.
 - **Sent in parts**: large sources arrive as many short requests, so a
   dropped connection or a deploy costs one part, not the whole export.
 - **Built by jobs**, streamed into the bucket without touching local disk,
@@ -140,9 +144,9 @@ every decision.
 
 - **Postgres job queue** with `SKIP LOCKED` and `LISTEN/NOTIFY`, enqueued
   in the same transaction as the state change it follows.
-- **Per-kind worker pools** for fetch, scan, render, rows, archive, purge,
-  reap and notify, so a slow kind never holds up another, with retries with
-  backoff and dead-job inspection.
+- **Per-kind worker pools** for fetch, scan, render, rows, archive,
+  document, purge, reap and notify, so a slow kind never holds up another,
+  with retries with backoff and dead-job inspection.
 - **Webhook** telling the backend when a blob is `ready`, `infected`,
   `failed` or `expired`, carrying the blob's full metadata, signed the
   Standard Webhooks way, enqueued with the state change it reports and
@@ -387,6 +391,42 @@ printf '{"path": "pieces/%s", "blob_id": "%s"}\n' report.pdf "$ID" \
   | curl -s -X PUT "localhost:8080/blobs/$ZIP" --data-binary @- | jq .state
 ```
 
+### Compose a PDF document
+
+Upload the template once as an ordinary blob, attached to a record of
+yours so it stays, and keep its id. Each document is then a workspace:
+the template and its assets by blob id, the document's own data inline.
+The PDF is compiled by [typst](https://typst.app) in a sandboxed helper.
+
+```sh
+TEMPLATE=$(curl -s localhost:8080/blobs \
+  -H 'content-type: application/json' \
+  -d "{\"filename\": \"facture.typ\", \"content_type\": \"text/plain\",
+       \"input_type\": \"raw\", \"checksum\": \"$(openssl dgst -sha256 -binary facture.typ | base64)\",
+       \"size\": $(wc -c < facture.typ | tr -d ' '), \"skip_virus_scan\": true,
+       \"attachment\": {\"record_type\": \"Template\", \"record_id\": \"facture\", \"name\": \"source\"}}" \
+  | jq -r .id)
+curl -s -X PUT "localhost:8080/blobs/$TEMPLATE" --data-binary @facture.typ > /dev/null
+
+DOC=$(curl -s localhost:8080/blobs \
+  -H 'content-type: application/json' \
+  -d '{"filename": "facture-12.pdf", "content_type": "application/pdf",
+       "input_type": "document"}' | jq -r .id)
+
+printf '%s\n' \
+  "{\"path\": \"main.typ\", \"blob_id\": \"$TEMPLATE\"}" \
+  "{\"path\": \"logo.png\", \"blob_id\": \"$LOGO\"}" \
+  '{"path": "data.json", "json": {"client": "Ada", "lignes": [{"libelle": "Conseil", "montant": "1 200,00"}]}}' \
+  | curl -s -X PUT "localhost:8080/blobs/$DOC" --data-binary @- | jq .state
+```
+
+The template is plain typst: `#let d = json("data.json")`,
+`#image("logo.png")`, `#include "lib/header.typ"`, every path relative to
+the workspace. Fonts are the `.ttf` and `.otf` files of the workspace plus
+the compiler's embedded ones; packages are not available. `main` at
+creation names another entry file than `main.typ`. A template that does
+not compile leaves the compiler's diagnostics in the blob's `last_error`.
+
 ### Get told when a blob is ready
 
 Rather than polling, configure one URL and agrafe `POST`s to it when a
@@ -515,9 +555,10 @@ and every configuration key is documented in
 | `agrafe-render` | What renders and how: `vips`, the helper drivers, the icons |
 | `agrafe-extract` | Sandboxed helper that pulls the image out of a PDF, DOCX or ODT |
 | `agrafe-render-text` | Sandboxed helper that rasterises a text sample |
+| `agrafe-render-document` | Sandboxed helper that compiles a typst workspace into a PDF |
 
-A deployment ships three binaries together: `agrafe`, `agrafe-extract` and
-`agrafe-render-text`.
+A deployment ships four binaries together: `agrafe`, `agrafe-extract`,
+`agrafe-render-text` and `agrafe-render-document`.
 
 ## Development
 
@@ -537,8 +578,9 @@ tests.
 
 The files under `fixtures/` and the renderer probe files under
 `crates/agrafe-render/assets/probe` are built by `fixtures/make.py` (needs
-Pillow), the placeholder icons by `scripts/icons.sh`, the dashboard's
-stylesheet by `scripts/daisyui.sh`; all outputs are committed.
+Pillow), except the probe's typst workspace under `probe/document`, which
+is written by hand; the placeholder icons by `scripts/icons.sh`, the
+dashboard's stylesheet by `scripts/daisyui.sh`; all outputs are committed.
 
 Coverage needs [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov):
 

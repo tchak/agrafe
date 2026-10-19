@@ -7,14 +7,12 @@ use std::collections::HashMap;
 use bytes::Bytes;
 use jiff::Timestamp;
 use serde::Deserialize;
-use unicode_normalization::{UnicodeNormalization, is_nfc};
 use uuid::Uuid;
 
-use super::{LineError, Lines};
+use super::{LineError, Lines, normalize_relative_path};
 use crate::app::Agrafe;
 use crate::blob::repo::{self, PartAccepted};
 use crate::blob::{Blob, BlobState};
-use crate::text::is_bidi_control;
 use crate::upload::{Tap, UploadError};
 
 /// The ZIP format's limit on an entry name, in bytes.
@@ -71,36 +69,7 @@ pub fn parse_line(line: &[u8]) -> Result<Entry, String> {
 /// no `.` or `..` components, none of the characters the filename rule
 /// refuses, at most the ZIP limit, and not the reserved `ERRORS.txt`.
 pub fn normalize_path(raw: &str) -> Result<String, String> {
-    let path: String = if is_nfc(raw) {
-        raw.to_string()
-    } else {
-        raw.nfc().collect()
-    };
-    if path.is_empty() {
-        return Err("path must not be empty".into());
-    }
-    if path.len() > MAX_PATH_LEN {
-        return Err(format!("path is longer than {MAX_PATH_LEN} bytes"));
-    }
-    if path.starts_with('/') {
-        return Err("path must be relative".into());
-    }
-    if path
-        .chars()
-        .any(|c| c == '\\' || c.is_control() || is_bidi_control(c))
-    {
-        return Err(
-            "path must not contain backslashes, control or bidirectional formatting characters"
-                .into(),
-        );
-    }
-    for component in path.split('/') {
-        match component {
-            "" => return Err("path must not contain empty components or end with a slash".into()),
-            "." | ".." => return Err("path must not contain `.` or `..` components".into()),
-            _ => {}
-        }
-    }
+    let path = normalize_relative_path(raw, MAX_PATH_LEN)?;
     if path.to_lowercase() == ERRORS_FILE.to_lowercase() {
         return Err(format!("{ERRORS_FILE} at the root is reserved"));
     }
@@ -227,6 +196,7 @@ impl Tap for Accept {
             bytes: self.bytes,
             size: Some(self.added),
             sheet: None,
+            workspace: 0,
         })
     }
 }

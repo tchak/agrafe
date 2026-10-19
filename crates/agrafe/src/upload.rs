@@ -140,8 +140,9 @@ pub enum UploadError {
     NotFound,
     #[error("blob is {0} and cannot be uploaded")]
     Conflict(BlobState),
-    /// A `rows` or `archive` blob was handed to the file pipeline: its
-    /// `PUT` body is a source, which goes through `source` instead.
+    /// A `rows`, `archive` or `document` blob was handed to the file
+    /// pipeline: its `PUT` body is a source, which goes through `source`
+    /// instead.
     #[error("a {0} blob is built from a source, not uploaded as a file")]
     Generated(InputType),
     /// A `url` blob was handed a `PUT`: its bytes are fetched by a job
@@ -149,7 +150,7 @@ pub enum UploadError {
     #[error("a {0} blob is fetched by the service from its url, not uploaded")]
     Fetched(InputType),
     /// Parts and finish apply to generated blobs only.
-    #[error("parts and finish apply to rows and archive blobs, not to a {0} blob")]
+    #[error("parts and finish apply to rows, archive and document blobs, not to a {0} blob")]
     NotGenerated(InputType),
     #[error("blob has no declared checksum and size")]
     Undeclared,
@@ -173,6 +174,8 @@ pub enum UploadError {
     NoParts,
     #[error("the archive would exceed the maximum of {0} bytes (archive.max_size)")]
     ArchiveTooLarge(u64),
+    #[error("the workspace would exceed the maximum of {0} bytes (document.max_workspace_size)")]
+    WorkspaceTooLarge(u64),
     /// The body stream failed; the boxed error is the caller's own.
     #[error(transparent)]
     Body(BoxError),

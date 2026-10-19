@@ -1,8 +1,8 @@
 //! Derived representations: which files can be rendered, from what, and the
 //! tools that do it. Decoding and rendering never happen in the calling
-//! process: `vips` and the `agrafe-extract` and `agrafe-render-text`
-//! helpers run as subprocesses through `agrafe_sandbox`, and this crate
-//! links none of their parsers.
+//! process: `vips` and the `agrafe-extract`, `agrafe-render-text` and
+//! `agrafe-render-document` helpers run as subprocesses through
+//! `agrafe_sandbox`, and this crate links none of their parsers.
 
 pub mod helpers;
 pub mod icons;
@@ -17,7 +17,7 @@ use agrafe_types::sniff;
 use serde::Deserialize;
 
 pub use agrafe_types::classify::{DOCX, ODT};
-pub use probe::{ProbeError, probe};
+pub use probe::{ProbeError, probe, probe_document};
 
 /// The tools and boxes the renderer works with. Flattened into the
 /// server's `[media]` section.
@@ -33,6 +33,10 @@ pub struct Config {
     /// The helper that rasterises text samples, found on `PATH` by default.
     #[serde(default = "default_render_text_command")]
     pub render_text_command: String,
+    /// The helper that compiles a typst workspace into a PDF, found on
+    /// `PATH` by default.
+    #[serde(default = "default_render_document_command")]
+    pub render_document_command: String,
     #[serde(default)]
     pub thumbnail: Thumbnail,
     #[serde(default)]
@@ -52,6 +56,9 @@ fn default_extract_command() -> String {
 fn default_render_text_command() -> String {
     "agrafe-render-text".to_string()
 }
+fn default_render_document_command() -> String {
+    "agrafe-render-document".to_string()
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -59,6 +66,7 @@ impl Default for Config {
             vips_command: default_vips_command(),
             extract_command: default_extract_command(),
             render_text_command: default_render_text_command(),
+            render_document_command: default_render_document_command(),
             thumbnail: Thumbnail::default(),
             preview: Preview::default(),
             embedded_image: EmbeddedImage::default(),

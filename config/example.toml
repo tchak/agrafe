@@ -115,6 +115,13 @@ read_cache_entries = 100000
 # margin on top of the estimate.
 max_size = "100 GiB"
 
+[document]
+# Upper bound on the workspace of a generated document, the members' sizes
+# plus the inline files, checked as the manifest is accepted and again by
+# the build, which writes the workspace to the worker's disk for the
+# compiler.
+max_workspace_size = "256 MiB"
+
 [fetch]
 # How `url` blobs are fetched: the service downloads the file from the URL
 # given at creation, through a job, instead of receiving it through a PUT.
@@ -180,10 +187,11 @@ variant_version = 1
 # pdfium renders PDFs more safely than one with poppler.
 vips_command = "vips"
 # The helper binaries run, sandboxed, to pull embedded images out of PDF and
-# office files and to rasterise text samples. Built by this workspace and
-# found on the PATH by default.
+# office files, to rasterise text samples and to compile typst documents.
+# Built by this workspace and found on the PATH by default.
 # extract_command = "/usr/local/bin/agrafe-extract"
 # render_text_command = "/usr/local/bin/agrafe-render-text"
+# render_document_command = "/usr/local/bin/agrafe-render-document"
 # Originals above this size get an icon and no preview; text files still get
 # their thumbnail, which reads only the first few KiB. Pictures and scans
 # people want to see are a few MiB; above this a file is one where the icon
@@ -194,8 +202,8 @@ max_source_size = "64 MiB"
 # tmp_dir = "/var/tmp/agrafe"
 
 [media.sandbox]
-# Limits on each rendering or extraction subprocess. The memory limit is an
-# address space limit, enforced on Linux only.
+# Limits on each rendering, extraction or compiling subprocess. The memory
+# limit is an address space limit, enforced on Linux only.
 timeout = "60s"
 memory = "1 GiB"
 max_output_size = "256 MiB"
@@ -233,7 +241,7 @@ keep_failed = "7d"
 # A worker process dedicated to archive builds would say ["archive"]. Every
 # kind must be handled by some process of the deployment. The --kinds flag
 # takes precedence.
-# kinds = ["fetch", "scan", "render", "rows", "archive", "purge", "reap", "notify"]
+# kinds = ["fetch", "scan", "render", "rows", "archive", "document", "purge", "reap", "notify"]
 
 # Workers per job kind; these are the defaults. Each kind has its own pool,
 # which is what keeps slow archive builds from holding up scans and renders.
@@ -243,6 +251,7 @@ scan = 4
 render = 4
 rows = 2
 archive = 1
+document = 2
 purge = 4
 reap = 1
 notify = 4

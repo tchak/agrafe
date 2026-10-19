@@ -15,7 +15,8 @@ use tracing::Instrument as _;
 use uuid::Uuid;
 
 use super::{
-    Failure, Job, JobError, JobKind, archive, fetch, notify, purge, reap, render, rows, scan,
+    Failure, Job, JobError, JobKind, archive, document, fetch, notify, purge, reap, render, rows,
+    scan,
 };
 use crate::app::Agrafe;
 use crate::metrics::Outcome;
@@ -49,6 +50,14 @@ where
         let media = &state.config().media;
         agrafe_render::probe(&media.render, media.tmp_dir.as_deref()).await?;
         tracing::info!("renderer probe passed");
+    }
+    if handled.contains(&JobKind::Document) {
+        // Templates are written against a compiler version; a helper that
+        // is not the compiler, or cannot read its workspace, must fail the
+        // deployment, not every document.
+        let media = &state.config().media;
+        agrafe_render::probe_document(&media.render, media.tmp_dir.as_deref()).await?;
+        tracing::info!("document compiler probe passed");
     }
     if handled.contains(&JobKind::Reap) {
         // The reaper reschedules itself from then on.
@@ -179,6 +188,7 @@ async fn handle(state: &Agrafe, job: &Job) -> Result<(), JobError> {
         JobKind::Render => render::run(state, job).await,
         JobKind::Rows => rows::run(state, job).await,
         JobKind::Archive => archive::run(state, job).await,
+        JobKind::Document => document::run(state, job).await,
         JobKind::Purge => purge::run(state, job).await,
         JobKind::Reap => reap::run(state, job).await,
         JobKind::Notify => notify::run(state, job).await,

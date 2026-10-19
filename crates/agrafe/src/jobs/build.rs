@@ -1,14 +1,16 @@
-//! What the two build jobs share: the generated file streamed into the
+//! What the build jobs share: the generated file streamed into the
 //! bucket as it is produced, through the same encryptor and multipart
 //! upload as an uploaded file, to `<blob id>/original`, and the row moved
-//! to `ready` once it is there. Nothing touches local disk and nothing is
-//! held whole in memory. See DESIGN.md, "Build".
+//! to `ready` once it is there. Nothing is held whole in memory, and only
+//! a `document` build, which hands its workspace to a compiler, touches
+//! local disk. See DESIGN.md, "Build".
 //!
 //! A kind of build is an [`Assemble`]: `archive` writes a ZIP of members,
-//! `rows` a CSV, XLSX or ODS of cells. Each gets a [`Sink`] to write into
-//! and the blob to read its source from; everything around it, the key,
-//! the multipart upload, the abort on failure, the last check that the
-//! blob still waits for its build, is here.
+//! `rows` a CSV, XLSX or ODS of cells, `document` the PDF a sandboxed
+//! compiler made of a workspace. Each gets a [`Sink`] to write into and
+//! the blob to read its source from; everything around it, the key, the
+//! multipart upload, the abort on failure, the last check that the blob
+//! still waits for its build, is here.
 
 pub mod zip;
 
@@ -66,20 +68,46 @@ pub enum BuildError {
     Compress(#[from] std::io::Error),
     #[error("database: {0}")]
     Db(#[from] sqlx::Error),
+    /// A workspace file whose blob was `ready` at accept time is not any
+    /// more. A document cannot do without a file, so this is not skipped
+    /// the way an archive skips an entry.
+    #[error("workspace file {path}: blob {blob_id} is {state}, not ready")]
+    Member {
+        path: String,
+        blob_id: Uuid,
+        state: BlobState,
+    },
+    /// The workspace cannot be written as the manifest describes it: a
+    /// path twice, a path both file and directory, more bytes than
+    /// `document.max_workspace_size`.
+    #[error("workspace: {0}")]
+    Workspace(String),
+    /// The compiler refused the document; the diagnostics follow.
+    #[error("the document does not compile: {0}")]
+    Compile(String),
+    /// The sandbox could not run the compiler.
+    #[error(transparent)]
+    Render(#[from] agrafe_render::Error),
+    #[error("temporary files: {0}")]
+    Io(std::io::Error),
 }
 
 impl BuildError {
     /// Whether the next attempt would fail the same way. A source that does
     /// not parse, a row missing its key material, a key that does not
-    /// unwrap, a stored object that is damaged and a package the writer
-    /// refuses are the blob's own; the bucket and the database may come
-    /// back.
+    /// unwrap, a stored object that is damaged, a package the writer
+    /// refuses, a workspace file gone or a document that does not compile
+    /// are the blob's own; the bucket, the database, the sandbox and the
+    /// temporary directory may come back.
     pub fn is_permanent(&self) -> bool {
         match self {
             BuildError::Source { .. }
             | BuildError::Incomplete { .. }
             | BuildError::Key(_)
-            | BuildError::Zip(_) => true,
+            | BuildError::Zip(_)
+            | BuildError::Member { .. }
+            | BuildError::Workspace(_)
+            | BuildError::Compile(_) => true,
             BuildError::Read(err) => err.is_permanent(),
             _ => false,
         }
