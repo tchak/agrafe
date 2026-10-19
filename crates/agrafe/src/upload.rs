@@ -326,6 +326,7 @@ where
         checksum_md5: checked.md5,
         size: checked.received as i64,
         scan: checked.scan,
+        content_type: checked.content_type.map(str::to_string),
     };
     match repo::complete_upload(
         state.pool(),
@@ -560,6 +561,9 @@ struct Checks {
     received: u64,
     head: Vec<u8>,
     sniffed: bool,
+    /// A content type more precise than the declared one, read off the
+    /// bytes: a GeoJSON file declared as JSON.
+    refined: Option<&'static str>,
     scanner: Scanner,
 }
 
@@ -573,6 +577,7 @@ impl Checks {
             received: 0,
             head: Vec::with_capacity(sniff::SNIFF_LEN),
             sniffed: false,
+            refined: None,
             scanner,
         }
     }
@@ -584,6 +589,9 @@ struct Checked {
     sha256: Vec<u8>,
     md5: Vec<u8>,
     received: u64,
+    /// The content type the blob gets when the bytes refined the
+    /// declaration.
+    content_type: Option<&'static str>,
 }
 
 impl Tap for Checks {
@@ -609,7 +617,7 @@ impl Tap for Checks {
             let take = (sniff::SNIFF_LEN - self.head.len()).min(chunk.len());
             self.head.extend_from_slice(&chunk[..take]);
             if self.head.len() == sniff::SNIFF_LEN {
-                check_type(&self.content_type, &self.head)?;
+                self.refined = check_type(&self.content_type, &self.head)?;
                 self.sniffed = true;
             }
         }
@@ -618,12 +626,12 @@ impl Tap for Checks {
 
     /// The scan verdict is read last, after the cheap checks have passed: a
     /// mismatched checksum is a `422` whatever clamd would have said.
-    async fn end(self) -> Result<Checked, UploadError> {
+    async fn end(mut self) -> Result<Checked, UploadError> {
         if self.declared.size.is_some_and(|size| self.received != size) {
             return Err(UploadError::SizeMismatch);
         }
         if !self.sniffed {
-            check_type(&self.content_type, &self.head)?;
+            self.refined = check_type(&self.content_type, &self.head)?;
         }
         let sha256 = self.hasher.finalize().to_vec();
         if self
@@ -660,16 +668,21 @@ impl Tap for Checks {
             sha256,
             md5,
             received: self.received,
+            content_type: self.refined,
         })
     }
 }
 
-fn check_type(declared: &str, head: &[u8]) -> Result<(), UploadError> {
+/// The bytes against the declared type: an error when they are clearly
+/// another kind of file, the more precise type when they refine the
+/// declaration, see `sniff::refine`.
+fn check_type(declared: &str, head: &[u8]) -> Result<Option<&'static str>, UploadError> {
     match sniff::sniff(head) {
         Some(sniffed) if !sniff::compatible(declared, sniffed) => Err(UploadError::TypeMismatch {
             declared: declared.to_string(),
             sniffed,
         }),
-        _ => Ok(()),
+        Some(sniffed) => Ok(sniff::refine(declared, sniffed)),
+        None => Ok(None),
     }
 }

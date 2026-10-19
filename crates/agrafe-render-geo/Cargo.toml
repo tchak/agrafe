@@ -1,0 +1,17 @@
+[package]
+name = "agrafe-render-geo"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Sandboxed helper: draws the geometry of a GeoJSON file as SVG paths over the map extent it chose"
+
+[lints]
+workspace = true
+
+[dependencies]
+agrafe-types = { version = "0.1.0", path = "../agrafe-types" }
+clap = { version = "4.6.7", features = ["derive"] }
+geojson = { version = "1.0.0", default-features = false }
+serde_json = "1.0.154"
+thiserror = "2.0.21"

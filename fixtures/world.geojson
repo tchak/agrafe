@@ -1,0 +1,57 @@
+{
+ "type": "FeatureCollection",
+ "features": [
+  {
+   "type": "Feature",
+   "properties": {},
+   "geometry": {
+    "type": "MultiPoint",
+    "coordinates": [
+     [
+      -170,
+      -80
+     ],
+     [
+      170,
+      80
+     ],
+     [
+      0,
+      89
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {},
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       113,
+       -39
+      ],
+      [
+       153,
+       -39
+      ],
+      [
+       153,
+       -10
+      ],
+      [
+       113,
+       -10
+      ],
+      [
+       113,
+       -39
+      ]
+     ]
+    ]
+   }
+  }
+ ]
+}

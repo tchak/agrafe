@@ -4,7 +4,9 @@
 //!
 //! One job serves both representations and does whatever is `pending` on
 //! the row. The picture is the file rendered as a whole, from the sources
-//! its content type lists (`agrafe_render::plan`): the preview is the
+//! its content type lists (`agrafe_render::plan`), for a GeoJSON file its
+//! map, drawn by a helper over a background fetched from a configured
+//! provider; the preview is the
 //! picture in the preview box, and the thumbnail is the preview fitted
 //! into the thumbnail box. The original is thus decoded once, the two
 //! pictures agree, and a thumbnail regenerated on its own is made from the
@@ -24,7 +26,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use agrafe_render::vips::{self, Fit, Input};
-use agrafe_render::{Fallback, Plan, Rejection, Source, Verdict, helpers, plan};
+use agrafe_render::{Fallback, Plan, Rejection, Source, Verdict, geo, helpers, plan};
 use agrafe_types::text::SAMPLE_LEN as TEXT_SAMPLE_LEN;
 use tokio::io::AsyncWriteExt;
 
@@ -273,6 +275,21 @@ impl<'a> Render<'a> {
                         }
                     }
                     (embedded, Input::Raster, PreviewSource::EmbeddedImage)
+                }
+                Source::GeoJson => {
+                    let whole = self.whole_original().await?;
+                    let maps = self.state.maps();
+                    match geo::render_map(&media.render, maps, &whole, self.workdir.path(), fit)
+                        .await?
+                    {
+                        Verdict::Rendered(map) => (map, Input::Raster, PreviewSource::GeoJson),
+                        Verdict::Declined => continue,
+                        Verdict::Rejected(rejection) => {
+                            tracing::warn!(?source, %rejection, "drawing the map failed");
+                            rejected = Some(rejection);
+                            continue;
+                        }
+                    }
                 }
             };
             match self.fit(&input, kind, fit, output).await? {

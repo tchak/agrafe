@@ -1,9 +1,10 @@
 //! The sandboxed helpers: `agrafe-extract` pulls the embedded image out of
 //! a document, `agrafe-render-text` rasterises a text sample,
-//! `agrafe-render-document` compiles a typst workspace into a PDF. Each is
-//! a separate binary with its own parsers, so none of that code is linked
-//! into the process that calls it. A helper that succeeds without writing
-//! its output found nothing to do.
+//! `agrafe-render-document` compiles a typst workspace into a PDF,
+//! `agrafe-render-geo` draws a GeoJSON file as SVG. Each is a separate
+//! binary with its own parsers, so none of that code is linked into the
+//! process that calls it. A helper that succeeds without writing its
+//! output found nothing to do.
 
 use std::path::Path;
 
@@ -84,6 +85,29 @@ pub async fn render_document(
         .arg("--output")
         .arg(output);
     run(config, command, output).await
+}
+
+/// Run `agrafe-render-geo` on `original`, a GeoJSON file, as `spec`
+/// asks, writing the geometry as SVG paths to `svg` and the extent it
+/// chose to `extent` when the file holds any geometry.
+pub async fn render_geo(
+    config: &Config,
+    original: &Path,
+    spec: &Path,
+    svg: &Path,
+    extent: &Path,
+) -> Result<Verdict<()>, Error> {
+    let mut command = sandbox::command(&config.render_geo_command);
+    command
+        .arg("--input")
+        .arg(original)
+        .arg("--spec")
+        .arg(spec)
+        .arg("--svg")
+        .arg(svg)
+        .arg("--extent")
+        .arg(extent);
+    run(config, command, svg).await
 }
 
 /// `Rendered` when the helper wrote `output`, `Declined` when it exited

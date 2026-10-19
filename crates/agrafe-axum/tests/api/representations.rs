@@ -530,6 +530,31 @@ async fn the_startup_probe_checks_vips_and_the_helper(pool: PgPool) {
     };
     let err = probe(&idle_binary).await.unwrap_err();
     assert!(err.to_string().contains("declined a text sample"), "{err}");
+
+    // The map helper is probed the same way, without a background layer.
+    let wrong_geo = agrafe_render::Config {
+        render_geo_command: "/usr/bin/false".into(),
+        ..media.render.clone()
+    };
+    let err = probe(&wrong_geo).await.unwrap_err();
+    assert!(
+        err.to_string().contains("failed on a one-point GeoJSON"),
+        "{err}"
+    );
+    assert!(
+        err.to_string()
+            .contains("is media.render_geo_command the agrafe-render-geo helper?"),
+        "{err}"
+    );
+    let idle_geo = agrafe_render::Config {
+        render_geo_command: "/usr/bin/true".into(),
+        ..media.render.clone()
+    };
+    let err = probe(&idle_geo).await.unwrap_err();
+    assert!(
+        err.to_string().contains("declined a one-point GeoJSON"),
+        "{err}"
+    );
 }
 
 #[sqlx::test(migrator = "MIGRATOR")]

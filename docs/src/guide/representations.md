@@ -22,6 +22,7 @@ stripped.
 | Other PDF | none | the first page |
 | Other DOCX, ODT and office files | none | the icon |
 | Text, CSV and TSV | none | the first lines, in a monospace font |
+| GeoJSON | the geometry over a map, see [Maps](#maps) | the map |
 | Anything else | none | the icon |
 
 A document "wraps a single image" when it is what users produce when asked
@@ -37,6 +38,49 @@ except text files, whose thumbnail reads only the first 8 KiB.
 
 A user interface should key on whether a blob has a preview
 (`preview_state` is `ready`), never on its category.
+
+## Maps
+
+A GeoJSON file, `application/geo+json`, gets its geometry drawn over a map
+as its preview, and that map fitted into the thumbnail box. A `.geojson`
+uploaded as `application/json` or `text/plain`, which is how they tend to
+arrive, is recognised by its first KiB and its `content_type` becomes
+`application/geo+json` as the upload completes. A file with no geometry,
+or with a coordinate off the globe, has no map and gets the text thumbnail
+instead.
+
+The map shows the geometry's bounding box, padded by `media.geojson.padding`
+(a tenth of its larger side) and at least `min_span` (200 m) wide, so a
+single point still gets a readable map, widened to the shape of the
+preview box. It is drawn at the preview box or `media.geojson.max_size`
+(2048 pixels), whichever is smaller. Features keep their
+[simplestyle-spec](https://github.com/mapbox/simplestyle-spec) properties,
+which geojson.io, uMap and most GIS exports write, over the default of
+`[media.geojson.style]`:
+
+| Property | Honoured as |
+|---|---|
+| `stroke`, `fill`, `marker-color` | a hex colour of 3 or 6 digits, `#` optional |
+| `stroke-opacity`, `fill-opacity` | a number, clamped to 0..1 |
+| `stroke-width` | pixels, clamped to 0..20 |
+| `marker-size` | `small`, `medium` or `large` |
+
+`marker-symbol`, `title` and `description` are not drawn, and a value of
+the wrong kind is ignored. Lines and polygons get a darker casing under
+their stroke, polygon holes stay holes, and points are discs with a ring.
+
+The background comes from the WMS layers of `[[media.geojson.layers]]`,
+each a `GetMap` URL template that agrafe fills with the bounding box in
+EPSG:3857 and the pixel size, composited bottom to top, and each drawn
+only on an extent between its `min_span` and `max_span`. The attribution
+of the first drawn layer is burned into a corner of the map. There is no
+layer by default: the geometry is then drawn on a flat background and
+nothing leaves the worker. Every render with a layer configured sends the
+extent of a user's geometry to that provider, so the render workers'
+egress must allow those hosts, and nothing else needs it. A layer that
+cannot be fetched, times out or does not decode fails the render attempt,
+which is retried; the file is never marked `failed` for the provider's
+downtime. See [Configuration](../reference/configuration.md#mediageojson).
 
 ## States
 
@@ -98,9 +142,9 @@ that repair. Use `POST /blobs/:id/retry` (see [Jobs and retries](jobs.md)).
 ## Sandboxing
 
 No user file is decoded in the server process. `vips` renders images and
-PDF pages, `agrafe-extract` pulls embedded images out of PDF and office
-files, and `agrafe-render-text` rasterises text samples, each as a
-subprocess with:
+PDF pages and composites maps, `agrafe-extract` pulls embedded images out
+of PDF and office files, `agrafe-render-text` rasterises text samples, and
+`agrafe-render-geo` draws GeoJSON files, each as a subprocess with:
 
 - a clean environment, with no secrets;
 - an address space limit, `media.sandbox.memory` (1 GiB, enforced on Linux
@@ -117,7 +161,8 @@ process. A file a renderer rejects is marked `failed`, and the job is done.
 Only failures of agrafe's own, such as the object store or the database,
 fail the job and retry it.
 
-Before the workers start, agrafe renders a text sample, a one-pixel PNG and
-a one-page PDF through the exact command lines the jobs use. The process
-refuses to start if any of them fails, so a libvips built without PDF
+Before the workers start, agrafe renders a text sample, a one-pixel PNG, a
+one-page PDF and the map of a one-point GeoJSON, without a background
+layer, through the exact command lines the jobs use. The process refuses
+to start if any of them fails, so a libvips built without PDF or SVG
 support fails the deployment rather than every render.

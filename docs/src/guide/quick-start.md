@@ -32,10 +32,10 @@ cargo build --workspace --release
 export PATH="$PWD/target/release:$PATH"
 ```
 
-The workspace produces four binaries that ship together: `agrafe`, the
-server, and three sandboxed helpers it runs as subprocesses,
-`agrafe-extract`, `agrafe-render-text` and `agrafe-render-document`. The
-server finds the helpers on the `PATH`.
+The workspace produces five binaries that ship together: `agrafe`, the
+server, and four sandboxed helpers it runs as subprocesses,
+`agrafe-extract`, `agrafe-render-text`, `agrafe-render-document` and
+`agrafe-render-geo`. The server finds the helpers on the `PATH`.
 
 ## Configure
 

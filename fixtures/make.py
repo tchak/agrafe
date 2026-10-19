@@ -4,6 +4,7 @@ files under crates/agrafe-render/assets/probe. Needs Pillow. The outputs are
 committed; run this only to change them."""
 
 import io
+import json
 import struct
 import zipfile
 import zlib
@@ -122,6 +123,78 @@ def odt(text, media):
     return out.getvalue()
 
 
+def feature(geometry, properties=None):
+    return {"type": "Feature", "properties": properties or {}, "geometry": geometry}
+
+
+def collection(*features):
+    return {"type": "FeatureCollection", "features": list(features)}
+
+
+def geojson(value):
+    return (json.dumps(value, ensure_ascii=False, indent=1) + "\n").encode()
+
+
+def square(lon, lat, side):
+    """A closed ring of about `side` metres around (lon, lat)."""
+    d = side / 111_320 / 2
+    return [[lon - d, lat - d], [lon + d, lat - d], [lon + d, lat + d], [lon - d, lat + d], [lon - d, lat - d]]
+
+
+PARIS = [2.3522, 48.8566]
+LYON = [4.8357, 45.7640]
+
+GEOJSON = {
+    "point.geojson": feature({"type": "Point", "coordinates": PARIS}, {"name": "Paris"}),
+    # A parcel-sized square with a square hole: the hole must stay a hole.
+    "polygon-hole.geojson": collection(
+        feature({"type": "Polygon", "coordinates": [square(*LYON, 100), square(*LYON, 30)]}, {"section": "AB", "numero": "12"}),
+    ),
+    # Two lines of a few kilometres, with properties of no interest.
+    "multiline.geojson": feature(
+        {"type": "MultiLineString", "coordinates": [
+            [[4.80, 45.75], [4.81, 45.755], [4.82, 45.752], [4.83, 45.76]],
+            [[4.80, 45.77], [4.83, 45.77]],
+        ]},
+        {"name": "chemins", "length": 4200},
+    ),
+    # A point, a line and a polygon in one geometry.
+    "collection.geojson": feature({"type": "GeometryCollection", "geometries": [
+        {"type": "Point", "coordinates": LYON},
+        {"type": "LineString", "coordinates": [[4.83, 45.76], [4.84, 45.77]]},
+        {"type": "Polygon", "coordinates": [square(4.84, 45.76, 200)]},
+    ]}),
+    # From one corner of the map to the other, with a point past the
+    # projection's latitude.
+    "world.geojson": collection(
+        feature({"type": "MultiPoint", "coordinates": [[-170, -80], [170, 80], [0, 89]]}),
+        feature({"type": "Polygon", "coordinates": [[[113, -39], [153, -39], [153, -10], [113, -10], [113, -39]]]}),
+    ),
+    "empty.geojson": collection(),
+    # A coordinate off the globe.
+    "off-earth.geojson": feature({"type": "Point", "coordinates": [200, 95]}),
+    # What geojson.io exports: simplestyle properties on each feature.
+    "styled.geojson": collection(
+        feature({"type": "Polygon", "coordinates": [square(*PARIS, 300)]}, {
+            "stroke": "#ff0000", "stroke-width": 2, "stroke-opacity": 1,
+            "fill": "#00ff00", "fill-opacity": 0.5, "title": "Parcelle", "description": "Une parcelle",
+        }),
+        feature({"type": "Point", "coordinates": PARIS}, {
+            "marker-color": "#0000ff", "marker-size": "large", "marker-symbol": "star",
+        }),
+    ),
+    # Values a file could carry to paint the map or break the SVG.
+    "hostile-style.geojson": collection(
+        feature({"type": "Polygon", "coordinates": [square(*PARIS, 300)]}, {
+            "stroke": "red", "stroke-width": 10000, "stroke-opacity": "1",
+            "fill": "#12345", "fill-opacity": 7, "marker-color": 12, "marker-size": 3,
+        }),
+        feature({"type": "Point", "coordinates": PARIS}, {"marker-size": "huge\"/><script>", "marker-color": "#fff\""}),
+        {"type": "Feature", "properties": None, "geometry": {"type": "Point", "coordinates": [2.36, 48.86]}},
+    ),
+}
+
+
 def main():
     photo = jpeg(600, 300)
     small_png = png(64, 32)
@@ -143,12 +216,18 @@ def main():
         "vector.docx": docx("", "image1.emf", b"\x01\x00\x00\x00" + b"\x00" * 60),
         "image.odt": odt("", small_png),
     }
+    files.update({name: geojson(value) for name, value in GEOJSON.items()})
     for name, data in files.items():
         (HERE / name).write_bytes(data)
         print(f"{name}: {len(data)} bytes")
     # What a worker renders at startup to check its vips and helper binary.
     PROBE.mkdir(exist_ok=True)
-    for name, data in {"pixel.png": png(1, 1), "page.pdf": empty_pdf(20, 10)}.items():
+    probe_files = {
+        "pixel.png": png(1, 1),
+        "page.pdf": empty_pdf(20, 10),
+        "point.geojson": geojson(feature({"type": "Point", "coordinates": PARIS})),
+    }
+    for name, data in probe_files.items():
         (PROBE / name).write_bytes(data)
         print(f"probe/{name}: {len(data)} bytes")
 

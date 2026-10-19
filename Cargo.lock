@@ -132,6 +132,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "sqlx",
+ "tempfile",
  "thiserror",
  "tokio",
  "tokio-stream",
@@ -199,10 +200,16 @@ version = "0.1.0"
 dependencies = [
  "agrafe-sandbox",
  "agrafe-types",
+ "bytesize",
+ "futures",
+ "humantime-serde",
+ "reqwest",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tokio",
+ "toml 0.9.12+spec-1.1.0",
  "tracing",
 ]
 
@@ -218,6 +225,17 @@ dependencies = [
  "typst-assets",
  "typst-layout",
  "typst-pdf",
+]
+
+[[package]]
+name = "agrafe-render-geo"
+version = "0.1.0"
+dependencies = [
+ "agrafe-types",
+ "clap",
+ "geojson",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
@@ -264,6 +282,7 @@ version = "0.1.0"
 dependencies = [
  "infer 0.22.0",
  "serde",
+ "serde_json",
  "thiserror",
 ]
 
@@ -1466,7 +1485,7 @@ dependencies = [
  "pear",
  "serde",
  "tempfile",
- "toml",
+ "toml 0.8.23",
  "uncased",
  "version_check",
 ]
@@ -1674,6 +1693,19 @@ checksum = "4bb6743198531e02858aeaea5398fcc883e71851fcbcb5a2f773e2fb6cb1edf2"
 dependencies = [
  "typenum",
  "version_check",
+]
+
+[[package]]
+name = "geojson"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "510c094bfc76ea34d02eee00833254945b70491d79a9c0b050abed6eaa799ffb"
+dependencies = [
+ "log",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tinyvec",
 ]
 
 [[package]]
@@ -4041,6 +4073,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_spanned"
+version = "1.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e7523beb55eece201a2356bee0bbca0d1ab466c14c07703b2e0ee6d42cb0c2c"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
 name = "serde_urlencoded"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4679,6 +4720,9 @@ name = "tinyvec"
 version = "1.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
+dependencies = [
+ "serde_core",
+]
 
 [[package]]
 name = "tokio"
@@ -4749,9 +4793,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc1beb996b9d83529a9e75c17a1686767d148d70663143c7854d8b4a09ced362"
 dependencies = [
  "serde",
- "serde_spanned",
- "toml_datetime",
+ "serde_spanned 0.6.9",
+ "toml_datetime 0.6.11",
  "toml_edit",
+]
+
+[[package]]
+name = "toml"
+version = "0.9.12+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf92845e79fc2e2def6a5d828f0801e29a2f8acc037becc5ab08595c7d5e9863"
+dependencies = [
+ "indexmap",
+ "serde_core",
+ "serde_spanned 1.1.2",
+ "toml_datetime 0.7.5+spec-1.1.0",
+ "toml_parser",
+ "toml_writer",
+ "winnow 0.7.15",
 ]
 
 [[package]]
@@ -4764,6 +4823,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "toml_datetime"
+version = "0.7.5+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92e1cfed4a3038bc5a127e35a2d360f145e1f4b971b551a2ba5fd7aedf7e1347"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
 name = "toml_edit"
 version = "0.22.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4771,10 +4839,19 @@ checksum = "41fe8c660ae4257887cf66394862d21dbca4a6ddd26f04a3560410406a2f819a"
 dependencies = [
  "indexmap",
  "serde",
- "serde_spanned",
- "toml_datetime",
+ "serde_spanned 0.6.9",
+ "toml_datetime 0.6.11",
  "toml_write",
  "winnow 0.7.15",
+]
+
+[[package]]
+name = "toml_parser"
+version = "1.1.5+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "baa693a8032d7e1cada7d0041e96126df243179ff061456783ac7f12bda4744c"
+dependencies = [
+ "winnow 1.0.4",
 ]
 
 [[package]]
@@ -4782,6 +4859,12 @@ name = "toml_write"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
+
+[[package]]
+name = "toml_writer"
+version = "1.1.3+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770"
 
 [[package]]
 name = "tower"
@@ -5006,7 +5089,7 @@ dependencies = [
  "indexmap",
  "rustc-hash",
  "stacker",
- "toml",
+ "toml 0.8.23",
  "typst-library",
  "typst-macros",
  "typst-syntax",
@@ -5122,7 +5205,7 @@ dependencies = [
  "smallvec",
  "syntect",
  "time",
- "toml",
+ "toml 0.8.23",
  "ttf-parser",
  "two-face",
  "typed-arena",
@@ -5237,7 +5320,7 @@ dependencies = [
  "ecow",
  "rustc-hash",
  "serde",
- "toml",
+ "toml 0.8.23",
  "typst-timing",
  "typst-utils",
  "unicode-ident",

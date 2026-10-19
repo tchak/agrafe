@@ -265,6 +265,7 @@ pub async fn setup_tuned(
     config.media.render.extract_command = helper("agrafe-extract");
     config.media.render.render_text_command = helper("agrafe-render-text");
     config.media.render.render_document_command = helper("agrafe-render-document");
+    config.media.render.render_geo_command = helper("agrafe-render-geo");
     config.media.render.preview.max_dimension = 400;
     tune(&mut config);
 
@@ -609,6 +610,8 @@ pub fn helper(name: &str) -> String {
                     "agrafe-render-text",
                     "-p",
                     "agrafe-render-document",
+                    "-p",
+                    "agrafe-render-geo",
                 ])
                 .arg("--target-dir")
                 .arg(dir.parent().unwrap())

@@ -1,4 +1,5 @@
-//! Rasterising a file to a bounded WebP with `vips thumbnail`.
+//! Rasterising a file to a bounded WebP with `vips thumbnail`, and
+//! stacking the layers of a map with `vips composite`.
 //!
 //! One operation covers every input: images are decoded with shrink-on-load
 //! where the format allows it, PDFs are rendered at the scale that fits the
@@ -111,6 +112,67 @@ pub async fn to_webp(
         )),
         Some(rejection) => Ok(Verdict::Rejected(rejection)),
     }
+}
+
+/// `VipsBlendMode` `over`, the `composite` argument the command line
+/// takes as a number.
+const BLEND_OVER: &str = "2";
+
+/// Stack `layers`, bottom to top, and `svg` over them into `output`, all
+/// of them file names in `dir`, in vips's native format for `to_webp` to
+/// pick up. The SVG is rendered at 72 dpi, where its pixel `width` and
+/// `height` are its size, which is what makes it line up with the layers.
+/// vips never declines: the verdict is `Rendered` or `Rejected`. The
+/// names must not contain spaces or brackets, which vips reads as a
+/// separator and as options.
+pub async fn composite(
+    config: &Config,
+    dir: &Path,
+    layers: &[String],
+    svg: &str,
+    output: &str,
+) -> Result<Verdict<()>, Error> {
+    let inputs: Vec<String> = layers
+        .iter()
+        .map(|layer| format!("{layer}[fail-on=error]"))
+        .chain(std::iter::once(format!("{svg}[dpi=72,fail-on=error]")))
+        .collect();
+    debug_assert!(
+        inputs
+            .iter()
+            .all(|input| !input.contains(' ') && input.matches('[').count() == 1)
+    );
+    let mut command = sandbox::command(&config.vips_command);
+    command
+        .current_dir(dir)
+        .env("TMPDIR", dir)
+        .env("VIPS_WARNING", "0")
+        .env("VIPS_CONCURRENCY", VIPS_CONCURRENCY)
+        .arg("composite")
+        .arg(inputs.join(" "))
+        .arg(output)
+        .arg(BLEND_OVER);
+    let outcome = sandbox::run(command, &config.sandbox).await?;
+    Ok(match Rejection::of(&outcome) {
+        None => Verdict::Rendered(()),
+        Some(rejection) => Verdict::Rejected(rejection),
+    })
+}
+
+/// Whether `file`, a name in `dir`, decodes whole: `vips avg` reads every
+/// pixel. Run on the layers of a map once the composite failed, to tell a
+/// background the provider corrupted from a failure of the drawing.
+pub async fn decodes(config: &Config, dir: &Path, file: &str) -> Result<bool, Error> {
+    let mut command = sandbox::command(&config.vips_command);
+    command
+        .current_dir(dir)
+        .env("TMPDIR", dir)
+        .env("VIPS_WARNING", "0")
+        .env("VIPS_CONCURRENCY", VIPS_CONCURRENCY)
+        .arg("avg")
+        .arg(format!("{file}[fail-on=error]"));
+    let outcome = sandbox::run(command, &config.sandbox).await?;
+    Ok(Rejection::of(&outcome).is_none())
 }
 
 /// The first `LOADER_SNIFF_LEN` bytes of `path`, fewer for a shorter file.

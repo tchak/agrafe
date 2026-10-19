@@ -319,6 +319,9 @@ pub struct Completed {
     pub checksum_md5: Vec<u8>,
     pub size: i64,
     pub scan: ScanOutcome,
+    /// A content type more precise than the declared one, read off the
+    /// bytes; `None` keeps the declaration. It never changes the category.
+    pub content_type: Option<String>,
 }
 
 /// `uploading` to wherever the scan outcome leads: `uploaded` when a job
@@ -346,6 +349,7 @@ pub async fn complete_upload(
             scan_signature = $13,
             uploaded_at = now(),
             checksum_md5 = $15,
+            content_type = COALESCE($16, content_type),
             -- The presigned URL of a fetched blob served its purpose: a
             -- retry only ever reads it while the blob is created.
             url = NULL
@@ -368,6 +372,7 @@ pub async fn complete_upload(
     .bind(done.scan.signature())
     .bind(started.to_sqlx())
     .bind(&done.checksum_md5)
+    .bind(&done.content_type)
     .fetch_optional(&mut *tx)
     .await?;
     let Some(updated) = updated else {

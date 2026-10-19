@@ -26,6 +26,8 @@ pub enum InitError {
     Config(#[from] ConfigError),
     #[error("building the fetch client: {0}")]
     Fetch(#[from] reqwest::Error),
+    #[error("building the map layer client: {0}")]
+    Maps(reqwest::Error),
     #[error("building the webhook client: {0}")]
     Webhook(reqwest::Error),
 }
@@ -42,6 +44,7 @@ struct Inner {
     keks: Keks,
     clamd: Clamd,
     fetcher: fetch::Client,
+    maps: agrafe_render::geo::Client,
     webhook: Option<notify::Client>,
     heads: HeadCache,
     metrics: Metrics,
@@ -59,6 +62,8 @@ impl Agrafe {
         let keks = Keks::from_config(&config.encryption)?;
         let clamd = Clamd::from_config(&config.clamav);
         let fetcher = fetch::Client::from_config(&config.fetch)?;
+        let maps = agrafe_render::geo::Client::from_config(&config.media.render.geojson)
+            .map_err(InitError::Maps)?;
         let webhook = match &config.webhook.url {
             Some(url) => Some(
                 notify::Client::new(url, config.webhook.key()?, config.webhook.timeout)
@@ -75,6 +80,7 @@ impl Agrafe {
             keks,
             clamd,
             fetcher,
+            maps,
             webhook,
             heads,
             metrics: Metrics::new(),
@@ -108,6 +114,11 @@ impl Agrafe {
     /// The client `url` blobs are fetched through.
     pub fn fetcher(&self) -> &fetch::Client {
         &self.0.fetcher
+    }
+
+    /// The client the background layers of a map are fetched through.
+    pub fn maps(&self) -> &agrafe_render::geo::Client {
+        &self.0.maps
     }
 
     /// The client deliveries go through; `None` without a `[webhook]` URL.

@@ -191,11 +191,13 @@ variant_version = 1
 # pdfium renders PDFs more safely than one with poppler.
 vips_command = "vips"
 # The helper binaries run, sandboxed, to pull embedded images out of PDF and
-# office files, to rasterise text samples and to compile typst documents.
-# Built by this workspace and found on the PATH by default.
+# office files, to rasterise text samples, to compile typst documents and to
+# draw GeoJSON files. Built by this workspace and found on the PATH by
+# default.
 # extract_command = "/usr/local/bin/agrafe-extract"
 # render_text_command = "/usr/local/bin/agrafe-render-text"
 # render_document_command = "/usr/local/bin/agrafe-render-document"
+# render_geo_command = "/usr/local/bin/agrafe-render-geo"
 # Originals above this size get an icon and no preview; text files still get
 # their thumbnail, which reads only the first few KiB. Pictures and scans
 # people want to see are a few MiB; above this a file is one where the icon
@@ -226,6 +228,62 @@ quality = 85
 # page, with at most `max_text_chars` of text, is treated as a wrapped image.
 min_coverage = 0.7
 max_text_chars = 50
+
+[media.geojson]
+# A GeoJSON file gets a map as its preview: its geometry, drawn by the
+# agrafe-render-geo helper, over a background fetched from the layers below.
+# Added around the geometry, as a fraction of its larger side.
+padding = 0.1
+# The smallest extent drawn, so a single point or a tiny parcel still gets a
+# readable map. Metres, or a string with a unit: "200 m", "3 km".
+min_span = "200 m"
+# The largest side of a background request, in pixels: the map is rendered
+# at the preview box or this, whichever is smaller. The Géoplateforme caps
+# GetMap at 2048.
+max_size = 2048
+# Vertices drawn at most over the whole file, after simplification to the
+# pixel, so a huge file cannot produce a huge drawing.
+max_vertices = 200000
+# The whole of one layer request, connect to last byte. A provider that
+# fails or stalls fails the render attempt, which is retried; the file is
+# never blamed for it.
+fetch_timeout = "10s"
+# A layer response larger than this is a failure, not a bomb to decode.
+max_layer_size = "8 MiB"
+
+# The default style, in the simplestyle-spec vocabulary. A feature's own
+# simplestyle properties (stroke, stroke-width, stroke-opacity, fill,
+# fill-opacity, marker-color, marker-size) override it key by key; a value
+# that is not a hex colour, a number or a known size is ignored, and
+# marker-symbol, title and description are not drawn. The casing under a
+# stroke is the stroke darkened.
+[media.geojson.style]
+stroke = "#FFD400"
+stroke-width = 4
+stroke-opacity = 1
+fill = "#FFD400"
+fill-opacity = 0.35
+marker-color = "#FFD400"
+marker-size = "medium"
+
+# Background layers, composited bottom to top; none by default, and the
+# geometry is drawn on a flat neutral background. Every render sends the
+# extent of a user's geometry to the provider, so the render workers' egress
+# must allow these hosts, and nothing else needs it. {bbox} is
+# minx,miny,maxx,maxy in EPSG:3857, {width} and {height} are pixels. The
+# attribution burned into a corner of the map is the first drawn layer's
+# that has one. The example is the IGN Géoplateforme: the orthophoto, and
+# the administrative boundaries and names above parcel scale.
+# [[media.geojson.layers]]
+# url = "https://data.geopf.fr/wms-r/wms?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&LAYERS=ORTHOIMAGERY.ORTHOPHOTOS&STYLES=&FORMAT=image/png&CRS=EPSG:3857&BBOX={bbox}&WIDTH={width}&HEIGHT={height}"
+# attribution = "© IGN — Géoplateforme"
+#
+# [[media.geojson.layers]]
+# url = "https://data.geopf.fr/wms-r/wms?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&LAYERS=ADMINEXPRESS-COG-CARTO.LATEST&STYLES=&FORMAT=image/png&TRANSPARENT=TRUE&CRS=EPSG:3857&BBOX={bbox}&WIDTH={width}&HEIGHT={height}"
+# # Drawn only on an extent at least this wide: below it the layer carries
+# # no name, only a boundary across the photo, and most maps are parcel-sized
+# # and cost one request. max_span bounds the other end.
+# min_span = "3 km"
 
 [jobs]
 # Workers are woken by NOTIFY on every enqueue; this is the fallback.

@@ -1,7 +1,7 @@
 # Deployment
 
 A deployment is Postgres, an object store, `clamd`, and processes running
-the `agrafe` binary with its three helpers next to it.
+the `agrafe` binary with its four helpers next to it.
 
 ## What to ship
 
@@ -11,15 +11,23 @@ the `agrafe` binary with its three helpers next to it.
 | `agrafe-extract` | Pulls the embedded image out of a PDF, DOCX or ODT |
 | `agrafe-render-text` | Rasterises the first lines of a text file |
 | `agrafe-render-document` | Compiles a typst workspace into a PDF |
+| `agrafe-render-geo` | Draws a GeoJSON file as SVG over the map extent it chose |
 
 The helpers are found on the `PATH`, or at the paths given by
-`media.extract_command`, `media.render_text_command` and
-`media.render_document_command`. Ship them from the same build as the
-server: they read no configuration and write no logs, and the startup probe
-fails if one of them is not what the server expects.
+`media.extract_command`, `media.render_text_command`,
+`media.render_document_command` and `media.render_geo_command`. Ship them
+from the same build as the server: they read no configuration, write no
+logs and never touch the network, and the startup probe fails if one of
+them is not what the server expects.
 
-Workers also need the `vips` command line tool. Run `agrafe migrate` once
-per release, before the new processes start.
+Workers also need the `vips` command line tool, built with SVG support
+(rsvg) for the maps. Run `agrafe migrate` once per release, before the new
+processes start.
+
+Outbound connections: the fetch workers reach the URLs of `url` blobs, the
+notify workers reach `webhook.url`, and the render workers reach the hosts
+of `media.geojson.layers`, if any are configured. Nothing else in agrafe
+talks to the network besides Postgres, the object store and `clamd`.
 
 ## libvips
 

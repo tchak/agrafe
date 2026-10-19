@@ -38,12 +38,13 @@ into a server process. Dependencies point downwards only.
 | Crate | Contents | Depends on |
 |---|---|---|
 | `agrafe-crypto` | Streaming AEAD and key wrapping, reviewed in isolation | |
-| `agrafe-types` | Content type constants, `classify`, `sniff`, the vips loader allowlist, the text-sample contract, `str_enum!` | `infer`, `serde` |
+| `agrafe-types` | Content type constants, `classify`, `sniff`, the vips loader allowlist, the text-sample contract, the GeoJSON contract (the style vocabulary, the spec and the extent the server and the helper exchange), `str_enum!` | `infer`, `serde` |
 | `agrafe-sandbox` | Running a subprocess with `setrlimit` bounds and a timeout; the `Limits` config | `tokio`, `libc` |
 | `agrafe-extract` | The `agrafe-extract` helper: pulls the one image out of a PDF, DOCX or ODT. Library plus binary | `agrafe-types`, `lopdf`, `zip`, `quick-xml` |
 | `agrafe-render-text` | The `agrafe-render-text` helper: rasterises a text sample. Library plus binary | `agrafe-types`, `ab_glyph` |
 | `agrafe-render-document` | The `agrafe-render-document` helper: compiles a typst workspace into a PDF. Library plus binary | `typst`, `typst-pdf`, `typst-assets` |
-| `agrafe-render` | Which files render and from what, `vips thumbnail`, the icons, the drivers that spawn the helpers, the startup probe, the `[media]` tool config | `agrafe-types`, `agrafe-sandbox` |
+| `agrafe-render-geo` | The `agrafe-render-geo` helper: projects, fits, simplifies and draws a GeoJSON file as SVG paths, with the extent it chose. Library plus binary | `agrafe-types`, `geojson`, `serde_json` |
+| `agrafe-render` | Which files render and from what, `vips thumbnail` and `vips composite`, the icons, the drivers that spawn the helpers, the fetcher of map backgrounds, the startup probe, the `[media]` tool config | `agrafe-types`, `agrafe-sandbox`, `reqwest` |
 | `agrafe` | The library: config, database, blobs, upload pipeline, the fetch client, the webhook, encryption, signing, storage, ClamAV, jobs, metrics, URL minting, and the `Agrafe` handle whose methods are the private API | `agrafe-crypto`, `agrafe-types`, `agrafe-render`, `sqlx`, `object_store`, `reqwest` |
 | `agrafe-axum` | The two HTTP interfaces as axum routers, the extractors, `ApiError` and the mapping of the library's errors onto status codes | `agrafe`, `axum` |
 | `agrafe-dashboard` | The HTML dashboard as an axum router: the queue census, the listings and details of jobs, blobs and attachments, the retry and discard forms; compiled templates and a vendored stylesheet | `agrafe`, `agrafe-axum` (the origin check), `axum`, `askama` |
@@ -51,15 +52,19 @@ into a server process. Dependencies point downwards only.
 
 The helpers are separate binaries, not subcommands of the server, so that
 the server links none of their parsers: `lopdf`, `zip`, `quick-xml`,
-`ab_glyph` and `typst` exist only in processes the sandbox bounds. They
-are found on `PATH` by default (`media.extract_command`,
-`media.render_text_command`, `media.render_document_command`), read no
-configuration and write no logs. A deployment ships the four binaries
-together. A renderer with a dependency tree of its own gets a
-helper crate the same way, turning the file into a raster that vips then
-fits into the box; a `Source` or `Fallback` variant, a row in the plan
-table (`agrafe_render::plan`) and a driver in `agrafe_render::helpers`
-are where it plugs in.
+`ab_glyph`, `typst` and `geojson` exist only in processes the sandbox
+bounds. They are found on `PATH` by default (`media.extract_command`,
+`media.render_text_command`, `media.render_document_command`,
+`media.render_geo_command`), read no configuration, write no logs and
+never touch the network. A deployment ships the five binaries together. A
+renderer with a dependency tree of its own gets a helper crate the same
+way, turning the file into a raster, or into something vips turns into
+one, that vips then fits into the box; a `Source` or `Fallback` variant,
+a row in the plan table (`agrafe_render::plan`) and a driver in
+`agrafe_render::helpers` are where it plugs in. What a helper and the
+server exchange beyond a file name, the text sample's length or the
+GeoJSON spec and extent, is a type in `agrafe-types`, so the two sides
+agree by construction.
 
 The library knows nothing of HTTP. Its operations are methods on the
 `Agrafe` handle (`create_blob`, `list_blobs`, `find_blob`, `delete_blob`,
@@ -694,7 +699,17 @@ rejecting would be wrong: aliases (`image/jpg`), a declared container of the
 sniffed type in either direction (a DOCX is a ZIP), text sniffers (HTML, XML,
 shell) against any `text/*` declaration, and `application/octet-stream`,
 which declares nothing. Siblings such as DOCX against XLSX are rejected. The
-rules live in `sniff.rs`. Categories:
+rules live in `sniff.rs`.
+
+JSON has no magic, but a JSON document that opens on a `Feature` or a
+`FeatureCollection` in its first KiB is a GeoJSON one, and the sniffer says
+so. Declared as `application/json`, `text/json` or `text/plain`, which is
+how a `.geojson` tends to arrive, the blob's `content_type` becomes
+`application/geo+json` as the upload completes (`sniff::refine`): the
+only case where the bytes change the declaration, in the direction of
+precision only, and the category, `text`, is the same either way. The
+row and the `Content-Type` the original is served with carry the refined
+type. Categories:
 
 `image`, `document`, `spreadsheet`, `presentation`, `archive`, `audio`,
 `video`, `text`, `other`.
@@ -1578,6 +1593,8 @@ Only files with a known source are attempted:
 - PDF, DOCX and ODT, through the sources below; a PDF that is not one gets
   a thumbnail of its first page, and no preview;
 - text files (the `text` category plus CSV and TSV), thumbnails only;
+- GeoJSON files, as a map (see "Preview"), with the text thumbnail when
+  they hold no geometry;
 - originals at most `media.max_source_size` (default 64 MiB), except for
   the text thumbnail, which reads the first 8 KiB whatever the size. The
   default is low on purpose: the pictures and scans people want to see
@@ -1589,8 +1606,10 @@ through anything `infer` does not recognise. vips, though, picks its loader
 by magic and tries ImageMagick last, so a file declared `image/png` holding
 an XPM would reach it. Every file handed to vips is therefore sniffed again
 right before the call (`agrafe_types::sniff::loader_for`) against the same
-list, plus PNM for the pages the helpers write; anything else is `failed` without vips
-ever seeing it. The embedded image extractor applies the same check to the
+list, plus PNM for the pages the helpers write and vips's own `.v` for the
+map `vips composite` writes; anything else is `failed` without vips ever
+seeing it. The same check, narrowed to rasters, is applied to the
+background layers fetched for a map before vips is handed them. The embedded image extractor applies the same check to the
 bytes it pulls out of a PDF, since a `DCTDecode` stream holds whatever its
 author put there. `VIPS_BLOCK_UNTRUSTED` would not do: it also blocks the
 PDF, SVG, JPEG 2000 and PNM loaders.
@@ -1633,8 +1652,11 @@ option alike, so a libvips built without PDF support, or too old for
 once fixed. Before a worker starts it therefore renders a text sample, a
 one-pixel PNG and a one-page PDF through the exact command lines the jobs
 use (`agrafe_render::probe`, files in `crates/agrafe-render/assets/probe`),
-and the process refuses to start if any of them fails. The probe also
-catches a `media.render_text_command` that is not the helper.
+and the process refuses to start if any of them fails, and so the map of a
+one-point GeoJSON with no background layer, through the helper and `vips
+composite`, which catches a libvips without SVG support. The probe also
+catches a `media.render_text_command` or `media.render_geo_command` that is
+not the helper, and it never touches the network.
 
 Representations live at `<blob id>/thumbnail` and `<blob id>/preview`,
 encrypted with the blob's own data key: the streaming AEAD derives a fresh
@@ -1727,7 +1749,10 @@ shaping library installed. The trade: no shaping, so Arabic or Indic text
 comes out as unconnected glyphs and anything outside Latin, Greek and
 Cyrillic as the notdef box. The helper writes a PGM at twice the box, and
 vips downsizes it into the WebP like any other raster. There is no text
-preview: a preview that cannot be read is not worth rendering.
+preview: a preview that cannot be read is not worth rendering. A GeoJSON
+file is a text file with a picture: its thumbnail is its map fitted into
+the box, and the text sample when it holds no geometry to draw, or a
+coordinate off the globe.
 
 A PDF that is not an embedded image (see "Preview") gets its first page as
 its thumbnail, through libvips's PDF loader, and no preview for the same
@@ -1765,6 +1790,101 @@ on "has preview", never on category. Sources, in order:
    containing a screenshot. The parsing runs in the `agrafe-extract`
    helper, its own binary executed in the sandbox, never in a server
    process.
+3. **Map** (`preview_source = geojson`): a GeoJSON file's geometry drawn
+   over a map background, the way a form's map field prints in a PDF
+   export. Three steps, two of them in the sandbox. The
+   `agrafe-render-geo` helper reads the file and writes `paths.svg`, the
+   geometry as SVG paths in the pixel box, and `extent.json`, the
+   bounding box it chose in EPSG:3857 metres with the pixel size and the
+   layers that apply to it; the `geojson` parser lives only there. The
+   worker, trusted code, fetches one WMS `GetMap` image per applicable
+   layer, concurrently, into the work directory. Then `vips composite`
+   stacks the layers and the SVG, in the sandbox, into a `.v` that goes
+   through `to_webp` as a raster like any picture: the background PNGs
+   are untrusted bytes decoded where untrusted bytes are decoded, and the
+   SVG goes through the rsvg loader the `image/svg+xml` source already
+   relies on. At 72 dpi an SVG with `width` and `height` in pixels renders
+   at exactly those pixels, which is what makes the composite line up.
+   One render costs one helper run, one request per applicable layer and
+   two vips runs, three when the composite fails and the layers are
+   decoded one by one to tell whose fault it was.
+
+   The helper projects every coordinate to Web Mercator, clamping the
+   latitude to the projection's edge; a coordinate that is not finite or
+   off the globe is a rejection, the file's fault. The extent is the
+   geometry's bounding box padded by `media.geojson.padding` of its larger
+   side, grown to at least `min_span` metres so a single point or a tiny
+   parcel still gets a readable map, then widened to the aspect ratio of
+   the box: the image is the whole box, never letterboxed. The map is
+   drawn at the preview box or `max_size`, whichever is smaller. Rings and
+   lines are simplified with Douglas–Peucker at half a pixel, and the
+   drawing stops at `max_vertices`, so a 60 MiB file cannot produce a
+   60 MiB SVG or make rsvg crawl; the sandbox timeout bounds the rest.
+   Points are discs with a ring, lines and polygons get a darker casing
+   under the stroke, polygons use `fill-rule="evenodd"` so holes stay
+   holes, and the first drawn layer's attribution is burned into a corner
+   as outlined text, since the preview travels without a caption. A
+   FeatureCollection, a Feature or a bare Geometry at the top level;
+   GeometryCollections recurse. Anything else, or nothing with
+   coordinates, is a decline, and the thumbnail is the text sample.
+
+   A feature's style is the configured default, `[media.geojson.style]`,
+   overlaid with its own simplestyle-spec properties: the convention most
+   exports write, so a client that wants some features drawn green sets
+   `stroke` on them at export time, and there is no second mechanism in
+   the config. Honoured: `stroke`, `fill` and `marker-color` as hex
+   colours of 3 or 6 digits, `#` optional, parsed and re-serialised;
+   `stroke-opacity` and `fill-opacity` clamped to 0..1; `stroke-width` in
+   pixels clamped to 0..20, so a file cannot paint the whole map;
+   `marker-size` as `small`, `medium` or `large`. Ignored: `marker-symbol`
+   (Maki icons would need an icon set and fonts in the sandbox), `title`,
+   `description`, and any value of the wrong type, never an error: nothing
+   from the file reaches the SVG verbatim. The casing is not a colour of
+   its own but the stroke darkened, so a red feature gets a dark-red halo.
+   One `Style` type, in `agrafe-types`, serves the config section, the
+   spec the server writes for the helper and a feature's properties, with
+   a merge of the two.
+
+   The background is a list of layers, `[[media.geojson.layers]]`, each a
+   `GetMap` URL template with `{bbox}`, `{width}` and `{height}` to fill
+   in, composited bottom to top, and drawn only on an extent between its
+   `min_span` and `max_span`: a boundaries-and-names layer that carries no
+   toponym at parcel scale is skipped there, and most maps are
+   parcel-sized and cost one request. A `GetMap` with the bbox in
+   EPSG:3857 and the output size gives the background at exactly the pixel
+   box wanted, with no tile stitching, no zoom rounding, no crop; an XYZ
+   layer kind can come later, stitched with `vips arrayjoin`. The code
+   names no provider; IGN's Géoplateforme is the example in
+   `config/example.toml`. With no layer applicable, or none configured,
+   which is the default and the test configuration, the geometry is drawn
+   on a flat neutral background and nothing leaves the worker.
+
+   Fetching: one request per applicable layer, each under
+   `fetch_timeout` and `max_layer_size`, at most four in flight per
+   process, since a `variant_version` bump re-renders every GeoJSON blob
+   and must not be a burst against the provider. The response is an image
+   only if its `Content-Type` says so and the loader sniff agrees: the
+   Géoplateforme answers an XML `ServiceException` with a `200`. A
+   failure to fetch, a layer that does not decode included, is not the
+   file's fault: it is an `Error`, the job attempt fails and is retried
+   with the backoff, and the representations stay `pending` meanwhile. The
+   file never gets `failed` for the provider's downtime, and the provider's
+   URL, which carries the extent, never reaches a log line: errors name
+   the layer and the host. The layer bytes are written to the work
+   directory and never reach a client; the composite is re-encoded like
+   every other render.
+
+   Privacy: every render sends the extent of a user's geometry to the
+   provider. That is the trade a deployment makes when it configures a
+   layer, which is why the list is empty by default and why the render
+   workers' egress has to allow the configured hosts and no more. A
+   deployment that wants a self-hosted background runs a tile server and
+   points the config at it; rendering one locally was weighed and
+   rejected, since raster coverage of a country at parcel zoom is hundreds
+   of gigabytes and vector tiles need a style-aware renderer that does not
+   exist in Rust and would have to be written inside a sandboxed helper.
+   Out of scope for now: XYZ and WMTS layers, caching backgrounds between
+   renders, KML, GPX and Shapefile.
 A document that is not one of these has no preview, whether PDF or office:
 the first page of a PDF is its thumbnail (see "Thumbnail"), not a preview.
 
@@ -1777,11 +1897,14 @@ is not `ready` answers `409` as the original does.
 ### Sandboxing
 
 Decoders and renderers are the most attackable code in the service. They run
-in a subprocess, never in the API process: `vips` for rendering, the
-`agrafe-extract`, `agrafe-render-text` and `agrafe-render-document`
-binaries for container parsing, text rasterising and document compiling,
-each its own crate so that the server links none of their parsers (see
-"Crates"). Each child gets a clean environment (`PATH` and `HOME`
+in a subprocess, never in the API process: `vips` for rendering and
+compositing, the `agrafe-extract`, `agrafe-render-text`,
+`agrafe-render-document` and `agrafe-render-geo` binaries for container
+parsing, text rasterising, document compiling and GeoJSON drawing, each
+its own crate so that the server links none of their parsers (see
+"Crates"). The helpers never touch the network: the one network step of a
+render, fetching a map's background, is the worker's own, outside the
+sandbox, against a host the operator configured. Each child gets a clean environment (`PATH` and `HOME`
 only, no secrets; vips also gets `TMPDIR`, `VIPS_CONCURRENCY` and `VIPS_WARNING=0`, and a coverage
 build alone passes `LLVM_PROFILE_FILE` through), `setrlimit` bounds on
 address space and data (`media.sandbox.memory`, default 1 GiB), CPU time and
@@ -2089,5 +2212,6 @@ is redacted so a dumped config cannot leak them. See `config/example.toml`.
 | Generated ZIP, XLSX, ODS | Own streaming ZIP writer (`jobs::build::zip`), `flate2` for the deflated sheet XML, XML written by hand |
 | Text thumbnails | `ab_glyph` with an embedded DejaVu Sans Mono, in the sandboxed `agrafe-render-text` helper |
 | Generated PDF documents | `typst` and `typst-pdf` with the embedded fonts of `typst-assets`, in the sandboxed `agrafe-render-document` helper |
+| GeoJSON maps | `geojson` and `serde_json` in the sandboxed `agrafe-render-geo` helper, the WMS of `[media.geojson.layers]` through `reqwest`, `vips composite` with rsvg in the sandbox |
 | Ids | UUID v7 |
 | Time | `jiff`. `Timestamp` throughout the model; `jiff-sqlx` wrappers only at the SQL boundary |

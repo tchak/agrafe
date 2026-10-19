@@ -364,11 +364,14 @@ impl Rendered {
 pub enum PreviewSource {
     Image,
     EmbeddedImage,
+    /// The geometry of a GeoJSON file drawn over a map background.
+    GeoJson,
 }
 
 agrafe_types::str_enum!(PreviewSource {
     Image => "image",
     EmbeddedImage => "embedded_image",
+    GeoJson => "geojson",
 });
 
 #[derive(Debug, Clone, sqlx::FromRow)]

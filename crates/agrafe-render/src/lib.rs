@@ -1,9 +1,13 @@
 //! Derived representations: which files can be rendered, from what, and the
 //! tools that do it. Decoding and rendering never happen in the calling
-//! process: `vips` and the `agrafe-extract`, `agrafe-render-text` and
-//! `agrafe-render-document` helpers run as subprocesses through
-//! `agrafe_sandbox`, and this crate links none of their parsers.
+//! process: `vips` and the `agrafe-extract`, `agrafe-render-text`,
+//! `agrafe-render-document` and `agrafe-render-geo` helpers run as
+//! subprocesses through `agrafe_sandbox`, and this crate links none of
+//! their parsers. The one thing it does itself is fetch the background
+//! layers of a map (`geo`), which is trusted code talking to a configured
+//! provider.
 
+pub mod geo;
 pub mod helpers;
 pub mod icons;
 pub mod probe;
@@ -13,10 +17,12 @@ use std::path::Path;
 
 use agrafe_sandbox::Limits;
 use agrafe_types::classify::{self, Category};
+use agrafe_types::geojson::GEOJSON;
 use agrafe_types::sniff;
 use serde::Deserialize;
 
 pub use agrafe_types::classify::{DOCX, ODT};
+pub use geo::GeoJson;
 pub use probe::{ProbeError, probe, probe_document};
 
 /// The tools and boxes the renderer works with. Flattened into the
@@ -37,12 +43,19 @@ pub struct Config {
     /// `PATH` by default.
     #[serde(default = "default_render_document_command")]
     pub render_document_command: String,
+    /// The helper that draws a GeoJSON file as SVG, found on `PATH` by
+    /// default.
+    #[serde(default = "default_render_geo_command")]
+    pub render_geo_command: String,
     #[serde(default)]
     pub thumbnail: Thumbnail,
     #[serde(default)]
     pub preview: Preview,
     #[serde(default)]
     pub embedded_image: EmbeddedImage,
+    /// How the map of a GeoJSON file is drawn, and what it is drawn over.
+    #[serde(default)]
+    pub geojson: GeoJson,
     #[serde(default)]
     pub sandbox: Limits,
 }
@@ -59,6 +72,9 @@ fn default_render_text_command() -> String {
 fn default_render_document_command() -> String {
     "agrafe-render-document".to_string()
 }
+fn default_render_geo_command() -> String {
+    "agrafe-render-geo".to_string()
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -67,9 +83,11 @@ impl Default for Config {
             extract_command: default_extract_command(),
             render_text_command: default_render_text_command(),
             render_document_command: default_render_document_command(),
+            render_geo_command: default_render_geo_command(),
             thumbnail: Thumbnail::default(),
             preview: Preview::default(),
             embedded_image: EmbeddedImage::default(),
+            geojson: GeoJson::default(),
             sandbox: Limits::default(),
         }
     }
@@ -128,7 +146,8 @@ impl Default for EmbeddedImage {
 }
 
 /// A failure of ours, which the caller may retry: the sandbox, the work
-/// directory. The file's own faults are a [`Verdict::Rejected`].
+/// directory, the provider of a map's background. The file's own faults
+/// are a [`Verdict::Rejected`].
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
@@ -137,6 +156,10 @@ pub enum Error {
     Input(std::io::Error),
     #[error("reading the rendered file: {0}")]
     Output(std::io::Error),
+    #[error("reading the extent the map helper wrote: {0}")]
+    Extent(serde_json::Error),
+    #[error("fetching a background layer: {0}")]
+    Fetch(#[from] geo::FetchError),
 }
 
 /// How an attempt at rendering ended. Anything that is not a failure of
@@ -224,6 +247,8 @@ pub enum Source {
     /// A document that wraps one image with next to no text: pull the image
     /// out at full resolution.
     EmbeddedImage,
+    /// A GeoJSON file: its geometry drawn over a map background.
+    GeoJson,
 }
 
 /// Where a thumbnail comes from when the file has no picture: a hint of
@@ -259,12 +284,17 @@ impl Plan {
 /// libvips loads natively: everything else would go through ImageMagick,
 /// which is more attack surface than it is worth. A PDF or an office file
 /// that wraps one picture is rendered from it; otherwise a PDF gets its
-/// first page as a thumbnail and an office file the icon. The `text`
-/// category, plus CSV and TSV, which classify as spreadsheets, get a text
-/// sample as a thumbnail.
+/// first page as a thumbnail and an office file the icon. A GeoJSON file
+/// gets a map, and the text sample of the text file it is when it holds
+/// no geometry. The `text` category, plus CSV and TSV, which classify as
+/// spreadsheets, get a text sample as a thumbnail.
 pub fn plan(content_type: &str) -> Plan {
     let canonical = sniff::canonical(content_type);
     match canonical {
+        GEOJSON => Plan {
+            picture: &[Source::GeoJson],
+            fallback: Some(Fallback::TextSample),
+        },
         "image/jpeg" | "image/png" | "image/gif" | "image/webp" | "image/tiff" | "image/heif"
         | "image/avif" | "image/svg+xml" | "image/bmp" | "image/jp2" => Plan {
             picture: &[Source::Image],
@@ -311,6 +341,13 @@ mod tests {
             assert_eq!(plan(office).picture, &[Source::EmbeddedImage], "{office}");
             assert_eq!(plan(office).fallback, None, "{office}");
         }
+        assert_eq!(
+            plan(GEOJSON),
+            Plan {
+                picture: &[Source::GeoJson],
+                fallback: Some(Fallback::TextSample),
+            }
+        );
         for text in [
             "text/plain",
             "application/json",

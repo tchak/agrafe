@@ -75,11 +75,14 @@ Blobs created with it cannot be uploaded through the public port.
 ## Sandboxed rendering
 
 Decoders are the most attackable code in the service, so none runs in the
-server process. `vips`, `agrafe-extract`, `agrafe-render-text` and
-`agrafe-render-document` run as subprocesses with a clean environment,
-memory, CPU, output size and wall-clock limits. The file parsers they use,
-`lopdf`, `zip`, `quick-xml`, `ab_glyph` and `typst`, are not even linked
-into the server. See [Previews and thumbnails](representations.md#sandboxing).
+server process. `vips`, `agrafe-extract`, `agrafe-render-text`,
+`agrafe-render-document` and `agrafe-render-geo` run as subprocesses with
+a clean environment, memory, CPU, output size and wall-clock limits. The
+file parsers they use, `lopdf`, `zip`, `quick-xml`, `ab_glyph`, `typst` and
+`geojson`, are not even linked into the server. The one network step of a
+render, fetching the background of a map from a configured WMS, is the
+worker's own and sends that provider the extent of the user's geometry;
+no layer is configured by default. See [Previews and thumbnails](representations.md#sandboxing).
 
 Before vips sees a file, its magic bytes are checked again against the
 formats agrafe means to render, so a file declared as a PNG that holds

@@ -31,11 +31,13 @@ See "Crates" in `DESIGN.md` for the dependency graph.
   text-sample contract, `str_enum!`. Pure; shared by every other crate.
 - `crates/agrafe-sandbox` — subprocesses with resource limits.
 - `crates/agrafe-extract`, `crates/agrafe-render-text`,
-  `crates/agrafe-render-document` — the sandboxed helpers, each a library
-  plus a binary of the same name. The server does not link them; it finds
-  the binaries on `PATH`. The last one embeds the typst compiler.
+  `crates/agrafe-render-document`, `crates/agrafe-render-geo` — the
+  sandboxed helpers, each a library plus a binary of the same name. The
+  server does not link them; it finds the binaries on `PATH`. The document
+  one embeds the typst compiler; the geo one parses GeoJSON and writes SVG.
 - `crates/agrafe-render` — what renders and how: `vips`, the helper
-  drivers, the icons, the probe, the `[media]` tool config.
+  drivers, the icons, the probe, the `[media]` tool config, and the
+  fetcher of map backgrounds (`geo`), the one network client in it.
 - `fixtures/` — sample files for tests, with the `make.py` that builds them.
 - `migrations/` — sqlx migrations, plain SQL, one file per table. Nothing
   is deployed yet, so a schema change edits the table's file; no `ALTER`
@@ -87,10 +89,12 @@ See "Crates" in `DESIGN.md` for the dependency graph.
   Never set `state` unconditionally.
 - Public routes verify the signature before touching the database.
 - Nothing decodes or renders user files in-process: `vips` and the
-  `agrafe-extract` and `agrafe-render-text` binaries run through
-  `agrafe_sandbox`. The parsers (`lopdf`, `zip`, `quick-xml`, `ab_glyph`)
-  are dependencies of the helper crates only; never add them to `agrafe`
-  or `agrafe-render`.
+  `agrafe-extract`, `agrafe-render-text`, `agrafe-render-document` and
+  `agrafe-render-geo` binaries run through `agrafe_sandbox`. The parsers
+  (`lopdf`, `zip`, `quick-xml`, `ab_glyph`, `typst`, `geojson`) are
+  dependencies of the helper crates only; never add them to `agrafe` or
+  `agrafe-render`. What a helper and the server exchange (the text sample,
+  the GeoJSON spec and extent) is typed in `agrafe-types`.
 - Errors are `thiserror` enums, one per module that fails in its own way
   (`ConfigError`, `ReadError`, `JobError`, `UploadError`, …). No `anyhow`.
   Messages inline their cause (`"reading the object: {0}"`), so log them

@@ -15,6 +15,7 @@ mod blobs;
 mod cache;
 mod document;
 mod fetch;
+mod geojson;
 mod hosts;
 mod jobs;
 mod original;

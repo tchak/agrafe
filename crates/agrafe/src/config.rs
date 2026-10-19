@@ -107,6 +107,11 @@ impl Config {
             ));
         }
         self.webhook.validate()?;
+        self.media
+            .render
+            .geojson
+            .validate()
+            .map_err(ConfigError::Invalid)?;
         if self.archive.max_size.as_u64() > ArchiveConfig::MAX_SIZE_LIMIT {
             return Err(ConfigError::Invalid(format!(
                 "archive.max_size must be at most {} bytes: the build writes 32 MiB parts, \
@@ -731,8 +736,8 @@ pub struct MediaConfig {
     /// The tools, boxes and sandbox limits, owned by the render crate and
     /// read from the same `[media]` table: `vips_command`,
     /// `extract_command`, `render_text_command`,
-    /// `render_document_command`, `thumbnail`, `preview`,
-    /// `embedded_image`, `sandbox`.
+    /// `render_document_command`, `render_geo_command`, `thumbnail`,
+    /// `preview`, `embedded_image`, `geojson`, `sandbox`.
     #[serde(flatten)]
     pub render: agrafe_render::Config,
 }

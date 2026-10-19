@@ -126,7 +126,11 @@ The bytes flow once through a chain of checks, in this order:
    aliases such as `image/jpg`, a container and its contents in either
    direction (a DOCX is a ZIP), any text sniffer against a `text/*`
    declaration, and `application/octet-stream`, which declares nothing.
-   Siblings, such as a DOCX declared as an XLSX, are refused.
+   Siblings, such as a DOCX declared as an XLSX, are refused. One
+   declaration is refined rather than checked: a JSON document that opens
+   on a GeoJSON `Feature` or `FeatureCollection`, declared as
+   `application/json`, `text/json` or `text/plain`, gets
+   `application/geo+json` as its `content_type`, so it is drawn as a map.
 4. **Virus scan**, inline when the file is small enough and `clamd` is
    reachable.
 5. **Encryption** and the multipart upload to the object store.

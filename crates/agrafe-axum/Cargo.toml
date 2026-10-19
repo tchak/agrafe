@@ -41,7 +41,8 @@ md-5 = "0.11.0"
 sha2 = "0.11.1"
 # `#[sqlx::test]`: a database of its own for each test, migrated afresh.
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "postgres", "macros", "migrate"] }
-tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "fs"] }
+tempfile = "3.27.0"
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "fs", "process"] }
 tokio-stream = "0.1.17"
 tower = { version = "0.5.3", features = ["util"] }
 zip = { version = "9.0.4", default-features = false, features = ["deflate"] }

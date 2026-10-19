@@ -43,9 +43,10 @@ agrafe --config agrafe.toml serve [--role <ROLE>] [--kinds <KIND,...>]
 
 ## Helpers
 
-`agrafe-extract`, `agrafe-render-text` and `agrafe-render-document` are run
-by the workers, never by hand. They read no configuration and write no logs.
-They must be on the `PATH`, or named by the `media.*_command` keys.
+`agrafe-extract`, `agrafe-render-text`, `agrafe-render-document` and
+`agrafe-render-geo` are run by the workers, never by hand. They read no
+configuration and write no logs. They must be on the `PATH`, or named by
+the `media.*_command` keys.
 
 ## Exit
 

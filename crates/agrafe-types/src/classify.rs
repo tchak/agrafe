@@ -62,7 +62,7 @@ pub fn classify(content_type: &str) -> Category {
         | "application/x-bzip2"
         | "application/zstd" => Some(Category::Archive),
 
-        "application/json" | "application/xml" | "application/geo+json" => Some(Category::Text),
+        "application/json" | "application/xml" | crate::geojson::GEOJSON => Some(Category::Text),
 
         _ => None,
     };
@@ -92,6 +92,7 @@ mod tests {
         assert_eq!(classify(ZIP), Category::Archive);
         assert_eq!(classify("text/plain"), Category::Text);
         assert_eq!(classify("application/json"), Category::Text);
+        assert_eq!(classify(crate::geojson::GEOJSON), Category::Text);
         assert_eq!(classify("video/mp4"), Category::Video);
         assert_eq!(classify("application/octet-stream"), Category::Other);
     }

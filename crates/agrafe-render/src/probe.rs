@@ -2,9 +2,8 @@
 
 use std::path::Path;
 
-use crate::helpers;
 use crate::vips::{self, Fit, Input};
-use crate::{Config, Error, Rejection, Verdict};
+use crate::{Config, Error, Rejection, Verdict, geo, helpers};
 
 /// Why a worker may not start: its tools do not work on files known to be
 /// good.
@@ -37,6 +36,7 @@ pub enum ProbeError {
 
 const PROBE_PNG: &[u8] = include_bytes!("../assets/probe/pixel.png");
 const PROBE_PDF: &[u8] = include_bytes!("../assets/probe/page.pdf");
+const PROBE_GEOJSON: &[u8] = include_bytes!("../assets/probe/point.geojson");
 
 /// The probe's typst workspace: a template importing a file, reading
 /// data and placing an image, as templates do.
@@ -56,12 +56,15 @@ const PROBE_DOCUMENT: &[(&str, &[u8])] = &[
     ("pixel.png", PROBE_PNG),
 ];
 
-/// Render a text sample, a one-pixel PNG and a one-page PDF through the
-/// exact command lines the jobs use. vips exits non-zero for a bad file and
-/// for a missing loader or an unknown option alike, so without this a
-/// libvips built without PDF support, or too old for an option, would mark
-/// every file `failed` instead of failing the deployment. The text sample
-/// also catches a `render_text_command` that is not the helper.
+/// Render a text sample, a one-pixel PNG, a one-page PDF and the map of a
+/// one-point GeoJSON through the exact command lines the jobs use. vips
+/// exits non-zero for a bad file and for a missing loader or an unknown
+/// option alike, so without this a libvips built without PDF or SVG
+/// support, or too old for an option, would mark every file `failed`
+/// instead of failing the deployment. The text sample and the map also
+/// catch a `render_text_command` or a `render_geo_command` that is not
+/// the helper. The map is drawn with no background layer: the probe never
+/// touches the network.
 pub async fn probe(config: &Config, tmp_dir: Option<&Path>) -> Result<(), ProbeError> {
     let workdir = crate::workdir(tmp_dir)?;
     let fit = Fit::thumbnail(config);
@@ -106,6 +109,68 @@ pub async fn probe(config: &Config, tmp_dir: Option<&Path>) -> Result<(), ProbeE
                 rejection,
             });
         }
+    }
+    let geojson = workdir.path().join("point.geojson");
+    tokio::fs::write(&geojson, PROBE_GEOJSON).await?;
+    let spec = workdir.path().join(geo::SPEC);
+    let bare = Config {
+        geojson: crate::GeoJson {
+            layers: Vec::new(),
+            ..config.geojson.clone()
+        },
+        ..config.clone()
+    };
+    tokio::fs::write(
+        &spec,
+        serde_json::to_vec(&bare.geojson.spec(fit)).expect("a spec serialises"),
+    )
+    .await?;
+    let svg = workdir.path().join(geo::PATHS);
+    let extent = workdir.path().join(geo::EXTENT);
+    let what = match helpers::render_geo(config, &geojson, &spec, &svg, &extent).await? {
+        Verdict::Rendered(()) => None,
+        Verdict::Declined => Some("declined a one-point GeoJSON".to_string()),
+        Verdict::Rejected(rejection) => Some(format!("failed on a one-point GeoJSON: {rejection}")),
+    };
+    if let Some(what) = what {
+        return Err(ProbeError::Helper {
+            command: config.render_geo_command.clone(),
+            setting: "render_geo_command",
+            helper: "agrafe-render-geo",
+            what,
+        });
+    }
+    let vips = config.vips_command.clone();
+    match vips::composite(config, workdir.path(), &[], geo::PATHS, geo::MAP)
+        .await
+        .map_err(|source| ProbeError::Render {
+            what: "a map",
+            vips: vips.clone(),
+            source,
+        })? {
+        Verdict::Rendered(()) | Verdict::Declined => {}
+        Verdict::Rejected(rejection) => {
+            return Err(ProbeError::Rejected {
+                what: "a map",
+                vips,
+                rejection,
+            });
+        }
+    }
+    let map = workdir.path().join(geo::MAP);
+    let verdict = vips::to_webp(config, &map, Input::Raster, &output, fit)
+        .await
+        .map_err(|source| ProbeError::Render {
+            what: "a map",
+            vips: vips.clone(),
+            source,
+        })?;
+    if let Verdict::Rejected(rejection) = verdict {
+        return Err(ProbeError::Rejected {
+            what: "a map",
+            vips,
+            rejection,
+        });
     }
     Ok(())
 }

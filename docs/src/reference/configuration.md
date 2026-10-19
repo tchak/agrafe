@@ -160,6 +160,7 @@ above `max_inline_scans` plus `jobs.concurrency.scan`.
 | `extract_command` | `"agrafe-extract"` | The embedded image helper |
 | `render_text_command` | `"agrafe-render-text"` | The text thumbnail helper |
 | `render_document_command` | `"agrafe-render-document"` | The typst helper |
+| `render_geo_command` | `"agrafe-render-geo"` | The GeoJSON map helper |
 | `max_source_size` | `"64 MiB"` | Larger originals get the icon and no preview; text thumbnails still render |
 | `tmp_dir` | the system temporary directory | Where workers unpack originals and document workspaces |
 
@@ -192,6 +193,45 @@ above `max_inline_scans` plus `jobs.concurrency.scan`.
 |---|---|---|
 | `min_coverage` | `0.7` | Fraction of the page a single image must cover for a PDF to count as a wrapped image |
 | `max_text_chars` | `50` | Most characters of text a wrapped image's document may have |
+
+### `[media.geojson]`
+
+How the map of a GeoJSON file is drawn; see [Maps](../guide/representations.md#maps).
+
+| Key | Default | Description |
+|---|---|---|
+| `padding` | `0.1` | Added around the geometry, as a fraction of its larger side |
+| `min_span` | `"200 m"` | The smallest extent drawn; metres, or a string with `m` or `km` |
+| `max_size` | `2048` | The largest side of a background request, in pixels; the map is the preview box or this, whichever is smaller |
+| `max_vertices` | `200000` | Vertices drawn at most over the whole file |
+| `fetch_timeout` | `"10s"` | The whole of one layer request |
+| `max_layer_size` | `"8 MiB"` | A larger layer response is a failure |
+
+### `[media.geojson.style]`
+
+The default style, in the simplestyle-spec vocabulary; a feature's own
+properties override it key by key.
+
+| Key | Default |
+|---|---|
+| `stroke` | `"#FFD400"` |
+| `stroke-width` | `4` |
+| `stroke-opacity` | `1` |
+| `fill` | `"#FFD400"` |
+| `fill-opacity` | `0.35` |
+| `marker-color` | `"#FFD400"` |
+| `marker-size` | `"medium"` |
+
+### `[[media.geojson.layers]]`
+
+Background layers, composited bottom to top. None by default.
+
+| Key | Default | Description |
+|---|---|---|
+| `url` | required | A WMS `GetMap` URL template with `{bbox}` (`minx,miny,maxx,maxy` in EPSG:3857), `{width}` and `{height}` (pixels) |
+| `attribution` | none | Burned into a corner of the map when this is the first drawn layer that has one |
+| `min_span` | none | Drawn only on an extent at least this wide |
+| `max_span` | none | Drawn only on an extent narrower than this |
 
 ## `[jobs]`
 
@@ -256,6 +296,8 @@ message naming the key:
 | `encryption.chunk_size must be at most 16777216 bytes (16 MiB)` | Lower it |
 | `blobs.default_expires_in must be at least 1h: …` | Raise it |
 | `media.variant_version must be at least 1` | Raise it |
+| `media.geojson.layers[0].url must contain {bbox}` | Add the placeholder; `{width}` and `{height}` likewise |
+| `media.geojson.layers[0].url must be an http or https URL` | Fix the URL |
 | `archive.max_size must be at most … bytes: …` | Lower it to 309 GiB or less |
 | `jobs.kinds must name at least one kind, or be omitted for all` | Remove the empty list |
 | `webhook.secret is required with webhook.url` | Set the secret |

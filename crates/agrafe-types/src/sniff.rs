@@ -8,13 +8,33 @@
 //! `loader_for` answers a different question for the renderer: whether the
 //! bytes are something vips may be handed at all, and with which loader.
 
+use crate::geojson::{self, GEOJSON};
+
 /// Bytes needed before a verdict. PDF allows its magic anywhere in the first
 /// 1 KiB; ZIP-based office formats need a few local file headers.
 pub const SNIFF_LEN: usize = 8 * 1024;
 
-/// What the first bytes of an upload look like, if recognisable.
+/// What the first bytes of an upload look like, if recognisable. JSON has
+/// no magic, but a JSON document that opens on a Feature or a
+/// FeatureCollection is a GeoJSON one, and is sniffed as such so that a
+/// `.geojson` declared as JSON or text can be refined (see [`refine`]).
 pub fn sniff(head: &[u8]) -> Option<&'static str> {
-    infer::get(head).map(|t| t.mime_type())
+    if let Some(kind) = infer::get(head) {
+        return Some(kind.mime_type());
+    }
+    geojson::looks_like_geojson(head).then_some(GEOJSON)
+}
+
+/// The content type a blob declared as `declared` gets once its bytes
+/// sniffed as `sniffed`: the sniffed type when it is more precise than a
+/// declaration that covers it, as a GeoJSON file declared as JSON or plain
+/// text; `None` to keep the declaration. The category is the same either
+/// way.
+pub fn refine(declared: &str, sniffed: &str) -> Option<&'static str> {
+    match (canonical(declared), sniffed) {
+        ("application/json" | "text/json" | "text/plain", GEOJSON) => Some(GEOJSON),
+        _ => None,
+    }
 }
 
 /// Whether bytes sniffed as `sniffed` may be served as `declared`.
@@ -29,6 +49,10 @@ pub fn compatible(declared: &str, sniffed: &str) -> bool {
     }
     if container(d) == Some(s) || container(s) == Some(d) {
         return true;
+    }
+    // A GeoJSON file is JSON, and text.
+    if s == GEOJSON {
+        return matches!(d, "application/json" | "text/json") || d.starts_with("text/");
     }
     // Text sniffers (HTML, shell scripts, XML) are heuristics; any text
     // declaration covers them.
@@ -97,8 +121,7 @@ fn container(mime: &str) -> Option<&'static str> {
         "image/svg+xml"
         | "application/xhtml+xml"
         | "application/rss+xml"
-        | "application/atom+xml"
-        | "application/geo+json" => Some(XML),
+        | "application/atom+xml" => Some(XML),
         other if other.ends_with("+xml") => Some(XML),
         _ => None,
     }
@@ -112,7 +135,7 @@ pub const LOADER_SNIFF_LEN: usize = 1024;
 /// the declared type, and the long tail of that choice ends at ImageMagick,
 /// so the allowlist of renderable types is enforced again here, on the
 /// bytes, for every file that reaches the renderer. PNM is here for the
-/// pages the helpers write.
+/// pages the helpers write, and `.v` for the map `vips composite` writes.
 pub fn loader_for(head: &[u8]) -> Option<&'static str> {
     match infer::get(head).map(|kind| kind.mime_type()) {
         Some("image/jpeg") => return Some("jpeg"),
@@ -134,6 +157,10 @@ pub fn loader_for(head: &[u8]) -> Option<&'static str> {
     }
     if matches!(head, [b'P', b'4'..=b'6', b' ' | b'\t' | b'\n' | b'\r', ..]) {
         return Some("pnm");
+    }
+    // The native format, in either byte order.
+    if head.starts_with(&[0xb6, 0xa6, 0xf2, 0x08]) || head.starts_with(&[0x08, 0xf2, 0xa6, 0xb6]) {
+        return Some("vips");
     }
     // vips looks for the root element in the first KiB; so does this.
     if head[..head.len().min(LOADER_SNIFF_LEN)]
@@ -159,6 +186,11 @@ mod tests {
         assert_eq!(loader_for(b"P5\n4 4\n255\n"), Some("pnm"));
         assert_eq!(loader_for(b"P7\n"), None);
         assert_eq!(
+            loader_for(&[0xb6, 0xa6, 0xf2, 0x08, 0x2c, 0x01]),
+            Some("vips")
+        );
+        assert_eq!(loader_for(&[0x08, 0xf2, 0xa6, 0xb6, 0, 0]), Some("vips"));
+        assert_eq!(
             loader_for(b"<?xml version=\"1.0\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\"/>"),
             Some("svg")
         );
@@ -180,6 +212,28 @@ mod tests {
         assert_eq!(sniff(b"%PDF-1.4\n"), Some("application/pdf"));
         assert_eq!(sniff(b"hello, world"), None);
         assert_eq!(sniff(b""), None);
+        assert_eq!(sniff(br#"{"a": 1}"#), None);
+        assert_eq!(
+            sniff(br#"{"type": "FeatureCollection", "features": []}"#),
+            Some(GEOJSON)
+        );
+    }
+
+    #[test]
+    fn refines_json_declarations_to_geojson() {
+        for declared in ["application/json", "text/json", "text/plain"] {
+            assert!(compatible(declared, GEOJSON), "{declared}");
+            assert_eq!(refine(declared, GEOJSON), Some(GEOJSON), "{declared}");
+        }
+        assert!(compatible(GEOJSON, GEOJSON));
+        assert_eq!(refine(GEOJSON, GEOJSON), None);
+        assert!(compatible("text/csv", GEOJSON));
+        assert_eq!(refine("text/csv", GEOJSON), None);
+        assert!(compatible("application/octet-stream", GEOJSON));
+        assert_eq!(refine("application/octet-stream", GEOJSON), None);
+        assert!(!compatible("image/png", GEOJSON));
+        assert!(!compatible("application/pdf", GEOJSON));
+        assert_eq!(refine("application/json", "image/png"), None);
     }
 
     #[test]

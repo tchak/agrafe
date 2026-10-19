@@ -99,7 +99,7 @@ reasoning behind every decision.
   or when clamd is unreachable. Nothing is rendered or served before it is
   clean.
 - **Sandboxed rendering**: no user file is ever decoded in the server
-  process. `vips` and the three helper binaries run as subprocesses with
+  process. `vips` and the four helper binaries run as subprocesses with
   resource limits and a timeout, and the file parsers are not even linked
   into the server.
 - **Safe serving**: originals carry `nosniff` and a `sandbox` CSP, so an
@@ -115,6 +115,11 @@ reasoning behind every decision.
 - **First-page thumbnails** for other PDFs, which have no preview: a
   document needs a viewer, not a picture. Office files have no page render.
 - **Text thumbnails** showing the first lines of text, CSV and TSV files.
+- **Maps for GeoJSON files**: the geometry drawn over a WMS background of
+  your choosing, none by default, in the file's own
+  [simplestyle](https://github.com/mapbox/simplestyle-spec) colours or a
+  configured default. A `.geojson` uploaded as JSON or text is recognised
+  as one.
 - **Category icons** for everything else. The thumbnail URL answers `200`
   for as long as the blob exists, so it can go straight into an `<img>`
   tag.
@@ -569,9 +574,14 @@ and every configuration key is documented in
 | `agrafe-extract` | Sandboxed helper that pulls the image out of a PDF, DOCX or ODT |
 | `agrafe-render-text` | Sandboxed helper that rasterises a text sample |
 | `agrafe-render-document` | Sandboxed helper that compiles a typst workspace into a PDF |
+| `agrafe-render-geo` | Sandboxed helper that draws a GeoJSON file as SVG over the map extent it chose |
 
-A deployment ships four binaries together: `agrafe`, `agrafe-extract`,
-`agrafe-render-text` and `agrafe-render-document`.
+A deployment ships five binaries together: `agrafe`, `agrafe-extract`,
+`agrafe-render-text`, `agrafe-render-document` and `agrafe-render-geo`.
+The render workers are the one place that talks to the network besides the
+fetch and webhook jobs: with `media.geojson.layers` configured they fetch
+map backgrounds from those hosts over HTTPS, and with the default empty
+list they fetch nothing.
 
 ## Development
 
