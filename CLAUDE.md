@@ -18,6 +18,11 @@ See "Crates" in `DESIGN.md` for the dependency graph.
   handle whose methods are the private API. No axum anywhere in it.
 - `crates/agrafe-axum` — the HTTP interfaces as routers, `ApiError`, and the
   integration tests under `tests/api`.
+- `crates/agrafe-dashboard` — the HTML dashboard as a router: askama
+  templates under `templates/`, the stylesheet under `assets/` (daisyUI
+  components assembled by `scripts/daisyui.sh`; regenerate, never edit),
+  its own integration tests under `tests/`. No `ApiError`: it renders
+  `DashboardError` as a page.
 - `crates/agrafe-server` — the clap entry point; its binary is named
   `agrafe`.
 - `crates/agrafe-crypto` — streaming AEAD and key wrapping, reviewed in
@@ -81,11 +86,12 @@ See "Crates" in `DESIGN.md` for the dependency graph.
   (`ConfigError`, `ReadError`, `JobError`, `UploadError`, …). No `anyhow`.
   Messages inline their cause (`"reading the object: {0}"`), so log them
   with `%err`. `ApiError::internal(e)` is the only type-erased boundary.
-- HTTP stays in `agrafe-axum`. The library never names a status code; a
-  new operation is a method on `Agrafe` returning its own error enum, and
-  the mapping to `ApiError` goes in `crates/agrafe-axum/src/error.rs`.
-  Handlers parse the request, call the handle and shape the response,
-  nothing more.
+- HTTP stays in `agrafe-axum` and `agrafe-dashboard`. The library never
+  names a status code; a new operation is a method on `Agrafe` returning
+  its own error enum, and the mapping to `ApiError` goes in
+  `crates/agrafe-axum/src/error.rs` (to `DashboardError` in
+  `crates/agrafe-dashboard/src/error.rs`). Handlers parse the request,
+  call the handle and shape the response, nothing more.
 - `blobs.updated_at` is set by a trigger (`migrations/0001_blobs.sql`). Do not set it in
   queries.
 - Tests run against the `agrafe_test` database: `DATABASE_URL` from the

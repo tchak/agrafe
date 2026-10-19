@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Blob {{ view.blob.filename }}{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+  <div>
+    <h1 class="text-2xl font-bold">{{ view.blob.filename }} {{ view.state|badge|safe }}</h1>
+    <div class="font-mono text-sm opacity-60">{{ view.blob.id }}</div>
+  </div>
+  {% if can_retry %}
+  <form method="post" action="{{ layout.base }}/blobs/{{ view.blob.id }}/retry"><button class="btn btn-primary btn-sm" type="submit">Retry</button></form>
+  {% endif %}
+</div>
+
+<div class="flex items-end gap-6 mb-6">
+  <img class="rounded-box border border-base-300 bg-base-100" src="{{ thumbnail }}" alt="thumbnail of {{ view.blob.filename }}" width="128" height="128" loading="lazy">
+  <div class="rounded-box border border-base-300 bg-base-100 w-full">
+  <table class="table table-sm kv">
+    <tbody>
+      <tr><th>content type</th><td>{{ view.blob.content_type }} <span class="opacity-60">({{ view.blob.category }}, {{ view.blob.input_type }})</span></td></tr>
+      <tr><th>size</th><td>{{ view.blob.size|size }}</td></tr>
+      <tr><th>priority</th><td>{{ view.blob.priority }}</td></tr>
+      <tr><th>scan</th><td>{{ view.blob.scan_state|badge|safe }}{% if let Some(sig) = view.blob.scan_signature %} {{ sig }}{% endif %}{% if let Some(at) = view.blob.scanned_at %} <span class="opacity-60">at {{ at|ts }}</span>{% endif %}{% if view.blob.skip_virus_scan %} <span class="opacity-60">(skipped on request)</span>{% endif %}</td></tr>
+      <tr><th>thumbnail</th><td>{{ view.blob.thumbnail_state|badge|safe }}</td></tr>
+      <tr><th>preview</th><td>{{ view.blob.preview_state|badge|safe }}{% if let Some(src) = view.blob.preview_source %} <span class="opacity-60">from {{ src }}</span>{% endif %}</td></tr>
+    </tbody>
+  </table>
+  </div>
+</div>
+
+<div class="rounded-box border border-base-300 bg-base-100 mb-6">
+<table class="table table-sm kv">
+  <tbody>
+    <tr><th>storage key</th><td class="font-mono">{{ view.blob.storage_key|opt }}</td></tr>
+    <tr><th>kek</th><td>{{ view.blob.kek_id|opt }}</td></tr>
+    <tr><th>source parts</th><td>{{ view.blob.source_parts }} <span class="opacity-60">({{ view.blob.source_rows }} rows, {{ view.blob.source_size }} bytes)</span></td></tr>
+    <tr><th>expires at</th><td>{{ view.blob.expires_at|opt_ts }}</td></tr>
+    <tr><th>created at</th><td>{{ view.blob.created_at|ts }}</td></tr>
+    <tr><th>updated at</th><td>{{ view.blob.updated_at|ts }}</td></tr>
+    <tr><th>upload started at</th><td>{{ view.blob.upload_started_at|opt_ts }}</td></tr>
+    <tr><th>uploaded at</th><td>{{ view.blob.uploaded_at|opt_ts }}</td></tr>
+    <tr><th>deleted at</th><td>{{ view.blob.deleted_at|opt_ts }}</td></tr>
+    <tr><th>purged at</th><td>{{ view.blob.purged_at|opt_ts }}</td></tr>
+    <tr><th>failed at</th><td>{{ view.blob.failed_at|opt_ts }}</td></tr>
+  </tbody>
+</table>
+</div>
+
+{% if let Some(error) = view.blob.last_error %}
+<h2 class="text-xl font-semibold mb-2">Last error</h2>
+<pre class="rounded-box border border-base-300 bg-base-100 p-4 text-sm whitespace-pre-wrap mb-6">{{ error }}</pre>
+{% endif %}
+
+<h2 class="text-xl font-semibold mb-2">Attachments</h2>
+<div class="overflow-x-auto rounded-box border border-base-300 bg-base-100 mb-6">
+<table class="table table-zebra table-sm">
+  <thead><tr><th>id</th><th>record type</th><th>record id</th><th>name</th><th>created at</th></tr></thead>
+  <tbody>
+    {% for a in attachments %}
+    <tr>
+      <td><a class="link link-primary font-mono text-xs" href="{{ layout.base }}/attachments/{{ a.id }}">{{ a.id }}</a></td>
+      <td>{{ a.record_type }}</td>
+      <td>{{ a.record_id }}</td>
+      <td>{{ a.name }}</td>
+      <td>{{ a.created_at|ts }}</td>
+    </tr>
+    {% endfor %}
+    {% if attachments.is_empty() %}<tr><td colspan="5" class="opacity-60">Not attached.</td></tr>{% endif %}
+  </tbody>
+</table>
+</div>
+
+<h2 class="text-xl font-semibold mb-2">Jobs</h2>
+{% call m::job_table(jobs, layout.base, "No jobs.") %}{% endcall %}
+{% endblock %}

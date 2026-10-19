@@ -1,6 +1,7 @@
-//! Prometheus metrics. Queue depth and age are read from the `jobs` table
-//! when scraped, so any process answers for the whole deployment; job
-//! outcomes and durations are counted by the process that ran them.
+//! Prometheus metrics. Queue depth and age come from the census of the
+//! `jobs` table taken when scraped (`Agrafe::job_counts`), so any process
+//! answers for the whole deployment; job outcomes and durations are
+//! counted by the process that ran them.
 
 use std::time::Duration;
 
@@ -8,15 +9,12 @@ use prometheus::{
     Encoder, GaugeVec, HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry,
     TextEncoder,
 };
-use sqlx::PgPool;
 
-use crate::jobs::{self, JobKind, JobState, Priority};
+use crate::jobs::{Count, JobKind, JobState, Priority};
 
 /// What a scrape can fail on.
 #[derive(Debug, thiserror::Error)]
 pub enum MetricsError {
-    #[error("counting jobs: {0}")]
-    Db(#[from] sqlx::Error),
     #[error("encoding metrics: {0}")]
     Encode(#[from] prometheus::Error),
 }
@@ -171,9 +169,9 @@ impl Metrics {
             .set(count as i64);
     }
 
-    /// Refresh the queue gauges from the database and render everything in
-    /// the Prometheus text format.
-    pub async fn render(&self, pool: &PgPool, lease: Duration) -> Result<String, MetricsError> {
+    /// Refresh the queue gauges from `counts`, the census the caller just
+    /// took, and render everything in the Prometheus text format.
+    pub fn render(&self, counts: &[Count]) -> Result<String, MetricsError> {
         for kind in JobKind::ALL {
             for priority in Priority::ALL {
                 for state in JobState::ALL {
@@ -186,7 +184,7 @@ impl Metrics {
                     .set(0.0);
             }
         }
-        for row in jobs::counts(pool, lease).await? {
+        for row in counts {
             let (kind, priority) = (row.kind.as_str(), row.priority.as_str());
             self.jobs
                 .with_label_values(&[kind, row.state.as_str(), priority])

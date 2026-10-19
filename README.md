@@ -151,6 +151,9 @@ every decision.
   per kind and priority, plus job runs, durations and workers per process.
 - **Jobs API** to list, retry or discard failed jobs, and a retry on the
   blob itself, which records the death of the job it was waiting on.
+- **Dashboard**, off by default: the queue, the blobs and the attachments
+  as HTML pages on the private port, with the same filters as the API and
+  optional retry and discard buttons. No JavaScript.
 - **Reaper** for expiry, stale uploads, abandoned exports, delayed purges
   of deleted and expired objects, and the pruning of old dead jobs and
   tombstones.
@@ -407,6 +410,28 @@ A blob created attached and never uploaded is expired by the reaper after
 sees `expired` as its `blob_state`; an unattached one keeps to its own
 `expires_at`.
 
+### Watch it in a browser
+
+The same listings as pages, for an operator on the trusted network:
+
+```toml
+[dashboard]
+enabled = true   # /dashboard on the private port
+actions = true   # the retry and discard buttons; off, the pages are read-only
+```
+
+`http://localhost:8080/dashboard` shows the queue census and the jobs with
+a tab per state, then the blobs and the attachments with the filters of
+the JSON routes, every row linking to the related objects. The URL holds
+the filters, so a view can be pasted; `?refresh=5` on the jobs page makes
+it reload every five seconds. The action forms are accepted only from the
+dashboard's own origin, which is what keeps a page the operator visits
+elsewhere from submitting them. Both keys are off by default.
+
+A host application nests `agrafe_dashboard::dashboard_router` wherever it
+likes, behind its own authentication; the pages find their prefix from
+the request.
+
 The full route tables for both ports are in [DESIGN.md](DESIGN.md#interfaces),
 and every configuration key is documented in
 [config/example.toml](config/example.toml).
@@ -417,6 +442,7 @@ and every configuration key is documented in
 |---|---|
 | `agrafe` | The library: domain, jobs, config, and the `Agrafe` handle |
 | `agrafe-axum` | The two HTTP interfaces as axum routers, and the mapping of errors onto status codes |
+| `agrafe-dashboard` | The HTML dashboard as an axum router, templates compiled in |
 | `agrafe-server` | The `agrafe` binary: `serve` and `migrate` |
 | `agrafe-crypto` | Streaming AEAD and key wrapping |
 | `agrafe-types` | Content types, classification, sniffing, the text-sample contract |
@@ -439,14 +465,15 @@ cargo fmt
 
 Tests connect as the current OS user to `agrafe_test`; set `DATABASE_URL`
 to override. They need `vips` on the `PATH` as well. The integration tests,
-in `agrafe-axum`, run the helper binaries from `target/`: a plain `cargo
-test` builds them, and `cargo test -p agrafe-axum` builds them on demand.
-ClamAV is faked in tests.
+in `agrafe-axum` and `agrafe-dashboard`, share that database. The former
+run the helper binaries from `target/`: a plain `cargo test` builds them,
+and `cargo test -p agrafe-axum` builds them on demand. ClamAV is faked in
+tests.
 
 The files under `fixtures/` and the renderer probe files under
 `crates/agrafe-render/assets/probe` are built by `fixtures/make.py` (needs
-Pillow), the placeholder icons by `scripts/icons.sh`; all outputs are
-committed.
+Pillow), the placeholder icons by `scripts/icons.sh`, the dashboard's
+stylesheet by `scripts/daisyui.sh`; all outputs are committed.
 
 Coverage needs [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov):
 

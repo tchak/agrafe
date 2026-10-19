@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}agrafe{% endblock %} · agrafe</title>
+<link rel="stylesheet" href="{{ layout.base }}/style.css">
+{% if let Some(seconds) = layout.refresh %}<meta http-equiv="refresh" content="{{ seconds }}">{% endif %}
+<style>
+  /* The layout utilities the pages need on top of the components; the
+     names are Tailwind's, which daisyUI's documentation uses. */
+  body { min-height: 100vh; }
+  .container { width: 100%; max-width: 84rem; margin: 0 auto; padding: 0 1.5rem; }
+  main.container { padding-top: 1.5rem; padding-bottom: 3rem; }
+  .flex { display: flex; } .flex-wrap { flex-wrap: wrap; } .items-end { align-items: flex-end; }
+  .items-center { align-items: center; } .justify-between { justify-content: space-between; }
+  .gap-2 { gap: 0.5rem; } .gap-4 { gap: 1rem; } .gap-6 { gap: 1.5rem; }
+  .mt-4 { margin-top: 1rem; } .mt-8 { margin-top: 2rem; } .mb-2 { margin-bottom: 0.5rem; }
+  .mb-4 { margin-bottom: 1rem; } .mb-6 { margin-bottom: 1.5rem; } .ml-1 { margin-left: 0.25rem; }
+  .w-full { width: 100%; } .w-56 { width: 14rem; } .w-24 { width: 6rem; }
+  .text-xs { font-size: 0.75rem; line-height: 1rem; } .text-sm { font-size: 0.875rem; line-height: 1.25rem; }
+  .text-xl { font-size: 1.25rem; line-height: 1.75rem; } .text-2xl { font-size: 1.5rem; line-height: 2rem; }
+  .font-bold { font-weight: 700; } .font-semibold { font-weight: 600; } .font-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .opacity-60 { opacity: 0.6; } .whitespace-nowrap { white-space: nowrap; } .whitespace-pre-wrap { white-space: pre-wrap; word-break: break-word; }
+  .overflow-x-auto { overflow-x: auto; } .rounded-box { border-radius: var(--radius-box); }
+  .border { border-width: 1px; } .border-base-300 { border-color: var(--color-base-300); }
+  .bg-base-100 { background-color: var(--color-base-100); } .bg-base-200 { background-color: var(--color-base-200); }
+  .shadow-sm { box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05); }
+  .p-4 { padding: 1rem; } .px-2 { padding-left: 0.5rem; padding-right: 0.5rem; }
+  .table th { white-space: nowrap; }
+  .table td { white-space: nowrap; }
+  .table td.wrap { white-space: normal; }
+  .kv th { width: 12rem; text-align: left; }
+  .kv td { white-space: normal; }
+</style>
+</head>
+<body class="bg-base-200">
+<header class="navbar bg-base-100 shadow-sm">
+  <div class="container flex items-center justify-between">
+    <a class="text-xl font-bold" href="{{ layout.base }}/jobs">agrafe</a>
+    <nav class="flex gap-2">
+      <a class="btn btn-ghost btn-sm{% if layout.section == "jobs" %} btn-active{% endif %}" href="{{ layout.base }}/jobs">Jobs</a>
+      <a class="btn btn-ghost btn-sm{% if layout.section == "blobs" %} btn-active{% endif %}" href="{{ layout.base }}/blobs">Blobs</a>
+      <a class="btn btn-ghost btn-sm{% if layout.section == "attachments" %} btn-active{% endif %}" href="{{ layout.base }}/attachments">Attachments</a>
+    </nav>
+  </div>
+</header>
+<main class="container">
+{% if let Some(notice) = layout.notice %}<div role="alert" class="alert alert-info alert-soft mb-6"><span>{{ notice }}</span></div>{% endif %}
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

@@ -45,7 +45,8 @@ into a server process. Dependencies point downwards only.
 | `agrafe-render` | Which files render and from what, `vips thumbnail`, the icons, the drivers that spawn the helpers, the startup probe, the `[media]` tool config | `agrafe-types`, `agrafe-sandbox` |
 | `agrafe` | The library: config, database, blobs, upload pipeline, the fetch client, encryption, signing, storage, ClamAV, jobs, metrics, URL minting, and the `Agrafe` handle whose methods are the private API | `agrafe-crypto`, `agrafe-types`, `agrafe-render`, `sqlx`, `object_store`, `reqwest` |
 | `agrafe-axum` | The two HTTP interfaces as axum routers, the extractors, `ApiError` and the mapping of the library's errors onto status codes | `agrafe`, `axum` |
-| `agrafe-server` | The clap entry point: `serve`, `migrate`. Produces the binary named `agrafe` | `agrafe`, `agrafe-axum` |
+| `agrafe-dashboard` | The HTML dashboard as an axum router: the queue census, the listings and details of jobs, blobs and attachments, the retry and discard forms; compiled templates and a vendored stylesheet | `agrafe`, `axum`, `askama` |
+| `agrafe-server` | The clap entry point: `serve`, `migrate`. Produces the binary named `agrafe` | `agrafe`, `agrafe-axum`, `agrafe-dashboard` |
 
 The helpers are separate binaries, not subcommands of the server, so that
 the server links none of their parsers: `lopdf`, `zip`, `quick-xml` and
@@ -152,6 +153,88 @@ JSON, unknown query values, a non-UUID path segment, unknown routes (`404`)
 and wrong methods (`405`). Handlers use wrapper extractors in `extract.rs`
 that convert those rejections. Internal errors are logged in full and reported
 as `internal` with no detail.
+
+### Dashboard
+
+Everything an operator wants to see is in the private API as JSON, and
+following a blob to its jobs or an attachment to its blob is three `curl |
+jq` commands. The dashboard is the same thing as HTML, in the spirit of
+Sidekiq's web UI: the queue at a glance, then the blobs and the attachments
+with the filters the JSON routes take, every row linking to the related
+objects. Nothing is created, uploaded or attached from it. The one write
+is retry (and discard, for a dead job), and its presence is configurable.
+
+It is a second presentation of the `Agrafe` handle, in its own crate,
+`agrafe-dashboard`, not a module of `agrafe-axum`: that crate has no
+presentation dependency, and a host that nests the public router or calls
+the private API in Rust should not compile templates and a stylesheet it
+never serves. The dashboard answers with HTML pages, not `ApiError`
+bodies, so it shares no code with `agrafe-axum` anyway. The library
+changed only to expose the queue census through the handle,
+`Agrafe::job_counts`, which `/metrics` reads too.
+
+`dashboard_router(state)` is one router with its state applied, like the
+other two. `agrafe-server` nests it under `/dashboard` on the private
+listener when `dashboard.enabled` is set, on the `api` role only; a host
+nests it wherever it likes, behind its own authentication. The pages build
+their links from the prefix they find themselves under (the part of the
+original URI the nest stripped), and embed the thumbnail from the private
+API's `GET /blobs/:id/thumbnail/:filename`, which is assumed one segment
+up: `/dashboard` under `/`, `/internal/dashboard` under `/internal`.
+
+Rendering: askama templates compiled into the binary, type-checked against
+the structs they render, so a nestable library needs no files next to the
+binary; one stylesheet served from the router, daisyUI's reset, themes
+and the components the pages use, assembled from the release's plain CSS
+files by `scripts/daisyui.sh` and committed, with the few layout
+utilities the pages need written in the base template; no Tailwind, no
+JavaScript, no build step. Filters are `GET` forms whose fields
+mirror the list query structs, so the URL is the state and a filtered view
+is a link an operator can paste. An enum filter is a select; so are the
+`record_type` and `name` of attachments, fed by `Agrafe::attachment_facets`,
+the distinct values of each (a backend has a handful, and both lead an
+index), with the value a pasted link names still offered when it is gone. Pagination is the existing cursor, a
+"next" link. Actions are `POST` forms that redirect (`303`) to the page
+they came from with a one-line notice in the query. The queue page takes
+`?refresh=5` and reloads itself through `<meta http-equiv="refresh">`.
+Errors are pages too, with the status in the title: a bad filter is `400`,
+an id of the wrong shape or an unknown path is `404`.
+
+Views. **Jobs**: the census from `Agrafe::job_counts`, a total per state
+and, per kind and priority, the count in each state and the age of the
+oldest due job; below it the listing with a tab per state and the `kind`,
+`priority` and `blob_id` filters, and the first line of `last_error` on
+each row. The detail shows the payload pretty-printed, the whole error,
+and on a dead job the retry and discard buttons. **Blobs**: the six
+filters of `repo::ListParams`; the detail embeds the thumbnail (always
+`200`, so no special case), lists the attachments and the jobs of the
+blob, and shows the retry button when `failed_at` is set. **Attachments**:
+the four filters of `attachment::ListParams`, each row with the state and
+the failure of its blob, as the JSON listing carries them.
+
+Actions and cross-site requests. The private port has no authentication
+because only trusted networks reach it. A browser breaks that assumption:
+an operator with the dashboard open on an internal address can be made to
+submit a form to it by any page they visit, since a cross-origin form
+`POST` goes through without a preflight. The JSON API has no such
+exposure: `PUT`, `DELETE` and JSON bodies are preflighted. The action
+routes therefore accept a request only when `Sec-Fetch-Site` is
+`same-origin` or `none`, and when that header is absent, only when
+`Origin` matches `Host`. Stateless, no token and no session, which the
+private port does not have. A refused action is a `403` page. The check
+applies whether or not actions are enabled, so a future action inherits
+it; with `dashboard.actions` off the action routes answer `404` and the
+buttons do not render.
+
+Both flags are off by default: an existing deployment does not grow an
+interface by upgrading. Considered and not done: a module of
+`agrafe-axum` (a template engine in every host, and a different error
+surface anyway); `maud` (markup as Rust code, harder to read for pages
+this size); `minijinja` for hot reload (loses the type checking, the
+wrong trade for a page that changes rarely); htmx or a JSON-driven front
+end (nothing needs partial updates, and the JSON API exists for anything
+programmatic); a CSRF token (the `Sec-Fetch-Site` / `Origin` check covers
+the threat without a session store).
 
 ## Signed URLs
 
@@ -1679,6 +1762,8 @@ due and notifies the workers; `DELETE /jobs/:id` removes one. Both answer
 `409` for a job that is not dead: a pending job is the only thing that will
 finish its blob, and a running one is a worker's. A retry whose blob already
 has a pending job of that kind is `409` too; the newer job does the work.
+The same census and listing as pages, with the buttons, is the dashboard;
+see "Dashboard" under "Interfaces".
 
 ## Configuration
 
@@ -1701,6 +1786,7 @@ is redacted so a dumped config cannot leak them. See `config/example.toml`.
 | Encryption | `aes-gcm` + `hkdf`, Tink streaming format, own crate (`agrafe-crypto`) |
 | Sniffing | `infer` |
 | Metrics | `prometheus`, text exposition on `/metrics` |
+| Dashboard | `askama` templates compiled in, `askama_web` for the axum glue, daisyUI's component CSS vendored |
 | Scanning | clamd `INSTREAM` client |
 | Images, PDF pages | `vips thumbnail` (libvips) in a sandboxed subprocess |
 | Embedded images | `lopdf`, `zip`, `quick-xml` in the sandboxed `agrafe-extract` helper |

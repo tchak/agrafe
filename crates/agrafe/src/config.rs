@@ -44,6 +44,8 @@ pub struct Config {
     pub blobs: BlobsConfig,
     #[serde(default)]
     pub fetch: FetchConfig,
+    #[serde(default)]
+    pub dashboard: DashboardConfig,
 }
 
 impl Config {
@@ -444,6 +446,20 @@ pub struct FetchConfig {
     /// The `User-Agent` sent with every fetch.
     #[serde(default = "default_user_agent")]
     pub user_agent: String,
+}
+
+/// The HTML dashboard on the private interface. See DESIGN.md,
+/// "Dashboard". Both off by default: a deployment does not grow an
+/// interface by upgrading.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct DashboardConfig {
+    /// Serve it under `/dashboard` on the private interface.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Show the retry and discard buttons. Off, the dashboard is read-only
+    /// and the action routes answer `404`.
+    #[serde(default)]
+    pub actions: bool,
 }
 
 fn default_fetch_connect_timeout() -> Duration {

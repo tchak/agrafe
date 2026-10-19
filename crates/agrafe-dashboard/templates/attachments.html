@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Attachments{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold mb-4">Attachments</h1>
+
+<form class="flex flex-wrap items-end gap-4 mb-4" method="get" action="{{ layout.base }}/attachments">
+  {% call m::select("record_type", "Record type", record_types) %}{% endcall %}
+  {% call m::text("record_id", "Record id", query.record_id) %}{% endcall %}
+  {% call m::select("name", "Name", names) %}{% endcall %}
+  {% call m::text("blob_id", "Blob", query.blob_id) %}{% endcall %}
+  <fieldset class="fieldset"><button class="btn btn-primary btn-sm" type="submit">Filter</button></fieldset>
+</form>
+
+<div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
+<table class="table table-zebra table-sm">
+  <thead>
+    <tr><th>id</th><th>record type</th><th>record id</th><th>name</th><th>blob</th><th>blob state</th><th>blob failed at</th><th>created at</th></tr>
+  </thead>
+  <tbody>
+    {% for l in attachments %}
+    <tr>
+      <td><a class="link link-primary font-mono text-xs" href="{{ layout.base }}/attachments/{{ l.attachment.id }}">{{ l.attachment.id }}</a></td>
+      <td>{{ l.attachment.record_type }}</td>
+      <td>{{ l.attachment.record_id }}</td>
+      <td>{{ l.attachment.name }}</td>
+      <td><a class="link link-primary font-mono text-xs" href="{{ layout.base }}/blobs/{{ l.attachment.blob_id }}">{{ l.attachment.blob_id }}</a></td>
+      <td>{{ l.blob_state|badge|safe }}</td>
+      <td>{{ l.blob_failed_at|opt_ts }}</td>
+      <td>{{ l.attachment.created_at|ts }}</td>
+    </tr>
+    {% endfor %}
+    {% if attachments.is_empty() %}<tr><td colspan="8" class="opacity-60">No attachments match.</td></tr>{% endif %}
+  </tbody>
+</table>
+</div>
+{% call m::next(next) %}{% endcall %}
+{% endblock %}

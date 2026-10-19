@@ -4,6 +4,7 @@ members = [
     "crates/agrafe",
     "crates/agrafe-axum",
     "crates/agrafe-crypto",
+    "crates/agrafe-dashboard",
     "crates/agrafe-extract",
     "crates/agrafe-render",
     "crates/agrafe-render-text",

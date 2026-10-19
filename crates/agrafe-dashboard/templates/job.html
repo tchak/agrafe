@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Job {{ view.job.id }}{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+  <h1 class="text-2xl font-bold">Job {{ view.job.id }} <span class="opacity-60">{{ view.job.kind }}</span> {{ view.state|badge|safe }}</h1>
+  {% if can_act %}
+  <div class="flex gap-2">
+    <form method="post" action="{{ layout.base }}/jobs/{{ view.job.id }}/retry"><button class="btn btn-primary btn-sm" type="submit">Retry</button></form>
+    <form method="post" action="{{ layout.base }}/jobs/{{ view.job.id }}/discard"><button class="btn btn-error btn-outline btn-sm" type="submit">Discard</button></form>
+  </div>
+  {% endif %}
+</div>
+
+<div class="rounded-box border border-base-300 bg-base-100 mb-6">
+<table class="table table-sm kv">
+  <tbody>
+    <tr><th>kind</th><td>{{ view.job.kind }}</td></tr>
+    <tr><th>state</th><td>{{ view.state|badge|safe }}</td></tr>
+    <tr><th>priority</th><td>{{ view.job.priority }}</td></tr>
+    <tr><th>blob</th><td>{% if let Some(blob) = view.job.blob_id %}<a class="link link-primary font-mono" href="{{ layout.base }}/blobs/{{ blob }}">{{ blob }}</a>{% else %}<span class="opacity-60">none</span>{% endif %}</td></tr>
+    <tr><th>attempts</th><td>{{ view.job.attempts }} / {{ view.job.max_attempts }}</td></tr>
+    <tr><th>run at</th><td>{{ view.job.run_at|ts }}</td></tr>
+    <tr><th>locked at</th><td>{{ view.job.locked_at|opt_ts }}</td></tr>
+    <tr><th>locked by</th><td>{{ view.job.locked_by|opt }}</td></tr>
+    <tr><th>failed at</th><td>{{ view.job.failed_at|opt_ts }}</td></tr>
+    <tr><th>created at</th><td>{{ view.job.created_at|ts }}</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2 class="text-xl font-semibold mb-2">Payload</h2>
+<pre class="rounded-box border border-base-300 bg-base-100 p-4 text-sm whitespace-pre-wrap mb-6">{{ payload }}</pre>
+
+{% if let Some(error) = view.job.last_error %}
+<h2 class="text-xl font-semibold mb-2">Last error</h2>
+<pre class="rounded-box border border-base-300 bg-base-100 p-4 text-sm whitespace-pre-wrap mb-6">{{ error }}</pre>
+{% endif %}
+{% endblock %}

@@ -63,6 +63,13 @@ impl Agrafe {
         let mut conn = self.pool().acquire().await?;
         discard(&mut conn, id).await
     }
+
+    /// The queue census: how many jobs of each kind and priority are in
+    /// each state, and how long the oldest due one has waited. What
+    /// `/metrics` and the dashboard both show.
+    pub async fn job_counts(&self) -> sqlx::Result<Vec<Count>> {
+        counts(self.pool(), self.config().jobs.lease_timeout).await
+    }
 }
 
 /// Why one attempt at a job failed. The message is what `last_error` keeps.

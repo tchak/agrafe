@@ -16,6 +16,7 @@ path = "src/main.rs"
 [dependencies]
 agrafe = { version = "0.1.0", path = "../agrafe" }
 agrafe-axum = { version = "0.1.0", path = "../agrafe-axum" }
+agrafe-dashboard = { version = "0.1.0", path = "../agrafe-dashboard" }
 axum = "0.8.9"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 futures = "0.3.34"

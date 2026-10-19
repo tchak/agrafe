@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Jobs{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold mb-4">Jobs</h1>
+
+<div class="stats shadow-sm bg-base-100 mb-6">
+  {% for tab in tabs %}{% if tab.label != "all" %}
+  <a class="stat" href="{{ tab.href }}">
+    <div class="stat-title">{{ tab.label }}</div>
+    <div class="stat-value">{{ tab.count }}</div>
+  </a>
+  {% endif %}{% endfor %}
+</div>
+
+<div class="overflow-x-auto rounded-box border border-base-300 bg-base-100 mb-6">
+<table class="table table-sm">
+  <thead>
+    <tr><th>kind</th><th>priority</th><th>due</th><th>scheduled</th><th>running</th><th>dead</th><th>oldest due</th></tr>
+  </thead>
+  <tbody>
+    {% for row in census.rows %}
+    <tr>
+      <td>{{ row.kind }}</td>
+      <td>{{ row.priority }}</td>
+      <td>{{ row.due }}</td>
+      <td>{{ row.scheduled }}</td>
+      <td>{{ row.running }}</td>
+      <td>{{ row.dead }}</td>
+      <td>{{ row.oldest_due|age }}</td>
+    </tr>
+    {% endfor %}
+    {% if census.rows.is_empty() %}<tr><td colspan="7" class="opacity-60">The queue is empty.</td></tr>{% endif %}
+  </tbody>
+</table>
+</div>
+
+<div role="tablist" class="tabs tabs-box mb-4">
+  {% for tab in tabs %}<a role="tab" class="tab{% if tab.active %} tab-active{% endif %}" href="{{ tab.href }}">{{ tab.label }} <span class="badge badge-sm ml-1">{{ tab.count }}</span></a>{% endfor %}
+</div>
+
+<form class="flex flex-wrap items-end gap-4 mb-4" method="get" action="{{ layout.base }}/jobs">
+  {% if let Some(state) = query.state %}<input type="hidden" name="state" value="{{ state }}">{% endif %}
+  {% call m::select("kind", "Kind", kinds) %}{% endcall %}
+  {% call m::select("priority", "Priority", priorities) %}{% endcall %}
+  {% call m::text("blob_id", "Blob", query.blob_id) %}{% endcall %}
+  <fieldset class="fieldset">
+    <legend class="fieldset-legend">Refresh (seconds)</legend>
+    <input class="input input-sm w-24" type="number" name="refresh" min="0"{% if let Some(r) = query.refresh %} value="{{ r }}"{% endif %}>
+  </fieldset>
+  <fieldset class="fieldset"><button class="btn btn-primary btn-sm" type="submit">Filter</button></fieldset>
+</form>
+
+{% call m::job_table(jobs, layout.base, "No jobs match.") %}{% endcall %}
+{% call m::next(next) %}{% endcall %}
+{% endblock %}

@@ -1,0 +1,46 @@
+{% macro select(name, label, opts) %}
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">{{ label }}</legend>
+  <select class="select select-sm" name="{{ name }}">
+    <option value="">any</option>
+    {% for o in opts %}<option value="{{ o.value }}"{% if o.selected %} selected{% endif %}>{{ o.value }}</option>{% endfor %}
+  </select>
+</fieldset>
+{% endmacro %}
+
+{% macro text(name, label, value) %}
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">{{ label }}</legend>
+  <input class="input input-sm w-56" type="text" name="{{ name }}"{% if let Some(v) = value %} value="{{ v }}"{% endif %}>
+</fieldset>
+{% endmacro %}
+
+{% macro job_table(jobs, base, empty) %}
+<div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
+<table class="table table-zebra table-sm">
+  <thead>
+    <tr><th>id</th><th>kind</th><th>state</th><th>priority</th><th>blob</th><th>attempts</th><th>run at</th><th>locked by</th><th>last error</th></tr>
+  </thead>
+  <tbody>
+    {% for v in jobs %}
+    <tr>
+      <td><a class="link link-primary" href="{{ base }}/jobs/{{ v.job.id }}">{{ v.job.id }}</a></td>
+      <td>{{ v.job.kind }}</td>
+      <td>{{ v.state|badge|safe }}</td>
+      <td>{{ v.job.priority }}</td>
+      <td>{% if let Some(blob) = v.job.blob_id %}<a class="link link-primary font-mono text-xs" href="{{ base }}/blobs/{{ blob }}">{{ blob }}</a>{% endif %}</td>
+      <td>{{ v.job.attempts }} / {{ v.job.max_attempts }}</td>
+      <td>{{ v.job.run_at|ts }}</td>
+      <td>{{ v.job.locked_by|opt }}</td>
+      <td class="wrap">{{ v.job.last_error|first_line }}</td>
+    </tr>
+    {% endfor %}
+    {% if jobs.is_empty() %}<tr><td colspan="9" class="opacity-60">{{ empty }}</td></tr>{% endif %}
+  </tbody>
+</table>
+</div>
+{% endmacro %}
+
+{% macro next(next) %}
+{% if let Some(href) = next %}<div class="mt-4"><a class="btn btn-sm" href="{{ href }}">Next page →</a></div>{% endif %}
+{% endmacro %}

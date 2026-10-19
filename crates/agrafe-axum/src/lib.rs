@@ -78,11 +78,10 @@ async fn healthz() -> &'static str {
 }
 
 async fn metrics(State(state): State<Agrafe>) -> ApiResult<Response> {
-    let lease = state.config().jobs.lease_timeout;
+    let counts = state.job_counts().await?;
     let body = state
         .metrics()
-        .render(state.pool(), lease)
-        .await
+        .render(&counts)
         .map_err(ApiError::internal)?;
     Ok((
         [(

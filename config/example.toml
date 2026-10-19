@@ -238,3 +238,12 @@ rows = 2
 archive = 1
 purge = 4
 reap = 1
+
+[dashboard]
+# Serve the HTML dashboard under /dashboard on the private interface: the
+# queue, the blobs and the attachments, read-only, for an operator with a
+# browser on the trusted network. Off by default.
+enabled = false
+# Show the retry and discard buttons. Off: the dashboard is read-only and
+# the action routes answer 404.
+actions = false

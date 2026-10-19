@@ -155,7 +155,14 @@ async fn serve(config: Config) -> Result<(), Error> {
         tracing::info!(addr = %cfg.private_addr, "private interface listening");
         tracing::info!(addr = %cfg.public_addr, "public interface listening");
 
-        let private_app = api::private_router(state.clone());
+        let mut private_app = api::private_router(state.clone());
+        if state.config().dashboard.enabled {
+            tracing::info!(addr = %cfg.private_addr, "dashboard at /dashboard");
+            private_app = private_app.nest(
+                "/dashboard",
+                agrafe_dashboard::dashboard_router(state.clone()),
+            );
+        }
         let public_app = api::public_router(state.clone());
         let s = shutdown.clone();
         tasks.spawn(async move {

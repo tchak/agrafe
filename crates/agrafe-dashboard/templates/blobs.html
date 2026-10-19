@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Blobs{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold mb-4">Blobs</h1>
+
+<form class="flex flex-wrap items-end gap-4 mb-4" method="get" action="{{ layout.base }}/blobs">
+  {% call m::text("content_type", "Content type", query.content_type) %}{% endcall %}
+  {% call m::select("category", "Category", categories) %}{% endcall %}
+  {% call m::select("state", "State", states) %}{% endcall %}
+  {% call m::select("scan_state", "Scan", scan_states) %}{% endcall %}
+  {% call m::select("attached", "Attached", attached) %}{% endcall %}
+  {% call m::select("failed", "Failed", failed) %}{% endcall %}
+  <fieldset class="fieldset"><button class="btn btn-primary btn-sm" type="submit">Filter</button></fieldset>
+</form>
+
+<div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
+<table class="table table-zebra table-sm">
+  <thead>
+    <tr><th>id</th><th>filename</th><th>content type</th><th>category</th><th>size</th><th>state</th><th>scan</th><th>thumbnail</th><th>preview</th><th>attached</th><th>failed at</th><th>created at</th></tr>
+  </thead>
+  <tbody>
+    {% for v in blobs %}
+    <tr>
+      <td><a class="link link-primary font-mono text-xs" href="{{ layout.base }}/blobs/{{ v.blob.id }}">{{ v.blob.id }}</a></td>
+      <td class="wrap">{{ v.blob.filename }}</td>
+      <td>{{ v.blob.content_type }}</td>
+      <td>{{ v.blob.category }}</td>
+      <td>{{ v.blob.size|size }}</td>
+      <td>{{ v.state|badge|safe }}</td>
+      <td>{{ v.blob.scan_state|badge|safe }}</td>
+      <td>{{ v.blob.thumbnail_state|badge|safe }}</td>
+      <td>{{ v.blob.preview_state|badge|safe }}</td>
+      <td>{% if v.attached %}yes{% else %}no{% endif %}</td>
+      <td>{{ v.blob.failed_at|opt_ts }}</td>
+      <td>{{ v.blob.created_at|ts }}</td>
+    </tr>
+    {% endfor %}
+    {% if blobs.is_empty() %}<tr><td colspan="12" class="opacity-60">No blobs match.</td></tr>{% endif %}
+  </tbody>
+</table>
+</div>
+{% call m::next(next) %}{% endcall %}
+{% endblock %}

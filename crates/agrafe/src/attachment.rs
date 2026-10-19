@@ -105,6 +105,27 @@ impl Agrafe {
         for_blobs(self.pool(), ids).await
     }
 
+    /// The distinct `record_type` and `name` values in the table, sorted,
+    /// at most `MAX_FACETS` of each: a backend has a handful of record
+    /// types and a handful of attachment names per type, and both are the
+    /// leading column of an index, so a filter can offer them as a list.
+    pub async fn attachment_facets(&self) -> sqlx::Result<Facets> {
+        let limit = MAX_FACETS as i64;
+        let record_types =
+            sqlx::query_scalar("SELECT DISTINCT record_type FROM attachments ORDER BY 1 LIMIT $1")
+                .bind(limit)
+                .fetch_all(self.pool())
+                .await?;
+        let names = sqlx::query_scalar("SELECT DISTINCT name FROM attachments ORDER BY 1 LIMIT $1")
+            .bind(limit)
+            .fetch_all(self.pool())
+            .await?;
+        Ok(Facets {
+            record_types,
+            names,
+        })
+    }
+
     /// List attachments, newest first. `limit` must lie in
     /// `1..=MAX_LIMIT`, and `record_id` needs `record_type`.
     pub async fn list_attachments(&self, params: &ListParams) -> Result<Page, ListError> {
@@ -191,6 +212,17 @@ pub struct ListParams {
 
 pub const DEFAULT_LIMIT: usize = 50;
 pub const MAX_LIMIT: usize = 200;
+
+/// The values `record_type` and `name` take across the table; see
+/// `Agrafe::attachment_facets`.
+#[derive(Debug, Clone, Default)]
+pub struct Facets {
+    pub record_types: Vec<String>,
+    pub names: Vec<String>,
+}
+
+/// Values of each facet returned at most.
+pub const MAX_FACETS: usize = 500;
 
 pub struct Page {
     pub items: Vec<Listed>,
