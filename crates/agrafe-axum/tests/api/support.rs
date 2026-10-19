@@ -7,7 +7,6 @@ pub use gate::{At, Gate};
 
 use agrafe::Agrafe;
 use agrafe::config::Config;
-use agrafe::db;
 use agrafe_axum as api;
 use axum::Router;
 use axum::body::Body;
@@ -24,28 +23,26 @@ use std::io::Write as _;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::sync::{Mutex, MutexGuard, Notify};
+use tokio::sync::Notify;
 use tower::ServiceExt;
 
-static LOCK: Mutex<()> = Mutex::const_new(());
-
-/// Set once the migrations have run in this process; read under `LOCK`.
-static MIGRATED: AtomicBool = AtomicBool::new(false);
+/// What `#[sqlx::test(migrator = "MIGRATOR")]` migrates each test's own
+/// database with.
+pub use agrafe::db::MIGRATOR;
+pub use sqlx::PgPool;
 
 /// How long a test waits for something it set in motion: a notification,
 /// a held store operation, a spawned task. Far above any honest wait, so a
-/// regression fails the test instead of hanging it, and with it every test
-/// queued behind it on `LOCK`.
+/// regression fails the test instead of hanging it.
 pub const DEADLINE: Duration = Duration::from_secs(10);
 
-/// How long a test may hold the database before the process is aborted:
-/// the backstop for a wait no `within` covers, such as a query stuck on a
-/// row lock. The slowest test takes a few seconds.
+/// How long a test may run before the process is aborted: the backstop for
+/// a wait no `within` covers, such as a query stuck on a row lock, since
+/// `cargo test` never gives up on a test. The slowest takes a few seconds.
 const BACKSTOP: Duration = Duration::from_secs(120);
 
 /// `fut`, or a panic at the caller naming `what` once `DEADLINE` passes.
@@ -61,7 +58,7 @@ pub fn within<F: Future>(what: &'static str, fut: F) -> impl Future<Output = F::
 
 /// Aborts the process if the returned sender is not dropped within
 /// `BACKSTOP`: a hung test fails the run, naming itself, instead of
-/// holding `LOCK` forever. A panic cannot be raised in another thread,
+/// keeping it waiting forever. A panic cannot be raised in another thread,
 /// and the test's own thread is the one stuck.
 fn watchdog() -> mpsc::Sender<()> {
     let (tx, rx) = mpsc::channel::<()>();
@@ -75,7 +72,7 @@ fn watchdog() -> mpsc::Sender<()> {
             // and the capture is lost with the process.
             let _ = writeln!(
                 std::io::stderr(),
-                "{test} held the test database for over {BACKSTOP:?}; aborting"
+                "{test} still running after {BACKSTOP:?}; aborting"
             );
             std::process::abort();
         }
@@ -91,7 +88,6 @@ pub struct TestApp {
     pub gate: Gate,
     storage: PathBuf,
     _watchdog: mpsc::Sender<()>,
-    _guard: MutexGuard<'static, ()>,
 }
 
 impl Drop for TestApp {
@@ -199,23 +195,23 @@ pub async fn closed_port() -> SocketAddr {
     listener.local_addr().unwrap()
 }
 
-pub async fn setup() -> TestApp {
+/// The app on `pool`, the test's own database from `#[sqlx::test]`.
+pub async fn setup(pool: PgPool) -> TestApp {
     let clamd = fake_clamd().await;
-    setup_with(clamd).await
+    setup_with(pool, clamd).await
 }
 
-pub async fn setup_with(clamd: SocketAddr) -> TestApp {
-    setup_tuned(clamd, |_| {}).await
+pub async fn setup_with(pool: PgPool, clamd: SocketAddr) -> TestApp {
+    setup_tuned(pool, clamd, |_| {}).await
 }
 
 /// `setup_with`, with `tune` applied to the configuration first.
-pub async fn setup_tuned(clamd: SocketAddr, tune: impl FnOnce(&mut Config)) -> TestApp {
-    let guard = LOCK.lock().await;
+pub async fn setup_tuned(
+    pool: PgPool,
+    clamd: SocketAddr,
+    tune: impl FnOnce(&mut Config),
+) -> TestApp {
     let watchdog = watchdog();
-    let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
-        let user = std::env::var("USER").unwrap_or_else(|_| "postgres".to_string());
-        format!("postgres://{user}@localhost/agrafe_test")
-    });
     let storage = std::env::temp_dir().join(format!("agrafe-test-{}", uuid::Uuid::now_v7()));
     let key = STANDARD.encode([42u8; 32]);
     let toml = format!(
@@ -225,8 +221,8 @@ pub async fn setup_tuned(clamd: SocketAddr, tune: impl FnOnce(&mut Config)) -> T
         public_addr = "127.0.0.1:0"
         public_base_url = "https://agrafe.test"
         [database]
-        url = "{db_url}"
-        max_connections = 2
+        # Never dialled: the app runs on the pool `#[sqlx::test]` hands over.
+        url = "postgres://unused"
         [storage]
         backend = "local"
         [storage.local]
@@ -272,16 +268,6 @@ pub async fn setup_tuned(clamd: SocketAddr, tune: impl FnOnce(&mut Config)) -> T
     config.media.render.preview.max_dimension = 400;
     tune(&mut config);
 
-    let pool = db::connect(&config.database).await.unwrap();
-    if !MIGRATED.load(Ordering::Relaxed) {
-        db::migrate(&pool).await.unwrap();
-        MIGRATED.store(true, Ordering::Relaxed);
-    }
-    sqlx::query("TRUNCATE jobs, attachments, blobs")
-        .execute(&pool)
-        .await
-        .unwrap();
-
     let gate = Gate::default();
     let store = agrafe::storage::build(&config.storage).unwrap();
     let store = Arc::new(gate::GatedStore::new(store, gate.clone()));
@@ -293,7 +279,6 @@ pub async fn setup_tuned(clamd: SocketAddr, tune: impl FnOnce(&mut Config)) -> T
         gate,
         storage,
         _watchdog: watchdog,
-        _guard: guard,
     }
 }
 

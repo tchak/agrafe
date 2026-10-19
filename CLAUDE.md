@@ -56,8 +56,8 @@ See "Crates" in `DESIGN.md` for the dependency graph.
   `media.extract_command`, `media.render_text_command` and
   `media.render_document_command` at the binaries under `target/debug`, or
   put `target/debug` on `PATH`.
-- Tests need a `agrafe_test` database reachable as the current OS user, or
-  `DATABASE_URL`, and `vips` on the `PATH` (`brew install vips`). Run
+- Tests need a `agrafe_test` database reachable as the current OS user
+  with `CREATEDB`, or `DATABASE_URL`, and `vips` on the `PATH` (`brew install vips`). Run
   `cargo test`, `cargo clippy --all-targets`, `cargo fmt` before committing.
   The integration tests live in `agrafe-axum` and run the helper binaries
   from `target/`; a plain `cargo test` builds them, `cargo test -p
@@ -96,6 +96,10 @@ See "Crates" in `DESIGN.md` for the dependency graph.
   call the handle and shape the response, nothing more.
 - `blobs.updated_at` is set by a trigger (`migrations/0001_blobs.sql`). Do not set it in
   queries.
-- Tests run against the `agrafe_test` database: `DATABASE_URL` from the
-  environment, else `postgres://$USER@localhost/agrafe_test`. Integration
-  tests share one database and serialise through a mutex.
+- Database tests are `#[sqlx::test(migrator = "MIGRATOR")]` taking a
+  `PgPool`, handed to `setup`: each gets a fresh, migrated database of its
+  own on the server `DATABASE_URL` names (default in `.cargo/config.toml`:
+  `agrafe_test` as the current OS user), so they run in parallel. Never
+  share state between tests through the database. The database is named
+  after the test: two test runs against one server at once (another
+  session, another workspace) fail each other, so run one at a time.

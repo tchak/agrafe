@@ -31,6 +31,7 @@ uuid = { version = "1.28.0", features = ["v7", "serde"] }
 base64 = "0.23.1"
 figment = { version = "0.10.19", features = ["toml"] }
 http-body-util = "0.1.5"
-sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "postgres"] }
+# `#[sqlx::test]`: a database of its own for each test, migrated afresh.
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "postgres", "macros", "migrate"] }
 tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "sync"] }
 tower = { version = "0.5.3", features = ["util"] }

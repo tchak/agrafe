@@ -92,9 +92,9 @@ async fn value_lists(pool: &PgPool) -> BTreeMap<(String, String), BTreeSet<Strin
 
 /// Each enum column's CHECK list is exactly its Rust enum's values, and
 /// no constrained column is left out of `expected`.
-#[tokio::test]
-async fn check_constraints_match_the_enums() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn check_constraints_match_the_enums(pool: PgPool) {
+    let app = setup(pool).await;
     let actual = value_lists(app.state.pool()).await;
     let expected: BTreeMap<(String, String), BTreeSet<String>> = expected()
         .into_iter()

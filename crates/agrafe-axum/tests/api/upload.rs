@@ -15,9 +15,9 @@ use tower::ServiceExt;
 
 use crate::support::*;
 
-#[tokio::test]
-async fn raw_upload_private() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn raw_upload_private(pool: PgPool) {
+    let app = setup(pool).await;
     // Longer than the sniff window, so the type is checked mid-stream.
     let bytes = png_bytes(10 * 1024);
     let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
@@ -48,9 +48,9 @@ async fn raw_upload_private() {
 }
 
 /// The backend vouches for the source: ready at once, representations queued.
-#[tokio::test]
-async fn vouched_upload_is_ready_at_once() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn vouched_upload_is_ready_at_once(pool: PgPool) {
+    let app = setup(pool).await;
     let body = ready_blob(&app, &png_bytes(5000)).await;
     assert_eq!(body["state"], "ready");
     assert_eq!(body["scan_state"], "skipped");
@@ -58,9 +58,9 @@ async fn vouched_upload_is_ready_at_once() {
 }
 
 /// An empty file is a valid file.
-#[tokio::test]
-async fn empty_file_upload() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn empty_file_upload(pool: PgPool) {
+    let app = setup(pool).await;
     let created = create(&app, blob_for(b"", "text/plain", "raw")).await;
     let id = id_of(&created);
     let (status, body) = put_private(&app, id, vec![]).await;
@@ -68,9 +68,9 @@ async fn empty_file_upload() {
     assert_eq!(stored_plaintext(&app, id).await, b"");
 }
 
-#[tokio::test]
-async fn raw_upload_rejections() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn raw_upload_rejections(pool: PgPool) {
+    let app = setup(pool).await;
     let bytes = png_bytes(3000);
     let mut flipped = bytes.clone();
     flipped[1500] ^= 0xff;
@@ -120,9 +120,9 @@ async fn raw_upload_rejections() {
 
 /// A Content-Length that disagrees with the declaration is refused before
 /// the body is read.
-#[tokio::test]
-async fn content_length_mismatch_is_refused_up_front() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn content_length_mismatch_is_refused_up_front(pool: PgPool) {
+    let app = setup(pool).await;
     let bytes = png_bytes(3000);
     let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
     let id = id_of(&created);
@@ -142,9 +142,9 @@ async fn content_length_mismatch_is_refused_up_front() {
 /// Past the sniff window the type is checked while the body still arrives.
 /// The body here never ends, so the upload can only stop at that check, and
 /// the message says so: checked at the end, it would be a size mismatch.
-#[tokio::test]
-async fn type_mismatch_past_the_sniff_window() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn type_mismatch_past_the_sniff_window(pool: PgPool) {
+    let app = setup(pool).await;
     let bytes = png_bytes(10 * 1024);
     let head = agrafe::sniff::SNIFF_LEN + 512;
     assert!(head < bytes.len());
@@ -177,9 +177,9 @@ async fn type_mismatch_past_the_sniff_window() {
 
 /// The client's body fails partway: a 400, the blob handed back, nothing
 /// stored.
-#[tokio::test]
-async fn body_error_midway() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn body_error_midway(pool: PgPool) {
+    let app = setup(pool).await;
     let bytes = png_bytes(5000);
     let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
     let id = id_of(&created);
@@ -202,9 +202,9 @@ async fn body_error_midway() {
     assert!(objects.is_empty(), "{objects:?}");
 }
 
-#[tokio::test]
-async fn multipart_upload_public() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn multipart_upload_public(pool: PgPool) {
+    let app = setup(pool).await;
     let bytes = png_bytes(2500);
     let created = create(&app, blob_for(&bytes, "image/png", "multipart")).await;
     let id = id_of(&created);
@@ -225,9 +225,9 @@ async fn multipart_upload_public() {
 }
 
 /// Every bad multipart body leaves the blob in `created`.
-#[tokio::test]
-async fn multipart_rejections() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn multipart_rejections(pool: PgPool) {
+    let app = setup(pool).await;
     let bytes = png_bytes(2500);
     let created = create(&app, blob_for(&bytes, "image/png", "multipart")).await;
     let id = id_of(&created);
@@ -255,9 +255,9 @@ async fn multipart_rejections() {
     assert_eq!(get_blob(&app, id).await["state"], "created");
 }
 
-#[tokio::test]
-async fn raw_upload_public() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn raw_upload_public(pool: PgPool) {
+    let app = setup(pool).await;
     let bytes = png_bytes(2500);
     let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
     let upload = public_url(&created, "upload");
@@ -265,9 +265,9 @@ async fn raw_upload_public() {
     assert_eq!(status, StatusCode::OK, "{body}");
 }
 
-#[tokio::test]
-async fn upload_url_is_dead_after_one_success() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn upload_url_is_dead_after_one_success(pool: PgPool) {
+    let app = setup(pool).await;
     let bytes = png_bytes(1500);
     let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
     let id = id_of(&created);
@@ -292,9 +292,9 @@ async fn upload_url_is_dead_after_one_success() {
     );
 }
 
-#[tokio::test]
-async fn dropped_upload_is_aborted() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn dropped_upload_is_aborted(pool: PgPool) {
+    let app = setup(pool).await;
     let bytes = png_bytes(5000);
     let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
     let id = id_of(&created);
@@ -336,9 +336,9 @@ async fn dropped_upload_is_aborted() {
 /// Deleted while its bytes are still arriving: the upload loses, and the
 /// object it wrote is removed rather than left to nobody. Nothing was
 /// stored when the delete ran, so no purge job would ever find it.
-#[tokio::test]
-async fn delete_during_upload() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn delete_during_upload(pool: PgPool) {
+    let app = setup(pool).await;
     let bytes = png_bytes(5000);
     let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
     let id = id_of(&created);

@@ -1,9 +1,7 @@
 //! The pages against a real database, nested under `/dashboard` the way
-//! `agrafe-server` mounts them. `DATABASE_URL` selects the database, else
-//! `postgres://$USER@localhost/agrafe_test`; tests serialise through a
-//! mutex, as the API's integration tests do on the same database.
-
-use std::sync::atomic::{AtomicBool, Ordering};
+//! `agrafe-server` mounts them. Each test runs on a database of its own,
+//! created and migrated by `#[sqlx::test]` on the server `DATABASE_URL`
+//! names.
 
 use axum::Router;
 use axum::body::Body;
@@ -14,7 +12,6 @@ use figment::Figment;
 use figment::providers::{Format, Toml};
 use http_body_util::BodyExt;
 use serde_json::json;
-use tokio::sync::{Mutex, MutexGuard};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -26,15 +23,12 @@ use agrafe::config::Config;
 use agrafe::db;
 use agrafe::jobs::{self, JobKind, JobState, Priority};
 use agrafe_dashboard::dashboard_router;
-
-static LOCK: Mutex<()> = Mutex::const_new(());
-static MIGRATED: AtomicBool = AtomicBool::new(false);
+use sqlx::PgPool;
 
 struct App {
     router: Router,
     state: Agrafe,
     storage: std::path::PathBuf,
-    _guard: MutexGuard<'static, ()>,
 }
 
 impl Drop for App {
@@ -43,12 +37,8 @@ impl Drop for App {
     }
 }
 
-async fn setup(actions: bool) -> App {
-    let guard = LOCK.lock().await;
-    let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
-        let user = std::env::var("USER").unwrap_or_else(|_| "postgres".to_string());
-        format!("postgres://{user}@localhost/agrafe_test")
-    });
+/// The dashboard on `pool`, the test's own database from `#[sqlx::test]`.
+async fn setup(pool: PgPool, actions: bool) -> App {
     let storage = std::env::temp_dir().join(format!("agrafe-dashboard-{}", Uuid::now_v7()));
     let key = STANDARD.encode([42u8; 32]);
     let toml = format!(
@@ -58,8 +48,8 @@ async fn setup(actions: bool) -> App {
         public_addr = "127.0.0.1:0"
         public_base_url = "https://agrafe.test"
         [database]
-        url = "{db_url}"
-        max_connections = 2
+        # Never dialled: the app runs on the pool `#[sqlx::test]` hands over.
+        url = "postgres://unused"
         [storage]
         backend = "local"
         [storage.local]
@@ -80,22 +70,12 @@ async fn setup(actions: bool) -> App {
         tmp = storage.display(),
     );
     let config: Config = Figment::from(Toml::string(&toml)).extract().unwrap();
-    let pool = db::connect(&config.database).await.unwrap();
-    if !MIGRATED.load(Ordering::Relaxed) {
-        db::migrate(&pool).await.unwrap();
-        MIGRATED.store(true, Ordering::Relaxed);
-    }
-    sqlx::query("TRUNCATE jobs, attachments, blobs")
-        .execute(&pool)
-        .await
-        .unwrap();
     let state = Agrafe::new(config, pool).unwrap();
     let router = Router::new().nest("/dashboard", dashboard_router(state.clone()));
     App {
         router,
         state,
         storage,
-        _guard: guard,
     }
 }
 
@@ -226,9 +206,9 @@ async fn dead_job(app: &App, blob: Uuid) -> i64 {
     id
 }
 
-#[tokio::test]
-async fn every_page_renders_with_and_without_filters() {
-    let app = setup(false).await;
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn every_page_renders_with_and_without_filters(pool: PgPool) {
+    let app = setup(pool, false).await;
     let blob = create_blob(&app, "photo été.png").await;
     let other = create_blob(&app, "plain.png").await;
     let attachment = attach(&app, blob, "42").await;
@@ -420,9 +400,9 @@ async fn every_page_renders_with_and_without_filters() {
     }
 }
 
-#[tokio::test]
-async fn the_census_matches_the_counts() {
-    let app = setup(false).await;
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn the_census_matches_the_counts(pool: PgPool) {
+    let app = setup(pool, false).await;
     let pool = app.state.pool();
     let now = jiff::Timestamp::now();
     let blobs = [
@@ -500,9 +480,9 @@ async fn the_census_matches_the_counts() {
     );
 }
 
-#[tokio::test]
-async fn actions_are_off_by_default_and_answer_404() {
-    let app = setup(false).await;
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn actions_are_off_by_default_and_answer_404(pool: PgPool) {
+    let app = setup(pool, false).await;
     let blob = create_blob(&app, "a.png").await;
     let dead = dead_job(&app, blob).await;
     for uri in [
@@ -517,9 +497,9 @@ async fn actions_are_off_by_default_and_answer_404() {
     assert_eq!(app.state.job_state(&state), JobState::Dead, "untouched");
 }
 
-#[tokio::test]
-async fn a_cross_site_action_is_refused() {
-    let app = setup(true).await;
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_cross_site_action_is_refused(pool: PgPool) {
+    let app = setup(pool.clone(), true).await;
     let blob = create_blob(&app, "a.png").await;
     let dead = dead_job(&app, blob).await;
     let uri = format!("/dashboard/jobs/{dead}/retry");
@@ -553,8 +533,7 @@ async fn a_cross_site_action_is_refused() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     // And before the actions flag: a read-only dashboard refuses the same.
-    drop(app);
-    let app = setup(false).await;
+    let app = setup(pool, false).await;
     let (status, _, _) = send(
         &app,
         post(
@@ -568,9 +547,9 @@ async fn a_cross_site_action_is_refused() {
 
 /// A pasted link names a notice by code; an unknown code is ignored, and
 /// nothing a link says reaches the page.
-#[tokio::test]
-async fn a_notice_is_a_code() {
-    let app = setup(true).await;
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_notice_is_a_code(pool: PgPool) {
+    let app = setup(pool, true).await;
     let (status, body) = get(&app, "/dashboard/jobs?notice=job_retried").await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("Job queued again."), "{body}");
@@ -582,9 +561,9 @@ async fn a_notice_is_a_code() {
 
 /// A request with no browser marks at all is a non-browser client on the
 /// trusted network, and goes through: `curl` can retry a job.
-#[tokio::test]
-async fn an_unmarked_post_is_accepted() {
-    let app = setup(true).await;
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn an_unmarked_post_is_accepted(pool: PgPool) {
+    let app = setup(pool, true).await;
     let blob = create_blob(&app, "a.png").await;
     let dead = dead_job(&app, blob).await;
     let (status, _, _) = send(&app, post(&format!("/dashboard/jobs/{dead}/retry"), &[])).await;
@@ -593,9 +572,9 @@ async fn an_unmarked_post_is_accepted() {
     assert_eq!(app.state.job_state(&job), JobState::Due);
 }
 
-#[tokio::test]
-async fn a_retry_redirects_and_the_job_is_due_again() {
-    let app = setup(true).await;
+#[sqlx::test(migrator = "db::MIGRATOR")]
+async fn a_retry_redirects_and_the_job_is_due_again(pool: PgPool) {
+    let app = setup(pool, true).await;
     let blob = create_blob(&app, "a.png").await;
     let dead = dead_job(&app, blob).await;
 

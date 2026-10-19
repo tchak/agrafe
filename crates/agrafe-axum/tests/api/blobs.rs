@@ -9,9 +9,9 @@ use serde_json::json;
 
 use crate::support::*;
 
-#[tokio::test]
-async fn create_and_get_blob() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn create_and_get_blob(pool: PgPool) {
+    let app = setup(pool).await;
     let (status, body) = call(&app.private, json_req(Method::POST, "/blobs", raw_blob())).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     assert_eq!(body["state"], "created");
@@ -40,9 +40,9 @@ async fn create_and_get_blob() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
-#[tokio::test]
-async fn validation_errors() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn validation_errors(pool: PgPool) {
+    let app = setup(pool).await;
     let mut no_checksum = raw_blob();
     no_checksum.as_object_mut().unwrap().remove("checksum");
     let (status, body) = call(&app.private, json_req(Method::POST, "/blobs", no_checksum)).await;
@@ -86,9 +86,9 @@ async fn validation_errors() {
     assert!(body["urls"]["upload"].is_null());
 }
 
-#[tokio::test]
-async fn private_only_blobs_get_no_public_upload() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn private_only_blobs_get_no_public_upload(pool: PgPool) {
+    let app = setup(pool).await;
     let mut b = raw_blob();
     b["skip_virus_scan"] = json!(true);
     let (status, body) = call(&app.private, json_req(Method::POST, "/blobs", b)).await;
@@ -111,9 +111,9 @@ async fn private_only_blobs_get_no_public_upload() {
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
 }
 
-#[tokio::test]
-async fn public_signed_metadata() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn public_signed_metadata(pool: PgPool) {
+    let app = setup(pool).await;
     let (_, created) = call(&app.private, json_req(Method::POST, "/blobs", raw_blob())).await;
     let metadata_url = public_url(&created, "metadata");
 
@@ -190,9 +190,9 @@ async fn public_signed_metadata() {
     );
 }
 
-#[tokio::test]
-async fn terminal_blobs_are_404_on_the_public_port() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn terminal_blobs_are_404_on_the_public_port(pool: PgPool) {
+    let app = setup(pool).await;
     for state in ["expired", "infected"] {
         let (_, created) = call(&app.private, json_req(Method::POST, "/blobs", raw_blob())).await;
         let id = parse_id(id_of(&created));
@@ -217,9 +217,9 @@ async fn terminal_blobs_are_404_on_the_public_port() {
     }
 }
 
-#[tokio::test]
-async fn blobs_past_expires_at_are_expired_before_the_reaper_runs() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn blobs_past_expires_at_are_expired_before_the_reaper_runs(pool: PgPool) {
+    let app = setup(pool).await;
     let ready = ready_blob(&app, &png_bytes(100)).await;
     let created = create(&app, raw_blob()).await;
     for blob in [&ready, &created] {
@@ -282,9 +282,9 @@ async fn blobs_past_expires_at_are_expired_before_the_reaper_runs() {
     assert_eq!(body["state"], "ready");
 }
 
-#[tokio::test]
-async fn mint_urls_with_options() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn mint_urls_with_options(pool: PgPool) {
+    let app = setup(pool).await;
     let (_, created) = call(&app.private, json_req(Method::POST, "/blobs", raw_blob())).await;
     let id = id_of(&created);
 
@@ -375,9 +375,9 @@ async fn mint_urls_with_options() {
     assert_eq!(a, b);
 }
 
-#[tokio::test]
-async fn list_filters_and_pagination() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn list_filters_and_pagination(pool: PgPool) {
+    let app = setup(pool).await;
     for i in 0..5 {
         let mut b = raw_blob();
         b["filename"] = json!(format!("f{i}.jpg"));
@@ -433,9 +433,9 @@ async fn list_filters_and_pagination() {
     assert_eq!(status, StatusCode::OK);
 }
 
-#[tokio::test]
-async fn every_error_uses_the_json_envelope() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn every_error_uses_the_json_envelope(pool: PgPool) {
+    let app = setup(pool).await;
 
     // Malformed JSON body.
     let (status, body) = call(
@@ -481,9 +481,9 @@ async fn every_error_uses_the_json_envelope() {
     }
 }
 
-#[tokio::test]
-async fn delete_is_soft_and_idempotent() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn delete_is_soft_and_idempotent(pool: PgPool) {
+    let app = setup(pool).await;
     let (_, created) = call(&app.private, json_req(Method::POST, "/blobs", raw_blob())).await;
     let id = id_of(&created);
 
@@ -521,9 +521,9 @@ async fn delete_is_soft_and_idempotent() {
     assert_eq!(jobs, 0);
 }
 
-#[tokio::test]
-async fn delete_enqueues_purge_when_stored() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn delete_enqueues_purge_when_stored(pool: PgPool) {
+    let app = setup(pool).await;
     let mut blob = raw_blob();
     blob["priority"] = json!("high");
     let (_, created) = call(&app.private, json_req(Method::POST, "/blobs", blob)).await;
@@ -550,12 +550,12 @@ async fn delete_enqueues_purge_when_stored() {
     assert!((1700.0..=1800.0).contains(&in_secs), "{in_secs}");
 }
 
-#[tokio::test]
-async fn state_machine_transitions() {
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn state_machine_transitions(pool: PgPool) {
     use agrafe::blob::BlobState;
     use agrafe::blob::repo::{self, Transition};
 
-    let app = setup().await;
+    let app = setup(pool).await;
     let (_, created) = call(&app.private, json_req(Method::POST, "/blobs", raw_blob())).await;
     let id = parse_id(id_of(&created));
     let pool = app.state.pool();
@@ -632,9 +632,9 @@ async fn state_machine_transitions() {
 /// whatever the blob's state waits on, supersedes the dead job of that
 /// kind and clears the failure on the row. It needs no job id, so it works
 /// once the dead job is pruned, and says `409` when there is nothing to do.
-#[tokio::test]
-async fn retry_enqueues_what_the_blob_waits_on() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn retry_enqueues_what_the_blob_waits_on(pool: PgPool) {
+    let app = setup(pool).await;
     let pool = app.state.pool();
     async fn retry(app: &TestApp, id: String) -> (StatusCode, serde_json::Value) {
         call(

@@ -43,9 +43,9 @@ fn about(at: Timestamp, after: Duration) -> bool {
     at.duration_since(expected).abs() < SignedDuration::from_secs(5)
 }
 
-#[tokio::test]
-async fn the_first_attach_clears_the_expiry_and_the_last_detach_restores_it() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn the_first_attach_clears_the_expiry_and_the_last_detach_restores_it(pool: PgPool) {
+    let app = setup(pool).await;
     let created = create(&app, raw_blob()).await;
     let id = id_of(&created);
     assert!(
@@ -145,10 +145,10 @@ async fn the_first_attach_clears_the_expiry_and_the_last_detach_restores_it() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
-#[tokio::test]
-async fn the_default_expiry_is_configurable() {
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn the_default_expiry_is_configurable(pool: PgPool) {
     let clamd = fake_clamd().await;
-    let app = setup_tuned(clamd, |c| {
+    let app = setup_tuned(pool, clamd, |c| {
         c.blobs.default_expires_in = Duration::from_secs(3 * 3600);
     })
     .await;
@@ -166,9 +166,9 @@ async fn the_default_expiry_is_configurable() {
     );
 }
 
-#[tokio::test]
-async fn a_blob_created_attached_has_no_expiry() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn a_blob_created_attached_has_no_expiry(pool: PgPool) {
+    let app = setup(pool).await;
     let mut blob = raw_blob();
     blob["attachment"] = attachment("Dossier", "42", "piece");
     let created = create(&app, blob).await;
@@ -209,9 +209,9 @@ async fn a_blob_created_attached_has_no_expiry() {
     assert_eq!(all["items"].as_array().unwrap().len(), 1);
 }
 
-#[tokio::test]
-async fn attachment_fields_are_validated() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn attachment_fields_are_validated(pool: PgPool) {
+    let app = setup(pool).await;
     let created = create(&app, raw_blob()).await;
     let id = id_of(&created);
     for (body, message) in [
@@ -246,9 +246,9 @@ async fn attachment_fields_are_validated() {
     assert_eq!(get_blob(&app, id).await["attachments"], json!([]));
 }
 
-#[tokio::test]
-async fn delete_refuses_an_attached_blob() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn delete_refuses_an_attached_blob(pool: PgPool) {
+    let app = setup(pool).await;
     let blob = ready_blob(&app, &png_bytes(100)).await;
     let id = id_of(&blob);
     let (status, attached) = attach(&app, id, attachment("Dossier", "1", "piece")).await;
@@ -275,9 +275,9 @@ async fn delete_refuses_an_attached_blob() {
     assert_eq!(get_blob(&app, id).await["state"], "deleted");
 }
 
-#[tokio::test]
-async fn attach_is_refused_on_terminal_blobs() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn attach_is_refused_on_terminal_blobs(pool: PgPool) {
+    let app = setup(pool).await;
 
     // Past its expiry, whether or not the reaper has recorded it.
     let created = create(&app, raw_blob()).await;
@@ -319,9 +319,9 @@ async fn attach_is_refused_on_terminal_blobs() {
     }
 }
 
-#[tokio::test]
-async fn detaching_an_infected_blob_starts_its_purge_clock() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn detaching_an_infected_blob_starts_its_purge_clock(pool: PgPool) {
+    let app = setup(pool).await;
     let created = create(&app, raw_blob()).await;
     let id = id_of(&created);
     let (status, attached) = attach(&app, id, attachment("Dossier", "1", "piece")).await;
@@ -349,9 +349,9 @@ async fn detaching_an_infected_blob_starts_its_purge_clock() {
     );
 }
 
-#[tokio::test]
-async fn listing_filters_and_pages() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn listing_filters_and_pages(pool: PgPool) {
+    let app = setup(pool).await;
     let a = create(&app, raw_blob()).await;
     let b = create(&app, raw_blob()).await;
     let c = create(&app, raw_blob()).await;
@@ -464,9 +464,9 @@ async fn listing_filters_and_pages() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
-#[tokio::test]
-async fn the_public_port_never_sees_attachments() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn the_public_port_never_sees_attachments(pool: PgPool) {
+    let app = setup(pool).await;
     let mut blob = raw_blob();
     blob["attachment"] = attachment("Dossier", "42", "piece");
     let created = create(&app, blob).await;
@@ -486,9 +486,9 @@ async fn the_public_port_never_sees_attachments() {
 /// locks it first wins, and the other sees the outcome. Here the expiry
 /// holds the lock while the attach waits, then finds the blob expired,
 /// although it was still alive when the attach began.
-#[tokio::test]
-async fn attach_waits_for_the_expiry_lock_and_sees_its_outcome() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn attach_waits_for_the_expiry_lock_and_sees_its_outcome(pool: PgPool) {
+    let app = setup(pool).await;
     let mut blob = raw_blob();
     blob["expires_in"] = json!("2s");
     let created = create(&app, blob).await;
@@ -540,9 +540,9 @@ async fn attach_waits_for_the_expiry_lock_and_sees_its_outcome() {
 /// Two detaches of one attachment contend for the blob row: the one that
 /// waits finds the attachment gone and says so, rather than claiming a
 /// detach it did not do.
-#[tokio::test]
-async fn a_detach_that_lost_the_race_finds_nothing() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn a_detach_that_lost_the_race_finds_nothing(pool: PgPool) {
+    let app = setup(pool).await;
     let created = create(&app, raw_blob()).await;
     let id = parse_id(id_of(&created));
     let (status, attached) =
@@ -583,11 +583,11 @@ async fn a_detach_that_lost_the_race_finds_nothing() {
 /// The facets are the distinct record types and names, sorted, each name
 /// once however many types use it, from a walk capped at `MAX_FACETS`
 /// pairs.
-#[tokio::test]
-async fn facets_walk_the_distinct_pairs() {
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn facets_walk_the_distinct_pairs(pool: PgPool) {
     use agrafe::attachment::MAX_FACETS;
 
-    let app = setup().await;
+    let app = setup(pool).await;
     let facets = app.state.attachment_facets().await.unwrap();
     assert!(facets.record_types.is_empty() && facets.names.is_empty());
 

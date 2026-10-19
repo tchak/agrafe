@@ -23,10 +23,13 @@ async fn status_of(app: &TestApp, uri: &str) -> StatusCode {
     call(&app.public, req(Method::GET, uri)).await.0
 }
 
-#[tokio::test]
-async fn settled_rows_are_kept_for_the_ttl() {
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn settled_rows_are_kept_for_the_ttl(pool: PgPool) {
     let clamd = fake_clamd().await;
-    let app = setup_tuned(clamd, |c| c.blobs.read_cache_ttl = Duration::from_secs(1)).await;
+    let app = setup_tuned(pool, clamd, |c| {
+        c.blobs.read_cache_ttl = Duration::from_secs(1)
+    })
+    .await;
     let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
     let metadata = public_url(&blob, "metadata");
 

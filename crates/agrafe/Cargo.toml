@@ -48,6 +48,9 @@ tokio-stream = "0.1.17"
 tracing = "0.1.44"
 unicode-normalization = "0.1.25"
 url = "2.5.4"
+# Not called: sqlx-postgres 0.9 depends on it without its `std` backend, so a
+# database URL without a user connects as "anonymous" instead of the OS user.
+whoami = { version = "2.1.3", default-features = false, features = ["std"] }
 uuid = { version = "1.28.0", features = ["v7", "serde"] }
 
 [dev-dependencies]

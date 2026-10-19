@@ -571,9 +571,14 @@ cargo fmt
 
 Tests connect as the current OS user to `agrafe_test`; set `DATABASE_URL`
 to override. They need `vips` on the `PATH` as well. The integration tests,
-in `agrafe-axum` and `agrafe-dashboard`, share that database. The former
-run the helper binaries from `target/`: a plain `cargo test` builds them,
-and `cargo test -p agrafe-axum` builds them on demand. ClamAV is faked in
+in `agrafe-axum` and `agrafe-dashboard`, use `#[sqlx::test]`: each creates
+a database of its own on that server, migrates it, and drops it when it
+passes, so the role needs `CREATEDB`. A failed test leaves its database
+behind for a look; the next run of that test drops it. The database is
+named after the test, so two runs against one server at once fail each
+other's tests: run one at a time, or give each its own server. The API tests run
+the helper binaries from `target/`: a plain `cargo test` builds them, and
+`cargo test -p agrafe-axum` builds them on demand. ClamAV is faked in
 tests.
 
 The files under `fixtures/` and the renderer probe files under

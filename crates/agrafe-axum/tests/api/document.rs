@@ -94,9 +94,9 @@ const TEMPLATE: &str = r#"#import "lib/header.typ": header
 
 const HEADER: &str = "#let header(t) = heading(level: 1, t)\n";
 
-#[tokio::test]
-async fn document_is_built_from_a_workspace_in_parts() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn document_is_built_from_a_workspace_in_parts(pool: PgPool) {
+    let app = setup(pool).await;
     let template = ready_file(&app, "facture.typ", "text/plain", TEMPLATE.as_bytes()).await;
     let logo = ready_file(&app, "logo.png", "image/png", &fixture("photo.png")).await;
 
@@ -190,9 +190,9 @@ async fn document_is_built_from_a_workspace_in_parts() {
 
 /// `PUT /blobs/:id` is part one and the finish in one call, and `main`
 /// names another entry file than `main.typ`.
-#[tokio::test]
-async fn whole_workspace_in_one_put_with_a_chosen_main() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn whole_workspace_in_one_put_with_a_chosen_main(pool: PgPool) {
+    let app = setup(pool).await;
     let mut blob = document_blob("note.pdf");
     blob["main"] = json!("src/note.typ");
     let created = create(&app, blob).await;
@@ -217,9 +217,9 @@ async fn whole_workspace_in_one_put_with_a_chosen_main() {
     assert!(download(&app, &built).await.starts_with(b"%PDF-"));
 }
 
-#[tokio::test]
-async fn creation_rules() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn creation_rules(pool: PgPool) {
+    let app = setup(pool).await;
     let cases: Vec<(&str, Value, &str)> = vec![
         (
             "not a PDF",
@@ -270,9 +270,9 @@ async fn creation_rules() {
 
 /// Every bad line answers 422 naming it, the part is discarded, the blob
 /// is back in `created` with the parts it had.
-#[tokio::test]
-async fn manifest_rejections() {
-    let app = setup_tuned(fake_clamd().await, |c| {
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn manifest_rejections(pool: PgPool) {
+    let app = setup_tuned(pool, fake_clamd().await, |c| {
         c.document.max_workspace_size = bytesize::ByteSize::kib(2);
     })
     .await;
@@ -393,9 +393,9 @@ async fn manifest_rejections() {
 
 /// A template that does not compile kills the job at once, with the
 /// compiler's diagnostics, located in the workspace, as the error.
-#[tokio::test]
-async fn compile_errors_die_at_once_with_diagnostics() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn compile_errors_die_at_once_with_diagnostics(pool: PgPool) {
+    let app = setup(pool).await;
     let created = create(&app, document_blob("broken.pdf")).await;
     let id = id_of(&created);
     let (status, _) = put_private(
@@ -424,9 +424,9 @@ async fn compile_errors_die_at_once_with_diagnostics() {
 
 /// What a template may not do: fetch a package, read outside the
 /// workspace, or need a file the manifest does not hold.
-#[tokio::test]
-async fn templates_are_confined_to_the_workspace() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn templates_are_confined_to_the_workspace(pool: PgPool) {
+    let app = setup(pool).await;
     let cases: Vec<(&str, &str, &str)> = vec![
         (
             "package",
@@ -468,9 +468,9 @@ async fn templates_are_confined_to_the_workspace() {
 
 /// A workspace file whose blob was ready at accept and is gone at build
 /// time kills the build: a document cannot be compiled without it.
-#[tokio::test]
-async fn a_member_gone_before_the_build_kills_it() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn a_member_gone_before_the_build_kills_it(pool: PgPool) {
+    let app = setup(pool).await;
     let logo = ready_blob(&app, &fixture("photo.png")).await;
     let created = create(&app, document_blob("gone.pdf")).await;
     let id = id_of(&created);
@@ -495,9 +495,9 @@ async fn a_member_gone_before_the_build_kills_it() {
 
 /// A path that is a file on one line and a directory on another cannot
 /// be written out; the build refuses it at the line.
-#[tokio::test]
-async fn a_file_and_a_directory_cannot_share_a_path() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn a_file_and_a_directory_cannot_share_a_path(pool: PgPool) {
+    let app = setup(pool).await;
     let created = create(&app, document_blob("clash.pdf")).await;
     let id = id_of(&created);
     let (status, _) = put_part(
@@ -521,9 +521,9 @@ async fn a_file_and_a_directory_cannot_share_a_path() {
 
 /// The blob is deleted while its document waits to be built: nothing is
 /// written and the job is done.
-#[tokio::test]
-async fn delete_before_the_build_writes_nothing() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn delete_before_the_build_writes_nothing(pool: PgPool) {
+    let app = setup(pool).await;
     let created = create(&app, document_blob("deleted.pdf")).await;
     let id = id_of(&created);
     let (status, _) = put_private(&app, id, manifest(&[text("main.typ", "x")])).await;
@@ -544,9 +544,9 @@ async fn delete_before_the_build_writes_nothing() {
 /// Workers that build documents do not start on a helper that fails its
 /// probe: the real one compiles the probe workspace, a wrong binary or an
 /// idle one does not.
-#[tokio::test]
-async fn the_startup_probe_compiles_a_workspace() {
-    let app = setup().await;
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn the_startup_probe_compiles_a_workspace(pool: PgPool) {
+    let app = setup(pool.clone()).await;
     let media = &app.state.config().media;
     let probe = |render| agrafe_render::probe_document(render, media.tmp_dir.as_deref());
     probe(&media.render).await.unwrap();
@@ -566,9 +566,7 @@ async fn the_startup_probe_compiles_a_workspace() {
     let err = probe(&idle_binary).await.unwrap_err().to_string();
     assert!(err.contains("wrote nothing"), "{err}");
 
-    // The test apps serialise on one lock: release this one first.
-    drop(app);
-    let app = setup_tuned(fake_clamd().await, |c| {
+    let app = setup_tuned(pool, fake_clamd().await, |c| {
         c.jobs.kinds = Some(vec![JobKind::Document]);
         c.media.render.render_document_command = "/nonexistent/agrafe-render-document".into();
     })
