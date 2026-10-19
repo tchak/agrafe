@@ -331,7 +331,7 @@ async fn job_queue_mechanics() {
         .await
         .unwrap()
         .unwrap();
-    jobs::succeed(pool, purge.id).await.unwrap();
+    jobs::succeed(&mut conn, &purge).await.unwrap();
     let purges: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE kind = 'purge'")
         .fetch_one(pool)
         .await
@@ -717,4 +717,97 @@ async fn workers_refuse_a_broken_renderer() {
             .contains("the renderer failed its startup probe"),
         "{err}"
     );
+}
+
+/// The verdict on the blob's row follows the job that will finish the
+/// blob, not the one that died: a job dying with a live twin says nothing,
+/// a job succeeding takes a stale verdict with it, and a terminal
+/// transition takes it too, since nothing is going to finish the blob.
+#[tokio::test]
+async fn the_blob_verdict_tracks_the_live_job() {
+    use agrafe::jobs::{self, Failure, JobKind, Priority};
+
+    let app = setup().await;
+    let pool = app.state.pool();
+    let now = jiff::Timestamp::now();
+    let lease = Duration::from_secs(600);
+    let created = create(&app, raw_blob()).await;
+    let id = id_of(&created);
+    let blob = parse_id(id);
+    let mut conn = pool.acquire().await.unwrap();
+    let enqueue = || {
+        jobs::enqueue(
+            pool,
+            JobKind::Scan,
+            Some(blob),
+            Priority::Normal,
+            json!({}),
+            now,
+        )
+    };
+
+    // A running job holds no pending slot, so a twin can be enqueued; the
+    // first one dying for good is not the blob's verdict.
+    assert!(enqueue().await.unwrap());
+    let first = jobs::claim(pool, &[JobKind::Scan], "w1", lease)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(enqueue().await.unwrap());
+    assert_eq!(
+        jobs::fail(&mut conn, &first, "boom", true, now)
+            .await
+            .unwrap(),
+        Failure::Dead
+    );
+    let got = get_blob(&app, id).await;
+    assert!(got["failed_at"].is_null(), "{got}");
+
+    // The twin succeeding clears whatever verdict landed on the row.
+    sqlx::query("UPDATE blobs SET failed_at = now(), last_error = 'stale' WHERE id = $1")
+        .bind(blob)
+        .execute(pool)
+        .await
+        .unwrap();
+    let twin = jobs::claim(pool, &[JobKind::Scan], "w1", lease)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(twin.id, first.id);
+    jobs::succeed(&mut conn, &twin).await.unwrap();
+    let got = get_blob(&app, id).await;
+    assert!(got["failed_at"].is_null(), "{got}");
+    assert!(got["last_error"].is_null(), "{got}");
+
+    // With no twin, the death is recorded, and a delete forgets it.
+    sqlx::query("DELETE FROM jobs WHERE blob_id = $1")
+        .bind(blob)
+        .execute(pool)
+        .await
+        .unwrap();
+    assert!(enqueue().await.unwrap());
+    let alone = jobs::claim(pool, &[JobKind::Scan], "w1", lease)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        jobs::fail(&mut conn, &alone, "boom", true, now)
+            .await
+            .unwrap(),
+        Failure::Dead
+    );
+    let got = get_blob(&app, id).await;
+    assert_eq!(got["last_error"], "boom", "{got}");
+    assert_eq!(delete(&app, id).await, StatusCode::NO_CONTENT);
+    let got = get_blob(&app, id).await;
+    assert_eq!(got["state"], "deleted");
+    assert!(got["failed_at"].is_null(), "{got}");
+    assert!(got["last_error"].is_null(), "{got}");
+    let (status, body) = call(
+        &app.private,
+        req(axum::http::Method::GET, "/blobs?failed=true"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["items"].as_array().unwrap().len(), 0, "{body}");
 }

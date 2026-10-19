@@ -166,7 +166,13 @@ pub enum Transition {
     Missing,
 }
 
+/// What a terminal transition appends: nothing is going to finish the
+/// blob, so the verdict of the job that was to is moot. `expire` and
+/// `expire_abandoned` spell the same out.
+const CLEAR_FAILURE: &str = ", failed_at = NULL, last_error = NULL";
+
 /// Move `id` from any of `from` to `to`, touching the matching timestamp.
+/// A terminal `to` clears the failure recorded on the row.
 pub async fn transition(
     conn: &mut PgConnection,
     id: Uuid,
@@ -185,6 +191,9 @@ pub async fn transition(
     for column in timestamp_columns {
         // The column names come from the match above, never from input.
         qb.push(", ").push(column).push(" = now()");
+    }
+    if to.is_terminal() {
+        qb.push(CLEAR_FAILURE);
     }
     qb.push(" WHERE id = ")
         .push_bind(id)
@@ -629,7 +638,22 @@ pub async fn retry(pool: &PgPool, id: Uuid, now: Timestamp) -> sqlx::Result<Retr
         .bind(&kind_names)
         .execute(&mut *tx)
         .await?;
-    let inserted = enqueue_kinds(&mut tx, &blob, kinds).await?;
+    // A job that is running holds no pending slot, so the enqueue alone
+    // would give it a twin doing the same work; it is left to finish.
+    let live: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT kind FROM jobs \
+         WHERE blob_id = $1 AND failed_at IS NULL AND kind = ANY($2)",
+    )
+    .bind(id)
+    .bind(&kind_names)
+    .fetch_all(&mut *tx)
+    .await?;
+    let waiting: Vec<JobKind> = kinds
+        .iter()
+        .copied()
+        .filter(|kind| !live.iter().any(|l| l == kind.as_str()))
+        .collect();
+    let inserted = enqueue_kinds(&mut tx, &blob, &waiting).await?;
     if inserted.is_empty() {
         return Ok(Retry::Pending(blob));
     }
@@ -708,7 +732,7 @@ pub async fn expire(conn: &mut PgConnection, now: Timestamp) -> sqlx::Result<Vec
         .map(|s| s.as_str())
         .collect();
     sqlx::query_scalar(
-        "UPDATE blobs SET state = $1 \
+        "UPDATE blobs SET state = $1, failed_at = NULL, last_error = NULL \
          WHERE expires_at <= $2 AND state <> ALL($3) \
          RETURNING id",
     )
@@ -730,7 +754,7 @@ pub async fn expire_abandoned(
     before: Timestamp,
 ) -> sqlx::Result<Vec<Uuid>> {
     sqlx::query_scalar(
-        "UPDATE blobs SET state = $1 \
+        "UPDATE blobs SET state = $1, failed_at = NULL, last_error = NULL \
          WHERE state = $2 AND (\
              (source_parts > 0 AND source_updated_at <= $3) \
              OR (source_parts = 0 AND expires_at IS NULL AND updated_at <= $3)\

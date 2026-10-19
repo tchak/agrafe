@@ -127,7 +127,8 @@ async fn run_claimed(state: &Agrafe, job: &Job, worker: &str) -> sqlx::Result<()
     let took = started.elapsed();
     let outcome = match outcome {
         Ok(()) => {
-            super::succeed(state.pool(), job.id).await?;
+            let mut conn = state.pool().acquire().await?;
+            super::succeed(&mut conn, job).await?;
             tracing::info!(took_ms = took.as_millis() as u64, "job done");
             Outcome::Ok
         }

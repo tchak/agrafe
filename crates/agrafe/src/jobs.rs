@@ -532,12 +532,17 @@ pub async fn prune_failed(exec: impl PgExecutor<'_>, before: Timestamp) -> sqlx:
     Ok(result.rows_affected())
 }
 
-/// A finished job leaves the table.
-pub async fn succeed(exec: impl PgExecutor<'_>, id: i64) -> sqlx::Result<()> {
+/// A finished job leaves the table. One that finishes its blob clears the
+/// verdict a dead twin may have left on the row meanwhile: the twin was
+/// enqueued while this one ran, and the blob is not stuck after all.
+pub async fn succeed(conn: &mut PgConnection, job: &Job) -> sqlx::Result<()> {
     sqlx::query("DELETE FROM jobs WHERE id = $1")
-        .bind(id)
-        .execute(exec)
+        .bind(job.id)
+        .execute(&mut *conn)
         .await?;
+    if let Some(blob_id) = job.blob_id.filter(|_| job.kind.finishes_blob()) {
+        clear_failure(&mut *conn, blob_id).await?;
+    }
     Ok(())
 }
 
@@ -570,13 +575,22 @@ pub async fn fail(
             .execute(&mut *conn)
             .await?;
         // The blob keeps the verdict too: the dead job is pruned after
-        // `jobs.keep_failed`, the stuck blob is not.
+        // `jobs.keep_failed`, the stuck blob is not. Unless a twin of this
+        // job, enqueued while it ran, is still going to finish the blob.
         if let Some(blob_id) = job.blob_id.filter(|_| job.kind.finishes_blob()) {
-            sqlx::query("UPDATE blobs SET failed_at = now(), last_error = $2 WHERE id = $1")
-                .bind(blob_id)
-                .bind(&error)
-                .execute(&mut *conn)
-                .await?;
+            sqlx::query(
+                "UPDATE blobs SET failed_at = now(), last_error = $2 \
+                 WHERE id = $1 AND NOT EXISTS (\
+                     SELECT 1 FROM jobs \
+                     WHERE blob_id = $1 AND kind = $3 AND failed_at IS NULL AND id <> $4\
+                 )",
+            )
+            .bind(blob_id)
+            .bind(&error)
+            .bind(job.kind.as_str())
+            .bind(job.id)
+            .execute(&mut *conn)
+            .await?;
         }
         return Ok(Failure::Dead);
     }
@@ -595,7 +609,7 @@ pub async fn fail(
         // Unlocking would make a second pending job of this kind for the
         // blob; the newer one carries on and this one is redundant.
         Err(err) if is_unique_violation(&err) => {
-            succeed(&mut *conn, job.id).await?;
+            succeed(&mut *conn, job).await?;
             Ok(Failure::Superseded)
         }
         Err(err) => Err(err),

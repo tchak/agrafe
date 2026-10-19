@@ -1405,9 +1405,13 @@ listing, and behind `GET /blobs?failed=true`. Why twice: the dead job is
 pruned after `jobs.keep_failed`, the blob it left in `uploaded`, or
 `ready` with a representation `pending`, is not, and an attached one is
 never expired either. Without the row's copy, a blob whose job died a
-week ago is indistinguishable from one whose job is queued. The verdict is
-cleared when a job of a finishing kind is enqueued or retried for the
-blob, which is to say when something is going to finish it after all. A
+week ago is indistinguishable from one whose job is queued. The verdict
+follows the job that will finish the blob, not the one that died: it is
+cleared when a job of a finishing kind is enqueued, retried or succeeds
+for the blob, a job dying while a twin of it is live says nothing (the
+twin was enqueued while it ran, the running one holding no pending slot),
+and a terminal transition clears it too, since nothing is going to finish
+the blob and `GET /blobs?failed=true` is for the ones something could. A
 dead purge says nothing on the blob: it is housekeeping of a terminal
 blob, and the dead job itself is the evidence of the bug that enqueued it.
 
@@ -1420,8 +1424,8 @@ so it works after the dead job is pruned, and it is the only way to get a
 render going again for a `pending` representation whose job died, which
 the read path's repair, keyed on a version or a missing object, does not
 see. `409` when the blob waits on no job (`created`, or `ready` with its
-representations settled), when the job it waits on is pending already,
-the newer job doing the work as for `POST /jobs/:id/retry`, or when the
+representations settled), when the job it waits on is pending or running
+already, which does the work as for `POST /jobs/:id/retry`, or when the
 blob is `infected`; `410` for an expired or deleted one. The row is
 locked for the operation, so a transition racing it lands on one side or
 the other. `POST /jobs/:id/retry` stays for the operator looking at the

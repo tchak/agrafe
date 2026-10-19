@@ -688,9 +688,18 @@ async fn retry_enqueues_what_the_blob_waits_on() {
     assert!(jobs[0].1.is_none(), "the new one is pending");
     assert_eq!(jobs_for(&app, &id).await, vec!["scan"]);
 
-    // With that job pending, a second retry has nothing to add.
+    // With that job pending, a second retry has nothing to add; nor while
+    // it runs, when the pending slot is free but the work is under way.
     let (status, body) = retry(&app, id.clone()).await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    sqlx::query("UPDATE jobs SET locked_at = now(), locked_by = 'w' WHERE blob_id = $1")
+        .bind(parse_id(&id))
+        .execute(pool)
+        .await
+        .unwrap();
+    let (status, body) = retry(&app, id.clone()).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(jobs_for(&app, &id).await, vec!["scan"], "no twin");
 
     // A `ready` blob with a representation pending and no job to render
     // it, the dead render pruned long ago: the retry is what gets it going.
