@@ -466,12 +466,27 @@ records may still reference.
 
 No blob state transition touches attachments. Delete cannot happen while
 attached and ordinary expiry cannot either, so the terminal blobs that still
-carry attachments are the two the backend did not cause: a source left
-unfinished past `upload.source_stale_after`, which the reaper expires
-whatever its attachments, and `infected`. Both keep their attachments so
-the backend can find out from the record's side, and the listing carries the
-blob's state, `blob_state`, so that the answer does not cost a second
-request. The tombstone prune takes the attachments with the row.
+carry attachments are the ones the backend did not cause: an abandoned
+blob, `created` and past `upload.abandoned_after` with no part arriving
+or, attached, with nothing arriving at all, which the reaper expires
+whatever its attachments (see "Abandoned blobs"), and `infected`. Both
+keep their attachments so the backend can find out from the record's side,
+and the listing carries the blob's state, `blob_state`, so that the answer
+does not cost a second request. The tombstone prune takes the attachments
+with the row.
+
+**Abandoned blobs.** An attachment at creation promises that the blob is
+in use; it does not promise that its bytes will arrive. A browser that
+never sends the `PUT`, a backend whose upload keeps failing, or a fetch
+that gave up, once there are fetched blobs, leave a blob `created`, attached, with
+no job and no expiry, and nothing of its own would ever move it. The
+reaper therefore treats a `created` blob that has been attached and
+untouched for `upload.abandoned_after` (default one day, by its
+`updated_at`) the way it treats a source nobody finished: it is expired,
+attachments and all, and the record's side sees `expired` in
+`blob_state`. An unattached `created` blob is left to its own
+`expires_at`, which may be longer than a day on purpose. The rule is a
+backstop: a backend that knows an upload is dead detaches and deletes.
 
 **Concurrency.** Attach and detach lock the blob row (`SELECT ... FOR
 UPDATE`) for their transaction, then change the attachments and
@@ -690,8 +705,10 @@ the build, which reads the source in order anyway. Parts are capped at
 
 A source that is never finished is an abandoned export. `DELETE` is the
 backend's way out; as a backstop the reaper expires a `created` blob whose
-last part is older than `upload.source_stale_after` (default one day), and
-the purge takes the parts with the prefix.
+last part is older than `upload.abandoned_after` (default one day), and
+the purge takes the parts with the prefix. The same clock expires an
+attached `created` blob with no parts that nothing has touched, see
+"Attachments".
 
 ### Build
 
@@ -1317,8 +1334,10 @@ Job kinds: `scan`, `render` (thumbnail and preview, whichever is pending),
 source, see "Generated blobs"), `purge`
 (delete the objects under a blob's prefix) and `reap`, the periodic
 housekeeping. One reap, in one transaction, in this order: record
-`expired` on every non-terminal blob past its `expires_at`; expire `created`
-blobs holding source parts untouched for `upload.source_stale_after`; prune
+`expired` on every non-terminal blob past its `expires_at`; expire the
+abandoned `created` blobs, holding source parts untouched for
+`upload.abandoned_after` or attached and untouched altogether for as long
+(see "Attachments"); prune
 dead jobs that failed more than `jobs.keep_failed` (default seven days) ago,
 long enough to have been looked at; enqueue a purge, `upload.purge_delay`
 out, for every terminal blob still holding objects that no purge job is

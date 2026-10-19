@@ -487,3 +487,72 @@ async fn tombstones_are_pruned_after_keep_purged_with_their_attachments() {
     assert_eq!(items[0]["blob_id"], id_of(&live));
     assert_eq!(reap_now(&app).await.tombstones, 0);
 }
+
+/// An attachment at creation keeps a blob from expiring, but not from
+/// being abandoned: a `created` blob nothing has touched for
+/// `upload.abandoned_after` is expired, attachments kept, like a source
+/// nobody finished. An unattached one keeps to its own `expires_at`.
+#[tokio::test]
+async fn an_attached_blob_nothing_reached_is_expired_as_abandoned() {
+    let app = setup().await;
+    let pool = app.state.pool();
+    let attachment = json!({"record_type": "Dossier", "record_id": "1", "name": "piece"});
+
+    let mut blob = raw_blob();
+    blob["attachment"] = attachment.clone();
+    let untouched = create(&app, blob).await;
+    let mut blob = raw_blob();
+    blob["attachment"] = attachment.clone();
+    let touched = create(&app, blob).await;
+    let mut blob = raw_blob();
+    blob["expires_in"] = json!("7d");
+    let unattached = create(&app, blob).await;
+    let bytes = png_bytes(100);
+    let mut blob = blob_for(&bytes, "image/png", "raw");
+    blob["skip_virus_scan"] = json!(true);
+    blob["attachment"] = attachment;
+    let uploaded = create(&app, blob).await;
+    let (status, body) = put_private(&app, id_of(&uploaded), bytes).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // All of them were last touched two days ago, as far as the row says,
+    // except the touched one, which got a failed upload an hour ago. The
+    // trigger that keeps `updated_at` current has to step aside for that.
+    sqlx::query("ALTER TABLE blobs DISABLE TRIGGER blobs_updated_at")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE blobs SET updated_at = now() - interval '2 days'")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE blobs SET updated_at = now() - interval '1 hour' WHERE id = $1")
+        .bind(parse_id(id_of(&touched)))
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("ALTER TABLE blobs ENABLE TRIGGER blobs_updated_at")
+        .execute(pool)
+        .await
+        .unwrap();
+
+    let report = reap_now(&app).await;
+    assert_eq!(report.abandoned, 1, "{report:?}");
+    assert_eq!(report.expired, 0, "{report:?}");
+    assert_eq!(get_blob(&app, id_of(&untouched)).await["state"], "expired");
+    assert_eq!(get_blob(&app, id_of(&touched)).await["state"], "created");
+    assert_eq!(get_blob(&app, id_of(&unattached)).await["state"], "created");
+    assert_eq!(get_blob(&app, id_of(&uploaded)).await["state"], "ready");
+
+    // The record's side learns of it from the listing.
+    let (status, body) = call(
+        &app.private,
+        req(
+            Method::GET,
+            &format!("/attachments?blob_id={}", id_of(&untouched)),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["items"][0]["blob_state"], "expired");
+}

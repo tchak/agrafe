@@ -270,9 +270,11 @@ pub struct UploadConfig {
     #[serde(with = "humantime_serde", default = "default_purge_delay")]
     pub purge_delay: Duration,
     /// A `created` blob whose last source part is older than this is an
-    /// abandoned export: the reaper expires it and its parts are purged.
-    #[serde(with = "humantime_serde", default = "default_source_stale_after")]
-    pub source_stale_after: Duration,
+    /// abandoned export, and an attached `created` blob with no parts that
+    /// nothing has touched for this long is a file that never came: the
+    /// reaper expires both, parts purged, attachments kept.
+    #[serde(with = "humantime_serde", default = "default_abandoned_after")]
+    pub abandoned_after: Duration,
 }
 
 impl UploadConfig {
@@ -297,7 +299,7 @@ fn default_stale_after() -> Duration {
 fn default_purge_delay() -> Duration {
     Duration::from_secs(3600)
 }
-fn default_source_stale_after() -> Duration {
+fn default_abandoned_after() -> Duration {
     Duration::from_secs(24 * 3600)
 }
 
@@ -308,7 +310,7 @@ impl Default for UploadConfig {
             inline_scan_max_size: default_inline_scan_max_size(),
             stale_after: default_stale_after(),
             purge_delay: default_purge_delay(),
-            source_stale_after: default_source_stale_after(),
+            abandoned_after: default_abandoned_after(),
         }
     }
 }
@@ -719,7 +721,7 @@ mod tests {
         Jail::expect_with(|jail| {
             let config = load(&example())?;
             assert_eq!(config.archive.max_size, ByteSize::gib(100));
-            assert_eq!(config.upload.source_stale_after.as_secs(), 24 * 3600);
+            assert_eq!(config.upload.abandoned_after.as_secs(), 24 * 3600);
             jail.set_env("AGRAFE_ARCHIVE__MAX_SIZE", "400 GiB");
             let err = load(&example()).unwrap_err().to_string();
             assert!(err.contains("archive.max_size"), "{err}");

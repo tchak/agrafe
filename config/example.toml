@@ -74,8 +74,11 @@ stale_after = "10m"
 # Downloads that started before the delete keep their bytes.
 purge_delay = "1h"
 # A rows or archive source left unfinished for this long after its last part
-# is an abandoned export: the reaper expires the blob and purges the parts.
-source_stale_after = "1d"
+# is an abandoned export, and an attached blob still waiting for its bytes
+# after this long untouched is a file that never came: the reaper expires
+# both, purging any parts and keeping the attachments for the record's side
+# to see. Unattached blobs have their own expires_at instead.
+abandoned_after = "1d"
 
 [blobs]
 # A blob created without expires_at or expires_in expires after this, long

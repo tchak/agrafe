@@ -636,16 +636,22 @@ pub async fn expire(conn: &mut PgConnection, now: Timestamp) -> sqlx::Result<Vec
     .await
 }
 
-/// Expire every `created` blob holding source parts whose last part landed
-/// before `before`: an export the backend never finished. Its parts are
-/// purged with the prefix.
-pub async fn expire_stale_sources(
+/// Expire every `created` blob that was abandoned before `before`: one
+/// holding source parts whose last part landed before then, an export the
+/// backend never finished, and an attached one with no parts that nothing
+/// has touched since then, a file that never arrived. An unattached blob
+/// with no parts is left to its own `expires_at`, which it always has.
+/// Whatever parts there are go with the purge of the prefix.
+pub async fn expire_abandoned(
     conn: &mut PgConnection,
     before: Timestamp,
 ) -> sqlx::Result<Vec<Uuid>> {
     sqlx::query_scalar(
         "UPDATE blobs SET state = $1 \
-         WHERE state = $2 AND source_parts > 0 AND source_updated_at <= $3 \
+         WHERE state = $2 AND (\
+             (source_parts > 0 AND source_updated_at <= $3) \
+             OR (source_parts = 0 AND expires_at IS NULL AND updated_at <= $3)\
+         ) \
          RETURNING id",
     )
     .bind(BlobState::Expired.as_str())

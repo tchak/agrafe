@@ -62,7 +62,8 @@ pub async fn schedule(exec: impl PgExecutor<'_>, run_at: Timestamp) -> sqlx::Res
 pub struct Report {
     /// Blobs recorded as `expired`.
     pub expired: usize,
-    /// `created` blobs expired for holding source parts nobody finished.
+    /// `created` blobs expired as abandoned: parts nobody finished, or an
+    /// attached blob whose file never came.
     pub abandoned: usize,
     /// Purges enqueued.
     pub purges: usize,
@@ -101,12 +102,13 @@ pub async fn reap(state: &Agrafe, now: Timestamp) -> Result<Report, JobError> {
 
     let expired = repo::expire(&mut tx, now).await?;
 
-    // An export whose backend stopped sending parts; the purge below takes
-    // the parts with the prefix.
-    let source_stale_before = now
-        .checked_sub(config.upload.source_stale_after)
+    // An export whose backend stopped sending parts, or an attached blob
+    // whose file never came; the purge below takes any parts with the
+    // prefix.
+    let abandoned_before = now
+        .checked_sub(config.upload.abandoned_after)
         .unwrap_or(Timestamp::MIN);
-    let abandoned = repo::expire_stale_sources(&mut tx, source_stale_before).await?;
+    let abandoned = repo::expire_abandoned(&mut tx, abandoned_before).await?;
 
     // Dead jobs go first, so a purge that died is scheduled again below,
     // in the same pass, once it has been around long enough.
