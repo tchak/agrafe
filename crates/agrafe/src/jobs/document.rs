@@ -7,9 +7,11 @@
 //!
 //! A document that does not compile is dead at once, the compiler's
 //! diagnostics as the error; so is a member gone since accept, since a
-//! template cannot do without a file the way an archive skips an entry.
-//! The sandbox, the temporary directory, the bucket and the database may
-//! come back, and fail the attempt only.
+//! template cannot do without a file the way an archive skips an entry,
+//! and a compile the sandbox killed at the time limit. A helper that
+//! failed any other way (a full disk, a crash), the sandbox, the
+//! temporary directory, the bucket and the database may come back, and
+//! fail the attempt only.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -55,13 +57,22 @@ impl Assemble for Document {
         let output = workdir.path().join("document.pdf");
         match helpers::render_document(&media.render, &root, main, &output).await? {
             Verdict::Rendered(()) => {}
+            Verdict::Rejected(Rejection::Failed {
+                code: Some(helpers::DOCUMENT_REJECTED_EXIT),
+                stderr,
+                ..
+            }) => return Err(BuildError::Compile(stderr)),
+            Verdict::Rejected(Rejection::TimedOut) => {
+                return Err(BuildError::Compile(Rejection::TimedOut.to_string()));
+            }
+            Verdict::Rejected(rejection) => return Err(BuildError::Helper(rejection)),
             Verdict::Declined => {
-                return Err(BuildError::Compile("the compiler wrote no output".into()));
+                return Err(agrafe_render::Error::Output(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "the compiler helper exited cleanly without writing the PDF",
+                ))
+                .into());
             }
-            Verdict::Rejected(Rejection::Failed { stderr, .. }) => {
-                return Err(BuildError::Compile(stderr));
-            }
-            Verdict::Rejected(rejection) => return Err(BuildError::Compile(rejection.to_string())),
         }
 
         let mut file = tokio::fs::File::open(&output)

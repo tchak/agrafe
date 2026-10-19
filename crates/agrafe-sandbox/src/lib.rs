@@ -72,6 +72,8 @@ pub enum Outcome {
     Success,
     /// A non-zero exit or a signal, with what the process said on stderr.
     Failed {
+        /// The exit code, `None` for a signal.
+        code: Option<i32>,
         status: String,
         stderr: String,
     },
@@ -122,6 +124,7 @@ pub async fn run(mut command: Command, limits: &Limits) -> Result<Outcome, Error
     match tokio::time::timeout(limits.timeout, child.wait_with_output()).await {
         Ok(Ok(output)) if output.status.success() => Ok(Outcome::Success),
         Ok(Ok(output)) => Ok(Outcome::Failed {
+            code: output.status.code(),
             status: output.status.to_string(),
             stderr: tail(&output.stderr),
         }),
@@ -186,8 +189,12 @@ mod tests {
         let mut failed = command("sh");
         failed.args(["-c", "echo first >&2; echo boom >&2; exit 3"]);
         match run(failed, &limits()).await.unwrap() {
-            Outcome::Failed { status, stderr } => {
-                assert!(status.contains('3'), "{status}");
+            Outcome::Failed {
+                code,
+                status,
+                stderr,
+            } => {
+                assert_eq!(code, Some(3), "{status}");
                 assert_eq!(stderr, "first\nboom");
             }
             other => panic!("{other:?}"),

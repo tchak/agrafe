@@ -82,9 +82,14 @@ pub enum BuildError {
     /// `document.max_workspace_size`.
     #[error("workspace: {0}")]
     Workspace(String),
-    /// The compiler refused the document; the diagnostics follow.
+    /// The compiler refused the document, or ran out of time on it; the
+    /// diagnostics follow.
     #[error("the document does not compile: {0}")]
     Compile(String),
+    /// The compiler helper failed on its own account, not the document's:
+    /// a full disk, a crash. Retried.
+    #[error("the compiler helper failed: {0}")]
+    Helper(agrafe_render::Rejection),
     /// The sandbox could not run the compiler.
     #[error(transparent)]
     Render(#[from] agrafe_render::Error),
@@ -97,8 +102,8 @@ impl BuildError {
     /// not parse, a row missing its key material, a key that does not
     /// unwrap, a stored object that is damaged, a package the writer
     /// refuses, a workspace file gone or a document that does not compile
-    /// are the blob's own; the bucket, the database, the sandbox and the
-    /// temporary directory may come back.
+    /// are the blob's own; the bucket, the database, the sandbox, the
+    /// compiler helper and the temporary directory may come back.
     pub fn is_permanent(&self) -> bool {
         match self {
             BuildError::Source { .. }

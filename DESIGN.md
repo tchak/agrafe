@@ -1218,8 +1218,11 @@ stderr; a referenced blob gone between accept and build, which unlike an
 archive's cannot be skipped, since a template cannot do without a file; a
 path twice or both file and directory; a workspace over the limit; a
 compile the sandbox had to kill at the time limit, since the same template
-would take as long again. Retried: the sandbox failing to start the
-helper, the temporary directory, the bucket, the database. Out of
+would take as long again. The helper tells the two apart by its exit code:
+2 is the compiler's verdict, with the diagnostics on stderr; anything else
+(a full disk, a crash) is the helper's own failure. Retried: those, the
+sandbox failing to start the helper, the temporary directory, the bucket,
+the database. Out of
 attempts, the blob is stuck in `uploaded` with `failed_at` and
 `last_error`, like any build. Once `ready` the PDF gets its preview and
 thumbnail through the existing PDF path: the first page as its thumbnail,

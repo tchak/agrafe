@@ -422,6 +422,26 @@ async fn compile_errors_die_at_once_with_diagnostics(pool: PgPool) {
     assert_eq!(blob["last_error"], error);
 }
 
+/// A helper that fails on its own account, not with the compiler's exit
+/// code, is a failed attempt, not a dead document: the same template may
+/// well compile once the disk or the helper is back.
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn a_helper_failing_for_its_own_reasons_is_retried(pool: PgPool) {
+    let app = setup_tuned(pool, fake_clamd().await, |c| {
+        c.media.render.render_document_command = "/usr/bin/false".into();
+    })
+    .await;
+    let created = create(&app, document_blob("unlucky.pdf")).await;
+    let id = id_of(&created);
+    let (status, _) = put_private(&app, id, manifest(&[text("main.typ", "= Hi\n")])).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(run_job(&app, JobKind::Document).await);
+    let (attempts, dead, error) = job_outcome(&app, id).await;
+    assert_eq!((attempts, dead), (1, false), "{error}");
+    assert!(error.contains("compiler helper failed"), "{error}");
+    assert_eq!(get_blob(&app, id).await["state"], "uploaded");
+}
+
 /// What a template may not do: fetch a package, read outside the
 /// workspace, or need a file the manifest does not hold.
 #[sqlx::test(migrator = "MIGRATOR")]

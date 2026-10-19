@@ -59,10 +59,16 @@ pub async fn render_text(
     run(config, command, output).await
 }
 
+/// The exit code `agrafe-render-document` reserves for a document that
+/// does not compile, its diagnostics on stderr. Any other failure is the
+/// helper's own: it could not read its workspace or write its output.
+/// Mirrored in the helper crate, which the server does not link.
+pub const DOCUMENT_REJECTED_EXIT: i32 = 2;
+
 /// Run `agrafe-render-document` on the `workspace` directory, compiling
 /// `main`, a path relative to it, into the PDF at `output`. A document
-/// that does not compile is a `Rejected` whose stderr holds the
-/// diagnostics.
+/// that does not compile is a `Rejected` with [`DOCUMENT_REJECTED_EXIT`]
+/// whose stderr holds the diagnostics.
 pub async fn render_document(
     config: &Config,
     workspace: &Path,

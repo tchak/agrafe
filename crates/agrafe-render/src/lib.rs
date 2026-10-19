@@ -176,7 +176,12 @@ pub enum Rejection {
     #[error("the file is not in a format the renderer may load")]
     Unsupported,
     #[error("the tool failed ({status}): {stderr}")]
-    Failed { status: String, stderr: String },
+    Failed {
+        /// The exit code, `None` for a signal.
+        code: Option<i32>,
+        status: String,
+        stderr: String,
+    },
     #[error("the tool exceeded the time limit")]
     TimedOut,
 }
@@ -187,7 +192,12 @@ impl Rejection {
     pub(crate) fn of(outcome: &agrafe_sandbox::Outcome) -> Option<Self> {
         match outcome {
             agrafe_sandbox::Outcome::Success => None,
-            agrafe_sandbox::Outcome::Failed { status, stderr } => Some(Rejection::Failed {
+            agrafe_sandbox::Outcome::Failed {
+                code,
+                status,
+                stderr,
+            } => Some(Rejection::Failed {
+                code: *code,
                 status: status.clone(),
                 stderr: stderr.clone(),
             }),

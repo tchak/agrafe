@@ -30,6 +30,13 @@ use typst_layout::PagedDocument;
 
 use typst_pdf::PdfOptions;
 
+/// The exit code of the helper for a document that does not compile,
+/// its diagnostics on stderr: the document's own fault, which the job
+/// records and does not retry. Any other failure exits 1 and is the
+/// helper's, retried. Mirrored as `DOCUMENT_REJECTED_EXIT` in
+/// `agrafe-render`, which cannot link this crate.
+pub const REJECTED_EXIT: u8 = 2;
+
 /// Why a workspace could not be opened: its root or its main file is not
 /// usable before the compiler has looked at anything.
 #[derive(Debug, thiserror::Error)]
@@ -244,8 +251,9 @@ impl World for Workspace {
     fn today(&self, offset: Option<Duration>) -> Option<Datetime> {
         let now = jiff::Timestamp::now();
         let shifted = match offset {
+            // An offset a template can write may be beyond any duration.
             Some(offset) => now
-                .checked_add(jiff::SignedDuration::from_secs_f64(offset.seconds()))
+                .checked_add(jiff::SignedDuration::try_from_secs_f64(offset.seconds()).ok()?)
                 .ok()?,
             None => now,
         };
