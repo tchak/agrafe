@@ -1,0 +1,74 @@
+# A Linux VM for the code that only runs on Linux: the agrafe-sandbox
+# confinement (Landlock, seccomp, and bubblewrap for stage 2 of #3).
+# Ubuntu 26.04, the CI runner's release, with its stock kernel: Landlock
+# and AppArmor are on, and unprivileged user namespaces are restricted by
+# AppArmor as on a default Ubuntu host. No profile for `bwrap` is
+# installed here; granting one is part of what stage 2 tests.
+#
+#   limactl start --name agrafe --mount-only "$PWD:w" scripts/lima.yaml
+#   limactl shell --workdir "$PWD" agrafe \
+#     env CARGO_TARGET_DIR=target/linux cargo nextest run --workspace
+#
+# The checkout is mounted at its own path; Linux build artifacts go to
+# target/linux so they do not mix with the macOS ones.
+
+minimumLimaVersion: 2.0.0
+
+base:
+- template:_images/ubuntu-26.04
+
+vmType: vz
+cpus: 4
+memory: 8GiB
+disk: 40GiB
+mountType: virtiofs
+
+# Nothing in the guest is for the host: the guest's Postgres would clash
+# with the host's on 5432.
+portForwards:
+- guestPortRange: [1, 65535]
+  proto: any
+  ignore: true
+
+# Containers are not what this VM is for.
+containerd:
+  system: false
+  user: false
+
+provision:
+- mode: system
+  script: |
+    #!/bin/bash
+    set -eux -o pipefail
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y --no-install-recommends \
+      build-essential pkg-config curl ca-certificates \
+      libvips-tools bubblewrap postgresql
+    # The tests' default DATABASE_URL: agrafe_test as the OS user, over
+    # the local socket, with CREATEDB for the per-test databases.
+    sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname = '{{.User}}'" | grep -q 1 \
+      || sudo -u postgres createuser --createdb '{{.User}}'
+    sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname = 'agrafe_test'" | grep -q 1 \
+      || sudo -u postgres createdb -O '{{.User}}' agrafe_test
+- mode: user
+  script: |
+    #!/bin/bash
+    set -eux -o pipefail
+    if [ ! -x "$HOME/.cargo/bin/cargo" ]; then
+      curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal -c clippy -c rustfmt
+    fi
+    if [ ! -x "$HOME/.cargo/bin/cargo-nextest" ]; then
+      curl -LsSf https://get.nexte.st/latest/linux-arm | tar zxf - -C "$HOME/.cargo/bin"
+    fi
+
+probes:
+- description: rust and cargo-nextest installed
+  script: |
+    #!/bin/bash
+    set -eux -o pipefail
+    if ! timeout 30s bash -c "until [ -x $HOME/.cargo/bin/cargo-nextest ]; do sleep 3; done"; then
+      echo >&2 "cargo-nextest is not installed yet"
+      exit 1
+    fi
+  hint: See "/var/log/cloud-init-output.log" in the guest.
