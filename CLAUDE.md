@@ -39,7 +39,8 @@ See "Crates" in `DESIGN.md` for the dependency graph.
   drivers, the icons, the probe, the `[media]` tool config, and the
   fetcher of map backgrounds (`geo`), the one network client in it.
 - `fixtures/` — sample files for tests, with the `make.py` that builds them.
-- `migrations/` — sqlx migrations, plain SQL, one file per table. Nothing
+- `crates/agrafe/migrations/` — sqlx migrations, plain SQL, one file per
+  table, inside the crate so that `cargo publish` packages them. Nothing
   is deployed yet, so a schema change edits the table's file; no `ALTER`
   migrations and no backfills until the first deployment. A changed file
   needs a fresh database (`DROP SCHEMA public CASCADE; CREATE SCHEMA
@@ -122,8 +123,8 @@ See "Crates" in `DESIGN.md` for the dependency graph.
   `crates/agrafe-axum/src/error.rs` (to `DashboardError` in
   `crates/agrafe-dashboard/src/error.rs`). Handlers parse the request,
   call the handle and shape the response, nothing more.
-- `blobs.updated_at` is set by a trigger (`migrations/0001_blobs.sql`). Do not set it in
-  queries.
+- `blobs.updated_at` is set by a trigger
+  (`crates/agrafe/migrations/0001_blobs.sql`). Do not set it in queries.
 - Database tests are `#[sqlx::test(migrator = "MIGRATOR")]` taking a
   `PgPool`, handed to `setup`: each gets a fresh, migrated database of its
   own on the server `DATABASE_URL` names (default in `.cargo/config.toml`:

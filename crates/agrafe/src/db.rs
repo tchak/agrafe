@@ -7,8 +7,9 @@ use sqlx::{PgPool, Postgres, Type};
 
 use crate::config::DatabaseConfig;
 
-/// The migrations under `migrations/`, embedded at build time.
-pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations");
+/// The migrations under `crates/agrafe/migrations/`, embedded at build
+/// time.
+pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
 /// A pool of at most `max_connections` connections to `url`, the first one
 /// opened before returning.

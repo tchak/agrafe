@@ -2373,7 +2373,7 @@ is redacted so a dumped config cannot leak them. See `config/example.toml`.
 | Concern | Choice |
 |---|---|
 | HTTP | `axum` on `tokio`, two routers sharing state, two listeners |
-| Database | Postgres via `sqlx`, migrations in `migrations/` |
+| Database | Postgres via `sqlx`, migrations in `crates/agrafe/migrations/` |
 | Object store | `object_store`, local filesystem, S3, Azure Blob Storage or Google Cloud Storage |
 | Fetching `url` blobs, webhook deliveries | `reqwest` with rustls, a resolver of our own enforcing the address policy on fetches |
 | Config | `figment` with TOML and env providers |
