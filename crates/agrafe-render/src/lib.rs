@@ -169,10 +169,6 @@ pub enum Error {
     /// What the tool wrote could not be read back.
     #[error("reading the rendered file: {0}")]
     Output(std::io::Error),
-    /// The map helper's `extent.json` does not parse as an
-    /// [`Extent`](agrafe_types::geojson::Extent).
-    #[error("reading the extent the map helper wrote: {0}")]
-    Extent(serde_json::Error),
     /// A background layer of a map could not be fetched or decoded.
     #[error("fetching a background layer: {0}")]
     Fetch(#[from] geo::FetchError),

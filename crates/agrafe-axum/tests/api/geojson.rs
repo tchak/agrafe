@@ -296,6 +296,38 @@ async fn provider_fault(pool: PgPool, answer: Answer, expected: &str) {
     assert!(!error.contains("BBOX"), "{error}");
 }
 
+/// An extent that does not parse is the helper's output gone wrong, so
+/// the file's fault like one that fails the checks: the map is rejected,
+/// not retried.
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn an_extent_that_does_not_parse_rejects_the_map(pool: PgPool) {
+    use std::os::unix::fs::PermissionsExt;
+    let helper = std::env::temp_dir().join(format!("agrafe-bad-extent-{}", uuid::Uuid::now_v7()));
+    // --input $2 --spec $4 --svg $6 --extent $8
+    std::fs::write(
+        &helper,
+        "#!/bin/sh\nprintf '<svg/>' > \"$6\"\nprintf 'not json' > \"$8\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let clamd = fake_clamd().await;
+    let app = setup_tuned(pool, clamd, |c| {
+        c.media.render.render_geo_command = helper.to_string_lossy().into_owned();
+    })
+    .await;
+    let point = geojson_blob(&app, "point.geojson", "application/geo+json").await;
+    let id = id_of(&point);
+    render_all(&app).await;
+    let blob = get_blob(&app, id).await;
+    assert_eq!(blob["preview_state"], "failed");
+    assert_eq!(
+        jobs_for(&app, id).await,
+        Vec::<String>::new(),
+        "not retried"
+    );
+    std::fs::remove_file(&helper).unwrap();
+}
+
 #[sqlx::test(migrator = "MIGRATOR")]
 async fn a_service_exception_fails_the_attempt(pool: PgPool) {
     provider_fault(pool, Answer::Xml, "answered `text/xml`, not an image").await;

@@ -490,9 +490,17 @@ pub async fn render_map(
         Verdict::Declined => return Ok(Verdict::Declined),
         Verdict::Rejected(rejection) => return Ok(Verdict::Rejected(rejection)),
     }
-    let extent: Extent =
-        serde_json::from_slice(&tokio::fs::read(&extent_path).await.map_err(Error::Output)?)
-            .map_err(Error::Extent)?;
+    // The helper is the untrusted side: an extent that does not parse is
+    // the file's doing like one that does not check, not ours to retry.
+    let bytes = tokio::fs::read(&extent_path).await.map_err(Error::Output)?;
+    let extent: Extent = match serde_json::from_slice(&bytes) {
+        Ok(extent) => extent,
+        Err(e) => {
+            return Ok(Verdict::Rejected(Rejection::Output(format!(
+                "an extent that does not parse: {e}"
+            ))));
+        }
+    };
     if let Err(what) = check_extent(&extent, &spec) {
         return Ok(Verdict::Rejected(Rejection::Output(format!(
             "an extent with {what}"
