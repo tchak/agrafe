@@ -2013,9 +2013,16 @@ only, no secrets; vips also gets `TMPDIR`, `VIPS_CONCURRENCY` and
 through), `setrlimit` bounds on address space and data
 (`media.sandbox.memory`, default 1 GiB), CPU time and output file size
 (`max_output_size`), no core dumps, and a kill at the wall-clock limit
-(`media.sandbox.timeout`, default 60 s). The address space limit is
-enforced by Linux and ignored by macOS, so development machines get only
-the timeout.
+(`media.sandbox.timeout`, default 60 s). The CPU time limit is the
+wall-clock limit plus a second, summed over the process's threads, which
+is why every tool is kept narrow (two threads for vips and LibreOffice):
+a process spread over sixteen cores would exhaust it in a tenth of the
+time. Its soft limit sends `SIGXCPU` and the hard one, a second later,
+`SIGKILL`; a tool that died of `SIGXCPU` timed out, and is reported as
+such rather than as a fault of the file. (With the two limits equal the
+kernel checks the hard one first and sends `SIGKILL`, which says
+nothing.) The address space limit is enforced by Linux and ignored by
+macOS, so development machines get only the timeout.
 
 **Landlock**, through the `landlock` crate, maintained by the feature's
 kernel author. The child's filesystem is the *system set*, read and
@@ -2196,7 +2203,10 @@ profile lock and nothing a document does persists past the job;
 time that is copied in instead, a copy being milliseconds. `HOME`,
 `XDG_CACHE_HOME` and `TMPDIR` are the work directory too: LibreOffice
 stages its PDF in `TMPDIR` before moving it to `--outdir`, and a
-`TMPDIR` outside the writable directory fails the write. Debian keeps
+`TMPDIR` outside the writable directory fails the write. Its thread pool
+is capped at two (`MAX_CONCURRENCY`), as vips's is: Calc's threaded
+formula groups would otherwise take every core, and the CPU time limit,
+summed over threads, with them. Debian keeps
 LibreOffice's registry and printer configuration under `/etc/libreoffice`,
 which the system set does not cover, so the driver declares it readable,
 skipped where absent; other layouts go through `media.sandbox.readable`.

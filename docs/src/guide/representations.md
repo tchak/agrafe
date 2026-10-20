@@ -170,7 +170,9 @@ configured, converts office files to PDF, each as a subprocess with:
 - a clean environment, with no secrets;
 - an address space limit, `media.sandbox.memory` (1 GiB, enforced on Linux
   only);
-- a CPU time limit and an output size limit, `media.sandbox.max_output_size`;
+- a CPU time limit, the wall-clock limit summed over the process's
+  threads, which is why vips and LibreOffice run two threads each, and an
+  output size limit, `media.sandbox.max_output_size`;
 - a wall-clock timeout, `media.sandbox.timeout` (60 seconds);
 - on Linux, a Landlock ruleset and a seccomp filter: the process sees the
   system libraries and fonts, the file it renders and the directory it

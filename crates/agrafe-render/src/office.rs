@@ -134,6 +134,13 @@ const ETC: &str = "/etc/libreoffice";
 /// document's extension, and the stem LibreOffice names the PDF after.
 const INPUT: &str = "document";
 
+/// Threads in LibreOffice's pool, which Calc's threaded formula groups
+/// fill with every core by default. Kept narrow like vips
+/// (`VIPS_CONCURRENCY`): parallelism comes from `jobs.concurrency`, and
+/// the CPU time limit is the wall-clock limit's, which a process spread
+/// over sixteen cores would exhaust in a tenth of the time.
+const OFFICE_CONCURRENCY: &str = "2";
+
 /// Convert `original`, a file of `content_type`, to a one-page PDF in the
 /// `office` directory under `workdir`, and return the PDF's path.
 /// `Declined` when no converter is configured or the type is not one
@@ -181,6 +188,7 @@ pub async fn convert(
         .env("TMPDIR", &dir)
         .env("HOME", &dir)
         .env("XDG_CACHE_HOME", &dir)
+        .env("MAX_CONCURRENCY", OFFICE_CONCURRENCY)
         .arg(format!(
             "-env:UserInstallation=file://{}",
             profile.display()

@@ -363,6 +363,11 @@ async fn run_with(
     let pid = child.id();
     let outcome = match tokio::time::timeout(config.timeout, child.wait_with_output()).await {
         Ok(Ok(output)) if output.status.success() => Outcome::Success,
+        // CPU time ran out before the wall clock did, which a process on
+        // several threads does: a timeout all the same, not a fault of the
+        // file. A launcher reports its child's death its own way, so this
+        // tells a direct tool's.
+        Ok(Ok(output)) if cpu_exhausted(&output.status) => Outcome::TimedOut,
         Ok(Ok(output)) => Outcome::Failed {
             code: output.status.code(),
             status: output.status.to_string(),
@@ -397,6 +402,24 @@ fn kill_group(pid: Option<u32>) {
 #[cfg(not(unix))]
 fn kill_group(_pid: Option<u32>) {}
 
+/// Whether the process died of `SIGXCPU`, the CPU time limit.
+#[cfg(unix)]
+fn cpu_exhausted(status: &std::process::ExitStatus) -> bool {
+    use std::os::unix::process::ExitStatusExt;
+    status.signal() == Some(libc::SIGXCPU)
+}
+
+#[cfg(not(unix))]
+fn cpu_exhausted(_status: &std::process::ExitStatus) -> bool {
+    false
+}
+
+/// Seconds of CPU time past the soft limit before the hard one: the soft
+/// limit sends `SIGXCPU`, which names the cause, and the hard limit sends
+/// `SIGKILL` to a process that caught it.
+#[cfg(unix)]
+const CPU_GRACE: u64 = 1;
+
 #[cfg(unix)]
 fn apply_limits(command: &mut tokio::process::Command, config: &Config) {
     let memory = config.memory.as_u64();
@@ -406,6 +429,13 @@ fn apply_limits(command: &mut tokio::process::Command, config: &Config) {
         rlim_cur: value as libc::rlim_t,
         rlim_max: value as libc::rlim_t,
     };
+    // With the soft and the hard limit equal the kernel checks the hard one
+    // first and sends `SIGKILL`, which says nothing; a hard limit one
+    // second past the soft one makes the death `SIGXCPU`.
+    let cpu = libc::rlimit {
+        rlim_cur: cpu as libc::rlim_t,
+        rlim_max: cpu.saturating_add(CPU_GRACE) as libc::rlim_t,
+    };
     // SAFETY: `setrlimit` is async-signal-safe and touches nothing shared
     // with the parent. A limit the hard limit forbids is left as inherited,
     // which is stricter.
@@ -413,7 +443,7 @@ fn apply_limits(command: &mut tokio::process::Command, config: &Config) {
         command.pre_exec(move || {
             libc::setrlimit(libc::RLIMIT_AS, &limit(memory));
             libc::setrlimit(libc::RLIMIT_DATA, &limit(memory));
-            libc::setrlimit(libc::RLIMIT_CPU, &limit(cpu));
+            libc::setrlimit(libc::RLIMIT_CPU, &cpu);
             libc::setrlimit(libc::RLIMIT_FSIZE, &limit(output));
             libc::setrlimit(libc::RLIMIT_CORE, &limit(0));
             Ok(())
@@ -800,6 +830,42 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         panic!("the forked `sleep` {pid} outlived the timeout");
+    }
+
+    /// CPU time is bounded by the wall-clock limit too, summed over the
+    /// threads, and running out of it is a timeout, not a fault of the
+    /// file: four threads hashing exhaust the limit in a quarter of the
+    /// wall-clock time.
+    #[tokio::test]
+    async fn cpu_time_is_a_timeout() {
+        if Command::new("python3").program().is_relative() {
+            eprintln!("skipped: no python3");
+            return;
+        }
+        let config = Config {
+            timeout: Duration::from_secs(5),
+            ..config()
+        };
+        let mut burn = Command::new("python3");
+        burn.args([
+            "-I",
+            "-c",
+            "import hashlib, threading, time\n\
+             def burn():\n\
+             \twhile True:\n\
+             \t\thashlib.sha256(bytes(10_000_000)).digest()\n\
+             for _ in range(4):\n\
+             \tthreading.Thread(target=burn, daemon=True).start()\n\
+             time.sleep(60)\n",
+        ]);
+        let started = std::time::Instant::now();
+        let outcome = run(burn, &config).await.unwrap();
+        assert!(matches!(outcome, Outcome::TimedOut), "{outcome:?}");
+        assert!(
+            started.elapsed() < config.timeout,
+            "the wall clock ran out first, after {:?}",
+            started.elapsed()
+        );
     }
 
     #[tokio::test]
