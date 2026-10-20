@@ -23,7 +23,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sqlx = { version = "0.9.0", default-features = false }
 thiserror = "2.0.21"
-tokio = { version = "1.53.3", features = ["time"] }
+tokio = { version = "1.54.0", features = ["time"] }
 tower-http = { version = "0.7.1", features = ["trace"] }
 tracing = "0.1.44"
 uuid = { version = "1.28.0", features = ["v7", "serde"] }
@@ -31,18 +31,18 @@ uuid = { version = "1.28.0", features = ["v7", "serde"] }
 [dev-dependencies]
 agrafe-crypto = { version = "0.1.0", path = "../agrafe-crypto" }
 agrafe-render = { version = "0.1.0", path = "../agrafe-render" }
-async-trait = "0.1.89"
+async-trait = "0.1.92"
 bytesize = "2.7.0"
 figment = { version = "0.10.19", features = ["toml", "test"] }
 hmac = "0.13.0"
 jiff-sqlx = { version = "0.2.0", features = ["postgres"] }
-object_store = "0.14.2"
 md-5 = "0.11.0"
+object_store = "0.14.2"
 sha2 = "0.11.1"
 # `#[sqlx::test]`: a database of its own for each test, migrated afresh.
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "postgres", "macros", "migrate"] }
 tempfile = "3.27.0"
-tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "fs", "process"] }
-tokio-stream = "0.1.17"
+tokio = { version = "1.54.0", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "fs", "process"] }
+tokio-stream = "0.1.19"
 tower = { version = "0.5.3", features = ["util"] }
-zip = { version = "9.0.4", default-features = false, features = ["deflate"] }
+zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
