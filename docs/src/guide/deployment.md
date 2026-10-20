@@ -169,6 +169,11 @@ AGRAFE_WEBHOOK__SECRET=whsec_…
 Losing a KEK loses every blob it wraps. Back up the KEKs separately from
 the database and the bucket.
 
+Where the KEKs must not rest on the host, `encryption.keks_file` reads
+them once at startup from a systemd credential or a FIFO fed by
+`systemd-ask-password`; see [Keeping the KEKs off the
+host](security.md#keeping-the-keks-off-the-host).
+
 ## Splitting the API and the workers
 
 `server.role`, or `--role`, picks what a process runs:

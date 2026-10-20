@@ -152,9 +152,12 @@ The bucket needs an `AbortIncompleteMultipartUpload` lifecycle rule.
 
 | Key | Default | Description |
 |---|---|---|
-| `current_kek` | **required** | Id of the KEK that wraps new data keys. Must be in `keks` |
+| `current_kek` | **required** | Id of the KEK that wraps new data keys. Must be in `keks` or in the `keks_file` |
 | `chunk_size` | `"256 KiB"` | Segment size of the streaming encryption, at most 16 MiB. Stored per blob, so it can change |
-| `keks` | **required** | Table of KEK id to key, each exactly 32 bytes. Keep every KEK that still wraps a key |
+| `keks` | | Table of KEK id to key, each exactly 32 bytes. Keep every KEK that still wraps a key |
+| `keks_file` | | A file of `id = "…"` lines, the body of `[encryption.keks]`, read once at startup. May be a FIFO or a systemd credential, so the KEKs stay off the disk; see [Keeping the KEKs off the host](../guide/security.md#keeping-the-keks-off-the-host). An id in both places is an error |
+
+One of `keks` and `keks_file` must hold `current_kek`.
 
 ## `[clamav]`
 
@@ -312,8 +315,11 @@ message naming the key:
 | `signing.window must be positive`, `signing.ttl.max must be positive` | Set a non-zero duration |
 | `signing.ttl.read (…) exceeds signing.ttl.max (…)` | Lower the TTL or raise the cap |
 | `encryption.current_kek is required` | Set it |
-| `` encryption.current_kek `…` is not present in encryption.keks `` | Add the KEK or fix the id |
+| `` encryption.current_kek `…` is not present in encryption.keks or encryption.keks_file `` | Add the KEK or fix the id |
 | `` encryption KEK `…` must be 32 bytes `` | Generate it with `openssl rand -base64 32` |
+| `` encryption KEK `…` is given both in encryption.keks and in encryption.keks_file `` | Keep it in one place |
+| `` encryption.keks_file `…`: No such file or directory `` | Fix the path; a relative one is from the working directory |
+| `` encryption.keks_file `…` must be a TOML table of KEK id to base64 key: … `` | Write `id = "…"` lines, nothing else |
 | `encryption.chunk_size must be at most 16777216 bytes (16 MiB)` | Lower it |
 | `blobs.default_expires_in must be at least 1h: …` | Raise it |
 | `media.variant_version must be at least 1` | Raise it |

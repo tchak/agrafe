@@ -1464,6 +1464,20 @@ sync-only seek make range requests awkward.
   and the row's `kek_id` picks the one that unwraps, so a new KEK is a
   config change. Retiring an old one means rewrapping the keys it wraps, a
   database update with zero bucket traffic, for which agrafe has no command.
+- **KEKs need not rest on the host.** `encryption.keks_file` names a path
+  read exactly once at startup, in the shape of the `keks` table, and
+  merged with it (an id in both is an error). What sits there is the
+  operator's choice: a plain file, a systemd credential sealed to the TPM,
+  or a FIFO fed by `systemd-ask-password`, which is what ds_proxy does and
+  what the security policy that governs it demands: nothing at rest on the
+  host decrypts the data, at the price of a human at every boot. One
+  mechanism covers the whole ladder, so a deployment moves up it by
+  changing its unit file, not its agrafe. Not a passphrase-wrapped keyring
+  as in ds_proxy: its password became a random key anyway, and rotating
+  the human-held secret is just a new KEK plus a rewrap. What none of this
+  does is keep the KEK out of the running process's memory; only an
+  external key service would, and wrap and unwrap being the only two KEK
+  operations, one could be added behind `Kek` later.
 - The stream's associated data is the object key, so a ciphertext copied to
   another key does not decrypt.
 - Payload follows **Tink's AES-GCM-HKDF-STREAMING** wire format. It is a

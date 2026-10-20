@@ -835,6 +835,12 @@ pub struct EncryptionConfig {
     /// base64.
     #[serde(default)]
     pub keks: HashMap<String, Base64Secret>,
+    /// A file holding more KEKs in the same shape as `keks`, `id = "base64"`
+    /// lines, read once at startup and never again. It may be a FIFO or a
+    /// systemd credential, so the KEKs need not sit on the host's disk. An
+    /// id in both places is an error. Relative to the working directory.
+    #[serde(default)]
+    pub keks_file: Option<PathBuf>,
     /// The streaming AEAD segment size, at most 16 MiB: a segment is held
     /// in memory whole per request in flight. Stored per blob, so it can
     /// change later. 256 KiB by default.
@@ -1155,6 +1161,24 @@ mod tests {
             assert_eq!(config.media.render.vips_command, "/opt/vips/bin/vips");
             assert_eq!(config.media.render.sandbox.timeout.as_secs(), 5);
             assert_eq!(config.media.max_source_size.as_u64(), 1 << 20);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn keks_file_is_a_path_the_environment_can_set() {
+        Jail::expect_with(|jail| {
+            let config = load(&example())?;
+            assert_eq!(config.encryption.keks_file, None);
+            jail.set_env(
+                "AGRAFE_ENCRYPTION__KEKS_FILE",
+                "/run/credentials/agrafe.service/keks",
+            );
+            let config = load(&example())?;
+            assert_eq!(
+                config.encryption.keks_file.as_deref(),
+                Some(Path::new("/run/credentials/agrafe.service/keks"))
+            );
             Ok(())
         });
     }

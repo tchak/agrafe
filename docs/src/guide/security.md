@@ -56,6 +56,56 @@ old one means rewrapping the data keys it wraps, a database update with no
 bucket traffic, for which agrafe has no command yet. Keep every KEK that
 still wraps a key.
 
+### Keeping the KEKs off the host
+
+A KEK in `agrafe.toml` or in the environment is readable by anyone who can
+read the file, the unit file or `/proc/<pid>/environ`, and it travels with
+every disk image and backup of the host. Some deployments require that
+nothing at rest on the host can decrypt the data. `encryption.keks_file`
+is for them: a path agrafe reads exactly once, at startup, holding
+`id = "…"` lines like the `[encryption.keks]` table. What sits at that path
+decides how strict the deployment is; agrafe does not know or care.
+
+- **A regular file** is no stronger than the inline table. Fine for
+  development.
+- **A systemd credential** keeps the KEKs on a tmpfs only the service can
+  see, decrypted at start from a blob sealed to the machine's TPM, so no
+  human is needed at boot and a copy of the disk is useless elsewhere:
+
+  ```sh
+  printf 'kek1 = "%s"\n' "$(openssl rand -base64 32)" \
+    | systemd-creds encrypt --name=keks --with-key=tpm2 - /etc/agrafe/keks.cred
+  ```
+
+  ```ini
+  [Service]
+  LoadCredentialEncrypted=keks:/etc/agrafe/keks.cred
+  Environment=AGRAFE_ENCRYPTION__KEKS_FILE=%d/keks
+  ```
+
+- **A FIFO fed by a human** is the strictest: the KEKs exist only in the
+  memory of the running process and in a password manager. Every start
+  waits for someone to type them, and a stolen disk or backup holds
+  nothing. The reader blocks until the writer closes the pipe, so start
+  the service first:
+
+  ```sh
+  mkfifo -m 0600 /run/agrafe/keks
+  systemctl start agrafe        # blocks in the read until the next line
+  systemd-ask-password "KEKs for agrafe (id = \"…\" lines)" > /run/agrafe/keks
+  rm -f /run/agrafe/keks
+  ```
+
+  with `AGRAFE_ENCRYPTION__KEKS_FILE=/run/agrafe/keks` in the unit. Note
+  that the whole file goes through the prompt, so keep it to the one or
+  two KEKs in use.
+
+Whichever rung, add `LimitCORE=0` to the unit so a crash does not write
+the KEKs to a core file. None of this keeps the KEKs out of the process's
+memory while it runs: a running agrafe must hold them to wrap and unwrap
+data keys. Only an external key service, which agrafe does not support
+yet, would do that.
+
 ## Virus scanning
 
 Files are scanned by ClamAV through `clamd`'s `INSTREAM` command, inline
@@ -191,4 +241,6 @@ belongs behind a proxy that has some.
 The database URL, signing keys, KEKs, bucket credentials and webhook secret
 are held in types whose debug output is redacted, so a dumped configuration
 cannot leak them. In production, pass them through `AGRAFE_` environment
-variables rather than the file.
+variables rather than the file, and the KEKs through `encryption.keks_file`
+where they must not rest on the host at all (see [Keeping the KEKs off the
+host](#keeping-the-keks-off-the-host)).

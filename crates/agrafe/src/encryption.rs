@@ -1,13 +1,16 @@
 //! Key-encryption keys from configuration and the per-blob envelope.
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use agrafe_crypto::streaming::Layout;
 use agrafe_crypto::wrap::Kek;
 use agrafe_crypto::{Error as CryptoError, Key};
+use figment::Figment;
+use figment::providers::{Format, Toml};
 use uuid::Uuid;
 
-use crate::config::{ConfigError, EncryptionConfig};
+use crate::config::{Base64Secret, ConfigError, EncryptionConfig};
 
 /// Upper bound on `encryption.chunk_size`. A segment is held in memory whole
 /// on both the write and the read path, once per in-flight request.
@@ -58,19 +61,25 @@ pub(crate) struct Envelope {
 }
 
 impl Keks {
+    /// The KEKs of `encryption.keks` and of the file `encryption.keks_file`
+    /// names, which is read here, once, and never again.
     pub(crate) fn from_config(config: &EncryptionConfig) -> Result<Self, ConfigError> {
         let invalid = ConfigError::Invalid;
         let mut keks = HashMap::new();
         for (id, secret) in &config.keks {
-            if id.is_empty() {
-                return Err(invalid("encryption KEK ids must not be empty".into()));
+            keks.insert(id.clone(), parse_kek(id, secret)?);
+        }
+        if let Some(path) = &config.keks_file {
+            for (id, secret) in read_keks_file(path)? {
+                if keks.contains_key(&id) {
+                    return Err(invalid(format!(
+                        "encryption KEK `{id}` is given both in encryption.keks and in \
+                         encryption.keks_file"
+                    )));
+                }
+                let kek = parse_kek(&id, &secret)?;
+                keks.insert(id, kek);
             }
-            let bytes = secret
-                .decoded()
-                .map_err(|e| invalid(format!("encryption KEK `{id}` is not valid base64: {e}")))?;
-            let key = Key::from_slice(&bytes)
-                .map_err(|_| invalid(format!("encryption KEK `{id}` must be 32 bytes")))?;
-            keks.insert(id.clone(), Kek::new(&key));
         }
         let current = config
             .current_kek
@@ -78,7 +87,8 @@ impl Keks {
             .ok_or_else(|| invalid("encryption.current_kek is required".into()))?;
         if !keks.contains_key(&current) {
             return Err(invalid(format!(
-                "encryption.current_kek `{current}` is not present in encryption.keks"
+                "encryption.current_kek `{current}` is not present in encryption.keks or \
+                 encryption.keks_file"
             )));
         }
         if config.chunk_size.as_u64() > MAX_CHUNK_SIZE {
@@ -127,6 +137,35 @@ impl Keks {
     }
 }
 
+/// The KEK `secret` stands for, or why it is not one.
+fn parse_kek(id: &str, secret: &Base64Secret) -> Result<Kek, ConfigError> {
+    let invalid = ConfigError::Invalid;
+    if id.is_empty() {
+        return Err(invalid("encryption KEK ids must not be empty".into()));
+    }
+    let bytes = secret
+        .decoded()
+        .map_err(|e| invalid(format!("encryption KEK `{id}` is not valid base64: {e}")))?;
+    let key = Key::from_slice(&bytes)
+        .map_err(|_| invalid(format!("encryption KEK `{id}` must be 32 bytes")))?;
+    Ok(Kek::new(&key))
+}
+
+/// The KEKs in the file at `path`: a TOML table of id to base64 key, the
+/// body of `[encryption.keks]`. Read to its end in one go, so a FIFO works:
+/// the read blocks until the writer closes it. Nothing re-reads it later.
+fn read_keks_file(path: &Path) -> Result<HashMap<String, Base64Secret>, ConfigError> {
+    let text = std::fs::read_to_string(path).map_err(|e| {
+        ConfigError::Invalid(format!("encryption.keks_file `{}`: {e}", path.display()))
+    })?;
+    Figment::from(Toml::string(&text)).extract().map_err(|e| {
+        ConfigError::Invalid(format!(
+            "encryption.keks_file `{}` must be a TOML table of KEK id to base64 key: {e}",
+            path.display()
+        ))
+    })
+}
+
 /// The wrapped key is bound to its blob so it cannot be moved to another row.
 fn wrap_aad(blob_id: Uuid) -> String {
     blob_id.to_string()
@@ -153,8 +192,110 @@ mod tests {
         EncryptionConfig {
             current_kek: current.map(String::from),
             keks,
+            keks_file: None,
             chunk_size: ByteSize::kib(64),
         }
+    }
+
+    fn keks_file(contents: &str) -> tempfile::NamedTempFile {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), contents).unwrap();
+        file
+    }
+
+    #[test]
+    fn reads_keks_from_a_file_alongside_the_inline_ones() {
+        let file = keks_file(&format!(
+            "c = \"{}\"\nd = \"{}\"\n",
+            STANDARD.encode([3u8; 32]),
+            STANDARD.encode([4u8; 32])
+        ));
+        let mut config = config(Some("c"));
+        config.keks_file = Some(file.path().to_path_buf());
+        let keks = Keks::from_config(&config).unwrap();
+        let id = Uuid::now_v7();
+        let env = keks.new_envelope(id);
+        assert_eq!(env.kek_id, "c");
+        assert_eq!(keks.unwrap(id, "c", &env.wrapped).unwrap(), env.key);
+        // The inline ones are still there.
+        assert!(keks.unwrap(id, "a", &env.wrapped).is_err());
+        assert!(matches!(
+            keks.unwrap(id, "zz", &env.wrapped),
+            Err(UnwrapError::UnknownKek { .. })
+        ));
+
+        // The file alone is enough.
+        config.keks.clear();
+        assert!(Keks::from_config(&config).is_ok());
+    }
+
+    // The documented deployment: a FIFO the operator fills after the
+    // service has started. The read must block until the writer closes it
+    // and must not be retried, or the second open would hang forever.
+    #[cfg(unix)]
+    #[test]
+    fn reads_keks_from_a_fifo_filled_after_startup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keks");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let writer = {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                std::fs::write(&path, format!("c = \"{}\"\n", STANDARD.encode([3u8; 32]))).unwrap();
+            })
+        };
+        let mut config = config(Some("c"));
+        config.keks_file = Some(path);
+        let keks = Keks::from_config(&config).unwrap();
+        writer.join().unwrap();
+        let id = Uuid::now_v7();
+        let env = keks.new_envelope(id);
+        assert_eq!(env.kek_id, "c");
+        assert_eq!(keks.unwrap(id, "c", &env.wrapped).unwrap(), env.key);
+    }
+
+    #[test]
+    fn validates_the_keks_file() {
+        let err = |config: &EncryptionConfig| match Keks::from_config(config) {
+            Ok(_) => panic!("accepted"),
+            Err(e) => e.to_string(),
+        };
+
+        let mut config = config(Some("a"));
+        config.keks_file = Some("/nonexistent/keks.toml".into());
+        assert!(err(&config).starts_with("encryption.keks_file `/nonexistent/keks.toml`:"));
+
+        let file = keks_file("not toml at all [");
+        config.keks_file = Some(file.path().to_path_buf());
+        assert!(err(&config).contains("must be a TOML table of KEK id to base64 key"));
+
+        let file = keks_file("c = 42\n");
+        config.keks_file = Some(file.path().to_path_buf());
+        assert!(err(&config).contains("must be a TOML table of KEK id to base64 key"));
+
+        let file = keks_file(&format!("a = \"{}\"\n", STANDARD.encode([9u8; 32])));
+        config.keks_file = Some(file.path().to_path_buf());
+        assert_eq!(
+            err(&config),
+            "encryption KEK `a` is given both in encryption.keks and in encryption.keks_file"
+        );
+
+        let file = keks_file(&format!("c = \"{}\"\n", STANDARD.encode([9u8; 16])));
+        config.keks_file = Some(file.path().to_path_buf());
+        assert_eq!(err(&config), "encryption KEK `c` must be 32 bytes");
+
+        let file = keks_file("");
+        config.keks_file = Some(file.path().to_path_buf());
+        config.current_kek = Some("c".into());
+        assert_eq!(
+            err(&config),
+            "encryption.current_kek `c` is not present in encryption.keks or encryption.keks_file"
+        );
     }
 
     #[test]

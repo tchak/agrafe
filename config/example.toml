@@ -172,6 +172,12 @@ current_kek = "kek1"
 # whole per in-flight request. Stored per blob, so it can change later.
 chunk_size = "256 KiB"
 
+# More KEKs from a file in the shape of [encryption.keks] below, `id = "…"`
+# lines, read once at startup and never again. May be a FIFO fed by
+# systemd-ask-password or a systemd credential, so the KEKs stay off the
+# host's disk; see the security guide. An id in both places is an error.
+# keks_file = "/run/credentials/agrafe.service/keks"
+
 [encryption.keks]
 # 32 random bytes, base64. Generate with: openssl rand -base64 32
 kek1 = "REPLACE_ME_WITH_32_RANDOM_BYTES_IN_BASE64_____"

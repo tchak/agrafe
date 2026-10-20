@@ -91,8 +91,9 @@ reasoning behind every decision.
 ### Security
 
 - **Envelope encryption at rest**: a random data key per blob, wrapped by a
-  key-encryption key from your config. Rotating a KEK touches the database
-  only, never the bucket.
+  key-encryption key from your config, or from a file read once at startup
+  (a systemd credential, a FIFO fed at boot) so the KEK never rests on the
+  host. Rotating a KEK touches the database only, never the bucket.
 - **Streaming AEAD** in Tink's AES-GCM-HKDF-STREAMING format, validated
   against cross-language test vectors, with random access for `Range`
   requests.
