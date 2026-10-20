@@ -118,10 +118,12 @@ async fn thumbnail(
         Input::Raster => "down",
         Input::Page => "both",
     };
-    let source = match page {
-        Some(page) => format!("{}[page={page}]", input.display()),
-        None => input.display().to_string(),
-    };
+    // The path as it is, with the page option appended, so that a path
+    // that is not UTF-8 still names the file.
+    let mut source = input.as_os_str().to_os_string();
+    if let Some(page) = page {
+        source.push(format!("[page={page}]"));
+    }
     let mut command = sandbox::Command::new(&config.vips_command);
     if let Some(dir) = output.parent() {
         command.env("TMPDIR", dir).writable(dir);

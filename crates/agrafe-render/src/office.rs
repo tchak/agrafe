@@ -115,13 +115,29 @@ pub fn document(content_type: &str) -> Option<Document> {
 const PIPE_DIRS: [&str; 2] = ["/tmp", "/var/tmp"];
 
 /// The directory LibreOffice will put its pipe in, mirroring its choice:
-/// the first of [`PIPE_DIRS`] this process, which is the same user, can
-/// write to.
+/// the first of [`PIPE_DIRS`] that `access(2)` reports readable and
+/// writable, which is the call it makes, from this process, which is the
+/// same user. Landlock does not govern `access`, so the child sees the
+/// same answer.
 pub(crate) fn pipe_dir() -> &'static str {
     PIPE_DIRS
         .into_iter()
-        .find(|dir| tempfile::tempfile_in(dir).is_ok())
+        .find(|dir| writable(dir))
         .unwrap_or(PIPE_DIRS[0])
+}
+
+#[cfg(unix)]
+fn writable(dir: &str) -> bool {
+    let Ok(path) = std::ffi::CString::new(dir) else {
+        return false;
+    };
+    // SAFETY: `access` reads a NUL-terminated path and nothing else.
+    unsafe { libc::access(path.as_ptr(), libc::R_OK | libc::W_OK) == 0 }
+}
+
+#[cfg(not(unix))]
+fn writable(dir: &str) -> bool {
+    tempfile::tempfile_in(dir).is_ok()
 }
 
 /// Debian's layout keeps LibreOffice's registry and printer configuration

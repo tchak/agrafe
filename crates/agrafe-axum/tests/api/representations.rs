@@ -348,7 +348,12 @@ async fn office_documents_get_their_first_page_through_libreoffice(pool: PgPool)
     let id = id_of(&broken);
     let blob = get_blob(&app, id).await;
     assert_eq!(blob["thumbnail_state"], "failed");
-    icon(&app, &format!("/blobs/{id}/thumbnail/broken.docx"), "failed").await;
+    icon(
+        &app,
+        &format!("/blobs/{id}/thumbnail/broken.docx"),
+        "failed",
+    )
+    .await;
 }
 
 #[sqlx::test(migrator = "MIGRATOR")]

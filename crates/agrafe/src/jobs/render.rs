@@ -350,6 +350,8 @@ impl<'a> Render<'a> {
     async fn converted_first_page(&mut self) -> Result<Verdict<Vec<u8>>, JobError> {
         let media = self.media();
         let blob = self.blob;
+        // The converter declines without a command too; asked here, before
+        // the original is fetched and decrypted for nothing.
         if media.render.office.command.is_none() {
             tracing::info!("no office converter configured, nothing to render a page from");
             return Ok(Verdict::Declined);
