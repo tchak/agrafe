@@ -439,6 +439,13 @@ async fn the_census_matches_the_counts(pool: PgPool) {
         .unwrap();
 
     let counts = app.state.job_counts().await.unwrap();
+    for c in &counts {
+        assert_eq!(
+            c.oldest_due_seconds.is_some(),
+            c.state == JobState::Due,
+            "{c:?}"
+        );
+    }
     let census = agrafe_dashboard::jobs::Census::from_counts(&counts);
     assert_eq!(census.total(JobState::Due), 2);
     assert_eq!(census.total(JobState::Scheduled), 1);

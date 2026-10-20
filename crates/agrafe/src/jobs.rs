@@ -369,9 +369,9 @@ pub struct Count {
     /// How many jobs there are; never zero, an empty combination has no
     /// line.
     pub count: i64,
-    /// Seconds since the earliest `run_at` among them. Only the `due` line's
-    /// means something: the wait of the oldest due job.
-    pub oldest_seconds: Option<f64>,
+    /// How long the oldest due job has waited, in seconds since its
+    /// `run_at`: `Some` on the `due` line, `None` on every other.
+    pub oldest_due_seconds: Option<f64>,
 }
 
 /// Count the jobs by kind, priority and state. Combinations with nothing
@@ -379,7 +379,9 @@ pub struct Count {
 pub(crate) async fn counts(exec: impl PgExecutor<'_>, lease: Duration) -> sqlx::Result<Vec<Count>> {
     let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
         "SELECT kind, priority, state, count(*) AS count, \
-                EXTRACT(EPOCH FROM now() - min(run_at))::float8 AS oldest_seconds \
+                CASE WHEN state = 'due' \
+                     THEN EXTRACT(EPOCH FROM now() - min(run_at))::float8 \
+                END AS oldest_due_seconds \
          FROM (SELECT kind, priority, run_at, ",
     );
     push_state(&mut qb, lease);

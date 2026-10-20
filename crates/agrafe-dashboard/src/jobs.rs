@@ -193,7 +193,7 @@ impl Census {
                     match c.state {
                         JobState::Due => {
                             row.due = c.count;
-                            row.oldest_due = c.oldest_seconds;
+                            row.oldest_due = c.oldest_due_seconds;
                         }
                         JobState::Scheduled => row.scheduled = c.count,
                         JobState::Running => row.running = c.count,

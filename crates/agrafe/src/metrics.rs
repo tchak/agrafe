@@ -221,10 +221,10 @@ impl Metrics {
             self.jobs
                 .with_label_values(&[kind, row.state.as_str(), priority])
                 .set(row.count);
-            if row.state == JobState::Due {
+            if let Some(seconds) = row.oldest_due_seconds {
                 self.oldest_due
                     .with_label_values(&[kind, priority])
-                    .set(row.oldest_seconds.unwrap_or(0.0).max(0.0));
+                    .set(seconds);
             }
         }
         let mut out = Vec::new();
