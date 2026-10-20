@@ -1,6 +1,8 @@
 //! The manifest of an `archive` blob: one `{"path": "...", "blob_id":
-//! "..."}` per line, checked as the part arrives. See DESIGN.md,
-//! "Archives".
+//! "..."}` per line, checked as the part arrives. See [DESIGN.md,
+//! "Archives"].
+//!
+//! [DESIGN.md, "Archives"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#archives
 
 use std::collections::HashMap;
 

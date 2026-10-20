@@ -68,7 +68,9 @@ impl Agrafe {
 }
 
 /// The body of `POST /blobs`, as [`Agrafe::create_blob`] takes it. See
-/// DESIGN.md, "Creation".
+/// [DESIGN.md, "Creation"].
+///
+/// [DESIGN.md, "Creation"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#creation
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateBlobRequest {

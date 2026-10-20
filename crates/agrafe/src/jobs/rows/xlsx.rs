@@ -3,7 +3,9 @@
 //! table, numbers and booleans as typed cells, dates and datetimes as
 //! serial numbers with a cell style pointing at the built-in number
 //! formats 14 and 22, so Excel shows them in the user's locale. See
-//! DESIGN.md, "Rows".
+//! [DESIGN.md, "Rows"].
+//!
+//! [DESIGN.md, "Rows"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#rows
 
 use std::borrow::Cow;
 use std::io::Write;

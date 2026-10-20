@@ -1,7 +1,7 @@
 //! Building an `archive` blob: the manifest parts read back in order, each
 //! member streamed into a stored ZIP entry, the ZIP encrypted and uploaded
 //! as it is produced through the shared `build` sink. Nothing larger than
-//! a small member is held whole in memory. See DESIGN.md, "Build" and
+//! a small member is held whole in memory. See [DESIGN.md, "Build"] and
 //! "Archives".
 //!
 //! A member that was `ready` at accept time may be gone by now: it is
@@ -9,6 +9,8 @@
 //! it. A bucket or database error is ours and fails the attempt, which
 //! retries from the source; a failed attempt aborts its multipart upload
 //! and leaves nothing behind.
+//!
+//! [DESIGN.md, "Build"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#build
 
 use std::collections::{HashMap, HashSet};
 

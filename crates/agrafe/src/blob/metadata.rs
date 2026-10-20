@@ -1,7 +1,9 @@
 //! A blob's full metadata as the backend sees it: the body of
 //! `GET /blobs/:id` on the private port and the `blob` of a webhook
 //! delivery, one shape for both so the backend applies what it gets from
-//! either without a second parser. See DESIGN.md, "Webhooks".
+//! either without a second parser. See [DESIGN.md, "Webhooks"].
+//!
+//! [DESIGN.md, "Webhooks"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#webhooks
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -46,8 +48,10 @@ pub struct BlobMetadata {
     pub checksum: Option<String>,
     /// MD5 of the bytes, base64: the `checksum` of an Active Storage blob,
     /// for a backend keeping records in both systems. As declared, or
-    /// computed by the service once the bytes are in. See DESIGN.md,
-    /// "Creation".
+    /// computed by the service once the bytes are in. See [DESIGN.md,
+    /// "Creation"].
+    ///
+    /// [DESIGN.md, "Creation"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#creation
     pub checksum_md5: Option<String>,
     /// Size of the file in bytes: as declared, or known once the bytes
     /// are in.
@@ -105,7 +109,9 @@ pub struct BlobMetadata {
     /// Set when the job that was to finish the blob, a scan, a build or a
     /// render, ran out of attempts: the blob is stuck where it is until
     /// `POST /blobs/:id/retry` or a delete. Cleared when a job is enqueued
-    /// for it again. See DESIGN.md, "Jobs".
+    /// for it again. See [DESIGN.md, "Jobs"].
+    ///
+    /// [DESIGN.md, "Jobs"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#jobs
     pub failed_at: Option<Timestamp>,
     /// What the dead job last said, set and cleared with `failed_at`.
     pub last_error: Option<String>,
@@ -116,7 +122,9 @@ pub struct BlobMetadata {
     pub urls: BlobUrls,
     /// What a read of the blob needs of this row, once it is `ready`, as
     /// one opaque string: a backend holding the signing key mints sealed
-    /// URLs from it without asking. See DESIGN.md, "Sealed URLs".
+    /// URLs from it without asking. See [DESIGN.md, "Sealed URLs"].
+    ///
+    /// [DESIGN.md, "Sealed URLs"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#sealed-urls
     pub envelope: Option<String>,
 }
 

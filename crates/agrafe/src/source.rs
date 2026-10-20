@@ -1,6 +1,6 @@
 //! Sources of generated blobs: the parts a `rows`, `archive` or `document`
 //! description arrives in, and the finish that seals them and enqueues the
-//! build. See DESIGN.md, "Generated blobs".
+//! build. See [DESIGN.md, "Generated blobs"].
 //!
 //! A part goes through the same pipeline as a file (`upload`), with a
 //! `Tap` that parses it line by line instead of checking a checksum, to
@@ -11,6 +11,8 @@
 //! The build reads the parts back through `Source`, which splits them
 //! with the same `Lines`, so what accept let through, the build parses
 //! the same way.
+//!
+//! [DESIGN.md, "Generated blobs"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#generated-blobs
 
 pub(crate) mod archive;
 pub(crate) mod document;

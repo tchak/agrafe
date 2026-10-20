@@ -1,5 +1,5 @@
-//! Attachments: a record of the backend uses a blob. See DESIGN.md,
-//! "Attachments".
+//! Attachments: a record of the backend uses a blob. See [DESIGN.md,
+//! "Attachments"].
 //!
 //! An attachment is three strings, `record_type`, `record_id` and `name`,
 //! against a blob. A blob with at least one attachment carries no expiry:
@@ -7,6 +7,8 @@
 //! default again. Attach and detach lock the blob row for their
 //! transaction, so the expiry and the attachments change together, and
 //! the reaper's expiry update waits on the same lock.
+//!
+//! [DESIGN.md, "Attachments"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#attachments
 
 use std::collections::BTreeSet;
 

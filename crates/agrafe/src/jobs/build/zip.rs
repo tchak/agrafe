@@ -3,7 +3,7 @@
 //! comes last. Zip64 is decided per entry from its size before its header
 //! goes out, since a streamed header cannot be rewritten; the central
 //! directory switches to zip64 on its own for the entry count and the
-//! offsets. See DESIGN.md, "Archives".
+//! offsets. See [DESIGN.md, "Archives"].
 //!
 //! The writer produces bytes and does no I/O: [`ZipWriter::begin_entry`]
 //! and [`ZipWriter::end_entry`] return the headers to emit, the caller
@@ -20,6 +20,8 @@
 //! always takes zip64 fields, which the format allows at any size: the
 //! header announces `0xFFFFFFFF` and a zip64 extra of zeros, and the
 //! descriptor carries the real sizes as 64-bit values.
+//!
+//! [DESIGN.md, "Archives"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#archives
 
 use jiff::Timestamp;
 use jiff::tz::TimeZone;

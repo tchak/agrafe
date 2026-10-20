@@ -3,7 +3,7 @@
 //! upload as an uploaded file, to `<blob id>/original`, and the row moved
 //! to `ready` once it is there. Nothing is held whole in memory, and only
 //! a `document` build, which hands its workspace to a compiler, touches
-//! local disk. See DESIGN.md, "Build".
+//! local disk. See [DESIGN.md, "Build"].
 //!
 //! A kind of build is an [`Assemble`]: `archive` writes a ZIP of members,
 //! `rows` a CSV, XLSX or ODS of cells, `document` the PDF a sandboxed
@@ -11,6 +11,8 @@
 //! the blob to read its source from; everything around it, the key, the
 //! multipart upload, the abort on failure, the last check that the blob
 //! still waits for its build, is here.
+//!
+//! [DESIGN.md, "Build"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#build
 
 pub mod zip;
 

@@ -1,5 +1,5 @@
-//! The rows the read routes served, kept for a while. See DESIGN.md,
-//! "Original".
+//! The rows the read routes served, kept for a while. See [DESIGN.md,
+//! "Original"].
 //!
 //! Only a settled row is kept: `ready` or terminal, with no representation
 //! pending. Such a row changes only by going terminal, which the cache
@@ -9,6 +9,8 @@
 //! see every change as it lands. The read path's own writes, setting a
 //! representation back to `pending`, drop the row from this process's
 //! cache at once.
+//!
+//! [DESIGN.md, "Original"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#original
 
 use std::time::Duration;
 

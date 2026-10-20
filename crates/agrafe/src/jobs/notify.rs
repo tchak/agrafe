@@ -1,13 +1,15 @@
 //! The webhook delivery: one `notify` job per event of a blob, enqueued in
 //! the transaction of the state change it reports, posted to the one
-//! configured URL with a Standard Webhooks signature. See DESIGN.md,
-//! "Webhooks".
+//! configured URL with a Standard Webhooks signature. See [DESIGN.md,
+//! "Webhooks"].
 //!
 //! The body carries the blob's full metadata as read at delivery time, so
 //! a delivery that lands late or twice tells the backend what is, not what
 //! was. One notify job is pending per blob: an event raised while an
 //! earlier one is still undelivered replaces it, and the backend gets the
 //! newest event with the state behind it.
+//!
+//! [DESIGN.md, "Webhooks"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#webhooks
 
 use std::time::Duration;
 

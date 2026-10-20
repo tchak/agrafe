@@ -147,7 +147,9 @@ impl Agrafe {
     }
 }
 
-/// Lifecycle of a blob. See DESIGN.md, "State machine".
+/// Lifecycle of a blob. See [DESIGN.md, "State machine"].
+///
+/// [DESIGN.md, "State machine"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#state-machine
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BlobState {
@@ -203,17 +205,25 @@ pub enum InputType {
     /// The `PUT` body is `multipart/form-data` with the bytes in one part
     /// named `file`.
     Multipart,
-    /// Fetched by a job from the URL given at creation. See DESIGN.md,
-    /// "Fetched blobs".
+    /// Fetched by a job from the URL given at creation. See [DESIGN.md,
+    /// "Fetched blobs"].
+    ///
+    /// [DESIGN.md, "Fetched blobs"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#fetched-blobs
     Url,
     /// A CSV, XLSX or ODS built from JSONL lines of cell values against
-    /// the declared columns. See DESIGN.md, "Rows".
+    /// the declared columns. See [DESIGN.md, "Rows"].
+    ///
+    /// [DESIGN.md, "Rows"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#rows
     Rows,
     /// A ZIP built from other blobs, listed as JSONL `path` and `blob_id`
-    /// entries. See DESIGN.md, "Generated blobs".
+    /// entries. See [DESIGN.md, "Generated blobs"].
+    ///
+    /// [DESIGN.md, "Generated blobs"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#generated-blobs
     Archive,
-    /// A PDF compiled by typst from a workspace of files. See DESIGN.md,
-    /// "Documents".
+    /// A PDF compiled by typst from a workspace of files. See [DESIGN.md,
+    /// "Documents"].
+    ///
+    /// [DESIGN.md, "Documents"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#documents
     Document,
 }
 
@@ -425,8 +435,10 @@ agrafe_types::str_enum!(PreviewSource {
     GeoJson => "geojson",
 });
 
-/// A row of `blobs`: one stored, or to-be-stored, file. See DESIGN.md,
-/// "Blobs".
+/// A row of `blobs`: one stored, or to-be-stored, file. See [DESIGN.md,
+/// "Blobs"].
+///
+/// [DESIGN.md, "Blobs"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#blobs
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Blob {
     /// A UUIDv7 minted at creation, so ids sort by creation time; also the

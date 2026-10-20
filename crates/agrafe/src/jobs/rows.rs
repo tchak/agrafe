@@ -6,7 +6,9 @@
 //! deflated as it goes; no spreadsheet library, since the ones available
 //! build the workbook in memory. A workbook's sheets are written in order,
 //! each consuming the source up to the `{"sheet": "..."}` line that
-//! switches to a later one. See DESIGN.md, "Rows".
+//! switches to a later one. See [DESIGN.md, "Rows"].
+//!
+//! [DESIGN.md, "Rows"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#rows
 
 mod csv;
 mod ods;

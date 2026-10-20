@@ -2,7 +2,9 @@
 //! creation, and one JSON array of cell values per line, positional
 //! against the current sheet's columns, checked as the part arrives. An
 //! object line `{"sheet": "..."}` switches to a later sheet. See
-//! DESIGN.md, "Rows".
+//! [DESIGN.md, "Rows"].
+//!
+//! [DESIGN.md, "Rows"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#rows
 
 use std::borrow::Cow;
 

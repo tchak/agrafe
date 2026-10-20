@@ -2,7 +2,9 @@
 //! from, one file per line, either taken from a blob (`{"path": "...",
 //! "blob_id": "..."}`) or given inline (`{"path": "...", "json": ...}` or
 //! `{"path": "...", "text": "..."}`), checked as the part arrives. See
-//! DESIGN.md, "Documents".
+//! [DESIGN.md, "Documents"].
+//!
+//! [DESIGN.md, "Documents"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#documents
 
 use std::collections::{HashMap, HashSet};
 

@@ -1,12 +1,14 @@
 //! The HTML dashboard of agrafe: the queue, the blobs and the attachments
 //! as pages on the private interface, a second presentation of the
 //! `Agrafe` handle. Read-only but for the retry and discard actions, which
-//! the configuration enables. See DESIGN.md, "Dashboard".
+//! the configuration enables. See [DESIGN.md, "Dashboard"].
 //!
 //! Compile-time templates (askama) and one vendored stylesheet, no
 //! JavaScript: the binary carries everything it serves. A host nests
 //! [`dashboard_router`] wherever it likes, behind its own authentication;
 //! `agrafe-server` puts it under `/dashboard` on the private listener.
+//!
+//! [DESIGN.md, "Dashboard"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#dashboard
 
 mod attachments;
 mod blobs;

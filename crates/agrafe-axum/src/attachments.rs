@@ -1,6 +1,8 @@
 //! Private interface: attachments, the backend's statements about which of
-//! its records use a blob. See DESIGN.md, "Attachments". The public port
+//! its records use a blob. See [DESIGN.md, "Attachments"]. The public port
 //! never sees them.
+//!
+//! [DESIGN.md, "Attachments"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#attachments
 
 use axum::Router;
 use axum::extract::State;

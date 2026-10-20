@@ -1,5 +1,5 @@
 //! The fetch job: download the bytes of a `url` blob and run them through
-//! the upload pipeline, as a `PUT` would. See DESIGN.md, "Fetched blobs".
+//! the upload pipeline, as a `PUT` would. See [DESIGN.md, "Fetched blobs"].
 //!
 //! The job is an uploader. It claims the row `created → uploading` the way
 //! the `PUT` handler does, hands the response body to the same pipeline
@@ -10,6 +10,8 @@
 //! The URL is a presigned secret: it is read off the row and never written
 //! into an error, a log or a span. reqwest's errors carry the URL, so
 //! every one of them goes through `without_url` before it is stringified.
+//!
+//! [DESIGN.md, "Fetched blobs"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#fetched-blobs
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -33,9 +35,11 @@ use crate::upload::{self, BoxError, Declared, UploadError};
 /// kilobyte or two; nothing legitimate needs more than this.
 pub const MAX_URL_LEN: usize = 8 * 1024;
 
-/// Why a URL may not be fetched: the network policy of DESIGN.md,
-/// "Fetched blobs". Checked at creation, on the first request and on
+/// Why a URL may not be fetched: the network policy of [DESIGN.md,
+/// "Fetched blobs"]. Checked at creation, on the first request and on
 /// every redirect.
+///
+/// [DESIGN.md, "Fetched blobs"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#fetched-blobs
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PolicyError {
     #[error("url does not parse")]
@@ -301,8 +305,10 @@ pub enum FetchError {
 }
 
 impl FetchError {
-    /// Whether the next attempt would fail the same way, see DESIGN.md,
-    /// "Fetched blobs".
+    /// Whether the next attempt would fail the same way, see [DESIGN.md,
+    /// "Fetched blobs"].
+    ///
+    /// [DESIGN.md, "Fetched blobs"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#fetched-blobs
     pub fn is_permanent(&self) -> bool {
         match self {
             FetchError::NoUrl

@@ -1,6 +1,6 @@
 //! The envelope: what serving a `ready` blob needs of its row, as one
 //! opaque string a signed URL can carry, so that the read path has no row
-//! to look up. See DESIGN.md, "Sealed URLs".
+//! to look up. See [DESIGN.md, "Sealed URLs"].
 //!
 //! Wire format, version 1, base64url without padding:
 //!
@@ -20,6 +20,8 @@
 //! what Postgres keeps of a timestamp, and nothing stands in for `None`. The envelope is signed with the rest of the
 //! URL, and the wrapped key is bound to the blob id, so nothing in it
 //! needs authenticating on its own.
+//!
+//! [DESIGN.md, "Sealed URLs"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#sealed-urls
 
 use agrafe_crypto::streaming::{Header, Layout};
 use base64::Engine;

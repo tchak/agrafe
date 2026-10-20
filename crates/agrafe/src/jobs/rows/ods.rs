@@ -1,7 +1,9 @@
 //! ODS as a streamed package: `mimetype` first and stored as the format
 //! requires, then the manifest and a streamed `content.xml` holding the
 //! sheets as tables in sequence, with typed cells, the typed value in its
-//! attribute and the displayed text alongside. See DESIGN.md, "Rows".
+//! attribute and the displayed text alongside. See [DESIGN.md, "Rows"].
+//!
+//! [DESIGN.md, "Rows"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#rows
 
 use std::io::Write;
 

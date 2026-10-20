@@ -1,7 +1,9 @@
 //! CSV per RFC 4180: comma separated, CRLF, a field quoted when it needs
 //! to be, UTF-8 with a byte order mark so Excel reads the accents. Text
 //! that a spreadsheet would evaluate as a formula is prefixed with a
-//! single quote. See DESIGN.md, "Rows".
+//! single quote. See [DESIGN.md, "Rows"].
+//!
+//! [DESIGN.md, "Rows"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#rows
 
 use super::{FLUSH_AT, SourceRows, header};
 use crate::jobs::build::{BuildError, Sink};

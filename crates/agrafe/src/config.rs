@@ -166,7 +166,9 @@ pub struct ServerConfig {
     /// (`agrafe.internal:8080`). Set, a private request whose `Host` is
     /// none of them is refused, which is what stops DNS rebinding from
     /// turning a browser on the trusted network into a client of the
-    /// port; see DESIGN.md, "Dashboard". Empty, no check.
+    /// port; see [DESIGN.md, "Dashboard"]. Empty, no check.
+    ///
+    /// [DESIGN.md, "Dashboard"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#dashboard
     #[serde(default)]
     pub private_hosts: Vec<String>,
 }
@@ -484,8 +486,11 @@ impl Default for UploadConfig {
     }
 }
 
-/// The lifetime of blobs and of their tombstones. See DESIGN.md,
-/// "Attachments" and "State machine".
+/// The lifetime of blobs and of their tombstones. See [DESIGN.md,
+/// "Attachments"] and ["State machine"].
+///
+/// [DESIGN.md, "Attachments"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#attachments
+/// ["State machine"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#state-machine
 #[derive(Debug, Clone, Deserialize)]
 pub struct BlobsConfig {
     /// Expiry of a blob created without one, and of a blob whose last
@@ -549,7 +554,9 @@ impl Default for BlobsConfig {
     }
 }
 
-/// Limits on generated archives. See DESIGN.md, "Archives".
+/// Limits on generated archives. See [DESIGN.md, "Archives"].
+///
+/// [DESIGN.md, "Archives"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#archives
 #[derive(Debug, Clone, Deserialize)]
 pub struct ArchiveConfig {
     /// Upper bound on the size of a generated archive, estimated at accept
@@ -583,7 +590,9 @@ impl Default for ArchiveConfig {
     }
 }
 
-/// Limits on generated documents. See DESIGN.md, "Documents".
+/// Limits on generated documents. See [DESIGN.md, "Documents"].
+///
+/// [DESIGN.md, "Documents"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#documents
 #[derive(Debug, Clone, Deserialize)]
 pub struct DocumentConfig {
     /// Upper bound on the bytes a document's workspace takes once written
@@ -619,7 +628,9 @@ impl Default for DocumentConfig {
     }
 }
 
-/// How `url` blobs are fetched. See DESIGN.md, "Fetched blobs".
+/// How `url` blobs are fetched. See [DESIGN.md, "Fetched blobs"].
+///
+/// [DESIGN.md, "Fetched blobs"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#fetched-blobs
 #[derive(Debug, Clone, Deserialize)]
 pub struct FetchConfig {
     /// The TCP connect and the TLS handshake; 10 seconds by default.
@@ -656,9 +667,11 @@ pub struct FetchConfig {
     pub user_agent: String,
 }
 
-/// The HTML dashboard on the private interface. See DESIGN.md,
-/// "Dashboard". Both off by default: a deployment does not grow an
+/// The HTML dashboard on the private interface. See [DESIGN.md,
+/// "Dashboard"]. Both off by default: a deployment does not grow an
 /// interface by upgrading.
+///
+/// [DESIGN.md, "Dashboard"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#dashboard
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct DashboardConfig {
     /// Serve it under `/dashboard` on the private interface.
@@ -703,7 +716,9 @@ impl Default for FetchConfig {
     }
 }
 
-/// Where state changes are posted. See DESIGN.md, "Webhooks".
+/// Where state changes are posted. See [DESIGN.md, "Webhooks"].
+///
+/// [DESIGN.md, "Webhooks"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#webhooks
 #[derive(Debug, Clone, Deserialize)]
 pub struct WebhookConfig {
     /// The one URL the deliveries go to. No webhook when unset: nothing

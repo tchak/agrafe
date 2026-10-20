@@ -3,7 +3,7 @@
 //! as they are and blob members decrypted into it; the
 //! `agrafe-render-document` helper run on that directory in the sandbox;
 //! and the PDF it wrote streamed into the bucket through the shared
-//! `build` sink. See DESIGN.md, "Documents".
+//! `build` sink. See [DESIGN.md, "Documents"].
 //!
 //! A document that does not compile is dead at once, the compiler's
 //! diagnostics as the error; so is a member gone since accept, since a
@@ -12,6 +12,8 @@
 //! failed any other way (a full disk, a crash), the sandbox, the
 //! temporary directory, the bucket and the database may come back, and
 //! fail the attempt only.
+//!
+//! [DESIGN.md, "Documents"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#documents
 
 use std::collections::HashSet;
 use std::path::Path;
