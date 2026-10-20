@@ -401,12 +401,18 @@ fn apply_confinement(
     layers: Layers,
 ) -> Result<Applied, String> {
     if layers.strict {
-        return Err(format!(
-            "isolation = \"required\" but Landlock and seccomp exist on Linux only, not {}",
-            std::env::consts::OS
-        ));
+        return Err(linux_only());
     }
     Ok(Applied::default())
+}
+
+/// Why `isolation = "required"` cannot be met on this platform.
+#[cfg(not(target_os = "linux"))]
+fn linux_only() -> String {
+    format!(
+        "isolation = \"required\" but Landlock and seccomp exist on Linux only, not {}",
+        std::env::consts::OS
+    )
 }
 
 fn tail(stderr: &[u8]) -> String {
@@ -482,7 +488,6 @@ pub enum ProbeError {
 
 /// The one tool the probe runs. Resolved before anything else, so a host
 /// without it says so instead of reporting a missing layer.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 const PROBE_TOOL: &str = "cat";
 
 /// Learn what the sandbox confines a child with, and that it refuses what
@@ -594,7 +599,11 @@ async fn probe_confinement(config: &Config) -> Result<Status, ProbeError> {
 #[cfg(not(target_os = "linux"))]
 async fn probe_confinement(config: &Config) -> Result<Status, ProbeError> {
     if config.isolation.strict() {
-        run(Command::new("true"), config).await?;
+        return Err(Error::Confine {
+            program: PROBE_TOOL.to_string(),
+            reason: linux_only(),
+        }
+        .into());
     }
     Ok(Status {
         landlock: None,
