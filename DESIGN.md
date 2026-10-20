@@ -1819,8 +1819,13 @@ on "has preview", never on category. Sources, in order:
    applicable layer, and two vips runs.
 
    The helper projects every coordinate to Web Mercator, clamping the
-   latitude to the projection's edge; a coordinate that is not finite or
-   off the globe is a rejection, the file's fault. The extent is the
+   latitude to the projection's edge. A coordinate that is not finite or
+   not a longitude and a latitude in degrees is a decline, not a
+   rejection: the file is most likely in a projected system, Lambert-93
+   as French administrations and QGIS export it, with eastings in the
+   hundreds of thousands and northings in the millions, which is valid
+   data for its producer and nothing this helper can place. Such a file
+   gets the text thumbnail and no preview, never `failed`. The extent is the
    geometry's bounding box padded by `media.geojson.padding` of its larger
    side, grown to at least `min_span` metres so a single point or a tiny
    parcel still gets a readable map, then widened to the aspect ratio of

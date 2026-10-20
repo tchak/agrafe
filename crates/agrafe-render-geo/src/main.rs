@@ -10,9 +10,9 @@ use agrafe_types::geojson::Spec;
 use clap::Parser;
 
 /// Draw a GeoJSON file as SVG paths over the extent it fits in. Writes
-/// `svg` and `extent` only when the file holds geometry; exits zero either
-/// way. A file that cannot be drawn, with a coordinate off the globe,
-/// exits non-zero with the reason on stderr.
+/// `svg` and `extent` only when the file holds geometry on Earth; exits
+/// zero either way. Nothing about the file is a failure: a non-zero exit
+/// means the helper itself could not run.
 #[derive(Parser)]
 #[command(name = "agrafe-render-geo")]
 struct Args {
@@ -34,8 +34,6 @@ struct Args {
 enum Error {
     #[error("reading the spec: {0}")]
     Spec(serde_json::Error),
-    #[error("{0}")]
-    Render(#[from] agrafe_render_geo::RenderError),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error("writing the extent: {0}")]
@@ -56,7 +54,7 @@ fn main() -> ExitCode {
 fn run(args: &Args) -> Result<(), Error> {
     let spec: Spec = serde_json::from_slice(&std::fs::read(&args.spec)?).map_err(Error::Spec)?;
     let bytes = std::fs::read(&args.input)?;
-    if let Some(rendered) = agrafe_render_geo::render(&bytes, &spec)? {
+    if let Some(rendered) = agrafe_render_geo::render(&bytes, &spec) {
         std::fs::write(&args.svg, rendered.svg)?;
         let extent = serde_json::to_vec(&rendered.extent).map_err(Error::Extent)?;
         std::fs::write(&args.extent, extent)?;

@@ -27,12 +27,14 @@ const CASING: f64 = 3.0;
 /// The ring around a point's disc, in pixels.
 const MARKER_RING: f64 = 2.0;
 
-/// Why the file cannot be drawn: it is at fault, and trying again would end
-/// the same way.
-#[derive(Debug, thiserror::Error)]
-pub enum RenderError {
-    #[error("the coordinate ({lon}, {lat}) is not on Earth")]
-    Coordinate { lon: f64, lat: f64 },
+/// A coordinate that is not a longitude and a latitude in degrees: the
+/// file is in some projected system, Lambert-93 as French administrations
+/// export it, or has a hole in it. Either way there is no map to draw
+/// from it, and the file declines like one with no geometry.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct OffEarth {
+    lon: f64,
+    lat: f64,
 }
 
 /// The SVG and the extent it is drawn on.
@@ -58,13 +60,13 @@ enum Shape {
     Polygon(Vec<Vec<P>>),
 }
 
-/// Draw `bytes` as `spec` asks. `Ok(None)` when the file is not a GeoJSON
-/// document, or holds no geometry: then there is nothing to draw and the
-/// file gets whatever a text file gets.
-pub fn render(bytes: &[u8], spec: &Spec) -> Result<Option<Rendered>, RenderError> {
-    let Ok(geojson) = serde_json::from_slice::<GeoJson>(bytes) else {
-        return Ok(None);
-    };
+/// Draw `bytes` as `spec` asks. `None` when the file is not a GeoJSON
+/// document, holds no geometry, or has a coordinate that is not on Earth
+/// in degrees: then there is nothing to draw and the file gets whatever a
+/// text file gets. Nothing about the file is an error: a file that
+/// cannot be drawn today would not be drawn tomorrow either.
+pub fn render(bytes: &[u8], spec: &Spec) -> Option<Rendered> {
+    let geojson = serde_json::from_slice::<GeoJson>(bytes).ok()?;
     let mut shapes: Vec<(Shape, Style)> = Vec::new();
     let mut collect = |geometry: Option<&Geometry>, properties: Option<&JsonObject>| {
         let style = properties
@@ -76,25 +78,25 @@ pub fn render(bytes: &[u8], spec: &Spec) -> Result<Option<Rendered>, RenderError
             project_geometry(geometry, &mut out)?;
             shapes.extend(out.into_iter().map(|shape| (shape, style.clone())));
         }
-        Ok::<(), RenderError>(())
+        Ok::<(), OffEarth>(())
     };
-    match &geojson {
-        GeoJson::Geometry(geometry) => collect(Some(geometry), None)?,
+    let projected = match &geojson {
+        GeoJson::Geometry(geometry) => collect(Some(geometry), None),
         GeoJson::Feature(feature) => {
-            collect(feature.geometry.as_ref(), feature.properties.as_ref())?;
+            collect(feature.geometry.as_ref(), feature.properties.as_ref())
         }
         GeoJson::FeatureCollection(collection) => {
-            for feature in &collection.features {
-                collect(feature.geometry.as_ref(), feature.properties.as_ref())?;
-            }
+            collection.features.iter().try_for_each(|feature| {
+                collect(feature.geometry.as_ref(), feature.properties.as_ref())
+            })
         }
-    }
-    if shapes.is_empty() {
-        return Ok(None);
+    };
+    if projected.is_err() || shapes.is_empty() {
+        return None;
     }
     let extent = extent_of(shapes.iter().map(|(shape, _)| shape), spec);
     let svg = draw(&shapes, &extent, spec);
-    Ok(Some(Rendered { svg, extent }))
+    Some(Rendered { svg, extent })
 }
 
 /// The style a feature's properties ask for. A value of the wrong type or
@@ -123,15 +125,14 @@ pub fn style_of(properties: &JsonObject) -> Style {
 }
 
 /// A position on Earth projected to Web Mercator. The latitude is clamped
-/// to where the projection ends; a position off the globe is the file's
-/// fault.
-fn project(position: &Position) -> Result<P, RenderError> {
+/// to where the projection ends.
+fn project(position: &Position) -> Result<P, OffEarth> {
     let (lon, lat) = match position.as_slice() {
         [lon, lat, ..] => (*lon, *lat),
         _ => (f64::NAN, f64::NAN),
     };
     if !lon.is_finite() || !lat.is_finite() || lon.abs() > 180.0 || lat.abs() > 90.0 {
-        return Err(RenderError::Coordinate { lon, lat });
+        return Err(OffEarth { lon, lat });
     }
     let lat = lat.clamp(-MAX_LATITUDE, MAX_LATITUDE);
     Ok(P {
@@ -143,19 +144,19 @@ fn project(position: &Position) -> Result<P, RenderError> {
     })
 }
 
-fn project_all(positions: &[Position]) -> Result<Vec<P>, RenderError> {
+fn project_all(positions: &[Position]) -> Result<Vec<P>, OffEarth> {
     positions.iter().map(project).collect()
 }
 
 /// The shapes of `geometry`, projected, onto `out`. A line or a ring
 /// without positions is nothing to draw and is dropped, so that a file
 /// made of them declines instead of getting a map of nowhere.
-fn project_geometry(geometry: &Geometry, out: &mut Vec<Shape>) -> Result<(), RenderError> {
-    let line = |positions: &[Position]| -> Result<Option<Shape>, RenderError> {
+fn project_geometry(geometry: &Geometry, out: &mut Vec<Shape>) -> Result<(), OffEarth> {
+    let line = |positions: &[Position]| -> Result<Option<Shape>, OffEarth> {
         let line = project_all(positions)?;
         Ok((!line.is_empty()).then_some(Shape::Line(line)))
     };
-    let polygon = |rings: &[Vec<Position>]| -> Result<Option<Shape>, RenderError> {
+    let polygon = |rings: &[Vec<Position>]| -> Result<Option<Shape>, OffEarth> {
         let rings: Vec<Vec<P>> = rings
             .iter()
             .filter(|ring| !ring.is_empty())
@@ -526,7 +527,7 @@ mod tests {
     }
 
     fn rendered(name: &str, spec: &Spec) -> Rendered {
-        render(&fixture(name), spec).unwrap().expect("rendered")
+        render(&fixture(name), spec).expect("rendered")
     }
 
     #[test]
@@ -648,23 +649,21 @@ mod tests {
     #[test]
     fn declines_what_has_no_geometry() {
         let spec = spec();
-        assert_eq!(render(&fixture("empty.geojson"), &spec).unwrap(), None);
-        assert_eq!(render(br##"{"a": 1}"##, &spec).unwrap(), None);
-        assert_eq!(render(b"not json", &spec).unwrap(), None);
+        assert_eq!(render(&fixture("empty.geojson"), &spec), None);
+        assert_eq!(render(br##"{"a": 1}"##, &spec), None);
+        assert_eq!(render(b"not json", &spec), None);
         assert_eq!(
             render(
                 br##"{"type": "Feature", "properties": {}, "geometry": null}"##,
                 &spec
-            )
-            .unwrap(),
+            ),
             None
         );
         assert_eq!(
             render(
                 br##"{"type": "GeometryCollection", "geometries": []}"##,
                 &spec
-            )
-            .unwrap(),
+            ),
             None
         );
         // A line or a ring without positions is nothing to draw, not a
@@ -678,7 +677,7 @@ mod tests {
             br##"{"type": "MultiPoint", "coordinates": []}"##,
         ] {
             assert_eq!(
-                render(empty, &spec).unwrap(),
+                render(empty, &spec),
                 None,
                 "{}",
                 String::from_utf8_lossy(empty)
@@ -689,12 +688,18 @@ mod tests {
             br##"{"type": "Polygon", "coordinates": [[[0, 0], [0.01, 0], [0.01, 0.01], [0, 0]], []]}"##,
             &spec,
         )
-        .unwrap()
         .expect("rendered");
         assert_eq!(map.svg.matches('M').count(), 2, "{}", map.svg);
-        // Off the globe is the file's fault.
-        let err = render(&fixture("off-earth.geojson"), &spec).unwrap_err();
-        assert_eq!(err.to_string(), "the coordinate (200, 95) is not on Earth");
+        // Off the globe, in degrees, is nothing to draw either: a Lambert-93
+        // file, as French administrations export them, or a broken one.
+        assert_eq!(render(&fixture("off-earth.geojson"), &spec), None);
+        assert_eq!(
+            render(
+                br##"{"type": "Point", "coordinates": [652469.0, 6862035.3]}"##,
+                &spec
+            ),
+            None
+        );
     }
 
     #[test]

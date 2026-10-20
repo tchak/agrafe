@@ -365,11 +365,11 @@ async fn files_without_a_map_get_what_a_text_file_gets(pool: PgPool) {
     let app = setup(pool).await;
     // No geometry at all: nothing to draw, the text sample as thumbnail.
     let empty = geojson_blob(&app, "empty.geojson", "application/geo+json").await;
-    // A coordinate off the globe: the file's fault, and still the text
-    // sample, since the text helper is not the one that gave up on it.
+    // A coordinate that is not degrees on Earth, as in a Lambert-93 file:
+    // nothing this helper can place, so the same as no geometry.
     let off = geojson_blob(&app, "off-earth.geojson", "application/geo+json").await;
     render_all(&app).await;
-    for (blob, preview) in [(&empty, "unavailable"), (&off, "failed")] {
+    for (blob, preview) in [(&empty, "unavailable"), (&off, "unavailable")] {
         let id = id_of(blob);
         let name = blob["filename"].as_str().unwrap();
         let blob = get_blob(&app, id).await;
