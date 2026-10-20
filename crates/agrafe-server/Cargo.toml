@@ -12,6 +12,8 @@ workspace = true
 [[bin]]
 name = "agrafe"
 path = "src/main.rs"
+# Its docs would land in `target/doc/agrafe`, over the library's.
+doc = false
 
 [dependencies]
 agrafe = { version = "0.1.0", path = "../agrafe" }

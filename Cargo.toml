@@ -26,3 +26,8 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage)"] }
 
 [workspace.lints.clippy]
 all = "warn"
+
+[workspace.lints.rustdoc]
+# The docs are read from the inside: CI builds them with
+# `--document-private-items`, where a link to a private item resolves.
+private_intra_doc_links = "allow"
