@@ -20,7 +20,7 @@ stripped.
 | JPEG, PNG, GIF, WebP, TIFF, HEIF/AVIF, SVG, BMP, JPEG 2000 | the image | the image |
 | PDF, DOCX or ODT that wraps a single image | the embedded image | the embedded image |
 | Other PDF | none | the first page |
-| Other DOCX, ODT and office files | none | the icon |
+| Other DOCX, ODT, XLSX and ODS | none | the first page, through [LibreOffice](deployment.md#libreoffice) when `media.office.command` is set; the icon otherwise |
 | Text, CSV and TSV | none | the first lines, in a monospace font |
 | GeoJSON | the geometry over a map, see [Maps](#maps) | the map |
 | Anything else | none | the icon |
@@ -35,6 +35,16 @@ pulled out at full resolution and rendered as an image.
 Other image types, which libvips would hand to ImageMagick, get the icon.
 Originals larger than `media.max_source_size` (64 MiB) get the icon too,
 except text files, whose thumbnail reads only the first 8 KiB.
+
+Office documents need a layout engine for a faithful page, and the only
+one that reads them is LibreOffice. It is optional: with
+`media.office.command` set, LibreOffice converts the first page of a
+DOCX, ODT, XLSX or ODS to a PDF in the job's work directory, one
+short-lived sandboxed process per document, and that page is rendered
+like a PDF's. Without it, office files get the icon, as they do when the
+file is over `media.max_source_size`. Turning it on later regenerates
+existing thumbnails through a `media.variant_version` bump. Spreadsheets
+exported by agrafe are ordinary blobs and get a thumbnail too.
 
 A user interface should key on whether a blob has a preview
 (`preview_state` is `ready`), never on its category.
@@ -153,8 +163,9 @@ that repair. Use `POST /blobs/:id/retry` (see [Jobs and retries](jobs.md)).
 
 No user file is decoded in the server process. `vips` renders images and
 PDF pages and composites maps, `agrafe-extract` pulls embedded images out
-of PDF and office files, `agrafe-render-text` rasterises text samples, and
-`agrafe-render-geo` draws GeoJSON files, each as a subprocess with:
+of PDF and office files, `agrafe-render-text` rasterises text samples,
+`agrafe-render-geo` draws GeoJSON files, and LibreOffice, when
+configured, converts office files to PDF, each as a subprocess with:
 
 - a clean environment, with no secrets;
 - an address space limit, `media.sandbox.memory` (1 GiB, enforced on Linux
@@ -164,7 +175,9 @@ of PDF and office files, `agrafe-render-text` rasterises text samples, and
 - on Linux, a Landlock ruleset and a seccomp filter: the process sees the
   system libraries and fonts, the file it renders and the directory it
   writes, and nothing else, not the configuration file, not the other
-  jobs' files, not the network, not even a unix socket. See [Security
+  jobs' files, not the network, not even a unix socket. LibreOffice
+  alone may have unix sockets, which it cannot start without, and its
+  own limits, `media.office.sandbox`. See [Security
   model](security.md#sandboxed-rendering).
 
 Every file handed to vips is sniffed again right before the call, against
@@ -179,8 +192,11 @@ fail the job and retry it.
 Before the workers start, agrafe checks that the sandbox refuses a read it
 did not grant, then renders a text sample, a one-pixel PNG, a one-page PDF
 and the map of a one-point GeoJSON, without a background layer, through
-the exact command lines the jobs use. The process refuses to start if any
-of them fails, so a libvips built without PDF or SVG support, or a font
-directory the sandbox does not expose, fails the deployment rather than
+the exact command lines the jobs use, and, with `media.office.command`
+set, converts a two-page DOCX and an XLSX through LibreOffice and checks
+that the DOCX came out as one page. The process refuses to start if any
+of them fails, so a libvips built without PDF or SVG support, a font
+directory the sandbox does not expose, or a LibreOffice without Calc or
+too old for the first-page export, fails the deployment rather than
 every render. The worker logs what the sandbox gives it, `sandbox:
 landlock abi 4, seccomp, rlimits` or `sandbox: rlimits only (macos)`.

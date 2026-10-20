@@ -60,11 +60,14 @@ jobs:
       # must confine, not skip, so a regression is not a green empty suite.
       AGRAFE_SANDBOX_REQUIRED: 1
     steps:
-      - name: Install libvips
+      # LibreOffice for the office thumbnail tests, which skip without it.
+      - name: Install libvips and LibreOffice
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libvips-tools
+          sudo apt-get install -y --no-install-recommends libvips-tools \
+            libreoffice-writer-nogui libreoffice-calc-nogui fonts-dejavu-core fonts-liberation
           vips --version
+          soffice --version
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@v2

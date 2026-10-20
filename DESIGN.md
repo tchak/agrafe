@@ -890,7 +890,9 @@ scanned clean, or was uploaded `skip_virus_scan` by the backend, which is
 its call to make for its own content and which the archive inherits: an
 archive is no more and no less trusted than its members. Once `ready`, a
 generated blob is rendered like any other: a CSV is text and gets a text
-thumbnail, an XLSX, ODS or ZIP the category icon, and none has a preview.
+thumbnail, an XLSX or ODS its first page when `media.office.command` names
+a LibreOffice and the category icon otherwise, a ZIP the category icon,
+and none has a preview.
 When the build finishes the blob moves to `ready` with
 the checksum and the final size on the row. A failure the next attempt
 would repeat, a source line that does not parse, a row missing its key
@@ -1610,7 +1612,9 @@ Only files with a known source are attempted:
   SVG, BMP, JPEG 2000. Everything else under `image/*` would go through
   ImageMagick, more attack surface than it is worth, and gets the icon;
 - PDF, DOCX and ODT, through the sources below; a PDF that is not one gets
-  a thumbnail of its first page, and no preview;
+  a thumbnail of its first page, and no preview, and so does a DOCX, ODT,
+  XLSX or ODS when `media.office.command` names a LibreOffice to convert
+  it (see "Thumbnail");
 - text files (the `text` category plus CSV and TSV), thumbnails only;
 - GeoJSON files, as a map (see "Preview"), with the text thumbnail when
   they hold no geometry;
@@ -1675,7 +1679,16 @@ and the process refuses to start if any of them fails, and so the map of a
 one-point GeoJSON with no background layer, through the helper and `vips
 composite`, which catches a libvips without SVG support. The probe also
 catches a `media.render_text_command` or `media.render_geo_command` that is
-not the helper, and it never touches the network.
+not the helper, and it never touches the network. With
+`media.office.command` set, it converts a two-page DOCX and a one-sheet
+XLSX (`probe/pages.docx`, `probe/sheet.xlsx`) through the exact command
+lines and renders the result: a LibreOffice without the Calc filter,
+without fonts, or too old for the JSON filter options fails the deployment
+rather than every office file. The DOCX has two pages so that `PageRange`
+is known to be honoured, since there is at least one report of it being
+ignored: vips must render page one of the export and refuse page two,
+which tells a one-page PDF from a longer one without a PDF parser in the
+server.
 
 Representations live at `<blob id>/thumbnail` and `<blob id>/preview`,
 encrypted with the blob's own data key: the streaming AEAD derives a fresh
@@ -1781,8 +1794,40 @@ builds against either poppler or pdfium; production images should use
 pdfium, the most hardened renderer available, rather than linking
 `pdfium-render`, a second native dependency for what vips already does.
 The thumbnail is subject to `media.max_source_size` like a preview, since
-the loader reads the whole file. Office files have no page render: without
-an embedded image they get the icon.
+the loader reads the whole file.
+
+A DOCX, ODT, XLSX or ODS that is not an embedded image gets its first
+page the same way, once LibreOffice has converted it to a PDF, and no
+preview for the same reason. A faithful page needs a layout engine, and
+the only one that reads these formats is LibreOffice. It is optional
+(`media.office.command`, unset by default): a deployment without it
+behaves as before, the category icon or the embedded-image preview when
+the file is "really an image", and one that turns it on later gets
+thumbnails for existing blobs through the variant version, no backfill.
+LibreOffice does one thing: convert the office file to a PDF in the job's
+work directory, and the first page of that PDF then takes the path a PDF
+thumbnail takes, the same loader sniff, the same box. LibreOffice never
+produces the picture, so there is one raster path, one probed PDF loader,
+and a DOCX and a PDF look the same; exporting PNG from LibreOffice would
+tie the resolution to its export options and add a second raster path for
+nothing. The export asks for the first page only (`PageRange`, the JSON
+filter options of LibreOffice 7.4 and later), so a 300-page document is
+not laid out and written in full; the probe checks the option is honoured
+(see "Rendering"). The export filter follows the type, `writer_pdf_Export`
+for DOCX and ODT and `calc_pdf_Export` for XLSX and ODS, and the input is
+linked into the work directory under the extension its content type
+implies, since LibreOffice picks its import filter from the name. PPTX
+and ODP are the same mechanism with `impress_pdf_Export`, once someone
+needs them. The plan (`agrafe_render::plan`) carries it as the
+`ConvertedFirstPage` fallback: the preview sources do not change, DOCX
+and ODT keep the embedded-image preview and spreadsheets have none, and
+the fallback runs once the preview has declined, like the PDF first page.
+Over `media.max_source_size`, or without a converter, it declines and the
+representation is `unavailable`, which is what office files got before. A
+LibreOffice that exits non-zero or runs out of time is a rejection, as
+for the other tools; one that exits zero without writing a PDF, which is
+how it reports a file it cannot load, declines. How it runs, and what it
+costs, is under "Sandboxing".
 
 ### Preview
 
@@ -2011,7 +2056,36 @@ the filter cannot read, so it is refused whole, in a second filter
 answering `ENOSYS`: that is the one errno glibc falls back from to
 `clone`, which the first filter does inspect, so threads keep working and
 namespaces do not. The filters are compiled once per process and
-installed per spawn.
+installed per spawn; a command that asks for unix sockets (below) gets a
+variant.
+
+*Unix sockets, on request.* LibreOffice cannot start without binding its
+single-instance pipe, a unix socket in `/tmp`, or in `/var/tmp` when
+`/tmp` is not writable, and its launcher refuses to start when neither
+is: with `socket` refused it reports a bootstrap error and exits, and
+with the bind refused by Landlock the same. A command may
+therefore ask for `unix_sockets(dir)`: the seccomp filter then refuses
+`socket` and `socketpair` for every family but `AF_UNIX` instead of
+refusing every socket call (`connect`, `bind`, `listen`, `accept` only
+act on a socket that exists), and Landlock grants `dir` the right to make
+and remove socket files, nothing else there. The office driver asks for
+the directory LibreOffice will pick, `/tmp` when the worker can write
+there and `/var/tmp` otherwise. The trade is that path-based unix
+sockets the child can see, such as a local Postgres's, are no longer
+closed to it, since no Landlock ABI governs them (ABI 6 scopes abstract
+sockets only), and that a compromised LibreOffice may remove files under
+`/tmp` that its uid owns, since Landlock has no "remove sockets only"
+right. Hence the deployment advice under "Thumbnail": a render-only
+worker, no local Postgres socket, and `media.tmp_dir` outside `/tmp` so
+that other jobs' files are not there. Nothing else asks for sockets, and
+the default filter is unchanged. The two filter variants are compiled
+once each.
+
+*Process groups.* `soffice` is a script around `oosplash` around
+`soffice.bin`, so a kill at the timeout that reached the direct child
+alone would leave LibreOffice running. Every child is made the leader of a
+process group of its own, and a timeout kills the group before the child
+is dropped. The resource limits were already inherited down the tree.
 
 Why a denylist: an allowlist has to track every syscall glibc, glib and
 libvips make and breaks silently on an upgrade, in the probe if we are
@@ -2099,6 +2173,41 @@ a spawn stays cheap. They skip with a message where the kernel cannot
 confine, except under `AGRAFE_SANDBOX_REQUIRED=1`, which CI sets so a
 regression is not a green empty suite. The integration suite runs under
 `auto` on CI, which confines every render it makes.
+
+*LibreOffice.* The office converter (see "Thumbnail") runs through the
+same `Command`, one short-lived process per document and no resident
+`soffice --accept` server or pool: the sandbox's unit of isolation is one
+document, and a pool would make it N documents from N tenants, where a
+document that compromises the process reads every file that member
+converts until it is recycled. A hang costs one attempt, as with vips. If
+the render queue ever shows conversions dominated by startup, a pool with
+a short recycle count is a contained addition later; measured on Ubuntu
+26.04 (LibreOffice 26.2, aarch64), a conversion is about 200 ms with a
+fresh profile and 135 ms with a warmed one; on macOS (LibreOffice 26.8)
+1.5 s and 0.9 s. A pool is not where this starts, and the profile
+template below is where the cold start goes. Each run gets a private
+user profile under the work directory
+(`-env:UserInstallation`), so concurrent workers never fight over a
+profile lock and nothing a document does persists past the job;
+`media.office.profile_template` names a profile warmed at image build
+time that is copied in instead, a copy being milliseconds. `HOME`,
+`XDG_CACHE_HOME` and `TMPDIR` are the work directory too: LibreOffice
+stages its PDF in `TMPDIR` before moving it to `--outdir`, and a
+`TMPDIR` outside the writable directory fails the write. Debian keeps
+LibreOffice's registry and printer configuration under `/etc/libreoffice`,
+which the system set does not cover, so the driver declares it readable,
+skipped where absent; other layouts go through `media.sandbox.readable`.
+Its limits are `[media.office.sandbox]`, 2 GiB and 120 s by default
+(LibreOffice needs more address space and more time than vips; 1 GiB was
+enough for the probe files, not for a document with pictures), the rest
+of its sandbox is `[media.sandbox]`'s. LibreOffice is a far larger attack
+surface than anything else in the sandbox, which is why it is off by
+default. Where it is on, it belongs on a worker that handles `render`
+only (`jobs.kinds`), with no outbound network: LibreOffice follows linked
+images and OLE links in a document, Landlock refuses TCP only from ABI 4,
+and the sandbox bounds resources, not egress (#3 closes that properly).
+The API image never carries it. The fonts are not optional: without them
+a page renders as boxes and exits 0, which nothing reports.
 
 *Costs.* A ruleset and two filters add well under a millisecond per
 spawn; libvips startup, which the per-job pipeline already pays, is 25
@@ -2402,6 +2511,7 @@ is redacted so a dumped config cannot leak them. See `config/example.toml`.
 | Dashboard | `askama` templates compiled in, `askama_web` for the axum glue, daisyUI's component CSS vendored |
 | Scanning | clamd `INSTREAM` client |
 | Images, PDF pages | `vips thumbnail` (libvips) in a sandboxed subprocess |
+| Office first pages | LibreOffice (`soffice --convert-to pdf`), optional, one sandboxed process per document with unix sockets allowed, then `vips thumbnail` |
 | Embedded images | `lopdf`, `zip`, `quick-xml` in the sandboxed `agrafe-extract` helper |
 | Generated ZIP, XLSX, ODS | Own streaming ZIP writer (`jobs::build::zip`), `flate2` for the deflated sheet XML, XML written by hand |
 | Text thumbnails | `ab_glyph` with an embedded DejaVu Sans Mono, in the sandboxed `agrafe-render-text` helper |

@@ -217,6 +217,25 @@ above `max_inline_scans` plus `jobs.concurrency.scan`.
 | `min_coverage` | `0.7` | Fraction of the page a single image must cover for a PDF to count as a wrapped image |
 | `max_text_chars` | `50` | Most characters of text a wrapped image's document may have |
 
+### `[media.office]`
+
+The optional LibreOffice that gives DOCX, ODT, XLSX and ODS files a
+first-page thumbnail; see [LibreOffice](../guide/deployment.md#libreoffice).
+
+| Key | Default | Description |
+|---|---|---|
+| `command` | unset | The LibreOffice binary, a name on the `PATH` or a path. Unset, office files get the icon |
+| `profile_template` | unset | A warmed user profile copied into the work directory for every run; unset, LibreOffice creates one per run |
+
+### `[media.office.sandbox]`
+
+The limits that differ from `[media.sandbox]`, whose other keys apply.
+
+| Key | Default | Description |
+|---|---|---|
+| `timeout` | `"120s"` | Wall-clock limit per conversion |
+| `memory` | `"2 GiB"` | Address space limit, enforced on Linux only |
+
 ### `[media.geojson]`
 
 How the map of a GeoJSON file is drawn; see [Maps](../guide/representations.md#maps).

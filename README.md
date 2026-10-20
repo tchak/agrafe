@@ -116,7 +116,9 @@ reasoning behind every decision.
 - **Embedded image extraction**: a scan wrapped in a PDF, a Word or an ODT
   file gets the picture as its preview, not a page with a picture on it.
 - **First-page thumbnails** for other PDFs, which have no preview: a
-  document needs a viewer, not a picture. Office files have no page render.
+  document needs a viewer, not a picture. DOCX, ODT, XLSX and ODS files
+  get one too when an optional LibreOffice is configured, see "Thumbnails
+  for office files" below; without it they get the icon.
 - **Text thumbnails** showing the first lines of text, CSV and TSV files.
 - **Maps for GeoJSON files**: the geometry drawn over a WMS background of
   your choosing, none by default, in the file's own
@@ -559,6 +561,66 @@ A host application nests `agrafe_dashboard::dashboard_router` wherever it
 likes, behind its own authentication; the pages find their prefix from
 the request.
 
+### Thumbnails for office files
+
+A DOCX, ODT, XLSX or ODS that is not a wrapped picture gets the category
+icon, unless a LibreOffice is configured to convert it: then its first
+page is the thumbnail, rendered like a PDF page, and there is still no
+preview.
+
+```toml
+[media.office]
+command = "soffice"
+```
+
+LibreOffice runs as one short-lived process per document, in the sandbox
+like `vips`, with a private user profile under the job's work directory.
+On Debian and Ubuntu, install `libreoffice-writer-nogui`,
+`libreoffice-calc-nogui`, `fonts-dejavu-core` and `fonts-liberation`
+(about 400 MB). The fonts are not optional: without them a page renders
+as boxes and LibreOffice exits 0, which nothing reports. Turning the
+converter on later gives existing blobs their thumbnail through a
+`media.variant_version` bump, no backfill. The startup probe converts a
+two-page DOCX and an XLSX, so a LibreOffice without Writer or Calc, or
+too old for the first-page export (7.4), fails the deployment rather than
+every office file.
+
+LibreOffice is a far larger attack surface than anything else in the
+sandbox, which is why it is off by default. Where it is on:
+
+- run it on a worker that handles `render` only (`jobs.kinds`) with no
+  outbound network: LibreOffice follows linked images and OLE links, and
+  the sandbox bounds resources, not egress. The API image never needs it;
+- LibreOffice needs a unix socket for its single-instance pipe, so the
+  sandbox lets it have unix sockets, and only those, where every other
+  tool has none. A local Postgres listening on a unix socket with peer
+  authentication for the worker's user would be reachable from it:
+  connect to Postgres over TCP on that worker, or run it where there is
+  no such socket;
+- the pipe lives in `/tmp`, where the sandbox lets LibreOffice create and
+  remove socket files: set `media.tmp_dir` to a directory outside `/tmp`,
+  so that no other job's files are there;
+- `[media.office.sandbox]` gives it its own limits, 2 GiB of address space
+  and 120 s by default.
+
+A fresh user profile costs LibreOffice a little startup time on every
+run. To skip it, build a warmed profile into the image with a throwaway
+conversion and point `profile_template` at it; it is copied into the work
+directory per run, so every run still has a private profile:
+
+```dockerfile
+RUN echo warm > /tmp/warm.txt \
+ && soffice -env:UserInstallation=file:///var/lib/agrafe/soffice-profile \
+      --headless --norestore --nologo --convert-to pdf --outdir /tmp /tmp/warm.txt \
+ && rm /tmp/warm.txt /tmp/warm.pdf
+```
+
+```toml
+[media.office]
+command = "soffice"
+profile_template = "/var/lib/agrafe/soffice-profile"
+```
+
 The full route tables for both ports are in [DESIGN.md](DESIGN.md#interfaces),
 and every configuration key is documented in
 [config/example.toml](config/example.toml).
@@ -615,7 +677,8 @@ database is named after the test, so two runs against one server at once
 fail each other's tests: run one at a time, or give each its own server.
 The API tests run the helper binaries from `target/`: a workspace run
 builds them, and `-p agrafe-axum` builds them on demand. ClamAV is faked
-in tests.
+in tests. The office thumbnail tests need `soffice` on the `PATH` and
+skip with a message without it; CI and the Lima VM have it.
 
 The files under `fixtures/` and the renderer probe files under
 `crates/agrafe-render/assets/probe` are built by `fixtures/make.py` (needs

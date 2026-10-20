@@ -21,8 +21,9 @@ logs and never touch the network, and the startup probe fails if one of
 them is not what the server expects.
 
 Workers also need the `vips` command line tool, built with SVG support
-(rsvg) for the maps. Run `agrafe migrate` once per release, before the new
-processes start.
+(rsvg) for the maps, and, for office thumbnails, an optional
+[LibreOffice](#libreoffice). Run `agrafe migrate` once per release,
+before the new processes start.
 
 Outbound connections: the fetch workers reach the URLs of `url` blobs, the
 notify workers reach `webhook.url`, and the render workers reach the hosts
@@ -70,6 +71,71 @@ features.
   advisories](https://github.com/libvips/libvips/security/advisories).
 - Prefer a libvips built with **pdfium** over poppler for PDF pages; it is
   the more hardened renderer.
+
+## LibreOffice
+
+Optional, for the first-page thumbnails of DOCX, ODT, XLSX and ODS files
+(see [Previews and thumbnails](representations.md#what-gets-rendered)).
+Without it, office files get the icon.
+
+```toml
+[media.office]
+command = "soffice"
+```
+
+On Debian and Ubuntu:
+
+```sh
+apt install libreoffice-writer-nogui libreoffice-calc-nogui fonts-dejavu-core fonts-liberation
+```
+
+About 400 MB. The fonts are not optional: without them a page renders as
+boxes and LibreOffice exits 0, which nothing reports. The startup probe
+converts a two-page DOCX and an XLSX and checks that the DOCX came out as
+one page, so a LibreOffice without Writer or Calc, or older than 7.4,
+fails the deployment rather than every office file.
+
+LibreOffice runs as one short-lived process per document, sandboxed like
+`vips`, with a private user profile under the job's work directory, and
+it is a far larger attack surface than anything else in the sandbox,
+which is why it is off by default. Where it is on:
+
+- run it on a worker that handles `render` only (`jobs.kinds`) with no
+  outbound network: LibreOffice follows linked images and OLE links in a
+  document, and the sandbox bounds resources, not egress. The API image
+  never needs it;
+- LibreOffice cannot start without a unix socket for its single-instance
+  pipe, so the sandbox lets it have unix sockets, and only those, where
+  every other tool has none. A local Postgres listening on a unix socket
+  with peer authentication for the worker's user would be reachable from
+  it: connect to Postgres over TCP on that worker, or run it where there
+  is no such socket;
+- the pipe lives in `/tmp`, where the sandbox lets LibreOffice create and
+  remove socket files: set `media.tmp_dir` to a directory outside `/tmp`,
+  so that no other job's files are there;
+- `[media.office.sandbox]` gives it its own limits, 2 GiB of address space
+  and 120 s by default; the rest of its sandbox is `[media.sandbox]`'s.
+  Debian's `/etc/libreoffice` is readable to it; another layout that keeps
+  LibreOffice's files outside `/usr` lists them in
+  `media.sandbox.readable`.
+
+A fresh user profile costs LibreOffice some startup time on every run. To
+skip it, build a warmed profile into the image with a throwaway
+conversion and point `profile_template` at it; it is copied into the work
+directory per run, so every run still has a private profile:
+
+```dockerfile
+RUN echo warm > /tmp/warm.txt \
+ && soffice -env:UserInstallation=file:///var/lib/agrafe/soffice-profile \
+      --headless --norestore --nologo --convert-to pdf --outdir /tmp /tmp/warm.txt \
+ && rm /tmp/warm.txt /tmp/warm.pdf
+```
+
+```toml
+[media.office]
+command = "soffice"
+profile_template = "/var/lib/agrafe/soffice-profile"
+```
 
 ## Postgres
 

@@ -266,6 +266,27 @@ quality = 85
 min_coverage = 0.7
 max_text_chars = 50
 
+[media.office]
+# A first-page thumbnail for DOCX, ODT, XLSX and ODS files through
+# LibreOffice, which converts the file to a PDF in the job's work directory,
+# one short-lived sandboxed process per document. Off by default: unset,
+# office files get the category icon, as they do when LibreOffice is not
+# installed. Turning it on later regenerates existing blobs through a
+# `variant_version` bump. Debian: libreoffice-writer-nogui,
+# libreoffice-calc-nogui, fonts-dejavu-core and fonts-liberation; LibreOffice
+# follows links in documents, so run it on a render-only worker with no
+# outbound network. See README.md, "Previews and thumbnails".
+# command = "soffice"
+# A user profile warmed at image build time, copied into the work directory
+# for every run instead of being created there: a copy is milliseconds, a
+# fresh profile longer, and every run still gets a private one.
+# profile_template = "/var/lib/agrafe/soffice-profile"
+# LibreOffice needs more address space and more time than vips; its output
+# size, isolation and extra readable paths are those of [media.sandbox].
+# [media.office.sandbox]
+# timeout = "120s"
+# memory = "2 GiB"
+
 [media.geojson]
 # A GeoJSON file gets a map as its preview: its geometry, drawn by the
 # agrafe-render-geo helper, over a background fetched from the layers below.

@@ -12,8 +12,10 @@
 //! pictures agree, and a thumbnail regenerated on its own is made from the
 //! stored preview without touching the original. A file with no picture,
 //! or whose picture failed, gets a thumbnail from the plan's fallback when
-//! there is one: a text sample, or the first page of a PDF. A file that
-//! timed out a tool is not handed to another, see [`NoPicture`].
+//! there is one: a text sample, the first page of a PDF, or the first
+//! page of an office file once LibreOffice, when one is configured, has
+//! converted it to a PDF. A file that timed out a tool is not handed to
+//! another, see [`NoPicture`].
 //!
 //! A file the renderer rejects, or that crashes a helper, leaves the
 //! representation `failed` and the job done: trying the same bytes again
@@ -26,7 +28,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use agrafe_render::vips::{self, Fit, Input};
-use agrafe_render::{Fallback, Plan, Rejection, Source, Verdict, geo, helpers, plan};
+use agrafe_render::{Fallback, Plan, Rejection, Source, Verdict, geo, helpers, office, plan};
 use agrafe_types::text::SAMPLE_LEN as TEXT_SAMPLE_LEN;
 use tokio::io::AsyncWriteExt;
 
@@ -323,8 +325,9 @@ impl<'a> Render<'a> {
     }
 
     /// A thumbnail for a file with no picture, from the plan's fallback:
-    /// the first lines of a text file set on a page, or the first page of a
-    /// PDF. Declines when there is none, and the thumbnail is the icon.
+    /// the first lines of a text file set on a page, the first page of a
+    /// PDF, or the first page of an office file converted to one. Declines
+    /// when there is none, and the thumbnail is the icon.
     async fn thumbnail_fallback(&mut self) -> Result<Verdict<Vec<u8>>, JobError> {
         match self.plan.fallback {
             Some(Fallback::TextSample) => self.text_sample().await,
@@ -334,7 +337,45 @@ impl<'a> Render<'a> {
                 self.fit(&original, Input::Page, fit, &self.path(THUMBNAIL))
                     .await
             }
+            Some(Fallback::ConvertedFirstPage) if !self.too_large() => {
+                self.converted_first_page().await
+            }
             _ => Ok(Verdict::Declined),
+        }
+    }
+
+    /// The first page of an office file, converted to a PDF by the
+    /// configured LibreOffice and rendered like a PDF page. Declines, and
+    /// the icon stands, when no converter is configured.
+    async fn converted_first_page(&mut self) -> Result<Verdict<Vec<u8>>, JobError> {
+        let media = self.media();
+        let blob = self.blob;
+        if media.render.office.command.is_none() {
+            tracing::info!("no office converter configured, nothing to render a page from");
+            return Ok(Verdict::Declined);
+        }
+        let original = self.whole_original().await?;
+        let converted = office::convert(
+            &media.render,
+            &blob.content_type,
+            &original,
+            self.workdir.path(),
+        )
+        .await?;
+        match converted {
+            Verdict::Rendered(pdf) => {
+                let fit = Fit::thumbnail(&media.render);
+                self.fit(&pdf, Input::Page, fit, &self.path(THUMBNAIL))
+                    .await
+            }
+            Verdict::Declined => {
+                tracing::info!("the office converter wrote no PDF");
+                Ok(Verdict::Declined)
+            }
+            Verdict::Rejected(rejection) => {
+                tracing::warn!(%rejection, "converting to PDF failed");
+                Ok(Verdict::Rejected(rejection))
+            }
         }
     }
 

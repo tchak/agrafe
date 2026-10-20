@@ -162,7 +162,10 @@ binary, no user namespaces and nothing to install:
   kernel-facing calls a decoder has no use for: `bpf`, `keyctl`,
   `userfaultfd`, `io_uring_setup`, module loading. It is a
   denylist, not an allowlist, so a glibc or libvips upgrade does not break
-  it silently.
+  it silently. The one exception is the optional
+  [LibreOffice](deployment.md#libreoffice), which cannot start without a
+  unix socket in `/tmp`: it may have unix sockets, and only those, and
+  Landlock lets it create and remove socket files there.
 
 `media.sandbox.isolation` is `"auto"` by default: a development VM, CI and
 a default Docker container all get both layers with nothing to configure,

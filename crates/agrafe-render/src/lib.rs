@@ -10,6 +10,7 @@
 pub mod geo;
 pub mod helpers;
 pub mod icons;
+pub mod office;
 pub mod probe;
 pub mod vips;
 
@@ -20,9 +21,10 @@ use agrafe_types::geojson::GEOJSON;
 use agrafe_types::sniff;
 use serde::Deserialize;
 
-use agrafe_types::classify::{DOCX, ODT};
+use agrafe_types::classify::{DOCX, ODS, ODT, XLSX};
 use geo::GeoJson;
-pub use probe::{ProbeError, probe, probe_document, probe_sandbox};
+pub use office::Office;
+pub use probe::{ProbeError, probe, probe_document, probe_office, probe_sandbox};
 
 /// The tools and boxes the renderer works with. Flattened into the
 /// server's `[media]` section.
@@ -59,6 +61,10 @@ pub struct Config {
     /// How the map of a GeoJSON file is drawn, and what it is drawn over.
     #[serde(default)]
     pub geojson: GeoJson,
+    /// The optional LibreOffice that converts office files for their
+    /// first-page thumbnail, the `[media.office]` table.
+    #[serde(default)]
+    pub office: Office,
     /// The limits on each tool's process and whether the kernel confines
     /// it, the `[media.sandbox]` table.
     #[serde(default)]
@@ -93,6 +99,7 @@ impl Default for Config {
             preview: Preview::default(),
             embedded_image: EmbeddedImage::default(),
             geojson: GeoJson::default(),
+            office: Office::default(),
             sandbox: agrafe_sandbox::Config::default(),
         }
     }
@@ -285,6 +292,10 @@ pub enum Fallback {
     TextSample,
     /// The first page rendered.
     FirstPage,
+    /// The first page rendered after LibreOffice converted the file to a
+    /// PDF, when a converter is configured (`media.office.command`); the
+    /// icon otherwise.
+    ConvertedFirstPage,
 }
 
 /// What renders for a content type.
@@ -309,10 +320,11 @@ impl Plan {
 /// libvips loads natively: everything else would go through ImageMagick,
 /// which is more attack surface than it is worth. A PDF or an office file
 /// that wraps one picture is rendered from it; otherwise a PDF gets its
-/// first page as a thumbnail and an office file the icon. A GeoJSON file
-/// gets a map, and the text sample of the text file it is when it holds
-/// no geometry. The `text` category, plus CSV and TSV, which classify as
-/// spreadsheets, get a text sample as a thumbnail.
+/// first page as a thumbnail, and a DOCX, ODT, XLSX or ODS its first page
+/// through LibreOffice when one is configured, else the icon. A GeoJSON
+/// file gets a map, and the text sample of the text file it is when it
+/// holds no geometry. The `text` category, plus CSV and TSV, which
+/// classify as spreadsheets, get a text sample as a thumbnail.
 pub fn plan(content_type: &str) -> Plan {
     let canonical = sniff::canonical(content_type);
     match canonical {
@@ -331,7 +343,11 @@ pub fn plan(content_type: &str) -> Plan {
         },
         DOCX | ODT => Plan {
             picture: &[Source::EmbeddedImage],
-            fallback: None,
+            fallback: Some(Fallback::ConvertedFirstPage),
+        },
+        XLSX | ODS => Plan {
+            picture: &[],
+            fallback: Some(Fallback::ConvertedFirstPage),
         },
         classify::CSV | "text/tab-separated-values" => Plan {
             picture: &[],
@@ -364,7 +380,19 @@ mod tests {
         );
         for office in [DOCX, ODT] {
             assert_eq!(plan(office).picture, &[Source::EmbeddedImage], "{office}");
-            assert_eq!(plan(office).fallback, None, "{office}");
+            assert_eq!(
+                plan(office).fallback,
+                Some(Fallback::ConvertedFirstPage),
+                "{office}"
+            );
+        }
+        for sheet in [XLSX, ODS] {
+            assert!(plan(sheet).picture.is_empty(), "{sheet}");
+            assert_eq!(
+                plan(sheet).fallback,
+                Some(Fallback::ConvertedFirstPage),
+                "{sheet}"
+            );
         }
         assert_eq!(
             plan(GEOJSON),
@@ -383,7 +411,7 @@ mod tests {
             assert_eq!(plan(text).fallback, Some(Fallback::TextSample), "{text}");
         }
         for other in [
-            classify::XLSX,
+            classify::ZIP,
             "image/vnd.adobe.photoshop",
             "application/octet-stream",
         ] {

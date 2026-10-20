@@ -248,7 +248,8 @@ async fn office_documents_wrapping_a_picture(pool: PgPool) {
         assert_eq!(size, (64, 32), "{name}");
     }
 
-    // A real document has no renderer yet: no preview, and the icon stays.
+    // A real document with no converter configured: no preview, and the
+    // icon stays.
     let id = id_of(&letter);
     let blob = get_blob(&app, id).await;
     assert_eq!(blob["preview_state"], "unavailable");
@@ -278,6 +279,116 @@ async fn office_documents_wrapping_a_picture(pool: PgPool) {
     )
     .await;
     assert_ne!(docx_icon, generic_icon);
+}
+
+const DOCX: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const ODT: &str = "application/vnd.oasis.opendocument.text";
+const XLSX: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const ODS: &str = "application/vnd.oasis.opendocument.spreadsheet";
+
+/// LibreOffice on the `PATH`, or `None` with a message: the converter
+/// tests run where it is installed, which CI is.
+fn soffice() -> Option<&'static str> {
+    let found = std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("soffice").is_file()));
+    if !found {
+        eprintln!("skipped: no soffice on PATH");
+    }
+    found.then_some("soffice")
+}
+
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn office_documents_get_their_first_page_through_libreoffice(pool: PgPool) {
+    let Some(soffice) = soffice() else {
+        return;
+    };
+    let clamd = fake_clamd().await;
+    let app = setup_tuned(pool, clamd, |c| {
+        c.media.render.office.command = Some(soffice.to_string())
+    })
+    .await;
+    // A two-page report, a letter and a table in each format: every one
+    // gets its first page, an A4 or Letter portrait page filling the box's
+    // height, and none a preview.
+    let documents = [
+        ready_file(&app, "report.docx", DOCX, &fixture("pages.docx")).await,
+        ready_file(&app, "letter.odt", ODT, &fixture("text.odt")).await,
+        ready_file(&app, "table.xlsx", XLSX, &fixture("table.xlsx")).await,
+        ready_file(&app, "table.ods", ODS, &fixture("table.ods")).await,
+    ];
+    // A DOCX wrapping a picture still takes the embedded-image path, and
+    // one whose picture is beside a paragraph is a real document.
+    let picture = ready_file(&app, "picture.docx", DOCX, &fixture("image.docx")).await;
+    let mixed = ready_file(&app, "mixed.docx", DOCX, &fixture("text.docx")).await;
+    render_all(&app).await;
+
+    for blob in documents.iter().chain([&mixed]) {
+        let id = id_of(blob);
+        let name = blob["filename"].as_str().unwrap();
+        let blob = get_blob(&app, id).await;
+        assert_eq!(blob["preview_state"], "unavailable", "{name}");
+        assert_eq!(blob["thumbnail_state"], "ready", "{name}");
+        no_preview(
+            &app,
+            &format!("/blobs/{id}/preview/{name}"),
+            "unavailable",
+            "no preview for this file",
+        )
+        .await;
+        let (_, (width, height)) = rendered(&app, &format!("/blobs/{id}/thumbnail/{name}")).await;
+        assert_eq!(height, 256, "{name}");
+        assert!((150..=200).contains(&width), "{name}: {width}");
+    }
+    let blob = get_blob(&app, id_of(&picture)).await;
+    assert_eq!(blob["preview_source"], "embedded_image");
+    assert_eq!(blob["thumbnail_state"], "ready");
+}
+
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn the_startup_probe_checks_libreoffice(pool: PgPool) {
+    let app = setup(pool).await;
+    let media = &app.state.config().media;
+    let probe = |render| agrafe_render::probe(render, media.tmp_dir.as_deref());
+    let with = |command: &str| agrafe_render::Config {
+        office: agrafe_render::Office {
+            command: Some(command.to_string()),
+            ..Default::default()
+        },
+        ..media.render.clone()
+    };
+
+    // A binary that exits non-zero on everything, and one that exits zero
+    // without writing anything.
+    let wrong = with("/usr/bin/false");
+    let err = probe(&wrong).await.unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("`/usr/bin/false` failed on a two-page DOCX"),
+        "{err}"
+    );
+    assert!(
+        err.to_string()
+            .contains("is media.office.command a LibreOffice 7.4 or later"),
+        "{err}"
+    );
+    let idle = with("/usr/bin/true");
+    let err = probe(&idle).await.unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("`/usr/bin/true` wrote no PDF for a two-page DOCX"),
+        "{err}"
+    );
+    let missing = with("/nonexistent/soffice");
+    let err = probe(&missing).await.unwrap_err();
+    assert!(
+        err.to_string().contains("starting `/nonexistent/soffice`"),
+        "{err}"
+    );
+
+    if let Some(soffice) = soffice() {
+        let real = with(soffice);
+        probe(&real).await.unwrap();
+    }
 }
 
 #[sqlx::test(migrator = "MIGRATOR")]

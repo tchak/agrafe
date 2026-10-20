@@ -2,8 +2,10 @@
 
 use std::path::Path;
 
+use agrafe_types::classify::{DOCX, XLSX};
+
 use crate::vips::{self, Fit, Input};
-use crate::{Config, Error, Rejection, Verdict, geo, helpers};
+use crate::{Config, Error, Rejection, Verdict, geo, helpers, office};
 
 /// Why a worker may not start: its tools do not work on files known to be
 /// good.
@@ -43,6 +45,19 @@ pub enum ProbeError {
         /// What it did instead of rendering.
         what: String,
     },
+    /// The configured LibreOffice declined or rejected a probe document,
+    /// or wrote more than the first page: it is not LibreOffice, lacks
+    /// Writer or Calc, or is too old for the JSON filter options.
+    #[error(
+        "`{command}` {what}; is media.office.command a LibreOffice 7.4 or later \
+         with Writer and Calc?"
+    )]
+    Office {
+        /// The configured `office.command`.
+        command: String,
+        /// What it did instead of converting.
+        what: String,
+    },
     /// A helper could not be run at all.
     #[error(transparent)]
     Run(#[from] Error),
@@ -57,6 +72,10 @@ pub enum ProbeError {
 const PROBE_PNG: &[u8] = include_bytes!("../assets/probe/pixel.png");
 const PROBE_PDF: &[u8] = include_bytes!("../assets/probe/page.pdf");
 const PROBE_GEOJSON: &[u8] = include_bytes!("../assets/probe/point.geojson");
+/// Two pages of text: the exported PDF must have one.
+const PROBE_DOCX: &[u8] = include_bytes!("../assets/probe/pages.docx");
+/// One sheet of a few cells.
+const PROBE_XLSX: &[u8] = include_bytes!("../assets/probe/sheet.xlsx");
 
 /// The probe's typst workspace: a template importing a file, reading
 /// data and placing an image, as templates do.
@@ -94,8 +113,17 @@ pub async fn probe_sandbox(
 /// instead of failing the deployment. The text sample and the map also
 /// catch a `render_text_command` or a `render_geo_command` that is not
 /// the helper. The map is drawn with no background layer: the probe never
-/// touches the network.
+/// touches the network. With `media.office.command` set, a two-page DOCX
+/// and an XLSX go through LibreOffice as well, see [`probe_office`].
 pub async fn probe(config: &Config, tmp_dir: Option<&Path>) -> Result<(), ProbeError> {
+    probe_tools(config, tmp_dir).await?;
+    if config.office.command.is_some() {
+        probe_office(config, tmp_dir).await?;
+    }
+    Ok(())
+}
+
+async fn probe_tools(config: &Config, tmp_dir: Option<&Path>) -> Result<(), ProbeError> {
     let workdir = crate::workdir(tmp_dir)?;
     let fit = Fit::thumbnail(config);
     let sample = workdir.path().join("sample.txt");
@@ -201,6 +229,74 @@ pub async fn probe(config: &Config, tmp_dir: Option<&Path>) -> Result<(), ProbeE
             vips,
             rejection,
         });
+    }
+    Ok(())
+}
+
+/// Convert a two-page DOCX and a one-sheet XLSX through the exact command
+/// lines the render job uses, and render the result through vips: a
+/// LibreOffice without the Calc filter, without fonts, or too old for the
+/// JSON filter options would mark every office file `failed` instead of
+/// failing the deployment. The DOCX has two pages so that `PageRange` is
+/// known to be honoured: its PDF must have one, which vips tells by
+/// refusing the second.
+pub async fn probe_office(config: &Config, tmp_dir: Option<&Path>) -> Result<(), ProbeError> {
+    let command = config.office.command.clone().unwrap_or_default();
+    let workdir = crate::workdir(tmp_dir)?;
+    let fit = Fit::thumbnail(config);
+    let output = workdir.path().join("probe.webp");
+    for (what, name, content_type, bytes) in [
+        ("a two-page DOCX", "writer", DOCX, PROBE_DOCX),
+        ("an XLSX", "calc", XLSX, PROBE_XLSX),
+    ] {
+        let dir = workdir.path().join(name);
+        tokio::fs::create_dir(&dir).await?;
+        let original = dir.join("original");
+        tokio::fs::write(&original, bytes).await?;
+        let pdf = match office::convert(config, content_type, &original, &dir).await? {
+            Verdict::Rendered(pdf) => pdf,
+            Verdict::Declined => {
+                return Err(ProbeError::Office {
+                    command,
+                    what: format!("wrote no PDF for {what}"),
+                });
+            }
+            Verdict::Rejected(rejection) => {
+                return Err(ProbeError::Office {
+                    command,
+                    what: format!("failed on {what}: {rejection}"),
+                });
+            }
+        };
+        let vips = config.vips_command.clone();
+        let render = |page| vips::page_to_webp(config, &pdf, page, &output, fit);
+        if let Verdict::Rejected(rejection) =
+            render(0).await.map_err(|source| ProbeError::Render {
+                what,
+                vips: vips.clone(),
+                source,
+            })?
+        {
+            return Err(ProbeError::Rejected {
+                what,
+                vips,
+                rejection,
+            });
+        }
+        if content_type == DOCX
+            && let Verdict::Rendered(_) = render(1).await.map_err(|source| ProbeError::Render {
+                what,
+                vips: vips.clone(),
+                source,
+            })?
+        {
+            return Err(ProbeError::Office {
+                command,
+                what: "wrote more than the first page of a two-page DOCX, so it ignores \
+                       the PageRange option"
+                    .to_string(),
+            });
+        }
     }
     Ok(())
 }

@@ -11,14 +11,17 @@
 //!   readable, the one [`Command::writable`] directory is writable, TCP
 //!   and signals to processes outside the sandbox are refused, and nothing
 //!   else exists;
-//! - a seccomp denylist, installed next: no sockets, no namespaces, no
+//! - a seccomp denylist, installed next: no sockets (unix sockets alone
+//!   on request, see [`Command::unix_sockets`]), no namespaces, no
 //!   ptrace, no mounts, no reaching another process's descriptors or
 //!   limits, no kernel-facing surface a process that turns bytes into
 //!   pixels has any use for. Refused calls fail with `EPERM`.
 //!
 //! The last two are Linux only, on by default where the kernel has them
 //! ([`Isolation::Auto`]), and [`Isolation::Required`] refuses to start
-//! without them. [`probe`] is how a worker learns what it got.
+//! without them. [`probe`] is how a worker learns what it got. The child
+//! leads a process group of its own, killed whole at the timeout, so a
+//! launcher that forked does not leave what it launched behind.
 
 #[cfg(target_os = "linux")]
 mod confine;
@@ -173,6 +176,7 @@ pub struct Command {
     inner: tokio::process::Command,
     readable: Vec<PathBuf>,
     writable: Option<PathBuf>,
+    unix_sockets: Option<PathBuf>,
 }
 
 impl Command {
@@ -193,6 +197,7 @@ impl Command {
             inner,
             readable: Vec::new(),
             writable: None,
+            unix_sockets: None,
         }
     }
 
@@ -237,6 +242,19 @@ impl Command {
     /// library writes lands there and goes with it.
     pub fn writable(&mut self, dir: impl Into<PathBuf>) -> &mut Self {
         self.writable = Some(dir.into());
+        self
+    }
+
+    /// Let the child create unix sockets, and bind them under `dir`. The
+    /// seccomp filter then refuses every other socket family instead of
+    /// every socket, and Landlock lets the child create and remove socket
+    /// files under `dir`, and nothing else there. For a program that
+    /// cannot start without one, such as LibreOffice's single-instance
+    /// pipe in `/tmp`; the trade is that path-based unix sockets the child
+    /// can see, such as a local Postgres's, are no longer closed to it
+    /// (Landlock scopes abstract sockets only), so it is not the default.
+    pub fn unix_sockets(&mut self, dir: impl Into<PathBuf>) -> &mut Self {
+        self.unix_sockets = Some(dir.into());
         self
     }
 
@@ -330,6 +348,8 @@ async fn run_with(
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    #[cfg(unix)]
+    command.inner.process_group(0);
     apply_limits(&mut command.inner, config);
     let applied =
         apply_confinement(&mut command, config, layers).map_err(|reason| Error::Confine {
@@ -340,6 +360,7 @@ async fn run_with(
         program: program.clone(),
         source,
     })?;
+    let pid = child.id();
     let outcome = match tokio::time::timeout(config.timeout, child.wait_with_output()).await {
         Ok(Ok(output)) if output.status.success() => Outcome::Success,
         Ok(Ok(output)) => Outcome::Failed {
@@ -348,11 +369,33 @@ async fn run_with(
             stderr: tail(&output.stderr),
         },
         Ok(Err(source)) => return Err(Error::Wait { program, source }),
-        // Dropping the child on timeout kills it.
-        Err(_) => Outcome::TimedOut,
+        // Dropping the child on timeout kills it; its process group goes
+        // with it, for a program that is a launcher around another.
+        Err(_) => {
+            kill_group(pid);
+            Outcome::TimedOut
+        }
     };
     Ok((outcome, applied))
 }
+
+/// Kill the process group the child leads, so that a program that forked
+/// (a launcher script, an office suite's wrapper) does not leave the
+/// worker behind. The child itself is killed by the drop that follows.
+#[cfg(unix)]
+fn kill_group(pid: Option<u32>) {
+    if let Some(pid) = pid.and_then(|pid| i32::try_from(pid).ok()) {
+        // SAFETY: `kill` on a group id is a plain syscall; the group is the
+        // one `process_group(0)` created for this child, and a pid is not
+        // reused while the child is unreaped.
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_group(_pid: Option<u32>) {}
 
 #[cfg(unix)]
 fn apply_limits(command: &mut tokio::process::Command, config: &Config) {
@@ -396,6 +439,7 @@ fn apply_confinement(
         &command.program,
         &command.readable,
         command.writable.as_deref(),
+        command.unix_sockets.as_deref(),
         &config.readable,
         layers,
     )
@@ -718,6 +762,46 @@ mod tests {
         ));
     }
 
+    /// A launcher that forked (a script, an office suite's wrapper) is
+    /// killed with what it forked at the timeout, not left running.
+    #[tokio::test]
+    async fn timeouts_kill_the_group() {
+        let work = tempdir();
+        let pidfile = work.path().join("pid");
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "sleep 30 & echo $! > \"$1\"; wait", "sh"])
+            .arg(&pidfile)
+            .writable(work.path());
+        let config = Config {
+            isolation: Isolation::Off,
+            ..config()
+        };
+        assert!(matches!(
+            run(command, &config).await.unwrap(),
+            Outcome::TimedOut
+        ));
+        let pid: i32 = std::fs::read_to_string(&pidfile)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        // Init reaps the orphan a moment after the kill; until then it is
+        // a zombie, which `kill` still finds.
+        let gone = || {
+            // SAFETY: a null signal only checks whether the pid exists.
+            let missing = unsafe { libc::kill(pid, 0) } == -1;
+            missing && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+        };
+        for _ in 0..200 {
+            if gone() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("the forked `sleep` {pid} outlived the timeout");
+    }
+
     #[tokio::test]
     async fn output_is_bounded() {
         let dir = tempdir();
@@ -978,6 +1062,85 @@ mod tests {
                 listener.accept().map(|_| ()).unwrap_err().kind(),
                 std::io::ErrorKind::WouldBlock
             );
+        }
+
+        /// A socket of any family, unix included, is refused unless the
+        /// command asks for unix sockets, and then every other family
+        /// still is.
+        const SOCKETS: &str = r#"
+import socket, sys
+try:
+    socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sys.exit(10)
+except PermissionError:
+    pass
+socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+"#;
+
+        #[tokio::test]
+        async fn unix_sockets_are_refused_by_default() {
+            let Some(config) = filtered().await else {
+                return;
+            };
+            if !has("python3") {
+                eprintln!("skipped: no python3");
+                return;
+            }
+            let work = tempdir();
+            let mut sockets = Command::new("python3");
+            sockets.args(["-I", "-c", SOCKETS]).writable(work.path());
+            match run(sockets, &config).await.unwrap() {
+                Outcome::Failed { code, stderr, .. } => {
+                    assert_ne!(code, Some(10), "an inet socket was allowed");
+                    assert!(stderr.contains("PermissionError"), "{stderr}");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+
+        /// With unix sockets allowed, a bind lands where granted and
+        /// nowhere else, and inet sockets stay refused.
+        #[tokio::test]
+        async fn unix_sockets_bind_where_granted() {
+            let Some(config) = confined().await else {
+                return;
+            };
+            if !has("python3") {
+                eprintln!("skipped: no python3");
+                return;
+            }
+            let work = tempdir();
+            let pipes = tempdir();
+            let elsewhere = tempdir();
+            let script = format!(
+                "{SOCKETS}\n\
+                 import os\n\
+                 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n\
+                 s.bind(sys.argv[1] + '/pipe')\n\
+                 s.listen(1)\n\
+                 os.unlink(sys.argv[1] + '/pipe')\n\
+                 try:\n\
+                 \tsocket.socket(socket.AF_UNIX, socket.SOCK_STREAM).bind(sys.argv[2] + '/pipe')\n\
+                 \tsys.exit(11)\n\
+                 except PermissionError:\n\
+                 \tpass\n"
+            );
+            let mut sockets = Command::new("python3");
+            sockets
+                .args(["-I", "-c", &script])
+                .arg(pipes.path())
+                .arg(elsewhere.path())
+                .writable(work.path())
+                .unix_sockets(pipes.path());
+            match run(sockets, &config).await.unwrap() {
+                Outcome::Success => {}
+                other => panic!("{other:?}"),
+            }
+            assert!(
+                !pipes.path().join("pipe").exists(),
+                "the pipe was not removed"
+            );
+            assert!(!elsewhere.path().join("pipe").exists());
         }
 
         #[tokio::test]

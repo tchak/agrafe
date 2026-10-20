@@ -1157,14 +1157,26 @@ mod tests {
             assert_eq!(config.media.render.extract_command, "agrafe-extract");
             assert_eq!(config.media.render.sandbox.timeout.as_secs(), 60);
             assert_eq!(config.media.render.thumbnail.width, 256);
+            assert_eq!(config.media.render.office.command, None);
+            assert_eq!(config.media.render.office.sandbox.timeout.as_secs(), 120);
 
             jail.set_env("AGRAFE_MEDIA__VIPS_COMMAND", "/opt/vips/bin/vips");
             jail.set_env("AGRAFE_MEDIA__SANDBOX__TIMEOUT", "5s");
             jail.set_env("AGRAFE_MEDIA__MAX_SOURCE_SIZE", "1 MiB");
+            jail.set_env("AGRAFE_MEDIA__OFFICE__COMMAND", "soffice");
+            jail.set_env("AGRAFE_MEDIA__OFFICE__SANDBOX__MEMORY", "3 GiB");
             let config = load(&example())?;
             assert_eq!(config.media.render.vips_command, "/opt/vips/bin/vips");
             assert_eq!(config.media.render.sandbox.timeout.as_secs(), 5);
             assert_eq!(config.media.max_source_size.as_u64(), 1 << 20);
+            assert_eq!(
+                config.media.render.office.command.as_deref(),
+                Some("soffice")
+            );
+            assert_eq!(
+                config.media.render.office.sandbox.memory,
+                bytesize::ByteSize::gib(3)
+            );
             Ok(())
         });
     }

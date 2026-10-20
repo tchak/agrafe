@@ -85,6 +85,31 @@ pub async fn to_webp(
     output: &Path,
     fit: Fit,
 ) -> Result<Verdict<Vec<u8>>, Error> {
+    thumbnail(config, input, None, kind, output, fit).await
+}
+
+/// Render page `page`, counted from zero, of `input`, a document, like
+/// [`to_webp`]. A page the document does not have is a `Rejected`, which
+/// is how the probe tells a one-page PDF from a longer one without a PDF
+/// parser. `input` must not contain `[` either.
+pub(crate) async fn page_to_webp(
+    config: &Config,
+    input: &Path,
+    page: u32,
+    output: &Path,
+    fit: Fit,
+) -> Result<Verdict<Vec<u8>>, Error> {
+    thumbnail(config, input, Some(page), Input::Page, output, fit).await
+}
+
+async fn thumbnail(
+    config: &Config,
+    input: &Path,
+    page: Option<u32>,
+    kind: Input,
+    output: &Path,
+    fit: Fit,
+) -> Result<Verdict<Vec<u8>>, Error> {
     let Some(loader) = loader_for(&head(input).await.map_err(Error::Input)?) else {
         return Ok(Verdict::Rejected(Rejection::Unsupported));
     };
@@ -92,6 +117,10 @@ pub async fn to_webp(
     let size = match kind {
         Input::Raster => "down",
         Input::Page => "both",
+    };
+    let source = match page {
+        Some(page) => format!("{}[page={page}]", input.display()),
+        None => input.display().to_string(),
     };
     let mut command = sandbox::Command::new(&config.vips_command);
     if let Some(dir) = output.parent() {
@@ -102,7 +131,7 @@ pub async fn to_webp(
         .env("VIPS_WARNING", "0")
         .env("VIPS_CONCURRENCY", VIPS_CONCURRENCY)
         .arg("thumbnail")
-        .arg(input)
+        .arg(source)
         .arg(format!("{}[Q={},keep=none]", output.display(), fit.quality))
         .arg(fit.width.to_string())
         .args(["--height", &fit.height.to_string()])

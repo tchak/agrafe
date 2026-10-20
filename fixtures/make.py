@@ -61,6 +61,7 @@ def stream(dictionary, data):
 
 
 LONG_TEXT = "This page is a real document with a paragraph of text next to the picture."
+TABLE = [["nom", "ville", "montant"], ["Dupont", "Besançon", "12,50"], ["Martin", "Orléans", "7,00"]]
 
 
 def image_pdf(image, width, height, page_w, page_h, place, text=None, filt="/DCTDecode", colorspace="/DeviceRGB"):
@@ -100,26 +101,87 @@ def empty_pdf(page_w, page_h):
     ])
 
 
-def docx(text, media_name, media):
+def zip_entry(z, name, data, compress=zipfile.ZIP_DEFLATED):
+    """An entry with a fixed timestamp, so that a run of this script changes
+    only the files whose content changed."""
+    info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+    info.compress_type = compress
+    z.writestr(info, data)
+
+
+# A4 in twentieths of a point (DOCX) and in centimetres (ODF), so that a
+# page renders the same whatever the converter's locale.
+A4_TWIPS = (11906, 16838)
+A4_CM = ("21.0cm", "29.7cm")
+PAGE_BREAK = '<w:p><w:r><w:br w:type="page"/></w:r></w:p>'
+
+
+def docx(text, media_name=None, media=None, pages=1):
+    """A Word document: `text` on each of `pages` A4 pages, and, with a media
+    file, a drawing that references it."""
     out = io.BytesIO()
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("[Content_Types].xml", '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>')
-        z.writestr("_rels/.rels", '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>')
-        paragraphs = f"<w:p><w:r><w:t>{text}</w:t></w:r></w:p>" if text else ""
-        z.writestr("word/document.xml", f'<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>{paragraphs}<w:p><w:r><w:drawing/></w:r></w:p></w:body></w:document>')
-        z.writestr("word/_rels/document.xml.rels", f'<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/{media_name}"/></Relationships>')
-        z.writestr(f"word/media/{media_name}", media)
+    with zipfile.ZipFile(out, "w") as z:
+        zip_entry(z, "[Content_Types].xml", '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>')
+        zip_entry(z, "_rels/.rels", '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>')
+        paragraph = f"<w:p><w:r><w:t>{text}</w:t></w:r></w:p>" if text else ""
+        body = PAGE_BREAK.join(paragraph.replace("{page}", str(n + 1)) for n in range(pages))
+        if media is not None:
+            body += "<w:p><w:r><w:drawing/></w:r></w:p>"
+        body += f'<w:sectPr><w:pgSz w:w="{A4_TWIPS[0]}" w:h="{A4_TWIPS[1]}"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="0" w:footer="0" w:gutter="0"/></w:sectPr>'
+        zip_entry(z, "word/document.xml", f'<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>{body}</w:body></w:document>')
+        if media is not None:
+            zip_entry(z, "word/_rels/document.xml.rels", f'<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/{media_name}"/></Relationships>')
+            zip_entry(z, f"word/media/{media_name}", media)
     return out.getvalue()
 
 
-def odt(text, media):
+def odt(text, media=None):
+    """An OpenDocument text: `text` on an A4 page and, with a media file, a
+    frame that shows it."""
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w") as z:
-        z.writestr("mimetype", "application/vnd.oasis.opendocument.text", compress_type=zipfile.ZIP_STORED)
-        z.writestr("META-INF/manifest.xml", '<?xml version="1.0" encoding="UTF-8"?><manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.2"><manifest:file-entry manifest:full-path="/" manifest:media-type="application/vnd.oasis.opendocument.text"/><manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/><manifest:file-entry manifest:full-path="Pictures/1.png" manifest:media-type="image/png"/></manifest:manifest>', compress_type=zipfile.ZIP_DEFLATED)
+        zip_entry(z, "mimetype", "application/vnd.oasis.opendocument.text", zipfile.ZIP_STORED)
+        picture = '<manifest:file-entry manifest:full-path="Pictures/1.png" manifest:media-type="image/png"/>' if media is not None else ""
+        zip_entry(z, "META-INF/manifest.xml", f'<?xml version="1.0" encoding="UTF-8"?><manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.2"><manifest:file-entry manifest:full-path="/" manifest:media-type="application/vnd.oasis.opendocument.text"/><manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/><manifest:file-entry manifest:full-path="styles.xml" manifest:media-type="text/xml"/>{picture}</manifest:manifest>')
         paragraph = f"<text:p>{text}</text:p>" if text else ""
-        z.writestr("content.xml", f'<?xml version="1.0" encoding="UTF-8"?><office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:xlink="http://www.w3.org/1999/xlink"><office:body><office:text>{paragraph}<text:p><draw:frame><draw:image xlink:href="Pictures/1.png"/></draw:frame></text:p></office:text></office:body></office:document-content>', compress_type=zipfile.ZIP_DEFLATED)
-        z.writestr("Pictures/1.png", media, compress_type=zipfile.ZIP_DEFLATED)
+        frame = '<text:p><draw:frame><draw:image xlink:href="Pictures/1.png"/></draw:frame></text:p>' if media is not None else ""
+        zip_entry(z, "content.xml", f'<?xml version="1.0" encoding="UTF-8"?><office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:xlink="http://www.w3.org/1999/xlink"><office:body><office:text>{paragraph}{frame}</office:text></office:body></office:document-content>')
+        zip_entry(z, "styles.xml", f'<?xml version="1.0" encoding="UTF-8"?><office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0"><office:automatic-styles><style:page-layout style:name="pm1"><style:page-layout-properties fo:page-width="{A4_CM[0]}" fo:page-height="{A4_CM[1]}" fo:margin="2cm"/></style:page-layout></office:automatic-styles><office:master-styles><style:master-page style:name="Standard" style:page-layout-name="pm1"/></office:master-styles></office:document-styles>')
+        if media is not None:
+            zip_entry(z, "Pictures/1.png", media)
+    return out.getvalue()
+
+
+def xlsx(rows):
+    """A workbook of one sheet holding `rows`, lists of strings, as inline
+    strings."""
+    def cell(col, row, value):
+        return f'<c r="{chr(65 + col)}{row}" t="inlineStr"><is><t>{value}</t></is></c>'
+    data = "".join(
+        f'<row r="{r + 1}">' + "".join(cell(c, r + 1, v) for c, v in enumerate(row)) + "</row>"
+        for r, row in enumerate(rows)
+    )
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        zip_entry(z, "[Content_Types].xml", '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>')
+        zip_entry(z, "_rels/.rels", '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>')
+        zip_entry(z, "xl/workbook.xml", '<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Feuille1" sheetId="1" r:id="rId1"/></sheets></workbook>')
+        zip_entry(z, "xl/_rels/workbook.xml.rels", '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>')
+        zip_entry(z, "xl/worksheets/sheet1.xml", f'<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>{data}</sheetData></worksheet>')
+    return out.getvalue()
+
+
+def ods(rows):
+    """An OpenDocument spreadsheet of one sheet holding `rows`, lists of
+    strings."""
+    def cell(value):
+        return f'<table:table-cell office:value-type="string"><text:p>{value}</text:p></table:table-cell>'
+    data = "".join("<table:table-row>" + "".join(cell(v) for v in row) + "</table:table-row>" for row in rows)
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        zip_entry(z, "mimetype", "application/vnd.oasis.opendocument.spreadsheet", zipfile.ZIP_STORED)
+        zip_entry(z, "META-INF/manifest.xml", '<?xml version="1.0" encoding="UTF-8"?><manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.2"><manifest:file-entry manifest:full-path="/" manifest:media-type="application/vnd.oasis.opendocument.spreadsheet"/><manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/></manifest:manifest>')
+        zip_entry(z, "content.xml", f'<?xml version="1.0" encoding="UTF-8"?><office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"><office:body><office:spreadsheet><table:table table:name="Feuille1">{data}</table:table></office:spreadsheet></office:body></office:document-content>')
     return out.getvalue()
 
 
@@ -230,6 +292,11 @@ def main():
         "text.docx": docx(LONG_TEXT, "image1.png", small_png),
         "vector.docx": docx("", "image1.emf", b"\x01\x00\x00\x00" + b"\x00" * 60),
         "image.odt": odt("", small_png),
+        # Real documents, for the converter: two pages, a letter, a table.
+        "pages.docx": docx("Page {page} of a two-page report.", pages=2),
+        "text.odt": odt("Bonjour, ceci est une lettre."),
+        "table.xlsx": xlsx(TABLE),
+        "table.ods": ods(TABLE),
     }
     files.update({name: geojson(value) for name, value in GEOJSON.items()})
     for name, data in files.items():
@@ -241,6 +308,10 @@ def main():
         "pixel.png": png(1, 1),
         "page.pdf": empty_pdf(20, 10),
         "point.geojson": geojson(feature({"type": "Point", "coordinates": PARIS})),
+        # Through LibreOffice when one is configured: the DOCX has two pages
+        # so that the one-page export is checked.
+        "pages.docx": docx("Page {page}", pages=2),
+        "sheet.xlsx": xlsx([["a", "b"], ["1", "2"]]),
     }
     for name, data in probe_files.items():
         (PROBE / name).write_bytes(data)

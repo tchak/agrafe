@@ -73,6 +73,7 @@ impl Plan {
         program: &Path,
         readable: &[PathBuf],
         writable: Option<&Path>,
+        unix_sockets: Option<&Path>,
         extra: &[PathBuf],
         layers: Layers,
     ) -> Result<Self, Error> {
@@ -80,7 +81,7 @@ impl Plan {
             match kernel_abi() {
                 None if layers.strict => return Err(Error::NoLandlock),
                 None => None,
-                Some(_) => match ruleset(program, readable, writable, extra) {
+                Some(_) => match ruleset(program, readable, writable, unix_sockets, extra) {
                     Ok(ruleset) => Some(ruleset),
                     Err(err) if layers.strict => return Err(Error::Landlock(err)),
                     Err(_) => None,
@@ -90,7 +91,7 @@ impl Plan {
             None
         };
         let filters = if layers.seccomp {
-            match filters() {
+            match filters(unix_sockets.is_some()) {
                 Ok(filters) => Some(filters),
                 Err(err) if layers.strict => return Err(Error::Seccomp(err)),
                 Err(_) => None,
@@ -189,14 +190,17 @@ pub(crate) fn kernel_abi() -> Option<i32> {
 
 /// The ruleset: read and execute on the system set and the program, read
 /// on the extra and declared paths, everything but execute on the
-/// writable directory, no TCP, no signal to a process outside the
-/// domain (the child shares the server's uid, so `kill` would reach the
-/// worker), no abstract unix socket, and nothing else. Handled accesses
-/// the kernel does not know are dropped, which is the best-effort mode.
+/// writable directory, socket files made and removed under the unix
+/// socket directory when there is one, no TCP, no signal to a process
+/// outside the domain (the child shares the server's uid, so `kill` would
+/// reach the worker), no abstract unix socket, and nothing else. Handled
+/// accesses the kernel does not know are dropped, which is the
+/// best-effort mode.
 fn ruleset(
     program: &Path,
     readable: &[PathBuf],
     writable: Option<&Path>,
+    unix_sockets: Option<&Path>,
     extra: &[PathBuf],
 ) -> Result<RulesetCreated, RulesetError> {
     let read = AccessFs::from_read(LATEST);
@@ -220,6 +224,12 @@ fn ruleset(
     if let Some(dir) = writable {
         ruleset = ruleset.add_rules(path_beneath_rules([dir], write))?;
     }
+    if let Some(dir) = unix_sockets {
+        ruleset = ruleset.add_rules(path_beneath_rules(
+            [dir],
+            AccessFs::MakeSock | AccessFs::RemoveFile,
+        ))?;
+    }
     Ok(ruleset)
 }
 
@@ -237,13 +247,6 @@ const ARCH: TargetArch = TargetArch::riscv64;
 /// Yama allows it); namespaces, mounts and the new mount API; and the
 /// kernel-facing surface a decoder has no use for.
 const DENIED: &[libc::c_long] = &[
-    libc::SYS_socket,
-    libc::SYS_socketpair,
-    libc::SYS_connect,
-    libc::SYS_bind,
-    libc::SYS_listen,
-    libc::SYS_accept,
-    libc::SYS_accept4,
     libc::SYS_ptrace,
     libc::SYS_process_vm_readv,
     libc::SYS_process_vm_writev,
@@ -274,6 +277,19 @@ const DENIED: &[libc::c_long] = &[
     libc::SYS_finit_module,
 ];
 
+/// The socket calls, refused whole by default. With unix sockets allowed,
+/// `socket` and `socketpair` are refused for every family but `AF_UNIX`,
+/// and the rest, which only act on a socket that exists, are allowed.
+const SOCKETS: &[libc::c_long] = &[
+    libc::SYS_socket,
+    libc::SYS_socketpair,
+    libc::SYS_connect,
+    libc::SYS_bind,
+    libc::SYS_listen,
+    libc::SYS_accept,
+    libc::SYS_accept4,
+];
+
 /// The `clone` flags that create a namespace, each refused on its own:
 /// a thread or a plain fork carries none of them.
 const NAMESPACE_FLAGS: &[u64] = &[
@@ -287,24 +303,50 @@ const NAMESPACE_FLAGS: &[u64] = &[
     0x4000_0000, // CLONE_NEWNET
 ];
 
-/// The two filters, compiled once: the denylist answering `EPERM`, with
-/// `clone` refused under a namespace flag and `prlimit64` refused for any
-/// pid but 0 (the same uid may set another process's limits, and the
-/// worker is one; glibc's own `setrlimit` and `getrlimit` pass 0), and
-/// `clone3` answering `ENOSYS`. `clone3` takes its flags in a struct the
-/// filter cannot read, so it is refused whole, and with the one errno
-/// glibc falls back from to `clone`, which the first filter does inspect:
-/// threads keep working, namespaces do not.
-fn filters() -> Result<Arc<Vec<BpfProgram>>, String> {
-    static FILTERS: OnceLock<Result<Arc<Vec<BpfProgram>>, String>> = OnceLock::new();
-    FILTERS
-        .get_or_init(|| compile().map(Arc::new).map_err(|err| err.to_string()))
+/// The two filters, compiled once per variant: the denylist answering
+/// `EPERM`, with `clone` refused under a namespace flag and `prlimit64`
+/// refused for any pid but 0 (the same uid may set another process's
+/// limits, and the worker is one; glibc's own `setrlimit` and `getrlimit`
+/// pass 0), and `clone3` answering `ENOSYS`. `clone3` takes its flags in
+/// a struct the filter cannot read, so it is refused whole, and with the
+/// one errno glibc falls back from to `clone`, which the first filter does
+/// inspect: threads keep working, namespaces do not. The variant with
+/// unix sockets refuses every other socket family instead of every
+/// socket.
+fn filters(unix_sockets: bool) -> Result<Arc<Vec<BpfProgram>>, String> {
+    type Compiled = OnceLock<Result<Arc<Vec<BpfProgram>>, String>>;
+    static NO_SOCKETS: Compiled = OnceLock::new();
+    static UNIX_SOCKETS: Compiled = OnceLock::new();
+    let compiled = if unix_sockets {
+        &UNIX_SOCKETS
+    } else {
+        &NO_SOCKETS
+    };
+    compiled
+        .get_or_init(|| {
+            compile(unix_sockets)
+                .map(Arc::new)
+                .map_err(|err| err.to_string())
+        })
         .clone()
 }
 
-fn compile() -> Result<Vec<BpfProgram>, seccompiler::Error> {
+fn compile(unix_sockets: bool) -> Result<Vec<BpfProgram>, seccompiler::Error> {
     let mut denied: BTreeMap<i64, Vec<SeccompRule>> =
         DENIED.iter().map(|&nr| (nr, Vec::new())).collect();
+    if unix_sockets {
+        for nr in [libc::SYS_socket, libc::SYS_socketpair] {
+            let other_family = SeccompRule::new(vec![SeccompCondition::new(
+                0,
+                SeccompCmpArgLen::Dword,
+                SeccompCmpOp::Ne,
+                libc::AF_UNIX as u64,
+            )?])?;
+            denied.insert(nr, vec![other_family]);
+        }
+    } else {
+        denied.extend(SOCKETS.iter().map(|&nr| (nr, Vec::new())));
+    }
     let namespaces = NAMESPACE_FLAGS
         .iter()
         .map(|&flag| {
@@ -345,9 +387,11 @@ mod tests {
 
     #[test]
     fn filters_compile() {
-        let filters = filters().unwrap();
-        assert_eq!(filters.len(), 2);
-        assert!(filters.iter().all(|f| !f.is_empty()));
+        for unix_sockets in [false, true] {
+            let filters = filters(unix_sockets).unwrap();
+            assert_eq!(filters.len(), 2);
+            assert!(filters.iter().all(|f| !f.is_empty()));
+        }
     }
 
     #[test]
@@ -355,6 +399,7 @@ mod tests {
         let plan = Plan::new(
             Path::new("/bin/true"),
             &[],
+            None,
             None,
             &[],
             Layers {
