@@ -7,6 +7,7 @@ use agrafe_crypto::streaming::Layout;
 use agrafe_crypto::wrap::Kek;
 use agrafe_crypto::{Error as CryptoError, Key};
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 use crate::config::{Base64Secret, ConfigError, EncryptionConfig};
 
@@ -155,11 +156,15 @@ fn parse_kek(id: &str, secret: &Base64Secret) -> Result<Kek, ConfigError> {
 ///
 /// A malformed file is reported by line, never by content: the error ends
 /// up in the journal, and the content is a key, most likely one a human
-/// just mistyped at a prompt.
+/// just mistyped at a prompt. The text is wiped once parsed, and so are
+/// the parsed secrets and their decoded bytes; only the `Kek`s outlive
+/// this, and those wipe themselves too.
 fn read_keks_file(path: &Path) -> Result<HashMap<String, Base64Secret>, ConfigError> {
-    let text = std::fs::read_to_string(path).map_err(|e| {
-        ConfigError::Invalid(format!("encryption.keks_file `{}`: {e}", path.display()))
-    })?;
+    let text = std::fs::read_to_string(path)
+        .map(Zeroizing::new)
+        .map_err(|e| {
+            ConfigError::Invalid(format!("encryption.keks_file `{}`: {e}", path.display()))
+        })?;
     toml::from_str(&text).map_err(|e| {
         let line = e
             .span()

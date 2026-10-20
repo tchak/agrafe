@@ -10,6 +10,7 @@ use figment::Figment;
 use figment::providers::{Env, Format, Toml};
 use jiff::{SignedDuration, Timestamp};
 use serde::Deserialize;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::jobs::JobKind;
 use crate::jobs::notify::Event;
@@ -329,17 +330,20 @@ impl std::fmt::Debug for Secret {
     }
 }
 
-/// A secret given as base64 in config.
-#[derive(Clone, Deserialize)]
+/// A secret given as base64 in config. Wiped when dropped, as are the bytes
+/// it decodes to.
+#[derive(Clone, Deserialize, Zeroize, ZeroizeOnDrop)]
 #[serde(transparent)]
 pub struct Base64Secret(String);
 
 impl Base64Secret {
     /// The bytes the base64 stands for, surrounding whitespace ignored, or
     /// the error that it is not base64.
-    pub fn decoded(&self) -> Result<Vec<u8>, base64::DecodeError> {
+    pub fn decoded(&self) -> Result<Zeroizing<Vec<u8>>, base64::DecodeError> {
         use base64::Engine;
-        base64::engine::general_purpose::STANDARD.decode(self.0.trim())
+        base64::engine::general_purpose::STANDARD
+            .decode(self.0.trim())
+            .map(Zeroizing::new)
     }
 }
 

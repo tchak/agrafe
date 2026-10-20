@@ -15,6 +15,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hmac::{Hmac, KeyInit, Mac};
 use http::Method;
 use sha2::Sha256;
+use zeroize::Zeroizing;
 
 use crate::config::{ConfigError, SigningConfig};
 
@@ -44,7 +45,7 @@ pub enum SignatureError {
 /// `[signing]`: the current one to mint, any of them to verify.
 #[derive(Clone)]
 pub struct Signer {
-    keys: HashMap<String, Vec<u8>>,
+    keys: HashMap<String, Zeroizing<Vec<u8>>>,
     current: String,
     window: Duration,
     max_ttl: Duration,
@@ -256,8 +257,8 @@ mod tests {
 
     fn signer() -> Signer {
         let mut keys = HashMap::new();
-        keys.insert("k1".to_string(), vec![1u8; 32]);
-        keys.insert("k2".to_string(), vec![2u8; 32]);
+        keys.insert("k1".to_string(), Zeroizing::new(vec![1u8; 32]));
+        keys.insert("k2".to_string(), Zeroizing::new(vec![2u8; 32]));
         Signer {
             keys,
             current: "k1".to_string(),
