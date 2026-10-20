@@ -6,8 +6,6 @@ use std::path::Path;
 use agrafe_crypto::streaming::Layout;
 use agrafe_crypto::wrap::Kek;
 use agrafe_crypto::{Error as CryptoError, Key};
-use figment::Figment;
-use figment::providers::{Format, Toml};
 use uuid::Uuid;
 
 use crate::config::{Base64Secret, ConfigError, EncryptionConfig};
@@ -154,14 +152,24 @@ fn parse_kek(id: &str, secret: &Base64Secret) -> Result<Kek, ConfigError> {
 /// The KEKs in the file at `path`: a TOML table of id to base64 key, the
 /// body of `[encryption.keks]`. Read to its end in one go, so a FIFO works:
 /// the read blocks until the writer closes it. Nothing re-reads it later.
+///
+/// A malformed file is reported by line, never by content: the error ends
+/// up in the journal, and the content is a key, most likely one a human
+/// just mistyped at a prompt.
 fn read_keks_file(path: &Path) -> Result<HashMap<String, Base64Secret>, ConfigError> {
     let text = std::fs::read_to_string(path).map_err(|e| {
         ConfigError::Invalid(format!("encryption.keks_file `{}`: {e}", path.display()))
     })?;
-    Figment::from(Toml::string(&text)).extract().map_err(|e| {
+    toml::from_str(&text).map_err(|e| {
+        let line = e
+            .span()
+            .map(|span| text[..span.start.min(text.len())].matches('\n').count() + 1);
+        let at = line.map_or(String::new(), |line| format!(" at line {line}"));
         ConfigError::Invalid(format!(
-            "encryption.keks_file `{}` must be a TOML table of KEK id to base64 key: {e}",
-            path.display()
+            "encryption.keks_file `{}` must be a TOML table of KEK id to base64 key, \
+             `id = \"…\"` lines: {}{at}",
+            path.display(),
+            e.message()
         ))
     })
 }
@@ -277,6 +285,22 @@ mod tests {
         let file = keks_file("c = 42\n");
         config.keks_file = Some(file.path().to_path_buf());
         assert!(err(&config).contains("must be a TOML table of KEK id to base64 key"));
+
+        // A syntax error names the line, never its content: a key mistyped
+        // at the prompt must not land in the journal.
+        let kek = STANDARD.encode([9u8; 32]);
+        for (broken, line) in [
+            (format!("c = \"{kek}\n"), 1),
+            (format!("c = {kek}\n"), 1),
+            (format!("c = \"{kek}\" x\n"), 1),
+            (format!("b = \"{kek}\"\n\nc = \"{kek}\"\n{{{kek}}}\n"), 4),
+        ] {
+            let file = keks_file(&broken);
+            config.keks_file = Some(file.path().to_path_buf());
+            let message = err(&config);
+            assert!(!message.contains(&kek[..8]), "{message}");
+            assert!(message.ends_with(&format!(" at line {line}")), "{message}");
+        }
 
         let file = keks_file(&format!("a = \"{}\"\n", STANDARD.encode([9u8; 32])));
         config.keks_file = Some(file.path().to_path_buf());

@@ -319,7 +319,7 @@ message naming the key:
 | `` encryption KEK `…` must be 32 bytes `` | Generate it with `openssl rand -base64 32` |
 | `` encryption KEK `…` is given both in encryption.keks and in encryption.keks_file `` | Keep it in one place |
 | `` encryption.keks_file `…`: No such file or directory `` | Fix the path; a relative one is from the working directory |
-| `` encryption.keks_file `…` must be a TOML table of KEK id to base64 key: … `` | Write `id = "…"` lines, nothing else |
+| `` encryption.keks_file `…` must be a TOML table of KEK id to base64 key, `id = "…"` lines: … at line … `` | Fix that line. The message names the line, not its content, which would be a key |
 | `encryption.chunk_size must be at most 16777216 bytes (16 MiB)` | Lower it |
 | `blobs.default_expires_in must be at least 1h: …` | Raise it |
 | `media.variant_version must be at least 1` | Raise it |

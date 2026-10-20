@@ -50,6 +50,9 @@ tempfile = "3.27.0"
 thiserror = "2.0.21"
 tokio = { version = "1.54.0", features = ["rt", "macros", "net", "io-util", "sync", "time", "process", "fs"] }
 tokio-stream = "0.1.19"
+# The KEK file: parsed by hand so that a syntax error can be reported without
+# the offending line, which holds a key. figment's errors quote the source.
+toml = { version = "1.1.8", default-features = false, features = ["parse", "serde"] }
 tracing = "0.1.44"
 unicode-normalization = "0.1.26"
 url = "2.5.8"
