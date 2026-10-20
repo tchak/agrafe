@@ -34,7 +34,9 @@ talks to the network besides Postgres, the object store and `clamd`.
 Each render runs under Landlock and seccomp on Linux (see [Security
 model](security.md#sandboxed-rendering)). Nothing is needed for it: a
 kernel of 5.13 or newer has Landlock, every kernel in service has
-seccomp, and Docker's default seccomp profile allows both. Set
+seccomp, and Docker's default seccomp profile allows both. The startup
+probe reads a file with `cat`, so the image needs coreutils (a
+distroless image does not have it). Set
 `media.sandbox.isolation = "required"` in production so that the worker
 refuses to start without them, and watch the `sandbox:` line in the
 worker's log. A host that keeps fonts or poppler's data outside `/usr`,

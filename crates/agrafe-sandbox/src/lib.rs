@@ -472,16 +472,25 @@ pub enum ProbeError {
     /// claimed to be enforced.
     #[error("the sandbox let `{program}` read outside the directories it was granted")]
     NotRefused { program: String },
+    /// The probe reads a file with `cat`, which this host does not have.
+    #[error("the sandbox probe needs `{program}` on PATH, and this host has none")]
+    Tool { program: String },
     #[error("temporary files for the sandbox probe: {0}")]
     Io(#[from] std::io::Error),
 }
 
+/// The one tool the probe runs. Resolved before anything else, so a host
+/// without it says so instead of reporting a missing layer.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+const PROBE_TOOL: &str = "cat";
+
 /// Learn what the sandbox confines a child with, and that it refuses what
-/// it should: two sibling temporary directories, one granted, and a read
-/// of a file in each. The granted read must succeed and the other must
-/// fail where Landlock is enforced. With [`Isolation::Required`] a layer
-/// that does not install is an error; with [`Isolation::Auto`] it is
-/// reported in the [`Status`].
+/// it should: two sibling temporary directories, one granted, and `cat`
+/// on a file in each, first under seccomp alone to learn whether the
+/// filter installs, then under both layers. The granted read must succeed
+/// and the other must fail where Landlock is enforced. With
+/// [`Isolation::Required`] a layer that does not install is an error;
+/// with [`Isolation::Auto`] it is reported in the [`Status`].
 pub async fn probe(config: &Config) -> Result<Status, ProbeError> {
     if config.isolation == Isolation::Off {
         return Ok(Status {
@@ -496,13 +505,36 @@ pub async fn probe(config: &Config) -> Result<Status, ProbeError> {
 #[cfg(target_os = "linux")]
 async fn probe_confinement(config: &Config) -> Result<Status, ProbeError> {
     let strict = config.isolation.strict();
+    let tool = resolve(OsStr::new(PROBE_TOOL));
+    if !tool.is_absolute() {
+        return Err(ProbeError::Tool {
+            program: PROBE_TOOL.to_string(),
+        });
+    }
+    let program = tool.to_string_lossy().into_owned();
+
+    let root = tempfile::Builder::new()
+        .prefix("agrafe-sandbox-")
+        .tempdir()?;
+    let granted = root.path().join("granted");
+    let other = root.path().join("other");
+    for dir in [&granted, &other] {
+        std::fs::create_dir(dir)?;
+        std::fs::write(dir.join("file"), b"agrafe\n")?;
+    }
+    let read_granted = || {
+        let mut cat = Command::new(&tool);
+        cat.arg(granted.join("file")).readable(&granted);
+        cat
+    };
+
     let seccomp = {
         let only_seccomp = Layers {
             landlock: false,
             seccomp: true,
             strict: true,
         };
-        match run_with(Command::new("true"), config, only_seccomp).await {
+        match run_with(read_granted(), config, only_seccomp).await {
             Ok(_) => true,
             Err(Error::Spawn { .. }) if !strict => false,
             Err(Error::Spawn { program, source }) => {
@@ -517,20 +549,7 @@ async fn probe_confinement(config: &Config) -> Result<Status, ProbeError> {
         strict,
     };
 
-    let root = tempfile::Builder::new()
-        .prefix("agrafe-sandbox-")
-        .tempdir()?;
-    let granted = root.path().join("granted");
-    let other = root.path().join("other");
-    for dir in [&granted, &other] {
-        std::fs::create_dir(dir)?;
-        std::fs::write(dir.join("file"), b"agrafe\n")?;
-    }
-
-    let mut inside = Command::new("cat");
-    inside.arg(granted.join("file")).readable(&granted);
-    let program = inside.program.to_string_lossy().into_owned();
-    let (outcome, applied) = run_with(inside, config, layers).await?;
+    let (outcome, applied) = run_with(read_granted(), config, layers).await?;
     match outcome {
         Outcome::Success => {}
         Outcome::Failed { status, stderr, .. } => {
@@ -549,7 +568,7 @@ async fn probe_confinement(config: &Config) -> Result<Status, ProbeError> {
         }
     }
 
-    let mut outside = Command::new("cat");
+    let mut outside = Command::new(&tool);
     outside.arg(other.join("file")).readable(&granted);
     let (outcome, _) = run_with(outside, config, layers).await?;
     let landlock = match (applied.landlock, outcome) {

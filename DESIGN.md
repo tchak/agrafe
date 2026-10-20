@@ -2055,9 +2055,11 @@ list of extra read-only paths. Under `auto`, a layer that fails to
 install in the child is skipped; under `required` it fails the spawn.
 
 *The probe asserts a refusal.* Before the render probe, the worker runs
-`agrafe_sandbox::probe`: a spawn with the seccomp filter alone, to learn
-whether it installs; then two sibling temporary directories, one granted,
-and `cat` on a file in each. The granted read must succeed, or the system
+`agrafe_sandbox::probe`: two sibling temporary directories, one granted,
+and `cat` on a file in each, first under the seccomp filter alone, to
+learn whether it installs, then under both layers. `cat` is the one tool
+the probe needs, resolved first so that an image without coreutils says
+so instead of reporting a missing layer. The granted read must succeed, or the system
 set misses something this host needs, which is a startup error in every
 mode; the other must fail where Landlock is enforced, or the ruleset is
 not doing its job. Under `required` a kernel that cannot refuse is a
