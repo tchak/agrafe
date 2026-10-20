@@ -2428,17 +2428,23 @@ row that never recorded it (a `PUT` whose row update failed), a part or
 a representation the row says is not there. And an object present but
 wrong: truncated or corrupted ciphertext.
 
-The sweep streams the bucket listing, one request per thousand objects,
-and takes the objects of a blob as one group, which holds for the sorted
-listings of S3, GCS and Azure and for the directory walk of the local
-backend alike; a backend that scattered a prefix would be refused, not
-misread. A thousand prefixes at a time are looked up in one query and
-checked against their rows, and recorded in a temporary table of the
-session the audit holds; at the end the rows that should have objects
-(an original, source parts, a `ready` representation; not terminal, not
-purged) and whose prefix never came up are read back by an anti-join
-against that table. No order is assumed of the listing and nothing is
-held in memory for the length of the bucket. The listing carries sizes,
+The sweep merges the bucket listing with the `blobs` table in id order,
+one pass over each and nothing held for the length of the bucket, in
+memory or in the database. S3, GCS and Azure list their keys sorted, and
+the hyphenated lowercase UUID at the head of every key sorts as the
+`uuid` column does (both bytewise), so the objects of a blob come as one
+group and the rows between two groups are the ones the listing has
+nothing for; a key whose first segment is any other spelling of a UUID is
+foreign, not a prefix. The listing is one request per thousand objects,
+the rows one query per thousand, paged by id over the rows that require
+objects (an original, source parts, a `ready` representation; not
+terminal, not purged), and a listed prefix with no such row is looked up
+by id, since a tombstone's leftovers and a `created` blob's stray object
+are orphans of a different kind than a prefix with no row at all. A
+backend that listed a prefix out of order would be refused
+(`AuditError::Unsorted`), not misread. The local backend walks its
+directory in filesystem order and its listing, development-sized, is
+sorted in memory. The listing carries sizes,
 so truncation is caught without a read: the expected ciphertext length
 of the original and of each representation follows from the plaintext
 size and `chunk_size` (`Layout::ciphertext_len`), and a source part's
@@ -2472,8 +2478,10 @@ render replacing it: what the listing shows of it is not evidence. Such
 a row is counted as unsettled and left for the next run, which with ids
 ordered by time (UUID v7) is also what makes the rows created after the
 listing ended safe, since they are unsettled by construction. What the
-row does not account for is reported either way, and deleted only when
-the object itself is old enough. The stamp on a missing or damaged
+row does not account for is judged by the object's own age: one written
+within `upload.stale_after` of the listing passing it is what an upload
+or a render in flight looks like, its row not yet updated, and is left
+for the next run too. The stamp on a missing or damaged
 original is conditional on the state the row was read in and on no
 purge since, so a row that moved on meanwhile is not written.
 

@@ -275,6 +275,37 @@ async fn a_missing_representation_is_rendered_again(pool: PgPool) {
     assert_eq!(report.objects, 3);
 }
 
+/// The merge: rows the listing has nothing for sit between listed
+/// prefixes, before the first and after the last, and each is found.
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn rows_between_listed_prefixes_are_checked(pool: PgPool) {
+    let app = settled_setup(pool).await;
+    let mut ids = Vec::new();
+    for _ in 0..5 {
+        ids.push(id_of(&ready_blob(&app, &png_bytes(100)).await).to_string());
+    }
+    let mut sorted = ids.clone();
+    sorted.sort();
+    assert_eq!(ids, sorted, "ids are ordered by time");
+    for i in [0, 2, 4] {
+        delete_object(&app, &storage_key(&app, &ids[i]).await).await;
+    }
+    // A prefix with no row between two that have one.
+    put_object(&app, &format!("{}/original", uuid::Uuid::now_v7()), vec![1]).await;
+
+    let report = audit_now(&app).await;
+    assert_eq!(
+        counts(&report),
+        vec![(Finding::MissingOriginal, 3), (Finding::Orphan, 1)],
+        "{report}"
+    );
+    assert_eq!((report.objects, report.blobs), (3, 5));
+    for (i, id) in ids.iter().enumerate() {
+        let stamped = get_blob(&app, id).await["failed_at"].is_string();
+        assert_eq!(stamped, i % 2 == 0, "blob {i}");
+    }
+}
+
 /// The objects nothing accounts for, under a blob of `app` whose id is
 /// returned with the keys planted.
 async fn plant_orphans(app: &TestApp) -> (String, Vec<String>) {
@@ -305,7 +336,7 @@ async fn plant_orphans(app: &TestApp) -> (String, Vec<String>) {
 
 #[sqlx::test(migrator = "MIGRATOR")]
 async fn orphans_are_reported_and_left_alone(pool: PgPool) {
-    let app = setup(pool).await;
+    let app = settled_setup(pool).await;
     let (id, _) = plant_orphans(&app).await;
     let before = object_keys(&app).await;
     assert_eq!(before.len(), 7);
@@ -319,14 +350,24 @@ async fn orphans_are_reported_and_left_alone(pool: PgPool) {
     assert_eq!(report.deleted, 0);
     assert_eq!(object_keys(&app).await, before);
     assert_eq!(get_blob(&app, &id).await["failed_at"], json!(null));
-    assert_eq!(report.unsettled, 1, "the live row, just written: {report}");
+}
 
-    // Under --fix too: every one of them is younger than upload.stale_after,
-    // which is what an upload or a render in flight looks like.
+/// An object younger than `upload.stale_after` that no row accounts for
+/// is what an upload or a render in flight looks like, its row not yet
+/// updated: not a finding, not deleted, left for the next run.
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn young_orphans_are_left_for_the_next_run(pool: PgPool) {
+    let app = setup(pool).await;
+    let (id, _) = plant_orphans(&app).await;
+    let before = object_keys(&app).await;
+
     let report = audit_with(&app, FIX).await;
-    assert_eq!(report.count(Finding::Orphan), 4);
+    assert_eq!(counts(&report), vec![(Finding::Foreign, 2)], "{report}");
+    assert_eq!(report.young, 4);
+    assert_eq!(report.unsettled, 1, "the live row, just written: {report}");
     assert_eq!(report.deleted, 0);
     assert_eq!(object_keys(&app).await, before);
+    assert_eq!(get_blob(&app, &id).await["failed_at"], json!(null));
 }
 
 #[sqlx::test(migrator = "MIGRATOR")]

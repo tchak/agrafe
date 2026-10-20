@@ -133,9 +133,10 @@ The `audit` job checks that the bucket and the `blobs` table agree, every
 `jobs.audit_interval`, seven days by default, the first run one interval
 after the workers start. It is for the mismatches nothing else sees: a
 bucket or a database restored from backup, a lifecycle rule, a bad purge.
-It streams the bucket listing, one request per thousand objects, and
-looks the blobs up a thousand at a time. The listing's sizes are enough
-to catch a truncated object; nothing is decrypted.
+It merges the bucket listing, one request per thousand objects, with the
+blobs table, one query per thousand rows, both in id order; nothing is
+held for the length of the bucket. The listing's sizes are enough to
+catch a truncated object; nothing is decrypted.
 
 What it finds, one `warn` line per finding and a tally in the metrics:
 
@@ -151,7 +152,9 @@ What it finds, one `warn` line per finding and a tally in the metrics:
 A row that changed within `upload.stale_after` of the listing passing it
 is left for the next run and counted as unsettled: an upload or a render
 finishing as the audit went by may have written an object after the
-listing looked, and the listing is not evidence against it.
+listing looked, and the listing is not evidence against it. An object
+that young which no row accounts for is left alone the same way, its
+row may not say so yet.
 
 The job never deletes. Deleting is `agrafe audit --fix` on the command
 line, the operator with the report in front of them, and even then only

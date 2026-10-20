@@ -10,20 +10,21 @@
 //! back. Like the reaper, each run schedules the next one
 //! `jobs.audit_interval` later before doing its work.
 //!
-//! The listing is streamed in whatever order the store gives it and the
-//! objects of a blob are taken as one group, which holds for the sorted
-//! listings of the cloud backends and for the local backend's directory
-//! walk alike. The prefixes seen go into a temporary table of the session
-//! the audit holds, and the rows holding objects that never came up are
-//! read back from it at the end: no order is assumed, and nothing is held
-//! in memory for the length of the bucket.
+//! The listing and the table are merged in id order, one pass over each:
+//! the cloud backends list their keys sorted, and the hyphenated lowercase
+//! UUID at the head of every key sorts as the `uuid` column does, so the
+//! objects of a blob come as one group and the rows between two groups
+//! are the ones the listing has nothing for. The local backend's directory
+//! walk is sorted in memory, it is for development. Nothing is held for
+//! the length of the bucket, in memory or in the database.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::num::NonZeroU32;
 
 use agrafe_crypto::streaming::Layout;
-use futures::TryStreamExt as _;
+use futures::stream::{self, BoxStream};
+use futures::{StreamExt as _, TryFutureExt as _, TryStreamExt as _};
 use jiff::Timestamp;
 use jiff_sqlx::ToSqlx as _;
 use object_store::{ObjectMeta, ObjectStoreExt as _};
@@ -35,6 +36,7 @@ use super::{Job, JobError, JobKind, Priority};
 use crate::app::Agrafe;
 use crate::blob::read::{Columns, ReadError, Reader, Stored};
 use crate::blob::{self, BlobState, Representation, RepresentationState, repo};
+use crate::config::StorageConfig;
 
 /// Why an audit could not run to the end. A mismatch it finds is a
 /// finding, not an error.
@@ -44,10 +46,11 @@ pub enum AuditError {
     /// command line.
     #[error("another audit is running")]
     Running,
-    /// The store listed the objects of one blob in more than one run,
-    /// which no supported backend does; the audit needs them grouped.
-    #[error("the store lists the objects of blob {0} apart; the audit needs them together")]
-    Scattered(Uuid),
+    /// The store listed this blob's objects after those of a greater id,
+    /// which no supported backend does; the audit merges the listing with
+    /// the table in id order.
+    #[error("the store lists blob {0} out of order; the audit needs the listing sorted by key")]
+    Unsorted(Uuid),
     /// Listing the bucket, or deleting an orphan, failed.
     #[error("object store: {0}")]
     Store(#[from] object_store::Error),
@@ -126,6 +129,10 @@ pub struct Report {
     /// passing their prefix, left for the next run: what the listing
     /// showed of them may predate the change.
     pub unsettled: u64,
+    /// Objects no row accounts for, written within `upload.stale_after`
+    /// of the listing passing them, left for the next run: an upload or
+    /// a render whose row does not say so yet.
+    pub young: u64,
     /// Findings by kind, in the order of `Finding::ALL`.
     counts: [u64; Finding::ALL.len()],
 }
@@ -182,7 +189,8 @@ impl fmt::Display for Report {
             self.count(Finding::Foreign)
         )?;
         writeln!(f, "orphans deleted:         {}", self.deleted)?;
-        write!(f, "rows left for next run:  {}", self.unsettled)
+        writeln!(f, "rows left for next run:  {}", self.unsettled)?;
+        write!(f, "young objects left:      {}", self.young)
     }
 }
 
@@ -214,6 +222,7 @@ pub(crate) async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
                 orphans = report.count(Finding::Orphan),
                 foreign = report.count(Finding::Foreign),
                 unsettled = report.unsettled,
+                young = report.young,
                 "audited"
             );
             Ok(())
@@ -248,18 +257,17 @@ pub async fn schedule(exec: impl PgExecutor<'_>, run_at: Timestamp) -> sqlx::Res
 #[doc(hidden)]
 pub const LOCK: i32 = 0x6175_6469; // "audi"
 
-/// Prefixes looked up per query: one round trip to the database per
-/// thousand blobs listed, as the listing is one request per thousand
-/// objects.
-const BATCH: usize = 1000;
+/// Rows read per query: one round trip to the database per thousand
+/// blobs, as the listing is one request per thousand objects.
+const PAGE: i64 = 1000;
 
 /// Stamp left on a blob whose original the audit found missing or damaged.
 const STAMP: &str = "audit: ";
 
 async fn audit(state: &Agrafe, options: Options) -> Result<Report, AuditError> {
     let now = Timestamp::now();
-    // One session for the run: it holds the lock and the table of prefixes
-    // seen, and closing it, however the run ends, releases both.
+    // One session for the run: it holds the lock and reads the rows, and
+    // closing it, however the run ends, releases the lock.
     let mut conn = state.pool().acquire().await?.detach();
     let held: bool =
         sqlx::query_scalar("SELECT pg_try_advisory_lock(hashtext(current_database()), $1)")
@@ -290,6 +298,8 @@ async fn audit(state: &Agrafe, options: Options) -> Result<Report, AuditError> {
 struct Group {
     id: Uuid,
     objects: Vec<ObjectMeta>,
+    /// When the listing reached the prefix.
+    listed_at: Timestamp,
 }
 
 async fn sweep(
@@ -298,27 +308,17 @@ async fn sweep(
     options: Options,
     now: Timestamp,
 ) -> Result<Report, AuditError> {
-    sqlx::query("CREATE TEMP TABLE audit_seen (id uuid PRIMARY KEY)")
-        .execute(&mut *conn)
-        .await?;
-    let stale_before = now
-        .checked_sub(state.config().upload.stale_after)
-        .unwrap_or(Timestamp::MIN);
     let mut sweep = Sweep {
         state,
         options,
-        now,
-        stale_before,
         listed_at: now,
+        last: None,
         report: Report::default(),
     };
+    let mut rows = Rows::new(conn, now);
 
-    let mut listing = state.store().list(None);
-    let mut batch: Vec<Group> = Vec::new();
+    let mut listing = listing(state);
     let mut current: Option<Group> = None;
-    // When the listing of the batch being gathered began: what a row
-    // changed after this says may postdate what the listing showed.
-    let mut batch_started = Timestamp::now();
     while let Some(object) = listing.try_next().await? {
         sweep.report.objects += 1;
         let Some(id) = prefix_of(&object) else {
@@ -331,45 +331,59 @@ async fn sweep(
                 let group = Group {
                     id,
                     objects: vec![object],
+                    listed_at: Timestamp::now(),
                 };
                 if let Some(done) = current.replace(group) {
-                    batch.push(done);
-                }
-                if batch.len() >= BATCH {
-                    sweep.listed_at = batch_started;
-                    sweep.check_batch(conn, std::mem::take(&mut batch)).await?;
-                    batch_started = Timestamp::now();
+                    sweep.merge(&mut rows, done).await?;
                 }
             }
         }
     }
-    batch.extend(current);
-    sweep.listed_at = batch_started;
-    sweep.check_batch(conn, batch).await?;
+    if let Some(done) = current {
+        sweep.merge(&mut rows, done).await?;
+    }
 
-    // The rows that should have objects and whose prefix never came up.
-    // The listing passed them all when it ended: a row that changed since,
-    // or will while this pass runs, is left alone.
+    // The rows after the last prefix listed: the listing passed them all
+    // when it ended, with nothing for them.
     sweep.listed_at = Timestamp::now();
-    let mut cursor = Uuid::nil();
-    loop {
-        let rows = unseen(conn, cursor, now).await?;
-        let Some(last) = rows.last() else { break };
-        cursor = last.id;
-        for row in &rows {
-            sweep.check(row, &[]).await?;
-        }
+    while let Some(row) = rows.next().await? {
+        sweep.check(&row, &[]).await?;
     }
     Ok(sweep.report)
 }
 
+/// The bucket's objects in key order. The cloud backends list sorted;
+/// the local backend walks its directory in whatever order the filesystem
+/// gives, so its listing, development-sized, is sorted in memory.
+fn listing(state: &Agrafe) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
+    let store = state.store().clone();
+    if !matches!(state.config().storage, StorageConfig::Local { .. }) {
+        return store.list(None);
+    }
+    async move {
+        let mut objects: Vec<ObjectMeta> = store.list(None).try_collect().await?;
+        objects.sort_by(|a, b| a.location.cmp(&b.location));
+        Ok(stream::iter(objects.into_iter().map(Ok)))
+    }
+    .try_flatten_stream()
+    .boxed()
+}
+
 /// The blob an object belongs to: the first segment of its key, when it is
-/// a UUID and there is a name after it.
+/// a UUID as agrafe writes them, hyphenated and lowercase, and there is a
+/// name after it. Any other spelling the parser would take is foreign:
+/// `check` matches names under the canonical prefix, and the merge relies
+/// on the key order being the id order.
 fn prefix_of(object: &ObjectMeta) -> Option<Uuid> {
     let mut parts = object.location.parts();
     let first = parts.next()?;
     parts.next()?;
-    first.as_ref().parse().ok()
+    let first = first.as_ref();
+    let canonical = first.len() == 36
+        && first
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f' | b'-'));
+    canonical.then(|| first.parse().ok()).flatten()
 }
 
 /// The columns an audit reads of a row, `Row` in the same order. A macro
@@ -429,111 +443,129 @@ impl Row {
     }
 }
 
-/// The rows of `ids`, by id.
-async fn rows(conn: &mut PgConnection, ids: &[Uuid]) -> sqlx::Result<HashMap<Uuid, Row>> {
-    let rows: Vec<Row> = sqlx::query_as(concat!(
-        "SELECT ",
-        columns!(),
-        " FROM blobs WHERE id = ANY($1)"
-    ))
-    .bind(ids)
-    .fetch_all(&mut *conn)
-    .await?;
-    Ok(rows.into_iter().map(|row| (row.id, row)).collect())
+/// The rows that require objects, in id order, a page at a time: not
+/// terminal, not purged, not expired at the start of the sweep, and
+/// naming an original, source parts or a `ready` representation. The
+/// rows that require nothing, tombstones among them, are looked up by
+/// id when the listing has objects under their prefix.
+struct Rows<'c> {
+    conn: &'c mut PgConnection,
+    now: Timestamp,
+    page: VecDeque<Row>,
+    cursor: Uuid,
+    done: bool,
 }
 
-/// A page of the rows after `cursor` that should have objects in the
-/// bucket, not terminal, not purged, and whose prefix the listing never
-/// showed: the ones the merge over the listing could not have checked.
-async fn unseen(conn: &mut PgConnection, cursor: Uuid, now: Timestamp) -> sqlx::Result<Vec<Row>> {
-    sqlx::query_as(concat!(
-        "SELECT ",
-        columns!(),
-        " FROM blobs b \
-         WHERE b.id > $1 AND b.purged_at IS NULL \
-           AND b.state <> ALL($2) AND (b.expires_at IS NULL OR b.expires_at > $3) \
-           AND (b.storage_key IS NOT NULL OR b.source_parts > 0 \
-                OR b.thumbnail_state = $4 OR b.preview_state = $4) \
-           AND NOT EXISTS (SELECT 1 FROM audit_seen s WHERE s.id = b.id) \
-         ORDER BY b.id LIMIT $5"
-    ))
-    .bind(cursor)
-    .bind(
-        [BlobState::Infected, BlobState::Expired, BlobState::Deleted]
-            .map(BlobState::as_str)
-            .to_vec(),
-    )
-    .bind(now.to_sqlx())
-    .bind(RepresentationState::Ready.as_str())
-    .bind(BATCH as i64)
-    .fetch_all(&mut *conn)
-    .await
+impl<'c> Rows<'c> {
+    fn new(conn: &'c mut PgConnection, now: Timestamp) -> Self {
+        Self {
+            conn,
+            now,
+            page: VecDeque::new(),
+            cursor: Uuid::nil(),
+            done: false,
+        }
+    }
+
+    async fn peek(&mut self) -> sqlx::Result<Option<&Row>> {
+        if self.page.is_empty() && !self.done {
+            let rows: Vec<Row> = sqlx::query_as(concat!(
+                "SELECT ",
+                columns!(),
+                " FROM blobs \
+                 WHERE id > $1 AND purged_at IS NULL \
+                   AND state <> ALL($2) AND (expires_at IS NULL OR expires_at > $3) \
+                   AND (storage_key IS NOT NULL OR source_parts > 0 \
+                        OR thumbnail_state = $4 OR preview_state = $4) \
+                 ORDER BY id LIMIT $5"
+            ))
+            .bind(self.cursor)
+            .bind(
+                [BlobState::Infected, BlobState::Expired, BlobState::Deleted]
+                    .map(BlobState::as_str)
+                    .to_vec(),
+            )
+            .bind(self.now.to_sqlx())
+            .bind(RepresentationState::Ready.as_str())
+            .bind(PAGE)
+            .fetch_all(&mut *self.conn)
+            .await?;
+            match rows.last() {
+                Some(last) => self.cursor = last.id,
+                None => self.done = true,
+            }
+            self.page.extend(rows);
+        }
+        Ok(self.page.front())
+    }
+
+    async fn next(&mut self) -> sqlx::Result<Option<Row>> {
+        self.peek().await?;
+        Ok(self.page.pop_front())
+    }
+}
+
+/// The row of `id`, whatever its state.
+async fn find(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Result<Option<Row>> {
+    sqlx::query_as(concat!("SELECT ", columns!(), " FROM blobs WHERE id = $1"))
+        .bind(id)
+        .fetch_optional(exec)
+        .await
 }
 
 struct Sweep<'a> {
     state: &'a Agrafe,
     options: Options,
-    now: Timestamp,
-    /// An orphan modified before this may be deleted; a younger one may be
-    /// an upload or a render that has not updated its row yet.
-    stale_before: Timestamp,
     /// When the listing passed the prefixes of the rows being checked. A
     /// row that changed within `upload.stale_after` before it, or after
     /// it, may record an object written after the listing looked, or a
-    /// new size for one it listed: what the listing shows of it is not
-    /// evidence, and it is left for the next run.
+    /// new size for one it listed; an object written within
+    /// `upload.stale_after` before it may belong to a row that has not
+    /// recorded it yet. Neither is evidence, and both are left for the
+    /// next run.
     listed_at: Timestamp,
+    /// The last prefix listed, which the next must follow.
+    last: Option<Uuid>,
     report: Report,
 }
 
 impl Sweep<'_> {
-    /// Look the rows of `groups` up in one query, record the prefixes as
-    /// seen, and check each group against its row.
-    async fn check_batch(
-        &mut self,
-        conn: &mut PgConnection,
-        groups: Vec<Group>,
-    ) -> Result<(), AuditError> {
-        if groups.is_empty() {
-            return Ok(());
+    /// One listed group against the table: the rows before its prefix
+    /// have nothing listed, its own row has its objects, and no row at
+    /// all makes its objects orphans.
+    async fn merge(&mut self, rows: &mut Rows<'_>, group: Group) -> Result<(), AuditError> {
+        if self.last.is_some_and(|last| group.id <= last) {
+            return Err(AuditError::Unsorted(group.id));
         }
-        let mut ids = HashSet::with_capacity(groups.len());
-        for group in &groups {
-            if !ids.insert(group.id) {
-                return Err(AuditError::Scattered(group.id));
-            }
+        self.last = Some(group.id);
+        self.listed_at = group.listed_at;
+        while rows.peek().await?.is_some_and(|row| row.id < group.id) {
+            let row = rows.next().await?.expect("peeked");
+            self.check(&row, &[]).await?;
         }
-        let ids: Vec<Uuid> = ids.into_iter().collect();
-        let inserted: Vec<Uuid> = sqlx::query_scalar(
-            "INSERT INTO audit_seen (id) SELECT unnest($1::uuid[]) \
-             ON CONFLICT DO NOTHING RETURNING id",
-        )
-        .bind(&ids)
-        .fetch_all(&mut *conn)
-        .await?;
-        if inserted.len() != ids.len() {
-            let inserted: HashSet<Uuid> = inserted.into_iter().collect();
-            let again = ids.iter().find(|id| !inserted.contains(id)).copied();
-            return Err(AuditError::Scattered(again.unwrap_or_default()));
+        if rows.peek().await?.is_some_and(|row| row.id == group.id) {
+            let row = rows.next().await?.expect("peeked");
+            return self.check(&row, &group.objects).await;
         }
-        let rows = rows(conn, &ids).await?;
-        for group in &groups {
-            match rows.get(&group.id) {
-                Some(row) => self.check(row, &group.objects).await?,
-                None => {
-                    for object in &group.objects {
-                        self.orphan(object, "no row has this id").await?;
-                    }
+        // Not among the rows that require objects: a tombstone, a blob
+        // awaiting its purge, a `created` one with nothing yet, or no row
+        // at all. The lookup also covers a row that appeared after its
+        // page was read.
+        match find(self.state.pool(), group.id).await? {
+            Some(row) => self.check(&row, &group.objects).await,
+            None => {
+                for object in &group.objects {
+                    self.orphan(object, "no row has this id").await?;
                 }
+                Ok(())
             }
         }
-        Ok(())
     }
 
     /// One blob against the objects under its prefix.
     async fn check(&mut self, row: &Row, objects: &[ObjectMeta]) -> Result<(), AuditError> {
         self.report.blobs += 1;
-        let state = blob::state_at(row.state, row.expires_at, self.now);
+        let state = blob::state_at(row.state, row.expires_at, self.listed_at);
         if row.purged_at.is_some() {
             // A tombstone: the purge took everything, so anything left is
             // an orphan.
@@ -550,8 +582,9 @@ impl Sweep<'_> {
         // What the row requires is checked only once the row has stood
         // still for `upload.stale_after` before the listing passed it; an
         // object it names may otherwise have been written, or replaced,
-        // after the listing looked. What it does not account for is
-        // reported either way, and deleted only when old enough.
+        // after the listing looked. An object that young is not judged
+        // either, see `young`: the row was read before the listing
+        // reached it and may not have recorded the object yet.
         let settled = row.updated_at <= self.settled_before();
         if !settled {
             self.report.unsettled += 1;
@@ -580,7 +613,7 @@ impl Sweep<'_> {
                         .zip(row.size)
                         .map(|(layout, size)| layout.ciphertext_len(size as u64));
                     match want {
-                        Some(want) if want != object.size => {
+                        Some(want) if want != object.size && !self.young(object) => {
                             self.stamp(
                                 row,
                                 Finding::DamagedOriginal,
@@ -612,6 +645,7 @@ impl Sweep<'_> {
                     if let Some(want) = want
                         && want != object.size
                         && settled
+                        && !self.young(object)
                     {
                         self.rerender(
                             row,
@@ -646,6 +680,7 @@ impl Sweep<'_> {
                     if let Some(layout) = layout
                         && layout.plaintext_len(object.size).is_err()
                         && settled
+                        && !self.young(object)
                     {
                         self.missing_source(
                             row,
@@ -671,11 +706,19 @@ impl Sweep<'_> {
     }
 
     /// A row that last changed before this stood still for
-    /// `upload.stale_after` before the listing passed its prefix.
+    /// `upload.stale_after` before the listing passed its prefix, and an
+    /// object written before this was there for as long.
     fn settled_before(&self) -> Timestamp {
         self.listed_at
             .checked_sub(self.state.config().upload.stale_after)
             .unwrap_or(Timestamp::MIN)
+    }
+
+    /// Whether the object was written within `upload.stale_after` of the
+    /// listing passing it: an upload or a render in flight, whose row may
+    /// not say so yet.
+    fn young(&self, object: &ObjectMeta) -> bool {
+        object.last_modified.timestamp() > self.settled_before().as_second()
     }
 
     /// Whether this original is in the deep sample.
@@ -765,12 +808,17 @@ impl Sweep<'_> {
         tracing::warn!(key = %object.location, size = object.size, finding = %Finding::Foreign, "audit: object outside the layout");
     }
 
-    /// An object no row accounts for: reported, and under `--fix` deleted
-    /// once it is older than `upload.stale_after`.
+    /// An object no row accounts for: reported, and under `--fix` deleted.
+    /// One younger than `upload.stale_after` is left for the next run: an
+    /// upload or a render that has written its object and not yet updated
+    /// its row looks the same.
     async fn orphan(&mut self, object: &ObjectMeta, why: &str) -> Result<(), AuditError> {
+        if self.young(object) {
+            self.report.young += 1;
+            return Ok(());
+        }
         self.report.add(Finding::Orphan);
-        let old = object.last_modified.timestamp() <= self.stale_before.as_second();
-        if self.options.fix && old {
+        if self.options.fix {
             match self.state.store().delete(&object.location).await {
                 Ok(()) | Err(object_store::Error::NotFound { .. }) => {}
                 Err(err) => return Err(err.into()),
@@ -840,6 +888,18 @@ mod tests {
         assert_eq!(prefix_of(&meta(&format!("{id}/source/3"))), Some(id));
         assert_eq!(prefix_of(&meta(&id.to_string())), None, "no name");
         assert_eq!(prefix_of(&meta("junk/original")), None);
+        assert_eq!(
+            prefix_of(&meta(&format!("{}/original", id.as_simple()))),
+            None,
+            "not the spelling agrafe writes"
+        );
+        assert_eq!(
+            prefix_of(&meta(&format!(
+                "{}/original",
+                id.to_string().to_uppercase()
+            ))),
+            None
+        );
         assert_eq!(prefix_of(&meta("README")), None);
     }
 }
