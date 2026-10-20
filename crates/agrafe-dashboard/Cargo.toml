@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 description = "The HTML dashboard of agrafe as an axum router: the queue, the blobs and the attachments, for operators"
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+keywords = ["axum", "dashboard", "file-storage", "admin", "job-queue"]
+categories = ["web-programming::http-server"]
 
 [lints]
 workspace = true

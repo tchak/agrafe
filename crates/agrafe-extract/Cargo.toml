@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 description = "Sandboxed helper: pulls the embedded image out of a PDF, DOCX or ODT that is really a wrapped picture"
+repository.workspace = true
+homepage.workspace = true
+keywords = ["pdf", "docx", "odt", "image", "extract"]
+categories = ["multimedia::images", "parser-implementations"]
 
 [lints]
 workspace = true

@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 description = "Sandboxed helper: rasterises the first lines of a text file for its thumbnail"
+repository.workspace = true
+homepage.workspace = true
+keywords = ["thumbnail", "text", "rasterize", "monospace"]
+categories = ["multimedia::images", "rendering"]
 
 [lints]
 workspace = true

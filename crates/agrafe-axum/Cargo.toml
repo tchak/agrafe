@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 description = "The HTTP interfaces of agrafe as axum routers, to serve or to nest in another application"
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+keywords = ["axum", "file-storage", "upload", "signed-url", "router"]
+categories = ["web-programming::http-server"]
 
 [lints]
 workspace = true

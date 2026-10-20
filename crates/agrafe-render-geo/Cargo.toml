@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 description = "Sandboxed helper: draws the geometry of a GeoJSON file as SVG paths over the map extent it chose"
+repository.workspace = true
+homepage.workspace = true
+keywords = ["geojson", "map", "svg", "mercator"]
+categories = ["science::geo", "rendering"]
 
 [lints]
 workspace = true

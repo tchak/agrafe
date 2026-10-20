@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 description = "Content types, classification and sniffing shared by the agrafe crates"
+repository.workspace = true
+homepage.workspace = true
+keywords = ["mime", "content-type", "sniffing", "geojson"]
+categories = ["encoding", "parser-implementations"]
 
 [lints]
 workspace = true

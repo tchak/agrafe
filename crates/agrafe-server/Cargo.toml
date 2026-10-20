@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 description = "The agrafe binary: serve the two interfaces and the workers, run migrations"
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+keywords = ["file-storage", "upload", "antivirus", "thumbnail", "server"]
+categories = ["web-programming::http-server", "command-line-utilities"]
 
 [lints]
 workspace = true

@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 description = "Runs decoders and renderers as subprocesses with resource limits"
+repository.workspace = true
+homepage.workspace = true
+keywords = ["sandbox", "landlock", "seccomp", "rlimit", "subprocess"]
+categories = ["os::linux-apis", "os::unix-apis"]
 
 [lints]
 workspace = true

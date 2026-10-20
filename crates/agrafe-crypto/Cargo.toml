@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 description = "Streaming AEAD (Tink AES-GCM-HKDF-STREAMING) and key wrapping for agrafe"
+repository.workspace = true
+homepage.workspace = true
+keywords = ["aead", "aes-gcm", "streaming", "tink", "envelope-encryption"]
+categories = ["cryptography"]
 
 [lints]
 workspace = true

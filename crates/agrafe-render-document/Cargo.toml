@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 description = "Sandboxed helper: compiles a typst workspace into a PDF"
+repository.workspace = true
+homepage.workspace = true
+keywords = ["typst", "pdf", "document", "render"]
+categories = ["text-processing", "rendering"]
 
 [lints]
 workspace = true

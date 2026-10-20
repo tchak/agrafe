@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 description = "File storage service: encrypted, scanned, with previews. The library; see agrafe-axum and agrafe-server"
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+keywords = ["file-storage", "upload", "encryption", "antivirus", "thumbnail"]
+categories = ["web-programming", "multimedia::images"]
 
 [lints]
 workspace = true

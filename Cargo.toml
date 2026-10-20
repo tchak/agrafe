@@ -19,6 +19,8 @@ members = [
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.94"
+repository = "https://github.com/tchak/agrafe"
+homepage = "https://tchak.github.io/agrafe/"
 
 [workspace.lints.rust]
 # Everything public is documented: the crates are published, and docs.rs
