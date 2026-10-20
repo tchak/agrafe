@@ -19,6 +19,9 @@ agrafe-types = { version = "0.1.0", path = "../agrafe-types" }
 bytesize = { version = "2.7.0", features = ["serde"] }
 futures = "0.3.34"
 humantime-serde = "1.1.1"
+# The office driver: `access` to mirror LibreOffice's choice of a pipe
+# directory, `getuid` to name its pipes.
+libc = "0.2.191"
 # Fetches the background layers of a map. Already in the tree, with rustls.
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "http2"] }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -27,6 +30,8 @@ tempfile = "3.27.0"
 thiserror = "2.0.21"
 tokio = { version = "1.54.0", features = ["fs", "io-util", "process", "sync"] }
 tracing = "0.1.44"
+# The profile's `file://` URL for LibreOffice, percent-encoded.
+url = "2.5.8"
 
 [dev-dependencies]
 tokio = { version = "1.54.0", features = ["rt-multi-thread", "macros"] }

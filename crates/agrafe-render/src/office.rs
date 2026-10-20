@@ -176,6 +176,11 @@ pub async fn convert(
             .map_err(Error::Input)?;
     }
     let output = dir.join(format!("{INPUT}.pdf"));
+    // A URL, percent-encoded: a work directory with a space or a `%` in its
+    // name would otherwise send the profile elsewhere.
+    let profile = std::path::absolute(&profile).map_err(Error::Input)?;
+    let profile = url::Url::from_file_path(&profile)
+        .map_err(|()| Error::Input(std::io::Error::other("the profile path is not absolute")))?;
 
     let mut command = sandbox::Command::new(command);
     command
@@ -189,10 +194,7 @@ pub async fn convert(
         .env("HOME", &dir)
         .env("XDG_CACHE_HOME", &dir)
         .env("MAX_CONCURRENCY", OFFICE_CONCURRENCY)
-        .arg(format!(
-            "-env:UserInstallation=file://{}",
-            profile.display()
-        ))
+        .arg(format!("-env:UserInstallation={profile}"))
         .args(["--headless", "--norestore", "--nologo", "--nolockcheck"])
         .arg("--convert-to")
         // The JSON filter options (LibreOffice 7.4 and later) lay out and
@@ -205,6 +207,20 @@ pub async fn convert(
         .arg(&dir)
         .arg(&input);
     let outcome = sandbox::run(command, &config.office.sandbox(&config.sandbox)).await?;
+    // A LibreOffice killed, at the timeout or by a signal, left its pipe
+    // behind.
+    if matches!(
+        outcome,
+        sandbox::Outcome::TimedOut | sandbox::Outcome::Failed { code: None, .. }
+    ) {
+        let dir = pipe_dir();
+        match tokio::task::spawn_blocking(move || sweep_stale_pipes(Path::new(dir))).await {
+            Ok(Ok(0)) => {}
+            Ok(Ok(removed)) => tracing::info!(removed, dir, "removed stale LibreOffice pipes"),
+            Ok(Err(err)) => tracing::warn!(%err, dir, "sweeping stale LibreOffice pipes"),
+            Err(err) => tracing::warn!(%err, dir, "sweeping stale LibreOffice pipes"),
+        }
+    }
     if let Some(rejection) = Rejection::of(&outcome) {
         return Ok(Verdict::Rejected(rejection));
     }
@@ -218,6 +234,49 @@ pub async fn convert(
             Verdict::Declined
         },
     )
+}
+
+/// Remove the stale pipes under `dir`: the socket files named
+/// `OSL_PIPE_<uid>_SingleOfficeIPC_<hash>` that nothing listens on. A
+/// LibreOffice removes its own on exit, not when killed at the timeout,
+/// and the name hashes the profile path, unique to the run, so every kill
+/// would leave one more file in `/tmp` for good, at an uploader's
+/// pleasure. A stale pipe is told from a live one, another job's, by
+/// connecting: a listener accepts and a dead one refuses. Returns how many
+/// were removed; a file that cannot be is left for the next sweep.
+#[cfg(unix)]
+fn sweep_stale_pipes(dir: &Path) -> std::io::Result<usize> {
+    use std::os::unix::fs::FileTypeExt;
+    use std::os::unix::net::UnixStream;
+
+    // SAFETY: `getuid` reads nothing and cannot fail.
+    let prefix = format!("OSL_PIPE_{}_SingleOfficeIPC_", unsafe { libc::getuid() });
+    let mut removed = 0;
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if !entry
+            .file_name()
+            .as_encoded_bytes()
+            .starts_with(prefix.as_bytes())
+            || !entry.file_type()?.is_socket()
+        {
+            continue;
+        }
+        let path = entry.path();
+        let stale = matches!(
+            UnixStream::connect(&path),
+            Err(err) if err.kind() == std::io::ErrorKind::ConnectionRefused
+        );
+        if stale && std::fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+#[cfg(not(unix))]
+fn sweep_stale_pipes(_dir: &Path) -> std::io::Result<usize> {
+    Ok(0)
 }
 
 /// Copy the directory `from` to `to`, which must not exist, following no
@@ -325,6 +384,35 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(verdict, Verdict::Declined);
+    }
+
+    /// The pipes nothing listens on go, and only those: a live one, a
+    /// regular file with the name, and a socket of another name stay.
+    #[cfg(unix)]
+    #[test]
+    fn sweeps_the_stale_pipes_and_keeps_the_live_ones() {
+        use std::os::unix::net::UnixListener;
+
+        // Under the pipe directory for a short path: a socket's is 104
+        // bytes at most on macOS.
+        let dir = tempfile::tempdir_in(pipe_dir()).unwrap();
+        // SAFETY: `getuid` reads nothing and cannot fail.
+        let uid = unsafe { libc::getuid() };
+        let pipe = |name: &str| {
+            dir.path()
+                .join(format!("OSL_PIPE_{uid}_SingleOfficeIPC_{name}"))
+        };
+        let live = UnixListener::bind(pipe("live")).unwrap();
+        drop(UnixListener::bind(pipe("stale")).unwrap());
+        std::fs::write(pipe("file"), b"").unwrap();
+        drop(UnixListener::bind(dir.path().join("other")).unwrap());
+
+        assert_eq!(sweep_stale_pipes(dir.path()).unwrap(), 1);
+        assert!(!pipe("stale").exists());
+        assert!(pipe("live").exists());
+        assert!(pipe("file").exists());
+        assert!(dir.path().join("other").exists());
+        drop(live);
     }
 
     #[tokio::test]

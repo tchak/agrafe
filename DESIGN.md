@@ -2087,9 +2087,15 @@ worker and no local Postgres socket, and a boot check
 (`check_office_host`) that `media.tmp_dir` is outside the pipe directory,
 so that no other job's decrypted original is where the converter may
 remove files: the default work directory is the system temporary
-directory, which is `/tmp` itself. Nothing else asks for sockets, and
-the default filter is unchanged. The two filter variants are compiled
-once each.
+directory, which is `/tmp` itself. A LibreOffice removes its pipe on
+exit, not when killed at the timeout, and the pipe's name hashes the
+profile path, unique to the run, so every kill would leave one more
+socket file in `/tmp` for good, at an uploader's pleasure: after a kill,
+the driver sweeps the pipe directory of the `OSL_PIPE_<uid>_` sockets
+nothing listens on, told from another job's live one by connecting (a
+listener accepts, a dead socket refuses), which needs no knowledge of the
+hash. Nothing else asks for sockets, and the default filter is
+unchanged. The two filter variants are compiled once each.
 
 *Process groups.* `soffice` is a script around `oosplash` around
 `soffice.bin`, so a kill at the timeout that reached the direct child
@@ -2197,7 +2203,9 @@ fresh profile and 135 ms with a warmed one; on macOS (LibreOffice 26.8)
 1.5 s and 0.9 s. A pool is not where this starts, and the profile
 template below is where the cold start goes. Each run gets a private
 user profile under the work directory
-(`-env:UserInstallation`), so concurrent workers never fight over a
+(`-env:UserInstallation`, a percent-encoded `file://` URL, since a work
+directory with a space in its name is a possibility and LibreOffice would
+read the profile elsewhere), so concurrent workers never fight over a
 profile lock and nothing a document does persists past the job;
 `media.office.profile_template` names a profile warmed at image build
 time that is copied in instead, a copy being milliseconds. `HOME`,
