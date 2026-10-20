@@ -2475,8 +2475,10 @@ of the original and of each representation follows from the plaintext
 size and `chunk_size` (`Layout::ciphertext_len`), and a source part's
 length must be one a stream of that layout produces. The deep check,
 `agrafe audit --deep`, decrypts the originals and compares their SHA-256
-with `checksum_sha256`, every one or one in N (`--sample N`), which is
-reading the bucket and is never the job's.
+with `checksum_sha256`, every one or one in N (`--sample N`, picked by
+the random low bits of the id so the sample is the same from one run to
+the next and a run can be repeated to confirm), which is reading the
+bucket and is never the job's.
 
 What it does with a finding, each one a `warn` line in the log:
 
@@ -2513,7 +2515,9 @@ purge since, so a row that moved on meanwhile is not written.
 - Orphan object: report by default. Deleted only by `agrafe audit --fix`,
   and only when older than `upload.stale_after`, so an upload or a render
   that has written its object and not yet updated its row is never
-  touched. A terminal blob awaiting its purge is skipped altogether, its
+  touched; a thousand per request through `delete_stream`, which S3
+  takes as one `DeleteObjects`, since a bucket restored from backup
+  leaves orphans by the million. A terminal blob awaiting its purge is skipped altogether, its
   prefix is the purge's. A key outside the layout, not `<blob id>/<name>`,
   is reported as foreign and never deleted: it is not agrafe's.
 
@@ -2521,7 +2525,14 @@ The decision taken up front is that the job never deletes. The
 destructive path is always a human running a command with the report in
 front of them, as the reaper only ever acts on what a row already says.
 The command exits non-zero when anything was found, so a restore
-procedure can end with it.
+procedure can end with it; a foreign object is reported and does not
+count, a README in the bucket is not a failed restore, and the alert on
+findings leaves orphans and foreign objects out for the same reason,
+they cost storage and nothing else. What the listing does not show the
+audit does not see: a multipart upload a crashed process left open on S3
+or GCS is parts, not an object, and the bucket's
+`AbortIncompleteMultipartUpload` lifecycle rule is what reclaims them
+(see the deployment guide).
 
 Results go to the log and to gauges, see "Observability": counts per
 finding kind from the last run, what it listed and checked, and when it

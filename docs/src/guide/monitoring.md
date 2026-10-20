@@ -93,7 +93,7 @@ groups:
         for: 5m
 
       - alert: AgrafeAuditFindings
-        expr: sum by (kind) (agrafe_audit_findings{kind!="orphan"}) > 0
+        expr: sum by (kind) (agrafe_audit_findings{kind!~"orphan|foreign"}) > 0
         annotations:
           summary: "the last agrafe audit found {{ $labels.kind }} mismatches: GET /blobs?failed=true, or the audit log lines"
 

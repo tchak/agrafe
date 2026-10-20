@@ -37,8 +37,8 @@ use futures::stream::{self, BoxStream};
 use futures::{StreamExt as _, TryFutureExt as _, TryStreamExt as _};
 use jiff::Timestamp;
 use jiff_sqlx::ToSqlx as _;
+use object_store::ObjectMeta;
 use object_store::path::Path;
-use object_store::{ObjectMeta, ObjectStoreExt as _};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{Connection as _, PgConnection, PgExecutor};
@@ -77,9 +77,10 @@ pub struct Options {
     /// Delete the orphan objects older than `upload.stale_after`, so an
     /// upload in flight is never touched. Off, they are reported only.
     pub fix: bool,
-    /// Decrypt one original in `n` (every one for `1`), chosen at random,
-    /// and compare its SHA-256 with the row's. Off, no object is read: the
-    /// listing's sizes catch truncation on their own.
+    /// Decrypt one original in `n` (every one for `1`), picked by id so
+    /// the sample is the same from one run to the next, and compare its
+    /// SHA-256 with the row's. Off, no object is read: the listing's
+    /// sizes catch truncation on their own.
     pub deep: Option<NonZeroU32>,
 }
 
@@ -163,6 +164,14 @@ impl Report {
         self.counts.iter().sum()
     }
 
+    /// Findings of every kind but `foreign`: the ones where the table and
+    /// the bucket disagree about agrafe's own objects. What the command
+    /// line exits non-zero on; a key that is not agrafe's is reported and
+    /// is no reason to fail a restore procedure.
+    pub fn mismatches(&self) -> u64 {
+        self.findings() - self.count(Finding::Foreign)
+    }
+
     fn add(&mut self, kind: Finding) {
         self.counts[kind as usize] += 1;
     }
@@ -237,6 +246,10 @@ pub struct Progress {
 
 /// How often a running job saves its `Progress`.
 const CHECKPOINT_EVERY: Duration = Duration::from_secs(60);
+
+/// Orphans deleted per request, under `--fix`: S3 takes a thousand in one
+/// `DeleteObjects`, the other backends delete them one by one anyway.
+const DELETE_BATCH: usize = 1000;
 
 /// The job the sweep saves its progress to, as the worker that holds it.
 struct Checkpoint {
@@ -393,6 +406,7 @@ async fn sweep(
         after: after.clone(),
         cursor: progress.cursor,
         checkpoint,
+        pending: Vec::new(),
         report: progress.report,
     };
     let mut rows = Rows::new(conn, now, progress.cursor);
@@ -433,6 +447,7 @@ async fn sweep(
         sweep.cursor = row.id;
         sweep.save(false).await;
     }
+    sweep.delete_pending().await;
     Ok(sweep.report)
 }
 
@@ -627,6 +642,8 @@ struct Sweep<'a> {
     cursor: Uuid,
     /// The job to save them to, when running as one.
     checkpoint: Option<Checkpoint>,
+    /// Orphans to delete, under `--fix`, in batches of `DELETE_BATCH`.
+    pending: Vec<Path>,
     report: Report,
 }
 
@@ -672,14 +689,17 @@ impl Sweep<'_> {
     /// back: the attempts guard against failing without getting anywhere,
     /// and a restart or a retry should not cost a day-long sweep its
     /// life. Not saving is logged, as a lost lease is by the heartbeat;
-    /// the sweep goes on.
+    /// the sweep goes on. The deletes pending go first, so what the save
+    /// says is done is done.
     async fn save(&mut self, now: bool) {
-        let Some(checkpoint) = &mut self.checkpoint else {
+        let Some(checkpoint) = &self.checkpoint else {
             return;
         };
         if !now && checkpoint.saved.elapsed() < CHECKPOINT_EVERY {
             return;
         }
+        self.delete_pending().await;
+        let checkpoint = self.checkpoint.as_mut().expect("checked above");
         checkpoint.saved = Instant::now();
         let progress = Progress {
             after: self.after.as_ref().map(ToString::to_string),
@@ -765,7 +785,7 @@ impl Sweep<'_> {
                             .await;
                         }
                         _ => {
-                            if self.sampled() {
+                            if self.sampled(row) {
                                 self.deep(row).await;
                             }
                         }
@@ -859,12 +879,13 @@ impl Sweep<'_> {
         object.last_modified.timestamp() > self.settled_before().as_second()
     }
 
-    /// Whether this original is in the deep sample.
-    fn sampled(&self) -> bool {
+    /// Whether this original is in the deep sample: one id in `n`, by the
+    /// random low bits of the id, so the sample is the same from one run
+    /// to the next and `--deep --sample N` can be run again to confirm.
+    fn sampled(&self, row: &Row) -> bool {
         match self.options.deep {
             None => false,
-            Some(n) if n.get() == 1 => true,
-            Some(n) => Uuid::new_v4().as_u128().is_multiple_of(u128::from(n.get())),
+            Some(n) => (row.id.as_u128() as u64).is_multiple_of(u64::from(n.get())),
         }
     }
 
@@ -951,10 +972,10 @@ impl Sweep<'_> {
         tracing::warn!(key = %object.location, size = object.size, finding = %Finding::Foreign, "audit: object outside the layout");
     }
 
-    /// An object no row accounts for: reported, and under `--fix` deleted.
-    /// One younger than `upload.stale_after` is left for the next run: an
-    /// upload or a render that has written its object and not yet updated
-    /// its row looks the same.
+    /// An object no row accounts for: reported, and under `--fix` deleted,
+    /// a batch at a time. One younger than `upload.stale_after` is left
+    /// for the next run: an upload or a render that has written its
+    /// object and not yet updated its row looks the same.
     async fn orphan(&mut self, object: &ObjectMeta, why: &str) {
         if self.young(object) {
             self.report.young += 1;
@@ -962,18 +983,34 @@ impl Sweep<'_> {
         }
         self.report.add(Finding::Orphan);
         if self.options.fix {
-            match self.state.store().delete(&object.location).await {
-                Ok(()) | Err(object_store::Error::NotFound { .. }) => {}
-                Err(err) => {
-                    self.report.errors += 1;
-                    tracing::error!(key = %object.location, error = %err, "audit: deleting the orphan failed");
-                    return;
-                }
+            tracing::warn!(key = %object.location, size = object.size, finding = %Finding::Orphan, "audit: orphan object, {why}, deleting it");
+            self.pending.push(object.location.clone());
+            if self.pending.len() >= DELETE_BATCH {
+                self.delete_pending().await;
             }
-            self.report.deleted += 1;
-            tracing::warn!(key = %object.location, size = object.size, finding = %Finding::Orphan, "audit: orphan object deleted, {why}");
         } else {
             tracing::warn!(key = %object.location, size = object.size, modified = %object.last_modified, finding = %Finding::Orphan, "audit: orphan object, {why}");
+        }
+    }
+
+    /// Delete the orphans pending. One already gone is deleted; one the
+    /// store would not delete is an error, and the next run finds it
+    /// again.
+    async fn delete_pending(&mut self) {
+        if self.pending.is_empty() {
+            return;
+        }
+        let paths = std::mem::take(&mut self.pending);
+        let locations = stream::iter(paths.into_iter().map(Ok)).boxed();
+        let mut results = self.state.store().delete_stream(locations);
+        while let Some(result) = results.next().await {
+            match result {
+                Ok(_) | Err(object_store::Error::NotFound { .. }) => self.report.deleted += 1,
+                Err(err) => {
+                    self.report.errors += 1;
+                    tracing::error!(error = %err, "audit: deleting an orphan failed");
+                }
+            }
         }
     }
 }

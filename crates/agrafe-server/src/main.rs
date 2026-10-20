@@ -62,7 +62,7 @@ enum Command {
         /// missing or truncated object.
         #[arg(long)]
         deep: bool,
-        /// With --deep: read one original in N, chosen at random.
+        /// With --deep: read one original in N, the same ones every run.
         #[arg(long, value_name = "N", requires = "deep")]
         sample: Option<NonZeroU32>,
     },
@@ -98,7 +98,7 @@ enum Error {
     Panicked(#[from] tokio::task::JoinError),
     #[error(transparent)]
     Audit(#[from] AuditError),
-    #[error("the audit found {0} mismatches, listed above")]
+    #[error("the audit found {0} mismatches, listed above; foreign objects do not count")]
     Findings(u64),
     #[error("the audit could not act on {0} of its findings, see the log")]
     Unacted(u64),
@@ -178,7 +178,7 @@ async fn main() -> Result<(), Error> {
             };
             let report = state.audit(options).await?;
             println!("{report}");
-            match (report.errors, report.findings()) {
+            match (report.errors, report.mismatches()) {
                 (0, 0) => Ok(()),
                 (0, n) => Err(Error::Findings(n)),
                 (n, _) => Err(Error::Unacted(n)),

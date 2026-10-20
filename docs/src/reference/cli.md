@@ -38,7 +38,8 @@ agrafe --config agrafe.toml serve [--role <ROLE>] [--kinds <KIND,...>]
 Checks the bucket against the `blobs` table once, as the weekly `audit`
 job does, then exits. One `warn` log line per mismatch, the tally on
 standard output, and a non-zero status when anything was found or could
-not be acted on. See
+not be acted on; a foreign object, a key that is not agrafe's, is
+reported and does not count. See
 [Jobs and retries](../guide/jobs.md#the-audit).
 
 ```sh
@@ -49,7 +50,7 @@ agrafe --config agrafe.toml audit [--fix] [--deep [--sample <N>]]
 |---|---|
 | `--fix` | Delete the orphan objects older than `upload.stale_after`. Without it they are reported and left alone. Nothing else is ever deleted |
 | `--deep` | Decrypt the originals and compare their SHA-256 with the rows'. Reads the whole bucket; the listing alone catches a missing or truncated object |
-| `--sample <N>` | With `--deep`: read one original in N, chosen at random |
+| `--sample <N>` | With `--deep`: read one original in N, picked by id, so the same ones every run |
 
 It needs the database and the bucket, and the KEKs for `--deep`. It runs
 on its own connection and holds a lock the job honours: a job starting
@@ -76,5 +77,6 @@ The process exits with a non-zero status and a one-line message when it
 cannot start: a missing configuration file, an invalid configuration, an
 unreachable database, a failed migration, an address already in use, or a
 failed renderer probe. `agrafe audit` also exits non-zero when it found
-mismatches, when a stamp, a render request or a delete failed and the
-finding stands for the next run, or when another audit was running.
+mismatches (foreign objects aside), when a stamp, a render request or a
+delete failed and the finding stands for the next run, or when another
+audit was running.

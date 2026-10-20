@@ -396,6 +396,7 @@ async fn fix_deletes_the_orphans_older_than_stale_after(pool: PgPool) {
 
     let report = audit_now(&app).await;
     assert_eq!(counts(&report), vec![(Finding::Foreign, 2)], "{report}");
+    assert_eq!(report.mismatches(), 0, "foreign objects do not count");
 }
 
 #[sqlx::test(migrator = "MIGRATOR")]

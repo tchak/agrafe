@@ -150,6 +150,11 @@ What it finds, one `warn` line per finding and a tally in the metrics:
 | `orphan` | An object no row accounts for: no row, a purged blob, an original under a row that never recorded it | Reports |
 | `foreign` | A key that is not `<blob id>/<name>` | Reports |
 
+What the listing does not show, the audit does not see: a multipart
+upload a crashed process left open on S3 or GCS is parts, not an object,
+and only the bucket's lifecycle rule reclaims them, see
+[Deployment](deployment.md#object-storage).
+
 A row that changed within `upload.stale_after` of the listing passing it
 is left for the next run and counted as unsettled: an upload or a render
 finishing as the audit went by may have written an object after the
@@ -181,7 +186,9 @@ a delete that fails is logged at `error`, counted as not acted on, and
 the next run finds it again.
 
 The command prints the tally and exits non-zero when anything was found
-or could not be acted on. One audit runs at a time: the command reports
+or could not be acted on; foreign objects do not count, so a README in
+the bucket does not fail a restore procedure. Under `--fix` the orphans
+go a thousand per request on S3. One audit runs at a time: the command reports
 a running job, and a job that finds the command running steps aside
 until its next interval. See
 [Command line](../reference/cli.md#agrafe-audit) and
