@@ -148,6 +148,11 @@ What it finds, one `warn` line per finding and a tally in the metrics:
 | `orphan` | An object no row accounts for: no row, a purged blob, an original under a row that never recorded it | Reports |
 | `foreign` | A key that is not `<blob id>/<name>` | Reports |
 
+A row that changed within `upload.stale_after` of the listing passing it
+is left for the next run and counted as unsettled: an upload or a render
+finishing as the audit went by may have written an object after the
+listing looked, and the listing is not evidence against it.
+
 The job never deletes. Deleting is `agrafe audit --fix` on the command
 line, the operator with the report in front of them, and even then only
 orphans older than `upload.stale_after`, so an upload or a render that

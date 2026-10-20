@@ -14,6 +14,15 @@ use serde_json::json;
 
 use crate::support::*;
 
+/// An app whose rows are settled as soon as they are written: the audit
+/// leaves a row alone for `upload.stale_after` after its last change,
+/// since the listing may predate it, and these tests write and audit at
+/// once.
+async fn settled_setup(pool: PgPool) -> TestApp {
+    let clamd = fake_clamd().await;
+    setup_tuned(pool, clamd, |c| c.upload.stale_after = Duration::ZERO).await
+}
+
 async fn audit_with(app: &TestApp, options: Options) -> Report {
     app.state.audit(options).await.unwrap()
 }
@@ -93,7 +102,7 @@ fn counts(report: &Report) -> Vec<(Finding, u64)> {
 
 #[sqlx::test(migrator = "MIGRATOR")]
 async fn a_consistent_bucket_has_no_findings(pool: PgPool) {
-    let app = setup(pool).await;
+    let app = settled_setup(pool).await;
     let photo = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
     render_all(&app).await;
     // No bytes yet: nothing to expect, nothing to find.
@@ -139,7 +148,7 @@ async fn a_consistent_bucket_has_no_findings(pool: PgPool) {
 
 #[sqlx::test(migrator = "MIGRATOR")]
 async fn a_missing_original_is_stamped_on_the_row(pool: PgPool) {
-    let app = setup(pool).await;
+    let app = settled_setup(pool).await;
     let blob = ready_blob(&app, &png_bytes(100)).await;
     let id = id_of(&blob);
     delete_object(&app, &storage_key(&app, id).await).await;
@@ -175,7 +184,7 @@ async fn a_missing_original_is_stamped_on_the_row(pool: PgPool) {
 
 #[sqlx::test(migrator = "MIGRATOR")]
 async fn a_truncated_original_is_damaged(pool: PgPool) {
-    let app = setup(pool).await;
+    let app = settled_setup(pool).await;
     let blob = ready_blob(&app, &png_bytes(3000)).await;
     let id = id_of(&blob);
     let key = storage_key(&app, id).await;
@@ -204,7 +213,7 @@ async fn a_truncated_original_is_damaged(pool: PgPool) {
 
 #[sqlx::test(migrator = "MIGRATOR")]
 async fn the_deep_check_reads_the_originals_back(pool: PgPool) {
-    let app = setup(pool).await;
+    let app = settled_setup(pool).await;
     let sound = ready_blob(&app, &png_bytes(3000)).await;
     let corrupt = ready_blob(&app, &png_bytes(3000)).await;
     let key = storage_key(&app, id_of(&corrupt)).await;
@@ -237,7 +246,7 @@ async fn the_deep_check_reads_the_originals_back(pool: PgPool) {
 
 #[sqlx::test(migrator = "MIGRATOR")]
 async fn a_missing_representation_is_rendered_again(pool: PgPool) {
-    let app = setup(pool).await;
+    let app = settled_setup(pool).await;
     let photo = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
     let id = id_of(&photo);
     render_all(&app).await;
@@ -310,6 +319,7 @@ async fn orphans_are_reported_and_left_alone(pool: PgPool) {
     assert_eq!(report.deleted, 0);
     assert_eq!(object_keys(&app).await, before);
     assert_eq!(get_blob(&app, &id).await["failed_at"], json!(null));
+    assert_eq!(report.unsettled, 1, "the live row, just written: {report}");
 
     // Under --fix too: every one of them is younger than upload.stale_after,
     // which is what an upload or a render in flight looks like.
@@ -349,7 +359,7 @@ async fn fix_deletes_the_orphans_older_than_stale_after(pool: PgPool) {
 
 #[sqlx::test(migrator = "MIGRATOR")]
 async fn a_source_part_the_build_still_needs_is_checked(pool: PgPool) {
-    let app = setup(pool).await;
+    let app = settled_setup(pool).await;
     let blob = create(
         &app,
         json!({
@@ -396,9 +406,40 @@ async fn a_source_part_the_build_still_needs_is_checked(pool: PgPool) {
     );
 }
 
+/// A row that changed within `upload.stale_after` of the listing passing
+/// it may name an object the listing could not have shown, an upload
+/// finishing as the audit went by: nothing is required of it until the
+/// next run, and nothing is written on it.
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn a_row_that_just_changed_is_left_for_the_next_run(pool: PgPool) {
+    let clamd = fake_clamd().await;
+    let app = setup_tuned(pool, clamd, |c| {
+        c.upload.stale_after = Duration::from_secs(2)
+    })
+    .await;
+    let blob = ready_blob(&app, &png_bytes(100)).await;
+    let id = id_of(&blob);
+    delete_object(&app, &storage_key(&app, id).await).await;
+
+    let report = audit_now(&app).await;
+    assert_eq!(counts(&report), vec![], "{report}");
+    assert_eq!((report.blobs, report.unsettled), (1, 1));
+    assert_eq!(get_blob(&app, id).await["failed_at"], json!(null));
+
+    tokio::time::sleep(Duration::from_millis(2100)).await;
+    let report = audit_now(&app).await;
+    assert_eq!(
+        counts(&report),
+        vec![(Finding::MissingOriginal, 1)],
+        "{report}"
+    );
+    assert_eq!(report.unsettled, 0);
+    assert!(get_blob(&app, id).await["failed_at"].is_string());
+}
+
 #[sqlx::test(migrator = "MIGRATOR")]
 async fn the_job_schedules_the_next_run_and_yields_to_a_running_one(pool: PgPool) {
-    let app = setup(pool).await;
+    let app = settled_setup(pool).await;
     ready_blob(&app, &png_bytes(100)).await;
     assert!(
         audit::schedule(app.state.pool(), Timestamp::now())

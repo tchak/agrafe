@@ -2461,6 +2461,22 @@ What it does with a finding, each one a `warn` line in the log:
   generated blob: report only; the build fails on it itself. The parts
   stay after the build and go with the purge, so under a `ready` blob
   they are accounted for and not required.
+What the row requires is checked only once the row has stood still for
+`upload.stale_after` before the listing passed its prefix (`updated_at`,
+kept by the trigger, against the time the listing of that stretch began;
+for the rows the listing never showed, the time it ended). The listing
+and the row are read at different moments, and a row that changed in
+between may name an object written after the listing looked, an upload
+finishing as the audit went by, or a new size for one it listed, a
+render replacing it: what the listing shows of it is not evidence. Such
+a row is counted as unsettled and left for the next run, which with ids
+ordered by time (UUID v7) is also what makes the rows created after the
+listing ended safe, since they are unsettled by construction. What the
+row does not account for is reported either way, and deleted only when
+the object itself is old enough. The stamp on a missing or damaged
+original is conditional on the state the row was read in and on no
+purge since, so a row that moved on meanwhile is not written.
+
 - Orphan object: report by default. Deleted only by `agrafe audit --fix`,
   and only when older than `upload.stale_after`, so an upload or a render
   that has written its object and not yet updated its row is never

@@ -122,6 +122,10 @@ pub struct Report {
     pub deep: u64,
     /// Orphans deleted, under `--fix`.
     pub deleted: u64,
+    /// Rows that changed within `upload.stale_after` of the listing
+    /// passing their prefix, left for the next run: what the listing
+    /// showed of them may predate the change.
+    pub unsettled: u64,
     /// Findings by kind, in the order of `Finding::ALL`.
     counts: [u64; Finding::ALL.len()],
 }
@@ -177,7 +181,8 @@ impl fmt::Display for Report {
             "foreign objects:         {}",
             self.count(Finding::Foreign)
         )?;
-        write!(f, "orphans deleted:         {}", self.deleted)
+        writeln!(f, "orphans deleted:         {}", self.deleted)?;
+        write!(f, "rows left for next run:  {}", self.unsettled)
     }
 }
 
@@ -208,6 +213,7 @@ pub(crate) async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
                 missing_sources = report.count(Finding::MissingSource),
                 orphans = report.count(Finding::Orphan),
                 foreign = report.count(Finding::Foreign),
+                unsettled = report.unsettled,
                 "audited"
             );
             Ok(())
@@ -303,12 +309,16 @@ async fn sweep(
         options,
         now,
         stale_before,
+        listed_at: now,
         report: Report::default(),
     };
 
     let mut listing = state.store().list(None);
     let mut batch: Vec<Group> = Vec::new();
     let mut current: Option<Group> = None;
+    // When the listing of the batch being gathered began: what a row
+    // changed after this says may postdate what the listing showed.
+    let mut batch_started = Timestamp::now();
     while let Some(object) = listing.try_next().await? {
         sweep.report.objects += 1;
         let Some(id) = prefix_of(&object) else {
@@ -326,15 +336,21 @@ async fn sweep(
                     batch.push(done);
                 }
                 if batch.len() >= BATCH {
+                    sweep.listed_at = batch_started;
                     sweep.check_batch(conn, std::mem::take(&mut batch)).await?;
+                    batch_started = Timestamp::now();
                 }
             }
         }
     }
     batch.extend(current);
+    sweep.listed_at = batch_started;
     sweep.check_batch(conn, batch).await?;
 
     // The rows that should have objects and whose prefix never came up.
+    // The listing passed them all when it ended: a row that changed since,
+    // or will while this pass runs, is left alone.
+    sweep.listed_at = Timestamp::now();
     let mut cursor = Uuid::nil();
     loop {
         let rows = unseen(conn, cursor, now).await?;
@@ -362,7 +378,7 @@ macro_rules! columns {
     () => {
         "id, state, expires_at, storage_key, size, chunk_size, kek_id, wrapped_key, \
          encryption_header, checksum_sha256, source_parts, thumbnail_state, thumbnail_size, \
-         preview_state, preview_size, purged_at"
+         preview_state, preview_size, purged_at, updated_at"
     };
 }
 
@@ -391,6 +407,11 @@ struct Row {
     preview_size: Option<i32>,
     #[sqlx(try_from = "crate::db::NullableTimestamp")]
     purged_at: Option<Timestamp>,
+    /// When the row last changed, by the trigger: a row that changed
+    /// after the listing passed its prefix may describe objects the
+    /// listing could not have shown.
+    #[sqlx(try_from = "jiff_sqlx::Timestamp")]
+    updated_at: Timestamp,
 }
 
 impl Row {
@@ -456,6 +477,12 @@ struct Sweep<'a> {
     /// An orphan modified before this may be deleted; a younger one may be
     /// an upload or a render that has not updated its row yet.
     stale_before: Timestamp,
+    /// When the listing passed the prefixes of the rows being checked. A
+    /// row that changed within `upload.stale_after` before it, or after
+    /// it, may record an object written after the listing looked, or a
+    /// new size for one it listed: what the listing shows of it is not
+    /// evidence, and it is left for the next run.
+    listed_at: Timestamp,
     report: Report,
 }
 
@@ -520,6 +547,15 @@ impl Sweep<'_> {
             // require and nothing to delete.
             return Ok(());
         }
+        // What the row requires is checked only once the row has stood
+        // still for `upload.stale_after` before the listing passed it; an
+        // object it names may otherwise have been written, or replaced,
+        // after the listing looked. What it does not account for is
+        // reported either way, and deleted only when old enough.
+        let settled = row.updated_at <= self.settled_before();
+        if !settled {
+            self.report.unsettled += 1;
+        }
 
         let prefix = format!("{}/", row.id);
         let mut seen: HashMap<&str, &ObjectMeta> = objects
@@ -530,8 +566,8 @@ impl Sweep<'_> {
 
         if let Some(key) = &row.storage_key {
             let name = key.strip_prefix(prefix.as_str()).unwrap_or(key);
-            match seen.remove(name) {
-                None => {
+            match (seen.remove(name), settled) {
+                (None, true) => {
                     self.stamp(
                         row,
                         Finding::MissingOriginal,
@@ -539,7 +575,7 @@ impl Sweep<'_> {
                     )
                     .await?;
                 }
-                Some(object) => {
+                (Some(object), true) => {
                     let want = layout
                         .zip(row.size)
                         .map(|(layout, size)| layout.ciphertext_len(size as u64));
@@ -562,6 +598,7 @@ impl Sweep<'_> {
                         }
                     }
                 }
+                (_, false) => {}
             }
         }
 
@@ -574,6 +611,7 @@ impl Sweep<'_> {
                         .map(|(layout, size)| layout.ciphertext_len(size as u64));
                     if let Some(want) = want
                         && want != object.size
+                        && settled
                     {
                         self.rerender(
                             row,
@@ -584,7 +622,7 @@ impl Sweep<'_> {
                     }
                 }
                 (None, RepresentationState::Ready) => {
-                    if state == BlobState::Ready {
+                    if state == BlobState::Ready && settled {
                         self.rerender(row, kind, "missing from the store").await?;
                     }
                 }
@@ -600,13 +638,14 @@ impl Sweep<'_> {
 
         // The parts stay after the build and go with the purge; before it,
         // the build needs every one.
-        let needed = matches!(state, BlobState::Created | BlobState::Uploaded);
+        let needed = settled && matches!(state, BlobState::Created | BlobState::Uploaded);
         for n in 1..=u32::try_from(row.source_parts).unwrap_or(0) {
             let name = format!("source/{n}");
             match seen.remove(name.as_str()) {
                 Some(object) => {
                     if let Some(layout) = layout
                         && layout.plaintext_len(object.size).is_err()
+                        && settled
                     {
                         self.missing_source(
                             row,
@@ -629,6 +668,14 @@ impl Sweep<'_> {
                 .await?;
         }
         Ok(())
+    }
+
+    /// A row that last changed before this stood still for
+    /// `upload.stale_after` before the listing passed its prefix.
+    fn settled_before(&self) -> Timestamp {
+        self.listed_at
+            .checked_sub(self.state.config().upload.stale_after)
+            .unwrap_or(Timestamp::MIN)
     }
 
     /// Whether this original is in the deep sample.
@@ -674,17 +721,19 @@ impl Sweep<'_> {
 
     /// Record a finding on the original: the log line, the count, and the
     /// row's `failed_at` and `last_error` unless a verdict is on it
-    /// already. Nothing clears the stamp but a retry, which a blob with
-    /// its original gone has nothing to retry; the first one stands.
+    /// already, or the row moved on since it was read. Nothing clears
+    /// the stamp but a retry, which a blob with its original gone has
+    /// nothing to retry; the first one stands.
     async fn stamp(&mut self, row: &Row, finding: Finding, what: String) -> Result<(), AuditError> {
         self.report.add(finding);
         tracing::warn!(blob = %row.id, finding = %finding, "audit: {what}");
         sqlx::query(
             "UPDATE blobs SET failed_at = now(), last_error = $2 \
-             WHERE id = $1 AND failed_at IS NULL",
+             WHERE id = $1 AND failed_at IS NULL AND state = $3 AND purged_at IS NULL",
         )
         .bind(row.id)
         .bind(format!("{STAMP}{what}"))
+        .bind(row.state.as_str())
         .execute(self.state.pool())
         .await?;
         Ok(())
