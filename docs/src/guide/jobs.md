@@ -147,7 +147,8 @@ What it finds, one `warn` line per finding and a tally in the metrics:
 | `damaged_original` | The original has a length its size does not produce (or, under `--deep`, does not decrypt to its checksum) | The same stamp |
 | `missing_representation` | A thumbnail or preview the row says is `ready` is missing or the wrong length | Sets it back to `pending` and enqueues the render |
 | `missing_source` | A source part a generated blob still needs is missing or truncated | Reports; the build fails on it itself |
-| `orphan` | An object no row accounts for: no row, a purged blob, an original under a row that never recorded it | Reports |
+| `orphan` | An object under a known blob that its row does not account for: a purged blob's leftovers, an original under a row that never recorded it, a representation the row says is not there | Reports |
+| `unknown` | An object under a prefix no row has: a purge's leftover whose tombstone is gone, or a blob whose row was lost, which is what a database restored from an older backup leaves | Reports, with how many such prefixes and when their blobs were created |
 | `foreign` | A key that is not `<blob id>/<name>` | Reports |
 
 What the listing does not show, the audit does not see: a multipart
@@ -168,9 +169,19 @@ orphans older than `upload.stale_after`, so an upload or a render that
 has written its object and not yet updated its row is left alone. A blob
 awaiting its purge is skipped: its prefix is the purge's.
 
+`--fix` never touches a prefix no row has. Those are `unknown`, and the
+tally says how many prefixes and when their blobs were created, from
+their ids. After a database restored from backup, that span is what the
+backup missed: the objects are still the files, the backend still holds
+the envelopes it minted sealed URLs from, and the rows are what to
+recover, from a later backup or from what the backend kept. Deleting
+them takes `--delete-unknown`, a flag of its own; do not run it until the
+database is as recovered as it will be.
+
 ```sh
 agrafe --config agrafe.toml audit            # report
 agrafe --config agrafe.toml audit --fix      # and delete the old orphans
+agrafe --config agrafe.toml audit --delete-unknown   # and the prefixes no row has
 agrafe --config agrafe.toml audit --deep     # and decrypt every original
 agrafe --config agrafe.toml audit --deep --sample 100   # one in a hundred
 ```

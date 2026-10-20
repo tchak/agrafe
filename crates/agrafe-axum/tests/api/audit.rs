@@ -33,11 +33,19 @@ async fn audit_now(app: &TestApp) -> Report {
 
 const DEEP: Options = Options {
     fix: false,
+    delete_unknown: false,
     deep: Some(NonZeroU32::MIN),
 };
 
 const FIX: Options = Options {
     fix: true,
+    delete_unknown: false,
+    deep: None,
+};
+
+const DELETE_UNKNOWN: Options = Options {
+    fix: false,
+    delete_unknown: true,
     deep: None,
 };
 
@@ -291,13 +299,22 @@ async fn rows_between_listed_prefixes_are_checked(pool: PgPool) {
         delete_object(&app, &storage_key(&app, &ids[i]).await).await;
     }
     // A prefix with no row between two that have one.
-    put_object(&app, &format!("{}/original", uuid::Uuid::now_v7()), vec![1]).await;
+    let unknown = uuid::Uuid::now_v7();
+    put_object(&app, &format!("{unknown}/original"), vec![1]).await;
 
     let report = audit_now(&app).await;
     assert_eq!(
         counts(&report),
-        vec![(Finding::MissingOriginal, 3), (Finding::Orphan, 1)],
+        vec![(Finding::MissingOriginal, 3), (Finding::Unknown, 1)],
         "{report}"
+    );
+    assert_eq!(
+        report.unknown,
+        Some(audit::Unknown {
+            prefixes: 1,
+            first: unknown,
+            last: unknown
+        })
     );
     assert_eq!((report.objects, report.blobs), (3, 5));
     for (i, id) in ids.iter().enumerate() {
@@ -306,9 +323,21 @@ async fn rows_between_listed_prefixes_are_checked(pool: PgPool) {
     }
 }
 
-/// The objects nothing accounts for, under a blob of `app` whose id is
-/// returned with the keys planted.
-async fn plant_orphans(app: &TestApp) -> (String, Vec<String>) {
+/// What `plant_orphans` left in the bucket.
+struct Planted {
+    /// A live blob, whose prefix two of the orphans are under.
+    id: String,
+    /// The objects under known prefixes that their rows do not account
+    /// for: junk and a source part under the live blob, the original of a
+    /// purged one.
+    orphans: Vec<String>,
+    /// The id of a prefix no row has, with an `original` under it.
+    unknown: uuid::Uuid,
+}
+
+/// The objects nothing accounts for, and two outside the layout: a key
+/// without a blob id, and a blob id without a name.
+async fn plant_orphans(app: &TestApp) -> Planted {
     let blob = ready_blob(app, &png_bytes(100)).await;
     let id = id_of(&blob).to_string();
     let tombstone = ready_blob(app, &png_bytes(100)).await;
@@ -319,7 +348,6 @@ async fn plant_orphans(app: &TestApp) -> (String, Vec<String>) {
         "purged"
     );
     let orphans = vec![
-        format!("{}/original", uuid::Uuid::now_v7()),
         format!("{id}/junk"),
         format!("{id}/source/1"),
         format!("{}/original", id_of(&tombstone)),
@@ -327,29 +355,45 @@ async fn plant_orphans(app: &TestApp) -> (String, Vec<String>) {
     for key in &orphans {
         put_object(app, key, vec![1, 2, 3]).await;
     }
-    // Outside the layout: a key without a blob id, and a blob id without
-    // a name.
+    let unknown = uuid::Uuid::now_v7();
+    put_object(app, &format!("{unknown}/original"), vec![1, 2, 3]).await;
     put_object(app, "README", vec![1, 2, 3]).await;
     put_object(app, &uuid::Uuid::now_v7().to_string(), vec![1, 2, 3]).await;
-    (id, orphans)
+    Planted {
+        id,
+        orphans,
+        unknown,
+    }
 }
 
 #[sqlx::test(migrator = "MIGRATOR")]
 async fn orphans_are_reported_and_left_alone(pool: PgPool) {
     let app = settled_setup(pool).await;
-    let (id, _) = plant_orphans(&app).await;
+    let planted = plant_orphans(&app).await;
     let before = object_keys(&app).await;
     assert_eq!(before.len(), 7);
 
     let report = audit_now(&app).await;
     assert_eq!(
         counts(&report),
-        vec![(Finding::Orphan, 4), (Finding::Foreign, 2)],
+        vec![
+            (Finding::Orphan, 3),
+            (Finding::Unknown, 1),
+            (Finding::Foreign, 2)
+        ],
         "{report}"
+    );
+    assert_eq!(
+        report.unknown,
+        Some(audit::Unknown {
+            prefixes: 1,
+            first: planted.unknown,
+            last: planted.unknown
+        })
     );
     assert_eq!(report.deleted, 0);
     assert_eq!(object_keys(&app).await, before);
-    assert_eq!(get_blob(&app, &id).await["failed_at"], json!(null));
+    assert_eq!(get_blob(&app, &planted.id).await["failed_at"], json!(null));
 }
 
 /// An object younger than `upload.stale_after` that no row accounts for
@@ -358,45 +402,106 @@ async fn orphans_are_reported_and_left_alone(pool: PgPool) {
 #[sqlx::test(migrator = "MIGRATOR")]
 async fn young_orphans_are_left_for_the_next_run(pool: PgPool) {
     let app = setup(pool).await;
-    let (id, _) = plant_orphans(&app).await;
+    let planted = plant_orphans(&app).await;
     let before = object_keys(&app).await;
 
-    let report = audit_with(&app, FIX).await;
+    let options = Options {
+        fix: true,
+        delete_unknown: true,
+        deep: None,
+    };
+    let report = audit_with(&app, options).await;
     assert_eq!(counts(&report), vec![(Finding::Foreign, 2)], "{report}");
     assert_eq!(report.young, 4);
+    assert_eq!(report.unknown, None, "nothing old enough under it");
     assert_eq!(report.unsettled, 1, "the live row, just written: {report}");
     assert_eq!(report.deleted, 0);
     assert_eq!(object_keys(&app).await, before);
-    assert_eq!(get_blob(&app, &id).await["failed_at"], json!(null));
+    assert_eq!(get_blob(&app, &planted.id).await["failed_at"], json!(null));
 }
 
 #[sqlx::test(migrator = "MIGRATOR")]
 async fn fix_deletes_the_orphans_older_than_stale_after(pool: PgPool) {
-    let clamd = fake_clamd().await;
-    let app = setup_tuned(pool, clamd, |c| c.upload.stale_after = Duration::ZERO).await;
-    let (id, orphans) = plant_orphans(&app).await;
+    let app = settled_setup(pool).await;
+    let planted = plant_orphans(&app).await;
 
     let report = audit_with(&app, FIX).await;
     assert_eq!(
         counts(&report),
-        vec![(Finding::Orphan, 4), (Finding::Foreign, 2)],
+        vec![
+            (Finding::Orphan, 3),
+            (Finding::Unknown, 1),
+            (Finding::Foreign, 2)
+        ],
         "{report}"
     );
-    assert_eq!(report.deleted, 4);
+    assert_eq!(report.deleted, 3);
     let left = object_keys(&app).await;
-    for key in &orphans {
+    for key in &planted.orphans {
         assert!(!left.contains(key), "{key} in {left:?}");
     }
-    assert!(left.contains(&format!("{id}/original")), "{left:?}");
+    assert!(
+        left.contains(&format!("{}/original", planted.id)),
+        "{left:?}"
+    );
+    assert!(
+        left.contains(&format!("{}/original", planted.unknown)),
+        "a prefix no row has is not --fix's to delete: {left:?}"
+    );
     assert!(
         left.contains(&"README".to_string()),
         "never deleted: {left:?}"
     );
-    assert_eq!(left.len(), 3);
+    assert_eq!(left.len(), 4);
 
     let report = audit_now(&app).await;
-    assert_eq!(counts(&report), vec![(Finding::Foreign, 2)], "{report}");
-    assert_eq!(report.mismatches(), 0, "foreign objects do not count");
+    assert_eq!(
+        counts(&report),
+        vec![(Finding::Unknown, 1), (Finding::Foreign, 2)],
+        "{report}"
+    );
+    assert_eq!(
+        report.mismatches(),
+        1,
+        "the unknown prefix counts, foreign does not"
+    );
+}
+
+/// The objects under a prefix no row has go only with `--delete-unknown`,
+/// which leaves the orphans under known prefixes to `--fix`.
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn delete_unknown_deletes_the_prefixes_no_row_has(pool: PgPool) {
+    let app = settled_setup(pool).await;
+    let planted = plant_orphans(&app).await;
+
+    let report = audit_with(&app, DELETE_UNKNOWN).await;
+    assert_eq!(
+        counts(&report),
+        vec![
+            (Finding::Orphan, 3),
+            (Finding::Unknown, 1),
+            (Finding::Foreign, 2)
+        ],
+        "{report}"
+    );
+    assert_eq!(report.deleted, 1);
+    let left = object_keys(&app).await;
+    assert!(
+        !left.contains(&format!("{}/original", planted.unknown)),
+        "{left:?}"
+    );
+    for key in &planted.orphans {
+        assert!(left.contains(key), "{key} not in {left:?}");
+    }
+    assert_eq!(left.len(), 6);
+
+    let report = audit_now(&app).await;
+    assert_eq!(
+        counts(&report),
+        vec![(Finding::Orphan, 3), (Finding::Foreign, 2)],
+        "{report}"
+    );
+    assert_eq!(report.unknown, None);
 }
 
 #[sqlx::test(migrator = "MIGRATOR")]

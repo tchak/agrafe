@@ -53,10 +53,19 @@ enum Command {
     /// job does: one log line per mismatch, the tally on stdout, and a
     /// non-zero exit when anything was found.
     Audit {
-        /// Delete the orphan objects older than upload.stale_after. Without
-        /// it they are reported and left alone.
+        /// Delete the orphan objects older than upload.stale_after: the
+        /// objects under a known blob that its row does not account for.
+        /// Without it they are reported and left alone. Never touches a
+        /// prefix no row has.
         #[arg(long)]
         fix: bool,
+        /// Delete the objects under a prefix no row has, older than
+        /// upload.stale_after. After a database restored from backup these
+        /// are the blobs the backup missed, rows to recover rather than
+        /// objects to delete: do not use it until the database is as
+        /// recovered as it will be.
+        #[arg(long)]
+        delete_unknown: bool,
         /// Decrypt the originals and compare their SHA-256 with the rows',
         /// which reads the whole bucket; the listing alone catches a
         /// missing or truncated object.
@@ -169,11 +178,17 @@ async fn main() -> Result<(), Error> {
             }
             serve(config).await
         }
-        Command::Audit { fix, deep, sample } => {
+        Command::Audit {
+            fix,
+            delete_unknown,
+            deep,
+            sample,
+        } => {
             let pool = db::connect(&config.database).await?;
             let state = Agrafe::new(config, pool)?;
             let options = audit::Options {
                 fix,
+                delete_unknown,
                 deep: deep.then(|| sample.unwrap_or(NonZeroU32::MIN)),
             };
             let report = state.audit(options).await?;

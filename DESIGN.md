@@ -2448,10 +2448,11 @@ last save.
 Three things can be wrong, at different costs. A row says present and the
 bucket says missing: a non-terminal blob without its `<id>/original`, or
 a representation `ready` without its WebP. The bucket has objects no row
-accounts for: a prefix with no row or a purged one, an original under a
-row that never recorded it (a `PUT` whose row update failed), a part or
-a representation the row says is not there. And an object present but
-wrong: truncated or corrupted ciphertext.
+accounts for: an original under a row that never recorded it (a `PUT`
+whose row update failed), a part or a representation the row says is not
+there, a purged blob's leftovers, which are orphans, and a prefix with no
+row at all, which is a finding of its own, `unknown`, see below. And an
+object present but wrong: truncated or corrupted ciphertext.
 
 The sweep merges the bucket listing with the `blobs` table in id order,
 one pass over each and nothing held for the length of the bucket, in
@@ -2465,7 +2466,7 @@ the rows one query per thousand, paged by id over the rows that require
 objects (an original, source parts, a `ready` representation; not
 terminal, not purged), and a listed prefix with no such row is looked up
 by id, since a tombstone's leftovers and a `created` blob's stray object
-are orphans of a different kind than a prefix with no row at all. A
+are orphans, and a prefix with no row at all is not one. A
 backend that listed a prefix out of order would be refused
 (`AuditError::Unsorted`), not misread. The local backend walks its
 directory in filesystem order and its listing, development-sized, is
@@ -2512,23 +2513,40 @@ for the next run too. The stamp on a missing or damaged
 original is conditional on the state the row was read in and on no
 purge since, so a row that moved on meanwhile is not written.
 
-- Orphan object: report by default. Deleted only by `agrafe audit --fix`,
-  and only when older than `upload.stale_after`, so an upload or a render
+- Orphan object, under a known prefix: report by default. The row is
+  authoritative, so it is garbage, and `agrafe audit --fix` deletes it,
+  only when older than `upload.stale_after`, so an upload or a render
   that has written its object and not yet updated its row is never
   touched; a thousand per request through `delete_stream`, which S3
   takes as one `DeleteObjects`, since a bucket restored from backup
   leaves orphans by the million. A terminal blob awaiting its purge is skipped altogether, its
   prefix is the purge's. A key outside the layout, not `<blob id>/<name>`,
   is reported as foreign and never deleted: it is not agrafe's.
+- Unknown prefix, one no row has: report, with the number of such
+  prefixes and the span of their ids, which being UUID v7 is the span of
+  the blobs' creation times. It is not an orphan, because nothing says
+  it is garbage. A purge's leftover whose tombstone the reaper has since
+  pruned looks like this, rare and harmless; so does every blob uploaded
+  after the backup a database was restored from, which is the finding
+  the audit exists for, and there the object is the file: the backend
+  holds the envelope with the wrapped key, the public read path serves
+  the original from it without a row, and the rows can be rebuilt from
+  it as long as the objects are there. `--fix` never touches them; the
+  tally says "under N prefixes, blobs created between A and B", which
+  after a restore reads as what the backup missed, and deleting them
+  takes `--delete-unknown` on its own, once the database is as recovered
+  as it will be. Older than `upload.stale_after`, as orphans are.
 
 The decision taken up front is that the job never deletes. The
 destructive path is always a human running a command with the report in
-front of them, as the reaper only ever acts on what a row already says.
-The command exits non-zero when anything was found, so a restore
+front of them, as the reaper only ever acts on what a row already says,
+and a command that deletes what no row says anything about is a second
+one. The command exits non-zero when anything was found, so a restore
 procedure can end with it; a foreign object is reported and does not
 count, a README in the bucket is not a failed restore, and the alert on
 findings leaves orphans and foreign objects out for the same reason,
-they cost storage and nothing else. What the listing does not show the
+they cost storage and nothing else. Unknown prefixes stay in, they are
+the sign of lost rows. What the listing does not show the
 audit does not see: a multipart upload a crashed process left open on S3
 or GCS is parts, not an object, and the bucket's
 `AbortIncompleteMultipartUpload` lifecycle rule is what reclaims them
@@ -2561,8 +2579,8 @@ it. Per process: `agrafe_job_runs_total{kind,outcome}` with `ok`, `retry`,
 `agrafe_workers{kind}` and `agrafe_webhook_deliveries_total{event,result}`
 with `delivered` or `failed`, see "Webhooks". The last audit this process
 ran, see "Audit": `agrafe_audit_findings{kind}` with `missing_original`,
-`damaged_original`, `missing_representation`, `missing_source`, `orphan`
-and `foreign`, `agrafe_audit_objects` and `agrafe_audit_blobs` for what
+`damaged_original`, `missing_representation`, `missing_source`, `orphan`,
+`unknown` and `foreign`, `agrafe_audit_objects` and `agrafe_audit_blobs` for what
 it listed and checked, and `agrafe_audit_last_run_timestamp_seconds`,
 zero until one has run; gauges, since a sweep is a census and not a
 rate, and per process, since the one worker handling `audit` is the one

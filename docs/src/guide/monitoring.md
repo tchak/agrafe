@@ -51,7 +51,7 @@ zero.
 
 | Metric | Labels | Meaning |
 |---|---|---|
-| `agrafe_audit_findings` | `kind` | Mismatches found, by kind: `missing_original`, `damaged_original`, `missing_representation`, `missing_source`, `orphan`, `foreign` |
+| `agrafe_audit_findings` | `kind` | Mismatches found, by kind: `missing_original`, `damaged_original`, `missing_representation`, `missing_source`, `orphan`, `unknown`, `foreign` |
 | `agrafe_audit_objects` | | Objects the last audit listed in the bucket |
 | `agrafe_audit_blobs` | | Blobs the last audit checked |
 | `agrafe_audit_errors` | | Findings the last audit could not act on: a stamp, a render request, a delete or a read back that failed; the next run finds them again |
@@ -107,7 +107,11 @@ A missing original is an incident: the bytes cannot be recovered from
 agrafe's side, and the blob is listed under `GET /blobs?failed=true` with
 `audit:` at the head of its `last_error`. Orphans only cost storage; look
 at them before the next restore, with `agrafe audit --fix` once you know
-what they are.
+what they are. Unknown prefixes, objects no row has, are rows lost, which
+is what a database restored from an older backup leaves: the audit's log
+line says how many prefixes and when their blobs were created, which is
+the span to recover. `--fix` leaves them alone; `--delete-unknown` is the
+flag that deletes them, for once the rows are not coming back.
 
 Thresholds depend on your traffic. Scans and renders normally run within
 seconds of the upload. A large archive can legitimately take hours, and

@@ -163,7 +163,10 @@ reasoning behind every decision.
 - **Audit** of the bucket against the `blobs` table, weekly as a job and
   on demand as `agrafe audit`: a missing or truncated original is stamped
   on its blob, a lost representation is rendered again, orphan objects
-  are reported, and deleted only by `agrafe audit --fix`.
+  are reported, and deleted only by `agrafe audit --fix`; the objects of
+  a blob whose row is gone are reported with the span of their creation
+  times, what a restored database missed, and deleted only by
+  `--delete-unknown`.
 - **Webhook** telling the backend when a blob is `ready`, `infected`,
   `failed` or `expired`, carrying the blob's full metadata, signed the
   Standard Webhooks way, enqueued with the state change it reports and

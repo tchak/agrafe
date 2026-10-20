@@ -6,9 +6,11 @@
 //! The `audit` job reports and repairs what the read path would repair
 //! anyway (a representation whose object is gone is rendered again); it
 //! never deletes. `agrafe audit --fix` on the command line is the one that
-//! deletes orphan objects, and `--deep` the one that reads the originals
-//! back. Each run schedules the next one `jobs.audit_interval` after it
-//! finishes.
+//! deletes orphan objects, `--delete-unknown` the one that deletes the
+//! objects under a prefix no row has, which after a database restored
+//! from backup are the blobs the backup missed, and `--deep` the one that
+//! reads the originals back. Each run schedules the next one
+//! `jobs.audit_interval` after it finishes.
 //!
 //! A sweep of a large bucket takes days, and the job keeps its place: the
 //! last key listed, the last row passed and the tally so far go into the
@@ -75,8 +77,15 @@ pub enum AuditError {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Options {
     /// Delete the orphan objects older than `upload.stale_after`, so an
-    /// upload in flight is never touched. Off, they are reported only.
+    /// upload in flight is never touched: the objects a row accounts
+    /// against, never those of a prefix no row has. Off, they are
+    /// reported only.
     pub fix: bool,
+    /// Delete the objects under a prefix no row has, older than
+    /// `upload.stale_after`. Its own switch, since after a database
+    /// restored from backup these are the blobs the backup missed, rows
+    /// to recover rather than objects to delete.
+    pub delete_unknown: bool,
     /// Decrypt one original in `n` (every one for `1`), picked by id so
     /// the sample is the same from one run to the next, and compare its
     /// SHA-256 with the row's. Off, no object is read: the listing's
@@ -102,12 +111,20 @@ pub enum Finding {
     /// A source part the build of a generated blob still needs is gone or
     /// truncated. Reported; the build fails on its own when it runs.
     MissingSource,
-    /// An object under a blob's prefix that no row accounts for: a prefix
-    /// without a row, a purged blob's leftovers, an original under a row
+    /// An object under a known blob's prefix that its row does not
+    /// account for: a purged blob's leftovers, an original under a row
     /// that never recorded it, a representation the row says is not
-    /// there. Reported, and deleted under `--fix` once older than
-    /// `upload.stale_after`.
+    /// there. The row is authoritative, so it is garbage: reported, and
+    /// deleted under `--fix` once older than `upload.stale_after`.
     Orphan,
+    /// An object under a prefix no row has. Not the same thing: the row
+    /// may have been lost, which is what a database restored from a
+    /// backup older than the blob looks like, and the object is then the
+    /// file, still served through the envelope the backend holds. Also a
+    /// purge's leftover whose tombstone has since been pruned. Reported
+    /// with the span of such prefixes, and deleted only under
+    /// `--delete-unknown`.
+    Unknown,
     /// A key outside the layout, `<blob id>/<name>`. Reported, never
     /// deleted: it is not agrafe's.
     Foreign,
@@ -119,8 +136,50 @@ agrafe_types::str_enum!(Finding {
     MissingRepresentation => "missing_representation",
     MissingSource => "missing_source",
     Orphan => "orphan",
+    Unknown => "unknown",
     Foreign => "foreign",
 });
+
+/// The prefixes no row has, as a span. The ids are UUID v7, so the first
+/// and the last say when the blobs were created, and after a database
+/// restored from backup, what the backup missed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Unknown {
+    /// Prefixes with objects older than `upload.stale_after` and no row.
+    pub prefixes: u64,
+    /// The lowest id among them.
+    pub first: Uuid,
+    /// The highest.
+    pub last: Uuid,
+}
+
+impl Unknown {
+    /// When `first` and `last` were created, for ids that carry a time.
+    fn created(&self) -> Option<(Timestamp, Timestamp)> {
+        created_at(self.first).zip(created_at(self.last))
+    }
+}
+
+impl fmt::Display for Unknown {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} prefixes, ", self.prefixes)?;
+        match self.created() {
+            Some((first, last)) => write!(
+                f,
+                "blobs created between {} and {}",
+                first.strftime("%FT%TZ"),
+                last.strftime("%FT%TZ")
+            ),
+            None => write!(f, "ids {} to {}", self.first, self.last),
+        }
+    }
+}
+
+/// When a UUID v7 was made.
+fn created_at(id: Uuid) -> Option<Timestamp> {
+    let (seconds, nanos) = id.get_timestamp()?.to_unix();
+    Timestamp::new(i64::try_from(seconds).ok()?, i32::try_from(nanos).ok()?).ok()
+}
 
 /// What one audit saw and did. Serialized into the job's payload as part
 /// of its `Progress`, so every field has a default.
@@ -134,8 +193,11 @@ pub struct Report {
     pub blobs: u64,
     /// Originals decrypted and hashed, under `--deep`.
     pub deep: u64,
-    /// Orphans deleted, under `--fix`.
+    /// Objects deleted, under `--fix` and `--delete-unknown`.
     pub deleted: u64,
+    /// The prefixes no row has, when there are any: how many, and the
+    /// span of their ids. The finding count is the objects under them.
+    pub unknown: Option<Unknown>,
     /// Rows that changed within `upload.stale_after` of the listing
     /// passing their prefix, left for the next run: what the listing
     /// showed of them may predate the change.
@@ -165,9 +227,10 @@ impl Report {
     }
 
     /// Findings of every kind but `foreign`: the ones where the table and
-    /// the bucket disagree about agrafe's own objects. What the command
-    /// line exits non-zero on; a key that is not agrafe's is reported and
-    /// is no reason to fail a restore procedure.
+    /// the bucket disagree about agrafe's own objects, a prefix no row
+    /// has among them. What the command line exits non-zero on; a key
+    /// that is not agrafe's is reported and is no reason to fail a
+    /// restore procedure.
     pub fn mismatches(&self) -> u64 {
         self.findings() - self.count(Finding::Foreign)
     }
@@ -209,10 +272,18 @@ impl fmt::Display for Report {
         )?;
         writeln!(
             f,
+            "objects with no row:     {}",
+            self.count(Finding::Unknown)
+        )?;
+        if let Some(unknown) = &self.unknown {
+            writeln!(f, "  under {unknown}")?;
+        }
+        writeln!(
+            f,
             "foreign objects:         {}",
             self.count(Finding::Foreign)
         )?;
-        writeln!(f, "orphans deleted:         {}", self.deleted)?;
+        writeln!(f, "objects deleted:         {}", self.deleted)?;
         writeln!(f, "rows left for next run:  {}", self.unsettled)?;
         writeln!(f, "young objects left:      {}", self.young)?;
         write!(f, "findings not acted on:   {}", self.errors)
@@ -247,8 +318,9 @@ pub struct Progress {
 /// How often a running job saves its `Progress`.
 const CHECKPOINT_EVERY: Duration = Duration::from_secs(60);
 
-/// Orphans deleted per request, under `--fix`: S3 takes a thousand in one
-/// `DeleteObjects`, the other backends delete them one by one anyway.
+/// Objects deleted per request, under `--fix` and `--delete-unknown`: S3
+/// takes a thousand in one `DeleteObjects`, the other backends delete
+/// them one by one anyway.
 const DELETE_BATCH: usize = 1000;
 
 /// The job the sweep saves its progress to, as the worker that holds it.
@@ -295,6 +367,8 @@ pub(crate) async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
                 missing_representations = report.count(Finding::MissingRepresentation),
                 missing_sources = report.count(Finding::MissingSource),
                 orphans = report.count(Finding::Orphan),
+                unknown = report.count(Finding::Unknown),
+                unknown_prefixes = report.unknown.as_ref().map(ToString::to_string),
                 foreign = report.count(Finding::Foreign),
                 unsettled = report.unsettled,
                 young = report.young,
@@ -642,7 +716,8 @@ struct Sweep<'a> {
     cursor: Uuid,
     /// The job to save them to, when running as one.
     checkpoint: Option<Checkpoint>,
-    /// Orphans to delete, under `--fix`, in batches of `DELETE_BATCH`.
+    /// Objects to delete, under `--fix` and `--delete-unknown`, in
+    /// batches of `DELETE_BATCH`.
     pending: Vec<Path>,
     report: Report,
 }
@@ -671,11 +746,7 @@ impl Sweep<'_> {
             // after its page was read.
             match find(self.state.pool(), group.id).await? {
                 Some(row) => self.check(&row, &group.objects).await,
-                None => {
-                    for object in &group.objects {
-                        self.orphan(object, "no row has this id").await;
-                    }
-                }
+                None => self.unknown(&group).await,
             }
         }
         self.after = group.objects.last().map(|o| o.location.clone());
@@ -972,10 +1043,11 @@ impl Sweep<'_> {
         tracing::warn!(key = %object.location, size = object.size, finding = %Finding::Foreign, "audit: object outside the layout");
     }
 
-    /// An object no row accounts for: reported, and under `--fix` deleted,
-    /// a batch at a time. One younger than `upload.stale_after` is left
-    /// for the next run: an upload or a render that has written its
-    /// object and not yet updated its row looks the same.
+    /// An object under a known prefix that its row does not account for:
+    /// reported, and under `--fix` deleted, a batch at a time. One
+    /// younger than `upload.stale_after` is left for the next run: an
+    /// upload or a render that has written its object and not yet
+    /// updated its row looks the same.
     async fn orphan(&mut self, object: &ObjectMeta, why: &str) {
         if self.young(object) {
             self.report.young += 1;
@@ -984,16 +1056,53 @@ impl Sweep<'_> {
         self.report.add(Finding::Orphan);
         if self.options.fix {
             tracing::warn!(key = %object.location, size = object.size, finding = %Finding::Orphan, "audit: orphan object, {why}, deleting it");
-            self.pending.push(object.location.clone());
-            if self.pending.len() >= DELETE_BATCH {
-                self.delete_pending().await;
-            }
+            self.delete(object).await;
         } else {
             tracing::warn!(key = %object.location, size = object.size, modified = %object.last_modified, finding = %Finding::Orphan, "audit: orphan object, {why}");
         }
     }
 
-    /// Delete the orphans pending. One already gone is deleted; one the
+    /// The objects of a prefix no row has: each reported, the prefix
+    /// added to the span of such prefixes, and deleted only under
+    /// `--delete-unknown`. The young ones are left for the next run as
+    /// orphans are, and a prefix with nothing older is not counted.
+    async fn unknown(&mut self, group: &Group) {
+        let mut found = false;
+        for object in &group.objects {
+            if self.young(object) {
+                self.report.young += 1;
+                continue;
+            }
+            found = true;
+            self.report.add(Finding::Unknown);
+            if self.options.delete_unknown {
+                tracing::warn!(key = %object.location, size = object.size, finding = %Finding::Unknown, "audit: no row has this id, deleting the object");
+                self.delete(object).await;
+            } else {
+                tracing::warn!(key = %object.location, size = object.size, modified = %object.last_modified, finding = %Finding::Unknown, "audit: no row has this id");
+            }
+        }
+        if found {
+            let span = self.report.unknown.get_or_insert(Unknown {
+                prefixes: 0,
+                first: group.id,
+                last: group.id,
+            });
+            span.prefixes += 1;
+            span.first = span.first.min(group.id);
+            span.last = span.last.max(group.id);
+        }
+    }
+
+    /// Queue an object for deletion, and delete the batch once full.
+    async fn delete(&mut self, object: &ObjectMeta) {
+        self.pending.push(object.location.clone());
+        if self.pending.len() >= DELETE_BATCH {
+            self.delete_pending().await;
+        }
+    }
+
+    /// Delete the objects pending. One already gone is deleted; one the
     /// store would not delete is an error, and the next run finds it
     /// again.
     async fn delete_pending(&mut self) {
@@ -1008,7 +1117,7 @@ impl Sweep<'_> {
                 Ok(_) | Err(object_store::Error::NotFound { .. }) => self.report.deleted += 1,
                 Err(err) => {
                     self.report.errors += 1;
-                    tracing::error!(error = %err, "audit: deleting an orphan failed");
+                    tracing::error!(error = %err, "audit: deleting an object failed");
                 }
             }
         }
@@ -1053,8 +1162,40 @@ mod tests {
         assert_eq!(report.count(Finding::Foreign), 1);
         assert_eq!(report.count(Finding::MissingOriginal), 0);
         assert_eq!(report.findings(), 3);
+        assert_eq!(report.mismatches(), 2);
         let text = report.to_string();
         assert!(text.contains("orphan objects:          2"), "{text}");
+        assert!(!text.contains("under"), "no unknown prefixes: {text}");
+    }
+
+    #[test]
+    fn the_unknown_prefixes_are_reported_as_a_span_of_creation_times() {
+        let first: Uuid = "01999e6c-0000-7000-8000-000000000000".parse().unwrap();
+        let last = Uuid::now_v7();
+        let mut report = Report::default();
+        report.add(Finding::Unknown);
+        report.unknown = Some(Unknown {
+            prefixes: 2,
+            first,
+            last,
+        });
+        let text = report.to_string();
+        assert!(text.contains("objects with no row:     1"), "{text}");
+        let created = created_at(last).unwrap();
+        let line = format!(
+            "  under 2 prefixes, blobs created between 2025-10-01T06:18:22Z and {}",
+            created.strftime("%FT%TZ")
+        );
+        assert!(text.contains(&line), "{text}");
+
+        // An id without a time in it is shown as is.
+        let v4: Uuid = "550e8400-e29b-41d4-a716-446655440000".parse().unwrap();
+        let span = Unknown {
+            prefixes: 1,
+            first: v4,
+            last: v4,
+        };
+        assert_eq!(span.to_string(), format!("1 prefixes, ids {v4} to {v4}"));
     }
 
     #[test]
