@@ -2239,10 +2239,14 @@ set refuses to start when the sandbox probe found no Landlock
 (`check_office_host`, next to the boot line), unless
 `media.sandbox.isolation` is `off`, which is the operator accepting that
 on a development machine. Where it is on, it belongs on a worker that handles `render`
-only (`jobs.kinds`), with no outbound network: LibreOffice follows linked
-images and OLE links in a document, Landlock refuses TCP only from ABI 4,
-and the sandbox bounds resources, not egress (#3 closes that properly).
-The API image never carries it. The fonts are not optional: without them
+only (`jobs.kinds`), with no outbound network, as defence in depth:
+LibreOffice follows linked images and OLE links in a document, and what
+closes egress to it is the seccomp variant it runs under, which refuses
+`socket` for every family but `AF_UNIX` on any kernel with seccomp (TCP,
+UDP, netlink alike), with Landlock refusing TCP as well from ABI 4. A
+network the worker cannot reach is one less layer to be wrong about, and
+#3 is where egress gets closed for every tool. The API image never
+carries it. The fonts are not optional: without them
 a page renders as boxes and exits 0, which nothing reports.
 
 *Costs.* A ruleset and two filters add well under a millisecond per

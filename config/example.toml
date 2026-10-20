@@ -274,8 +274,9 @@ max_text_chars = 50
 # installed. Turning it on later regenerates existing blobs through a
 # `variant_version` bump. Debian: libreoffice-writer-nogui,
 # libreoffice-calc-nogui, fonts-dejavu-core and fonts-liberation; LibreOffice
-# follows links in documents, so run it on a render-only worker with no
-# outbound network. It needs Landlock: with `command` set, the worker
+# follows links in documents, which the sandbox refuses it the sockets for,
+# so run it on a render-only worker with no outbound network as defence in
+# depth. It needs Landlock: with `command` set, the worker
 # refuses to start when the sandbox has none (unless `isolation = "off"`),
 # and when `media.tmp_dir` is under /tmp, where LibreOffice may remove
 # files for its pipe. See README.md, "Thumbnails for office files".

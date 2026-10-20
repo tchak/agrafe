@@ -595,9 +595,10 @@ sandbox, which is why it is off by default. Where it is on:
   converter configured refuses to start when the sandbox has no Landlock,
   unless `media.sandbox.isolation` is `"off"`, which is you accepting
   that on a development machine;
-- run it on a worker that handles `render` only (`jobs.kinds`) with no
-  outbound network: LibreOffice follows linked images and OLE links, and
-  the sandbox bounds resources, not egress. The API image never needs it;
+- run it on a worker that handles `render` only (`jobs.kinds`), with no
+  outbound network as defence in depth: LibreOffice follows linked images
+  and OLE links, and the sandbox refuses it every socket but unix ones,
+  so a link to a host fails there first. The API image never needs it;
 - LibreOffice needs a unix socket for its single-instance pipe, so the
   sandbox lets it have unix sockets, and only those, where every other
   tool has none. A local Postgres listening on a unix socket with peer
