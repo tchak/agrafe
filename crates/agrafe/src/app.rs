@@ -61,7 +61,9 @@ struct Inner {
 impl Agrafe {
     /// The handle on `config`, with the object store `[storage]` describes
     /// and `pool`, which must already be migrated. Connects to nothing but
-    /// checks every key the state depends on.
+    /// checks every key the state depends on, and reads
+    /// `encryption.keks_file` if set: a blocking read, once, that on a FIFO
+    /// returns only when the writer has closed it.
     pub fn new(config: Config, pool: PgPool) -> Result<Self, InitError> {
         let store = storage::build(&config.storage)?;
         Self::with_store(config, pool, store)

@@ -230,8 +230,12 @@ mod tests {
         let env = keks.new_envelope(id);
         assert_eq!(env.kek_id, "c");
         assert_eq!(keks.unwrap(id, "c", &env.wrapped).unwrap(), env.key);
-        // The inline ones are still there.
-        assert!(keks.unwrap(id, "a", &env.wrapped).is_err());
+        // The inline ones are still there: `a` is known, it just does not
+        // open an envelope wrapped under `c`.
+        assert!(matches!(
+            keks.unwrap(id, "a", &env.wrapped),
+            Err(UnwrapError::Crypto { .. })
+        ));
         assert!(matches!(
             keks.unwrap(id, "zz", &env.wrapped),
             Err(UnwrapError::UnknownKek { .. })

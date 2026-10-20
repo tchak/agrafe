@@ -86,19 +86,31 @@ decides how strict the deployment is; agrafe does not know or care.
 - **A FIFO fed by a human** is the strictest: the KEKs exist only in the
   memory of the running process and in a password manager. Every start
   waits for someone to type them, and a stolen disk or backup holds
-  nothing. The reader blocks until the writer closes the pipe, so start
-  the service first:
+  nothing. agrafe opens the FIFO for reading and blocks until the writer
+  closes it, so the FIFO must exist and belong to the service's user
+  before the service starts, and the service starts before the writer:
 
   ```sh
-  mkfifo -m 0600 /run/agrafe/keks
-  systemctl start agrafe        # blocks in the read until the next line
-  systemd-ask-password "KEKs for agrafe (id = \"…\" lines)" > /run/agrafe/keks
+  mkfifo -m 0600 /run/agrafe/keks && chown agrafe: /run/agrafe/keks
+  systemctl start agrafe        # returns at once; agrafe waits in the read
+  systemd-ask-password 'KEK for agrafe (id = "…")' > /run/agrafe/keks
   rm -f /run/agrafe/keks
   ```
 
-  with `AGRAFE_ENCRYPTION__KEKS_FILE=/run/agrafe/keks` in the unit. Note
-  that the whole file goes through the prompt, so keep it to the one or
-  two KEKs in use.
+  with `AGRAFE_ENCRYPTION__KEKS_FILE=/run/agrafe/keks` and
+  `RuntimeDirectory=agrafe` in the unit. `systemd-ask-password` returns
+  one line and the file wants one `id = "…"` per line, so one KEK fits
+  per prompt. For several, prompt once per KEK inside one redirection,
+  `{ systemd-ask-password …; systemd-ask-password …; } > /run/agrafe/keks`,
+  or type them into `cat > /run/agrafe/keks` and end with Ctrl-D.
+
+  The redirection itself blocks until agrafe opens the other end. If the
+  prompt never appears, agrafe has not reached the read: it connects to
+  the database first and exits before opening the FIFO when that fails,
+  or it could not open the FIFO at all. Interrupt with Ctrl-C and read
+  `journalctl -u agrafe`. A mistyped line fails the start with its line
+  number, never its content, which would be a key in the journal; just
+  start again.
 
 Whichever rung, add `LimitCORE=0` to the unit so a crash does not write
 the KEKs to a core file. None of this keeps the KEKs out of the process's

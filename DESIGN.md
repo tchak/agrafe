@@ -1477,7 +1477,11 @@ sync-only seek make range requests awkward.
   the human-held secret is just a new KEK plus a rewrap. What none of this
   does is keep the KEK out of the running process's memory; only an
   external key service would, and wrap and unwrap being the only two KEK
-  operations, one could be added behind `Kek` later.
+  operations, one could be added behind `Kek` later. A malformed file is
+  reported by line number, never by quoting the line: the error lands in
+  the journal and the line is a key, likely one just mistyped at the
+  prompt. The text and every intermediate copy of the secrets are wiped
+  once the `Kek`s are built.
 - The stream's associated data is the object key, so a ciphertext copied to
   another key does not decrypt.
 - Payload follows **Tink's AES-GCM-HKDF-STREAMING** wire format. It is a
