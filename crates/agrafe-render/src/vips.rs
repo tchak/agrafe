@@ -88,11 +88,12 @@ pub async fn to_webp(
         Input::Raster => "down",
         Input::Page => "both",
     };
-    let mut command = sandbox::command(&config.vips_command);
+    let mut command = sandbox::Command::new(&config.vips_command);
     if let Some(dir) = output.parent() {
-        command.env("TMPDIR", dir);
+        command.env("TMPDIR", dir).writable(dir);
     }
     command
+        .readable(input)
         .env("VIPS_WARNING", "0")
         .env("VIPS_CONCURRENCY", VIPS_CONCURRENCY)
         .arg("thumbnail")
@@ -143,9 +144,10 @@ pub async fn composite(
             .iter()
             .all(|input| !input.contains(' ') && input.matches('[').count() == 1)
     );
-    let mut command = sandbox::command(&config.vips_command);
+    let mut command = sandbox::Command::new(&config.vips_command);
     command
         .current_dir(dir)
+        .writable(dir)
         .env("TMPDIR", dir)
         .env("VIPS_WARNING", "0")
         .env("VIPS_CONCURRENCY", VIPS_CONCURRENCY)
@@ -176,9 +178,10 @@ pub async fn fit_layer(
     height: u32,
 ) -> Result<Verdict<()>, Error> {
     debug_assert!(!layer.contains(['[', ' ']) && !output.contains(['[', ' ']));
-    let mut command = sandbox::command(&config.vips_command);
+    let mut command = sandbox::Command::new(&config.vips_command);
     command
         .current_dir(dir)
+        .writable(dir)
         .env("TMPDIR", dir)
         .env("VIPS_WARNING", "0")
         .env("VIPS_CONCURRENCY", VIPS_CONCURRENCY)

@@ -1,23 +1,42 @@
-//! Running decoders and renderers as subprocesses with resource limits.
+//! Running decoders and renderers as subprocesses, confined.
 //!
 //! They are the most attackable code in the service, so they never run in
 //! the server process: a crash, a decoder bomb or an infinite loop costs one
-//! job attempt, not the process. The limits are `setrlimit` on the child and
-//! a wall-clock timeout in the parent; on macOS the address space limit is
-//! not enforced by the kernel, so only Linux gets the memory bound.
+//! job attempt, not the process. Three layers, from the inside out:
+//!
+//! - `setrlimit` on the child and a wall-clock timeout in the parent, on
+//!   every platform (macOS does not enforce the address space limit);
+//! - a Landlock ruleset, installed by the child before `exec`: the system
+//!   set is readable, the declared [`Command::readable`] paths are
+//!   readable, the one [`Command::writable`] directory is writable, TCP
+//!   and signals to processes outside the sandbox are refused, and nothing
+//!   else exists;
+//! - a seccomp denylist, installed next: no sockets, no namespaces, no
+//!   ptrace, no mounts, no reaching another process's descriptors or
+//!   limits, no kernel-facing surface a process that turns bytes into
+//!   pixels has any use for. Refused calls fail with `EPERM`.
+//!
+//! The last two are Linux only, on by default where the kernel has them
+//! ([`Isolation::Auto`]), and [`Isolation::Required`] refuses to start
+//! without them. [`probe`] is how a worker learns what it got.
+
+#[cfg(target_os = "linux")]
+mod confine;
 
 use std::ffi::OsStr;
+use std::fmt;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
 use bytesize::ByteSize;
 use serde::Deserialize;
-use tokio::process::Command;
 
-/// Limits on a subprocess that decodes or renders a user file. Deserialises
-/// from the `[media.sandbox]` table of the server configuration.
+/// What a subprocess that decodes or renders a user file may do.
+/// Deserialises from the `[media.sandbox]` table of the server
+/// configuration.
 #[derive(Debug, Clone, Deserialize)]
-pub struct Limits {
+pub struct Config {
     /// Wall-clock limit; the process is killed past it.
     #[serde(with = "humantime_serde", default = "default_timeout")]
     pub timeout: Duration,
@@ -27,6 +46,34 @@ pub struct Limits {
     /// Largest file the process may write (`RLIMIT_FSIZE`).
     #[serde(default = "default_max_output_size")]
     pub max_output_size: ByteSize,
+    /// Whether Landlock and seccomp confine the process.
+    #[serde(default)]
+    pub isolation: Isolation,
+    /// Paths readable on top of the system set, for a host that keeps its
+    /// fonts or its poppler data somewhere unusual.
+    #[serde(default)]
+    pub readable: Vec<PathBuf>,
+}
+
+/// Whether the kernel confines the subprocess beyond its resource limits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Isolation {
+    /// Landlock and seccomp where the kernel has them, logged either way.
+    #[default]
+    Auto,
+    /// Both install, or the worker does not start. What each enforces
+    /// still follows the kernel's Landlock ABI, which the boot line names.
+    Required,
+    /// Resource limits and the timeout only.
+    Off,
+}
+
+impl Isolation {
+    /// Whether a confinement layer that cannot be installed is an error.
+    fn strict(self) -> bool {
+        self == Isolation::Required
+    }
 }
 
 fn default_timeout() -> Duration {
@@ -39,12 +86,14 @@ fn default_max_output_size() -> ByteSize {
     ByteSize::mib(256)
 }
 
-impl Default for Limits {
+impl Default for Config {
     fn default() -> Self {
         Self {
             timeout: default_timeout(),
             memory: default_memory(),
             max_output_size: default_max_output_size(),
+            isolation: Isolation::default(),
+            readable: Vec::new(),
         }
     }
 }
@@ -64,6 +113,10 @@ pub enum Error {
         program: String,
         source: std::io::Error,
     },
+    /// A confinement layer `isolation = "required"` demands cannot be set
+    /// up on this kernel.
+    #[error("confining `{program}`: {reason}")]
+    Confine { program: String, reason: String },
 }
 
 /// How a sandboxed process ended.
@@ -91,54 +144,198 @@ const INHERITED: &[&str] = &[
     "LLVM_PROFILE_FILE",
 ];
 
-/// A command with a clean environment: the child sees `PATH` and `HOME` and
-/// nothing else, in particular no secrets from this process.
-pub fn command(program: impl AsRef<OsStr>) -> Command {
-    let mut command = Command::new(program);
-    command.env_clear();
-    for &name in INHERITED {
-        if let Some(value) = std::env::var_os(name) {
-            command.env(name, value);
-        }
-    }
-    command
+/// A command to run under the sandbox: the program, its arguments and
+/// environment, and what it may touch. The child sees `PATH` and `HOME`
+/// and nothing else of this process's environment, in particular no
+/// secrets. The declarations are the contract; the paths in the arguments
+/// are a means, and a path that is not declared does not exist for the
+/// child.
+pub struct Command {
+    program: PathBuf,
+    inner: tokio::process::Command,
+    readable: Vec<PathBuf>,
+    writable: Option<PathBuf>,
 }
 
-/// Run `command` to completion under `limits`.
-pub async fn run(mut command: Command, limits: &Limits) -> Result<Outcome, Error> {
-    let program = command
-        .as_std()
-        .get_program()
-        .to_string_lossy()
-        .into_owned();
+impl Command {
+    /// A command for `program`, a bare name looked up on `PATH` or a
+    /// path, resolved now to an absolute path: the confinement has to
+    /// name the file the child executes.
+    pub fn new(program: impl AsRef<OsStr>) -> Self {
+        let program = resolve(program.as_ref());
+        let mut inner = tokio::process::Command::new(&program);
+        inner.env_clear();
+        for &name in INHERITED {
+            if let Some(value) = std::env::var_os(name) {
+                inner.env(name, value);
+            }
+        }
+        Self {
+            program,
+            inner,
+            readable: Vec::new(),
+            writable: None,
+        }
+    }
+
+    pub fn arg(&mut self, arg: impl AsRef<OsStr>) -> &mut Self {
+        self.inner.arg(arg);
+        self
+    }
+
+    pub fn args<I, S>(&mut self, args: I) -> &mut Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        self.inner.args(args);
+        self
+    }
+
+    pub fn env(&mut self, name: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> &mut Self {
+        self.inner.env(name, value);
+        self
+    }
+
+    /// The child's working directory, which it must also be allowed to
+    /// read or write to do anything there.
+    pub fn current_dir(&mut self, dir: impl AsRef<Path>) -> &mut Self {
+        self.inner.current_dir(dir);
+        self
+    }
+
+    /// A file or directory the child reads.
+    pub fn readable(&mut self, path: impl Into<PathBuf>) -> &mut Self {
+        self.readable.push(path.into());
+        self
+    }
+
+    /// The one directory the child writes; its working files, its output
+    /// and, under confinement, its home and cache, so that whatever a
+    /// library writes lands there and goes with it.
+    pub fn writable(&mut self, dir: impl Into<PathBuf>) -> &mut Self {
+        self.writable = Some(dir.into());
+        self
+    }
+
+    /// The resolved program, for messages.
+    pub fn program(&self) -> &Path {
+        &self.program
+    }
+}
+
+impl fmt::Debug for Command {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.inner.fmt(f)
+    }
+}
+
+/// `program` as the path the child will execute: a name is searched on
+/// `PATH`, a relative path is made absolute. A program that is not found
+/// is left as it is, and the spawn reports it missing.
+fn resolve(program: &OsStr) -> PathBuf {
+    let path = Path::new(program);
+    if path.is_absolute() || path.components().count() > 1 {
+        return std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    }
+    let Some(paths) = std::env::var_os("PATH") else {
+        return path.to_path_buf();
+    };
+    std::env::split_paths(&paths)
+        .map(|dir| dir.join(path))
+        .find(|candidate| is_executable(candidate))
+        .and_then(|found| std::path::absolute(&found).ok())
+        .unwrap_or_else(|| path.to_path_buf())
+}
+
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    path.is_file()
+}
+
+/// Which confinement layers a spawn sets up, and whether failing to is an
+/// error.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+struct Layers {
+    landlock: bool,
+    seccomp: bool,
+    strict: bool,
+}
+
+impl Layers {
+    fn of(isolation: Isolation) -> Self {
+        let on = isolation != Isolation::Off;
+        Self {
+            landlock: on,
+            seccomp: on,
+            strict: isolation.strict(),
+        }
+    }
+}
+
+/// What a spawn actually set up.
+#[derive(Debug, Clone, Copy, Default)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+struct Applied {
+    landlock: bool,
+    seccomp: bool,
+}
+
+/// Run `command` to completion under `config`.
+pub async fn run(command: Command, config: &Config) -> Result<Outcome, Error> {
+    run_with(command, config, Layers::of(config.isolation))
+        .await
+        .map(|(outcome, _)| outcome)
+}
+
+async fn run_with(
+    mut command: Command,
+    config: &Config,
+    layers: Layers,
+) -> Result<(Outcome, Applied), Error> {
+    let program = command.program.to_string_lossy().into_owned();
     command
+        .inner
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    apply_limits(&mut command, limits);
-    let child = command.spawn().map_err(|source| Error::Spawn {
+    apply_limits(&mut command.inner, config);
+    let applied =
+        apply_confinement(&mut command, config, layers).map_err(|reason| Error::Confine {
+            program: program.clone(),
+            reason,
+        })?;
+    let child = command.inner.spawn().map_err(|source| Error::Spawn {
         program: program.clone(),
         source,
     })?;
-    match tokio::time::timeout(limits.timeout, child.wait_with_output()).await {
-        Ok(Ok(output)) if output.status.success() => Ok(Outcome::Success),
-        Ok(Ok(output)) => Ok(Outcome::Failed {
+    let outcome = match tokio::time::timeout(config.timeout, child.wait_with_output()).await {
+        Ok(Ok(output)) if output.status.success() => Outcome::Success,
+        Ok(Ok(output)) => Outcome::Failed {
             code: output.status.code(),
             status: output.status.to_string(),
             stderr: tail(&output.stderr),
-        }),
-        Ok(Err(source)) => Err(Error::Wait { program, source }),
+        },
+        Ok(Err(source)) => return Err(Error::Wait { program, source }),
         // Dropping the child on timeout kills it.
-        Err(_) => Ok(Outcome::TimedOut),
-    }
+        Err(_) => Outcome::TimedOut,
+    };
+    Ok((outcome, applied))
 }
 
 #[cfg(unix)]
-fn apply_limits(command: &mut Command, limits: &Limits) {
-    let memory = limits.memory.as_u64();
-    let cpu = limits.timeout.as_secs().saturating_add(1);
-    let output = limits.max_output_size.as_u64();
+fn apply_limits(command: &mut tokio::process::Command, config: &Config) {
+    let memory = config.memory.as_u64();
+    let cpu = config.timeout.as_secs().saturating_add(1);
+    let output = config.max_output_size.as_u64();
     let limit = |value: u64| libc::rlimit {
         rlim_cur: value as libc::rlim_t,
         rlim_max: value as libc::rlim_t,
@@ -159,36 +356,279 @@ fn apply_limits(command: &mut Command, limits: &Limits) {
 }
 
 #[cfg(not(unix))]
-fn apply_limits(_command: &mut Command, _limits: &Limits) {}
+fn apply_limits(_command: &mut tokio::process::Command, _config: &Config) {}
+
+/// Prepare the Landlock ruleset and the seccomp filter in this process
+/// and have the child install them before `exec`. Under confinement
+/// `HOME` and `XDG_CACHE_HOME` move to the writable directory, so that a
+/// fontconfig cache rebuild lands there and is removed with it instead of
+/// failing on a home the child cannot write.
+#[cfg(target_os = "linux")]
+fn apply_confinement(
+    command: &mut Command,
+    config: &Config,
+    layers: Layers,
+) -> Result<Applied, String> {
+    let plan = confine::Plan::new(
+        &command.program,
+        &command.readable,
+        command.writable.as_deref(),
+        &config.readable,
+        layers,
+    )
+    .map_err(|err| err.to_string())?;
+    let applied = plan.applied();
+    if applied.landlock
+        && let Some(dir) = &command.writable
+    {
+        command.inner.env("HOME", dir).env("XDG_CACHE_HOME", dir);
+    }
+    let mut plan = plan;
+    // SAFETY: the ruleset and the filter were built here; the child only
+    // dups a descriptor and makes the `landlock_restrict_self`, `prctl`
+    // and `seccomp` calls, none of which touches the heap or a lock.
+    unsafe {
+        command.inner.pre_exec(move || plan.install());
+    }
+    Ok(applied)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn apply_confinement(
+    _command: &mut Command,
+    _config: &Config,
+    layers: Layers,
+) -> Result<Applied, String> {
+    if layers.strict {
+        return Err(format!(
+            "isolation = \"required\" but Landlock and seccomp exist on Linux only, not {}",
+            std::env::consts::OS
+        ));
+    }
+    Ok(Applied::default())
+}
 
 fn tail(stderr: &[u8]) -> String {
     let start = stderr.len().saturating_sub(STDERR_KEEP);
     String::from_utf8_lossy(&stderr[start..]).trim().to_string()
 }
 
+/// What the sandbox confines a child with, as [`probe`] found it, for the
+/// boot log: `landlock abi 4, seccomp, rlimits`, or `rlimits only
+/// (macOS)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Status {
+    /// The Landlock ABI the kernel enforces, when it refused a read the
+    /// probe did not grant.
+    pub landlock: Option<i32>,
+    /// Whether the seccomp filter installs.
+    pub seccomp: bool,
+    /// Why there is nothing but resource limits, when there is not.
+    pub rlimits_only: Option<String>,
+}
+
+impl fmt::Display for Status {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(reason) = &self.rlimits_only {
+            return write!(f, "rlimits only ({reason})");
+        }
+        if let Some(abi) = self.landlock {
+            write!(f, "landlock abi {abi}, ")?;
+        } else {
+            write!(f, "no landlock, ")?;
+        }
+        if self.seccomp {
+            write!(f, "seccomp, ")?;
+        } else {
+            write!(f, "no seccomp, ")?;
+        }
+        write!(f, "rlimits")
+    }
+}
+
+/// Why the sandbox is not fit to run a worker.
+#[derive(Debug, thiserror::Error)]
+pub enum ProbeError {
+    #[error(transparent)]
+    Run(#[from] Error),
+    /// The seccomp filter does not install, and `isolation = "required"`.
+    #[error("confining `{program}`: the seccomp filter does not install: {source}")]
+    Seccomp {
+        program: String,
+        source: std::io::Error,
+    },
+    /// A read the probe granted was refused: the system set misses
+    /// something this host needs, or the ruleset is wrong.
+    #[error(
+        "the sandbox refused `{program}` a read it was granted ({status}: {stderr}); \
+         check media.sandbox.readable"
+    )]
+    Granted {
+        program: String,
+        status: String,
+        stderr: String,
+    },
+    /// A read the probe did not grant went through although Landlock
+    /// claimed to be enforced.
+    #[error("the sandbox let `{program}` read outside the directories it was granted")]
+    NotRefused { program: String },
+    #[error("temporary files for the sandbox probe: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+/// Learn what the sandbox confines a child with, and that it refuses what
+/// it should: two sibling temporary directories, one granted, and a read
+/// of a file in each. The granted read must succeed and the other must
+/// fail where Landlock is enforced. With [`Isolation::Required`] a layer
+/// that does not install is an error; with [`Isolation::Auto`] it is
+/// reported in the [`Status`].
+pub async fn probe(config: &Config) -> Result<Status, ProbeError> {
+    if config.isolation == Isolation::Off {
+        return Ok(Status {
+            landlock: None,
+            seccomp: false,
+            rlimits_only: Some("isolation off".to_string()),
+        });
+    }
+    probe_confinement(config).await
+}
+
+#[cfg(target_os = "linux")]
+async fn probe_confinement(config: &Config) -> Result<Status, ProbeError> {
+    let strict = config.isolation.strict();
+    let seccomp = {
+        let only_seccomp = Layers {
+            landlock: false,
+            seccomp: true,
+            strict: true,
+        };
+        match run_with(Command::new("true"), config, only_seccomp).await {
+            Ok(_) => true,
+            Err(Error::Spawn { .. }) if !strict => false,
+            Err(Error::Spawn { program, source }) => {
+                return Err(ProbeError::Seccomp { program, source });
+            }
+            Err(err) => return Err(err.into()),
+        }
+    };
+    let layers = Layers {
+        landlock: true,
+        seccomp,
+        strict,
+    };
+
+    let root = tempfile::Builder::new()
+        .prefix("agrafe-sandbox-")
+        .tempdir()?;
+    let granted = root.path().join("granted");
+    let other = root.path().join("other");
+    for dir in [&granted, &other] {
+        std::fs::create_dir(dir)?;
+        std::fs::write(dir.join("file"), b"agrafe\n")?;
+    }
+
+    let mut inside = Command::new("cat");
+    inside.arg(granted.join("file")).readable(&granted);
+    let program = inside.program.to_string_lossy().into_owned();
+    let (outcome, applied) = run_with(inside, config, layers).await?;
+    match outcome {
+        Outcome::Success => {}
+        Outcome::Failed { status, stderr, .. } => {
+            return Err(ProbeError::Granted {
+                program,
+                status,
+                stderr,
+            });
+        }
+        Outcome::TimedOut => {
+            return Err(ProbeError::Granted {
+                program,
+                status: "timed out".to_string(),
+                stderr: String::new(),
+            });
+        }
+    }
+
+    let mut outside = Command::new("cat");
+    outside.arg(other.join("file")).readable(&granted);
+    let (outcome, _) = run_with(outside, config, layers).await?;
+    let landlock = match (applied.landlock, outcome) {
+        (true, Outcome::Success) => return Err(ProbeError::NotRefused { program }),
+        (true, _) => confine::kernel_abi(),
+        (false, _) => None,
+    };
+
+    let seccomp = applied.seccomp;
+    let rlimits_only = if landlock.is_none() && !seccomp {
+        Some("the kernel has neither landlock nor seccomp".to_string())
+    } else {
+        None
+    };
+    Ok(Status {
+        landlock,
+        seccomp,
+        rlimits_only,
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn probe_confinement(config: &Config) -> Result<Status, ProbeError> {
+    if config.isolation.strict() {
+        run(Command::new("true"), config).await?;
+    }
+    Ok(Status {
+        landlock: None,
+        seccomp: false,
+        rlimits_only: Some(std::env::consts::OS.to_string()),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn limits() -> Limits {
-        Limits {
+    fn config() -> Config {
+        Config {
             timeout: Duration::from_millis(500),
-            ..Limits::default()
+            ..Config::default()
         }
+    }
+
+    fn sh(script: &str) -> Command {
+        let mut command = Command::new("sh");
+        command.args(["-c", script]);
+        command
+    }
+
+    fn tempdir() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix("agrafe-sandbox-test-")
+            .tempdir()
+            .unwrap()
+    }
+
+    #[test]
+    fn programs_are_resolved() {
+        assert!(Command::new("sh").program().is_absolute());
+        assert!(Command::new("/bin/sh").program() == Path::new("/bin/sh"));
+        assert_eq!(
+            Command::new("nonexistent-agrafe-program").program(),
+            Path::new("nonexistent-agrafe-program")
+        );
     }
 
     #[tokio::test]
     async fn outcomes() {
-        let mut ok = command("sh");
-        ok.args(["-c", "exit 0"]);
+        let mut ok = sh("exit 0");
+        ok.readable("/").writable(std::env::temp_dir());
         assert!(matches!(
-            run(ok, &limits()).await.unwrap(),
+            run(ok, &config()).await.unwrap(),
             Outcome::Success
         ));
 
-        let mut failed = command("sh");
-        failed.args(["-c", "echo first >&2; echo boom >&2; exit 3"]);
-        match run(failed, &limits()).await.unwrap() {
+        let mut failed = sh("echo first >&2; echo boom >&2; exit 3");
+        failed.readable("/");
+        match run(failed, &config()).await.unwrap() {
             Outcome::Failed {
                 code,
                 status,
@@ -200,38 +640,33 @@ mod tests {
             other => panic!("{other:?}"),
         }
 
-        let mut slow = command("sh");
-        slow.args(["-c", "sleep 5"]);
+        let mut slow = sh("sleep 5");
+        slow.readable("/");
         assert!(matches!(
-            run(slow, &limits()).await.unwrap(),
+            run(slow, &config()).await.unwrap(),
             Outcome::TimedOut
         ));
 
-        let missing = command("/nonexistent/agrafe-no-such-program");
+        let missing = Command::new("/nonexistent/agrafe-no-such-program");
         assert!(matches!(
-            run(missing, &limits()).await,
+            run(missing, &config()).await,
             Err(Error::Spawn { .. })
         ));
     }
 
     #[tokio::test]
     async fn output_is_bounded() {
-        let dir = std::env::temp_dir().join(format!("agrafe-sandbox-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("out");
-        let limits = Limits {
+        let dir = tempdir();
+        let file = dir.path().join("out");
+        let config = Config {
             max_output_size: ByteSize::kib(64),
-            ..limits()
+            ..config()
         };
 
-        let mut write = command("sh");
-        write
-            .args(["-c", "head -c 1048576 /dev/zero > \"$1\""])
-            .arg("sh")
-            .arg(&file);
-        let outcome = run(write, &limits).await.unwrap();
+        let mut write = sh("head -c 1048576 /dev/zero > \"$1\"");
+        write.arg("sh").arg(&file).writable(dir.path());
+        let outcome = run(write, &config).await.unwrap();
         let written = std::fs::metadata(&file).unwrap().len();
-        std::fs::remove_dir_all(&dir).unwrap();
         assert!(matches!(outcome, Outcome::Failed { .. }), "{outcome:?}");
         assert!(
             written <= ByteSize::kib(64).as_u64(),
@@ -243,37 +678,344 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn memory_is_bounded() {
-        let limits = Limits {
+        let config = Config {
             memory: ByteSize::mib(64),
-            ..limits()
+            ..config()
         };
         // `dd` allocates its whole block up front.
-        let mut hog = command("dd");
+        let mut hog = Command::new("dd");
         hog.args(["if=/dev/zero", "of=/dev/null", "bs=256M", "count=1"]);
-        let outcome = run(hog, &limits).await.unwrap();
+        let outcome = run(hog, &config).await.unwrap();
         assert!(matches!(outcome, Outcome::Failed { .. }), "{outcome:?}");
 
-        let mut small = command("dd");
+        let mut small = Command::new("dd");
         small.args(["if=/dev/zero", "of=/dev/null", "bs=1M", "count=1"]);
         assert!(matches!(
-            run(small, &limits).await.unwrap(),
+            run(small, &config).await.unwrap(),
             Outcome::Success
         ));
     }
 
     #[tokio::test]
     async fn environment_is_clean() {
-        let mut env = command("sh");
-        env.args([
-            "-c",
-            "test -z \"$AGRAFE_SANDBOX_TEST\" && test -n \"$PATH\"",
-        ]);
+        let env = sh("test -z \"$AGRAFE_SANDBOX_TEST\" && test -n \"$PATH\"");
         // SAFETY: nothing else reads this variable; the configuration tests
         // set their own, so they are left alone.
         unsafe { std::env::set_var("AGRAFE_SANDBOX_TEST", "secret") };
         assert!(matches!(
-            run(env, &limits()).await.unwrap(),
+            run(env, &config()).await.unwrap(),
             Outcome::Success
         ));
+    }
+
+    #[tokio::test]
+    async fn isolation_off_is_rlimits_only() {
+        let config = Config {
+            isolation: Isolation::Off,
+            ..config()
+        };
+        let status = probe(&config).await.unwrap();
+        assert_eq!(status.to_string(), "rlimits only (isolation off)");
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[tokio::test]
+    async fn other_platforms_have_rlimits_only() {
+        let status = probe(&config()).await.unwrap();
+        assert!(status.rlimits_only.is_some(), "{status}");
+        let required = Config {
+            isolation: Isolation::Required,
+            ..config()
+        };
+        let err = probe(&required).await.unwrap_err();
+        assert!(err.to_string().contains("Linux only"), "{err}");
+    }
+
+    /// The configured isolation wins over a required check on another
+    /// platform: `auto` and `off` run.
+    #[tokio::test]
+    async fn the_boot_line_names_every_layer() {
+        let status = Status {
+            landlock: Some(4),
+            seccomp: true,
+            rlimits_only: None,
+        };
+        assert_eq!(status.to_string(), "landlock abi 4, seccomp, rlimits");
+        let status = Status {
+            landlock: None,
+            seccomp: true,
+            rlimits_only: None,
+        };
+        assert_eq!(status.to_string(), "no landlock, seccomp, rlimits");
+    }
+
+    /// What is refused, on a kernel that can refuse it. Elsewhere the tests
+    /// skip with a message, unless `AGRAFE_SANDBOX_REQUIRED=1`, which CI
+    /// sets so that a regression is not a green empty suite.
+    #[cfg(target_os = "linux")]
+    mod refusals {
+        use super::*;
+
+        /// The configuration the tests run under, or `None` with a message
+        /// when this kernel cannot confine and the tests are not required.
+        async fn confined() -> Option<Config> {
+            let config = config();
+            let status = probe(&config).await.unwrap();
+            if status.landlock.is_some() && status.seccomp {
+                return Some(config);
+            }
+            if std::env::var_os("AGRAFE_SANDBOX_REQUIRED").is_some_and(|v| v == "1") {
+                panic!("AGRAFE_SANDBOX_REQUIRED=1 but the sandbox is {status}");
+            }
+            eprintln!("skipped: the sandbox is {status}");
+            None
+        }
+
+        fn has(program: &str) -> bool {
+            Command::new(program).program().is_absolute()
+        }
+
+        #[tokio::test]
+        async fn required_confines() {
+            let Some(config) = confined().await else {
+                return;
+            };
+            let required = Config {
+                isolation: Isolation::Required,
+                ..config
+            };
+            let status = probe(&required).await.unwrap();
+            assert!(status.landlock.is_some() && status.seccomp, "{status}");
+        }
+
+        #[tokio::test]
+        async fn reads_outside_are_refused() {
+            let Some(config) = confined().await else {
+                return;
+            };
+            let dir = tempdir();
+            let secret = dir.path().join("secret");
+            std::fs::write(&secret, b"key").unwrap();
+            let work = tempdir();
+            std::fs::write(work.path().join("input"), b"input").unwrap();
+
+            let mut cat = Command::new("cat");
+            cat.arg(&secret).writable(work.path());
+            match run(cat, &config).await.unwrap() {
+                Outcome::Failed { stderr, .. } => {
+                    assert!(stderr.contains("Permission denied"), "{stderr}");
+                }
+                other => panic!("{other:?}"),
+            }
+
+            let mut cat = Command::new("cat");
+            cat.arg(work.path().join("input")).writable(work.path());
+            assert!(matches!(run(cat, &config).await.unwrap(), Outcome::Success));
+
+            // The parent's environment is not where the secrets live, but a
+            // configuration file next to the binary would be.
+            let mut ls = Command::new("ls");
+            ls.arg(std::env::current_dir().unwrap())
+                .writable(work.path());
+            assert!(matches!(
+                run(ls, &config).await.unwrap(),
+                Outcome::Failed { .. }
+            ));
+        }
+
+        #[tokio::test]
+        async fn writes_outside_are_refused() {
+            let Some(config) = confined().await else {
+                return;
+            };
+            let work = tempdir();
+            let elsewhere = tempdir();
+
+            let mut write = sh("echo x > \"$1\"");
+            write
+                .arg("sh")
+                .arg(elsewhere.path().join("out"))
+                .writable(work.path());
+            assert!(matches!(
+                run(write, &config).await.unwrap(),
+                Outcome::Failed { .. }
+            ));
+            assert!(!elsewhere.path().join("out").exists());
+
+            let mut write = sh("echo x > \"$1\" && mkdir \"$2\" && mv \"$1\" \"$2\"");
+            write
+                .arg("sh")
+                .arg(work.path().join("out"))
+                .arg(work.path().join("sub"))
+                .writable(work.path());
+            assert!(matches!(
+                run(write, &config).await.unwrap(),
+                Outcome::Success
+            ));
+            assert!(work.path().join("sub/out").exists());
+
+            // A readable path is read-only.
+            let mut write = sh("echo x > \"$1\"");
+            write
+                .arg("sh")
+                .arg(elsewhere.path().join("out"))
+                .readable(elsewhere.path())
+                .writable(work.path());
+            assert!(matches!(
+                run(write, &config).await.unwrap(),
+                Outcome::Failed { .. }
+            ));
+        }
+
+        #[tokio::test]
+        async fn connects_are_refused() {
+            let Some(config) = confined().await else {
+                return;
+            };
+            if !has("bash") {
+                eprintln!("skipped: no bash");
+                return;
+            }
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let work = tempdir();
+
+            let mut connect = Command::new("bash");
+            connect
+                .args(["-c", "exec 3<>/dev/tcp/127.0.0.1/$1"])
+                .arg("bash")
+                .arg(port.to_string())
+                .writable(work.path());
+            match run(connect, &config).await.unwrap() {
+                Outcome::Failed { stderr, .. } => {
+                    assert!(stderr.contains("not permitted"), "{stderr}");
+                }
+                other => panic!("{other:?}"),
+            }
+            assert_eq!(
+                listener.accept().map(|_| ()).unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+        }
+
+        #[tokio::test]
+        async fn namespaces_are_refused() {
+            let Some(config) = confined().await else {
+                return;
+            };
+            if !has("unshare") {
+                eprintln!("skipped: no unshare");
+                return;
+            }
+            let work = tempdir();
+            let mut unshare = Command::new("unshare");
+            unshare.args(["--user", "true"]).writable(work.path());
+            match run(unshare, &config).await.unwrap() {
+                Outcome::Failed { stderr, .. } => {
+                    assert!(stderr.contains("not permitted"), "{stderr}");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+
+        /// The child shares this process's uid, so without the signal scope
+        /// `kill` would reach the worker. The scope is ABI 6 (kernel 6.12);
+        /// on an older kernel the test skips, unless required.
+        #[tokio::test]
+        async fn signals_outside_are_refused() {
+            let Some(config) = confined().await else {
+                return;
+            };
+            let status = probe(&config).await.unwrap();
+            if status.landlock.is_some_and(|abi| abi < 6) {
+                let message = format!("the kernel has no signal scope ({status})");
+                assert!(
+                    std::env::var_os("AGRAFE_SANDBOX_REQUIRED").is_none_or(|v| v != "1"),
+                    "AGRAFE_SANDBOX_REQUIRED=1 but {message}"
+                );
+                eprintln!("skipped: {message}");
+                return;
+            }
+            let work = tempdir();
+            // `kill -0` only asks whether the signal may be sent.
+            let mut kill = sh("kill -0 $PPID");
+            kill.writable(work.path());
+            match run(kill, &config).await.unwrap() {
+                Outcome::Failed { stderr, .. } => {
+                    assert!(stderr.contains("not permitted"), "{stderr}");
+                }
+                other => panic!("{other:?}"),
+            }
+            // Its own children are inside the domain.
+            let mut own = sh("sleep 5 & kill $!");
+            own.writable(work.path());
+            assert!(matches!(run(own, &config).await.unwrap(), Outcome::Success));
+        }
+
+        /// `prlimit64` on another process is refused; on the process itself
+        /// it is how glibc reads and sets limits, so it keeps working.
+        #[tokio::test]
+        async fn limits_of_other_processes_are_refused() {
+            let Some(config) = confined().await else {
+                return;
+            };
+            if !has("prlimit") {
+                eprintln!("skipped: no prlimit");
+                return;
+            }
+            let work = tempdir();
+            let mut other = sh("prlimit --pid $PPID --nofile");
+            other.writable(work.path());
+            match run(other, &config).await.unwrap() {
+                Outcome::Failed { stderr, .. } => {
+                    assert!(stderr.contains("not permitted"), "{stderr}");
+                }
+                other => panic!("{other:?}"),
+            }
+            let mut own = sh("prlimit --nofile > /dev/null && ulimit -n 64");
+            own.writable(work.path());
+            assert!(matches!(run(own, &config).await.unwrap(), Outcome::Success));
+        }
+
+        /// Threads still work: glibc's `clone3` is answered `ENOSYS`, not
+        /// `EPERM`, so it falls back to `clone`.
+        #[tokio::test]
+        async fn threads_still_work() {
+            let Some(config) = confined().await else {
+                return;
+            };
+            let work = tempdir();
+            // `sort --parallel` spawns threads for a large enough input;
+            // `xargs -P` forks, which is a `clone` without namespace flags.
+            let mut threads = sh("seq 1 200000 | sort --parallel=4 -S 64M > /dev/null && \
+                                  seq 1 4 | xargs -P 4 -I{} true");
+            threads.writable(work.path());
+            match run(threads, &config).await.unwrap() {
+                Outcome::Success => {}
+                other => panic!("{other:?}"),
+            }
+        }
+
+        /// A ruleset and a filter add well under a millisecond per spawn,
+        /// so the spawn stays cheap next to the tool's own startup.
+        #[tokio::test]
+        async fn spawns_stay_cheap() {
+            let Some(config) = confined().await else {
+                return;
+            };
+            let work = tempdir();
+            let started = std::time::Instant::now();
+            for _ in 0..20 {
+                let mut t = Command::new("true");
+                t.writable(work.path());
+                assert!(matches!(run(t, &config).await.unwrap(), Outcome::Success));
+            }
+            let elapsed = started.elapsed();
+            assert!(
+                elapsed < Duration::from_secs(4),
+                "20 spawns took {elapsed:?}"
+            );
+        }
     }
 }

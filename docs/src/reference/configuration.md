@@ -171,6 +171,8 @@ above `max_inline_scans` plus `jobs.concurrency.scan`.
 | `timeout` | `"60s"` | Wall-clock limit per subprocess |
 | `memory` | `"1 GiB"` | Address space limit, enforced on Linux only |
 | `max_output_size` | `"256 MiB"` | Largest file a subprocess may write |
+| `isolation` | `"auto"` | Landlock and seccomp around each subprocess: `auto` where the kernel can, `required` or the worker does not start, `off` |
+| `readable` | `[]` | Extra read-only paths for the subprocesses, such as a fonts directory outside `/usr` |
 
 ### `[media.thumbnail]`
 

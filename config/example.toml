@@ -213,6 +213,22 @@ max_source_size = "64 MiB"
 timeout = "60s"
 memory = "1 GiB"
 max_output_size = "256 MiB"
+# Whether the kernel confines each subprocess beyond its limits, with
+# Landlock (the filesystem it sees is the system libraries and fonts, the
+# file it reads and the directory it writes; no TCP) and seccomp (no
+# sockets, namespaces, ptrace or mounts). Linux only; a default Docker
+# container has both.
+#   "auto": confine where the kernel can, and log what the worker got.
+#   "required": refuse to start unless Landlock and seccomp both install.
+#     Set it in production, so a kernel downgrade or a seccomp profile that
+#     blocks the landlock_* syscalls cannot quietly turn confinement off.
+#     What Landlock enforces still follows the kernel's ABI, which the
+#     worker's "sandbox:" boot line names.
+#   "off": limits and timeout only.
+isolation = "auto"
+# Extra read-only paths for the subprocesses, for a host that keeps its fonts
+# or poppler's data outside /usr, /etc/fonts and /var/cache/fontconfig.
+readable = []
 
 [media.thumbnail]
 width = 256

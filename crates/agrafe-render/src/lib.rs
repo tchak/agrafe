@@ -15,7 +15,6 @@ pub mod vips;
 
 use std::path::Path;
 
-use agrafe_sandbox::Limits;
 use agrafe_types::classify::{self, Category};
 use agrafe_types::geojson::GEOJSON;
 use agrafe_types::sniff;
@@ -23,7 +22,7 @@ use serde::Deserialize;
 
 pub use agrafe_types::classify::{DOCX, ODT};
 pub use geo::GeoJson;
-pub use probe::{ProbeError, probe, probe_document};
+pub use probe::{ProbeError, probe, probe_document, probe_sandbox};
 
 /// The tools and boxes the renderer works with. Flattened into the
 /// server's `[media]` section.
@@ -56,8 +55,10 @@ pub struct Config {
     /// How the map of a GeoJSON file is drawn, and what it is drawn over.
     #[serde(default)]
     pub geojson: GeoJson,
+    /// The limits on each tool's process and whether the kernel confines
+    /// it, the `[media.sandbox]` table.
     #[serde(default)]
-    pub sandbox: Limits,
+    pub sandbox: agrafe_sandbox::Config,
 }
 
 fn default_vips_command() -> String {
@@ -88,7 +89,7 @@ impl Default for Config {
             preview: Preview::default(),
             embedded_image: EmbeddedImage::default(),
             geojson: GeoJson::default(),
-            sandbox: Limits::default(),
+            sandbox: agrafe_sandbox::Config::default(),
         }
     }
 }

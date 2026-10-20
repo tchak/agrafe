@@ -30,6 +30,8 @@ pub enum ProbeError {
     },
     #[error(transparent)]
     Run(#[from] Error),
+    #[error("sandbox: {0}")]
+    Sandbox(#[from] agrafe_sandbox::ProbeError),
     #[error("temporary files: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -55,6 +57,16 @@ const PROBE_DOCUMENT: &[(&str, &[u8])] = &[
     ),
     ("pixel.png", PROBE_PNG),
 ];
+
+/// Check that the sandbox confines what it should, before any tool runs
+/// in it: what the worker gets, for its boot log, or why it may not start.
+/// With `media.sandbox.isolation = "required"` a kernel that cannot
+/// confine is a startup error.
+pub async fn probe_sandbox(
+    config: &agrafe_sandbox::Config,
+) -> Result<agrafe_sandbox::Status, ProbeError> {
+    Ok(agrafe_sandbox::probe(config).await?)
+}
 
 /// Render a text sample, a one-pixel PNG, a one-page PDF and the map of a
 /// one-point GeoJSON through the exact command lines the jobs use. vips

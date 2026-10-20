@@ -100,8 +100,9 @@ reasoning behind every decision.
   clean.
 - **Sandboxed rendering**: no user file is ever decoded in the server
   process. `vips` and the four helper binaries run as subprocesses with
-  resource limits and a timeout, and the file parsers are not even linked
-  into the server.
+  resource limits and a timeout, confined by Landlock and seccomp on Linux
+  to the file they read and the directory they write, with no network,
+  and the file parsers are not even linked into the server.
 - **Safe serving**: originals carry `nosniff` and a `sandbox` CSP, so an
   uploaded HTML or SVG never runs as a page of your origin.
 
@@ -569,7 +570,7 @@ and every configuration key is documented in
 | `agrafe-server` | The `agrafe` binary: `serve` and `migrate` |
 | `agrafe-crypto` | Streaming AEAD and key wrapping |
 | `agrafe-types` | Content types, classification, sniffing, the text-sample contract |
-| `agrafe-sandbox` | Subprocesses with resource limits |
+| `agrafe-sandbox` | Subprocesses with resource limits, Landlock and seccomp |
 | `agrafe-render` | What renders and how: `vips`, the helper drivers, the icons |
 | `agrafe-extract` | Sandboxed helper that pulls the image out of a PDF, DOCX or ODT |
 | `agrafe-render-text` | Sandboxed helper that rasterises a text sample |
@@ -578,6 +579,10 @@ and every configuration key is documented in
 
 A deployment ships five binaries together: `agrafe`, `agrafe-extract`,
 `agrafe-render-text`, `agrafe-render-document` and `agrafe-render-geo`.
+On Linux the workers confine each of them, and `vips`, with Landlock and
+seccomp by default, with nothing to install; a default Docker container
+has both. Set `media.sandbox.isolation = "required"` in production so a
+kernel without them fails the deployment instead of running unconfined.
 The render workers are the one place that talks to the network besides the
 fetch and webhook jobs: with `media.geojson.layers` configured they fetch
 map backgrounds from those hosts over HTTPS, and with the default empty

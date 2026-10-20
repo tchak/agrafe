@@ -46,6 +46,13 @@ where
     F: Future<Output = ()> + Clone + Send + 'static,
 {
     let handled = state.config().jobs.kinds();
+    if handled.contains(&JobKind::Render) || handled.contains(&JobKind::Document) {
+        // What confines the tools, checked before any of them runs: a
+        // kernel that cannot refuse is a startup error under `required`,
+        // and a log line otherwise.
+        let sandbox = agrafe_render::probe_sandbox(&state.config().media.render.sandbox).await?;
+        tracing::info!("sandbox: {sandbox}");
+    }
     if handled.contains(&JobKind::Render) {
         let media = &state.config().media;
         agrafe_render::probe(&media.render, media.tmp_dir.as_deref()).await?;

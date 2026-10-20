@@ -3,8 +3,9 @@
 //! `agrafe-render-document` compiles a typst workspace into a PDF,
 //! `agrafe-render-geo` draws a GeoJSON file as SVG. Each is a separate
 //! binary with its own parsers, so none of that code is linked into the
-//! process that calls it. A helper that succeeds without writing its
-//! output found nothing to do.
+//! process that calls it. Each declares what it reads and the one
+//! directory it writes, which is what the sandbox confines it to. A
+//! helper that succeeds without writing its output found nothing to do.
 
 use std::path::Path;
 
@@ -21,8 +22,9 @@ pub async fn extract(
     original: &Path,
     output: &Path,
 ) -> Result<Verdict<()>, Error> {
-    let mut command = sandbox::command(&config.extract_command);
+    let mut command = sandbox::Command::new(&config.extract_command);
     command
+        .readable(original)
         .arg("--input")
         .arg(original)
         .arg("--output")
@@ -47,8 +49,9 @@ pub async fn render_text(
     output: &Path,
     fit: Fit,
 ) -> Result<Verdict<()>, Error> {
-    let mut command = sandbox::command(&config.render_text_command);
+    let mut command = sandbox::Command::new(&config.render_text_command);
     command
+        .readable(sample)
         .arg("--input")
         .arg(sample)
         .arg("--output")
@@ -76,8 +79,9 @@ pub async fn render_document(
     main: &str,
     output: &Path,
 ) -> Result<Verdict<()>, Error> {
-    let mut command = sandbox::command(&config.render_document_command);
+    let mut command = sandbox::Command::new(&config.render_document_command);
     command
+        .readable(workspace)
         .arg("--workspace")
         .arg(workspace)
         .arg("--main")
@@ -97,8 +101,10 @@ pub async fn render_geo(
     svg: &Path,
     extent: &Path,
 ) -> Result<Verdict<()>, Error> {
-    let mut command = sandbox::command(&config.render_geo_command);
+    let mut command = sandbox::Command::new(&config.render_geo_command);
     command
+        .readable(original)
+        .readable(spec)
         .arg("--input")
         .arg(original)
         .arg("--spec")
@@ -110,13 +116,17 @@ pub async fn render_geo(
     run(config, command, svg).await
 }
 
+/// Run the helper with `output`'s directory as the one it may write.
 /// `Rendered` when the helper wrote `output`, `Declined` when it exited
 /// cleanly without, `Rejected` when it crashed or ran out of time.
 async fn run(
     config: &Config,
-    command: tokio::process::Command,
+    mut command: sandbox::Command,
     output: &Path,
 ) -> Result<Verdict<()>, Error> {
+    if let Some(dir) = output.parent() {
+        command.writable(dir);
+    }
     let outcome = sandbox::run(command, &config.sandbox).await?;
     if let Some(rejection) = Rejection::of(&outcome) {
         return Ok(Verdict::Rejected(rejection));

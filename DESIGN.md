@@ -39,7 +39,7 @@ into a server process. Dependencies point downwards only.
 |---|---|---|
 | `agrafe-crypto` | Streaming AEAD and key wrapping, reviewed in isolation | |
 | `agrafe-types` | Content type constants, `classify`, `sniff`, the vips loader allowlist, the text-sample contract, the GeoJSON contract (the style vocabulary, the spec and the extent the server and the helper exchange), `str_enum!` | `infer`, `serde` |
-| `agrafe-sandbox` | Running a subprocess with `setrlimit` bounds and a timeout; the `Limits` config | `tokio`, `libc` |
+| `agrafe-sandbox` | Running a subprocess with `setrlimit` bounds and a timeout, confined by Landlock and seccomp on Linux; the `Command` builder that declares what it reads and writes; the `[media.sandbox]` config and the startup probe | `tokio`, `libc`, `landlock`, `seccompiler` |
 | `agrafe-extract` | The `agrafe-extract` helper: pulls the one image out of a PDF, DOCX or ODT. Library plus binary | `agrafe-types`, `lopdf`, `zip`, `quick-xml` |
 | `agrafe-render-text` | The `agrafe-render-text` helper: rasterises a text sample. Library plus binary | `agrafe-types`, `ab_glyph` |
 | `agrafe-render-document` | The `agrafe-render-document` helper: compiles a typst workspace into a PDF. Library plus binary | `typst`, `typst-pdf`, `typst-assets` |
@@ -1936,15 +1936,152 @@ parsing, text rasterising, document compiling and GeoJSON drawing, each
 its own crate so that the server links none of their parsers (see
 "Crates"). The helpers never touch the network: the one network step of a
 render, fetching a map's background, is the worker's own, outside the
-sandbox, against a host the operator configured. Each child gets a clean environment (`PATH` and `HOME`
-only, no secrets; vips also gets `TMPDIR`, `VIPS_CONCURRENCY` and `VIPS_WARNING=0`, and a coverage
-build alone passes `LLVM_PROFILE_FILE` through), `setrlimit` bounds on
-address space and data (`media.sandbox.memory`, default 1 GiB), CPU time and
-output file size (`max_output_size`), no core dumps, and is killed at the
-wall-clock limit (`media.sandbox.timeout`, default 60 s). The address space
-limit is enforced by Linux and ignored by macOS, so development machines get
-only the timeout. A crash, a decoder bomb or an infinite loop costs one job
-attempt, not the process.
+sandbox, against a host the operator configured. A crash, a decoder bomb
+or an infinite loop costs one job attempt, not the process.
+
+Three layers confine the child, from the inside out. The first is on every
+platform; the other two are Linux's, installed by the child between `fork`
+and `exec`, next to the `setrlimit` calls, both setting `no_new_privs`.
+
+**Resource limits and a timeout.** A clean environment (`PATH` and `HOME`
+only, no secrets; vips also gets `TMPDIR`, `VIPS_CONCURRENCY` and
+`VIPS_WARNING=0`, and a coverage build alone passes `LLVM_PROFILE_FILE`
+through), `setrlimit` bounds on address space and data
+(`media.sandbox.memory`, default 1 GiB), CPU time and output file size
+(`max_output_size`), no core dumps, and a kill at the wall-clock limit
+(`media.sandbox.timeout`, default 60 s). The address space limit is
+enforced by Linux and ignored by macOS, so development machines get only
+the timeout.
+
+**Landlock**, through the `landlock` crate, maintained by the feature's
+kernel author. The child's filesystem is the *system set*, read and
+execute: `/usr`, `/lib`, `/lib64`, `/bin`, `/etc/ld.so.cache`,
+`/etc/alternatives`, `/etc/fonts`, `/etc/localtime`,
+`/var/cache/fontconfig`, `/dev/urandom`, `/dev/zero`, with paths missing
+on a host skipped, and `/dev/null` read and write, since a library that
+silences a stream reopens it there; the program itself; the paths the caller
+declared readable; the one directory it declared writable, with every
+right but execute; and nothing else. TCP `bind` and `connect` are handled
+with no rule, so refused, and the domain is *scoped*: no signal to a
+process outside it and no abstract unix socket. The child runs as the
+worker's uid, so without the signal scope `kill` would reach the worker,
+and a poisoned file would take it down on every retry. Fonts and
+poppler's data are in the set on
+purpose: without them a PDF with non-embedded fonts renders as a blank
+page and exits 0, which nothing reports (demarche-numerique learned this
+the hard way); `media.sandbox.readable` adds paths for a host that keeps
+fonts elsewhere. The crate's best-effort compatibility degrades on an
+older kernel instead of failing: ABI 1 (5.13) gives the filesystem rules,
+ABI 2 (5.19) renames across directories, ABI 4 (6.7) the TCP refusal,
+ABI 6 (6.12) the signal and socket scopes, and the handled accesses this
+build knows and the kernel does not are dropped. A Landlock domain also
+forbids `mount`, which matters for the bubblewrap stage below.
+
+**seccomp**, through `seccompiler` (pure Rust, from Firecracker, no
+libseccomp), as a *denylist* answering `EPERM`: `socket`, `socketpair`,
+`connect`, `bind`, `listen`, `accept`, `accept4`, `ptrace`,
+`process_vm_readv`, `process_vm_writev`, `pidfd_getfd`, `kcmp`,
+`perf_event_open`, `unshare`, `setns`, `mount`,
+`umount2`, `pivot_root`, the new mount API (`open_tree`, `move_mount`,
+`fsopen`, `fsconfig`, `fsmount`, `fspick`, `mount_setattr`), `bpf`,
+`keyctl`, `add_key`, `request_key`, `userfaultfd`, `io_uring_setup`,
+`kexec_load`, `kexec_file_load`, `init_module`, `finit_module`, `clone`
+with any namespace flag, and `prlimit64` on any pid but 0 (glibc's
+`setrlimit` and `getrlimit` pass 0). `clone3` carries its flags in a struct
+the filter cannot read, so it is refused whole, in a second filter
+answering `ENOSYS`: that is the one errno glibc falls back from to
+`clone`, which the first filter does inspect, so threads keep working and
+namespaces do not. The filters are compiled once per process and
+installed per spawn.
+
+Why a denylist: an allowlist has to track every syscall glibc, glib and
+libvips make and breaks silently on an upgrade, in the probe if we are
+lucky. The denylist buys what Landlock cannot: no sockets at all, which
+closes path-based unix sockets (Postgres over its socket with peer auth),
+which no Landlock ABI governs (ABI 6 scopes *abstract* sockets only); no
+namespaces, ptrace or kernel-facing surface from a process that only has
+to turn bytes into pixels; and, since the child runs as the worker's uid,
+none of what the same uid may do to the worker: steal its descriptors
+with `pidfd_getfd` (Yama's `ptrace_scope` is 0 on Debian and in a
+container that inherits it, and a container running as root passes the
+check anyway), or set its limits with `prlimit64`. The signal scope above
+closes `kill`. `EPERM` rather than kill, so a library that
+probes a feature and tolerates failure keeps working, and so the error
+shows up in the stderr tail the job already keeps.
+
+Why not reimplement namespaces in Rust with `unshare`: the same kernel
+requirements as bubblewrap, without its review history. That is the
+optional second stage, bubblewrap around the same child, for deployments
+that can grant unprivileged user namespaces; it is designed in issue #3
+and not built yet.
+
+*The builder is the contract.* Callers put paths in the argv, and the
+sandbox could not tell an input from an output. `agrafe_sandbox::Command`
+replaces the bare `tokio::process::Command`: `arg`, `env`, `current_dir`
+as before, plus `readable(path)` for a file the child reads and
+`writable(dir)` for the one directory it writes. Every caller
+(`vips::to_webp`, `composite`, `fit_layer`, the four helpers, the probe)
+has one input and one work directory, and the input lives in that
+directory, so each declares `writable(workdir)` and the argv falls under
+it; the declaration stays explicit because the confinement is the
+contract and the argv a means. The program is resolved on `PATH` to an
+absolute path when the command is built, because Landlock has to grant
+execute on the file the child executes; `media.vips_command` and the
+helper settings keep accepting a bare name. Under confinement `HOME` and
+`XDG_CACHE_HOME` point at the work directory, so a fontconfig cache
+rebuild lands there and is removed with it instead of failing on a
+read-only home.
+
+*What runs where.* The ruleset is built in the parent, where opening
+paths and allocating are fine; the BPF is compiled in the parent once.
+The child, between `fork` and `exec`, only duplicates the ruleset's
+descriptor, calls `landlock_restrict_self`, and installs the filters with
+`prctl` and `seccomp`: nothing on that path allocates or takes a lock.
+`chdir` happens before, so a `current_dir` under the writable directory
+works, and the environment is applied after.
+
+*Configuration*, in `[media.sandbox]`: `isolation = "auto"` (the
+default) confines where the kernel can and logs what it got, so a
+development VM, CI and a default Docker container get it with nothing to
+configure (Docker's default seccomp profile allows the `landlock_*`
+syscalls and `seccomp`); `"required"` refuses to start unless Landlock
+and seccomp both install, which production sets so a kernel downgrade or
+a seccomp profile that blocks them cannot quietly turn confinement off.
+It asks that the layers install, not that the kernel knows every access
+the ruleset names: a 5.15 kernel passes with the filesystem rules alone,
+and the boot line names the ABI, so the floor is the operator's to read;
+`"off"` keeps the limits and the timeout. `readable = []` is the operator
+list of extra read-only paths. Under `auto`, a layer that fails to
+install in the child is skipped; under `required` it fails the spawn.
+
+*The probe asserts a refusal.* Before the render probe, the worker runs
+`agrafe_sandbox::probe`: a spawn with the seccomp filter alone, to learn
+whether it installs; then two sibling temporary directories, one granted,
+and `cat` on a file in each. The granted read must succeed, or the system
+set misses something this host needs, which is a startup error in every
+mode; the other must fail where Landlock is enforced, or the ruleset is
+not doing its job. Under `required` a kernel that cannot refuse is a
+startup error naming the layer. The worker then logs what it got:
+`sandbox: landlock abi 4, seccomp, rlimits`, or `sandbox: rlimits only
+(macos)`. The render probe that follows runs the real command lines on
+known-good files under the same confinement, so a path missing from the
+system set fails the deployment instead of every thumbnail.
+
+*Tests* in `agrafe-sandbox` assert what is refused: a read outside the
+granted directories, a write outside the writable one, a `connect` to a
+listening socket on localhost, `unshare`, and that threads still work and
+a spawn stays cheap. They skip with a message where the kernel cannot
+confine, except under `AGRAFE_SANDBOX_REQUIRED=1`, which CI sets so a
+regression is not a green empty suite. The integration suite runs under
+`auto` on CI, which confines every render it makes.
+
+*Costs.* A ruleset and two filters add well under a millisecond per
+spawn; libvips startup, which the per-job pipeline already pays, is 25
+to 40 ms. Out of scope: macOS confinement (`sandbox-exec`), a seccomp
+allowlist, cgroup memory accounting (`RLIMIT_AS` plus the pod or service
+limit stay the bound), and a uid of the child's own: the same-uid rules
+above close the vectors we know of, and a separate uid, which the
+bubblewrap stage brings, closes the class.
 
 ## Jobs
 

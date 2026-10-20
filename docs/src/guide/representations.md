@@ -160,7 +160,12 @@ of PDF and office files, `agrafe-render-text` rasterises text samples, and
 - an address space limit, `media.sandbox.memory` (1 GiB, enforced on Linux
   only);
 - a CPU time limit and an output size limit, `media.sandbox.max_output_size`;
-- a wall-clock timeout, `media.sandbox.timeout` (60 seconds).
+- a wall-clock timeout, `media.sandbox.timeout` (60 seconds);
+- on Linux, a Landlock ruleset and a seccomp filter: the process sees the
+  system libraries and fonts, the file it renders and the directory it
+  writes, and nothing else, not the configuration file, not the other
+  jobs' files, not the network, not even a unix socket. See [Security
+  model](security.md#sandboxed-rendering).
 
 Every file handed to vips is sniffed again right before the call, against
 the same list of formats, so a file declared `image/png` that holds
@@ -171,8 +176,11 @@ process. A file a renderer rejects is marked `failed`, and the job is done.
 Only failures of agrafe's own, such as the object store or the database,
 fail the job and retry it.
 
-Before the workers start, agrafe renders a text sample, a one-pixel PNG, a
-one-page PDF and the map of a one-point GeoJSON, without a background
-layer, through the exact command lines the jobs use. The process refuses
-to start if any of them fails, so a libvips built without PDF or SVG
-support fails the deployment rather than every render.
+Before the workers start, agrafe checks that the sandbox refuses a read it
+did not grant, then renders a text sample, a one-pixel PNG, a one-page PDF
+and the map of a one-point GeoJSON, without a background layer, through
+the exact command lines the jobs use. The process refuses to start if any
+of them fails, so a libvips built without PDF or SVG support, or a font
+directory the sandbox does not expose, fails the deployment rather than
+every render. The worker logs what the sandbox gives it, `sandbox:
+landlock abi 4, seccomp, rlimits` or `sandbox: rlimits only (macos)`.

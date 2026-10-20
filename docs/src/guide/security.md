@@ -84,6 +84,35 @@ render, fetching the background of a map from a configured WMS, is the
 worker's own and sends that provider the extent of the user's geometry;
 no layer is configured by default. See [Previews and thumbnails](representations.md#sandboxing).
 
+On Linux the kernel confines each subprocess as well, with no helper
+binary, no user namespaces and nothing to install:
+
+- **Landlock** gives the process a filesystem of the system libraries,
+  the fonts and their cache, the file it reads and the one directory it
+  writes. The configuration file, with the master key and the database
+  URL, the other jobs' work directories and the rest of the disk do not
+  exist for it. TCP `bind` and `connect` are refused on kernels 6.7 and
+  newer, and on 6.12 and newer the process cannot signal a process
+  outside the sandbox, such as the worker itself.
+- **seccomp** refuses, with `EPERM`, every socket call (which also closes
+  path-based unix sockets such as Postgres's), namespaces, `ptrace`,
+  mounts, reaching another process's descriptors or limits, and the
+  kernel-facing calls a decoder has no use for: `bpf`, `keyctl`,
+  `userfaultfd`, `io_uring_setup`, module loading. It is a
+  denylist, not an allowlist, so a glibc or libvips upgrade does not break
+  it silently.
+
+`media.sandbox.isolation` is `"auto"` by default: a development VM, CI and
+a default Docker container all get both layers with nothing to configure,
+and the worker logs what it got at startup. Production should set
+`"required"`, so a kernel downgrade or a seccomp profile that blocks the
+`landlock_*` syscalls fails the deployment instead of quietly turning
+confinement off. `"required"` checks that both layers install; what
+Landlock enforces still depends on the kernel's ABI, which the `sandbox:`
+boot line names (`abi 4` adds the TCP refusal, `abi 6` the signal scope). Before any tool runs, the worker checks that the sandbox
+refuses a read it was not granted. macOS keeps the limits and the timeout
+only.
+
 Before vips sees a file, its magic bytes are checked again against the
 formats agrafe means to render, so a file declared as a PNG that holds
 something else never reaches ImageMagick or another loader.

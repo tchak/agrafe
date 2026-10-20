@@ -78,6 +78,18 @@ See "Crates" in `DESIGN.md` for the dependency graph.
   `probe/document` is hand-written text and is edited directly.
 - `cargo coverage` (an alias in `.cargo/config.toml`, needs cargo-llvm-cov)
   reports line coverage; add `--show-missing-lines` to see what is uncovered.
+- Linux-only code (the `agrafe-sandbox` confinement) is run locally through
+  [Dory](https://github.com/Augani/dory), not Docker Desktop: its `docker`
+  CLI lives in `~/.dory/bin` (not on `PATH`). Mount the checkout and give
+  cargo a target directory of its own, since macOS build artifacts do not
+  mix with Linux ones:
+  `~/.dory/bin/docker run --rm -v "$PWD":/work -w /work -e CARGO_TARGET_DIR=/work/target/linux rust:1-trixie cargo test -p agrafe-sandbox`.
+  Dory's kernel (6.12, `-dory`) is built without the Landlock LSM, so
+  seccomp is exercised there but the Landlock refusal tests skip; do not set
+  `AGRAFE_SANDBOX_REQUIRED=1` in it. CI (`ubuntu-26.04`) has both and
+  sets that variable, so a pushed bookmark with a draft PR is the full
+  Linux run. `cargo clippy --target x86_64-unknown-linux-gnu` (target
+  installed) catches type and cfg errors without a container.
 
 ## Conventions
 

@@ -29,6 +29,19 @@ notify workers reach `webhook.url`, and the render workers reach the hosts
 of `media.geojson.layers`, if any are configured. Nothing else in agrafe
 talks to the network besides Postgres, the object store and `clamd`.
 
+## The sandbox
+
+Each render runs under Landlock and seccomp on Linux (see [Security
+model](security.md#sandboxed-rendering)). Nothing is needed for it: a
+kernel of 5.13 or newer has Landlock, every kernel in service has
+seccomp, and Docker's default seccomp profile allows both. Set
+`media.sandbox.isolation = "required"` in production so that the worker
+refuses to start without them, and watch the `sandbox:` line in the
+worker's log. A host that keeps fonts or poppler's data outside `/usr`,
+`/etc/fonts` and `/var/cache/fontconfig` lists them in
+`media.sandbox.readable`; without them a PDF whose fonts are not embedded
+renders blank, and the startup probe does not catch that.
+
 ## libvips
 
 libvips decodes untrusted files, so its version matters more than its
