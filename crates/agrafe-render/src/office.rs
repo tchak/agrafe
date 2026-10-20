@@ -144,9 +144,11 @@ const OFFICE_CONCURRENCY: &str = "2";
 /// Convert `original`, a file of `content_type`, to a one-page PDF in the
 /// `office` directory under `workdir`, and return the PDF's path.
 /// `Declined` when no converter is configured or the type is not one
-/// LibreOffice converts, and when LibreOffice exited cleanly without
-/// writing a PDF, which is how it reports a file it cannot load;
-/// `Rejected` when it failed or ran out of time.
+/// LibreOffice converts; `Rejected` when it failed or ran out of time,
+/// which includes a file it cannot load ("source file could not be
+/// loaded", exit 1, on 26.2 and 26.8). An exit of zero with no PDF, which
+/// no version has been seen to produce, declines rather than failing the
+/// blob for a fault nothing names.
 pub async fn convert(
     config: &Config,
     content_type: &str,

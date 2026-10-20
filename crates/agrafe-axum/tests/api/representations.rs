@@ -320,6 +320,9 @@ async fn office_documents_get_their_first_page_through_libreoffice(pool: PgPool)
     // one whose picture is beside a paragraph is a real document.
     let picture = ready_file(&app, "picture.docx", DOCX, &fixture("image.docx")).await;
     let mixed = ready_file(&app, "mixed.docx", DOCX, &fixture("text.docx")).await;
+    // A well-formed ZIP whose document part is cut mid-element: LibreOffice
+    // cannot load it and exits non-zero, so the file is at fault.
+    let broken = ready_file(&app, "broken.docx", DOCX, &fixture("broken.docx")).await;
     render_all(&app).await;
 
     for blob in documents.iter().chain([&mixed]) {
@@ -342,6 +345,10 @@ async fn office_documents_get_their_first_page_through_libreoffice(pool: PgPool)
     let blob = get_blob(&app, id_of(&picture)).await;
     assert_eq!(blob["preview_source"], "embedded_image");
     assert_eq!(blob["thumbnail_state"], "ready");
+    let id = id_of(&broken);
+    let blob = get_blob(&app, id).await;
+    assert_eq!(blob["thumbnail_state"], "failed");
+    icon(&app, &format!("/blobs/{id}/thumbnail/broken.docx"), "failed").await;
 }
 
 #[sqlx::test(migrator = "MIGRATOR")]

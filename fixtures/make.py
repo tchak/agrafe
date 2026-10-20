@@ -135,6 +135,17 @@ def docx(text, media_name=None, media=None, pages=1):
     return out.getvalue()
 
 
+def broken_docx():
+    """A Word document that is a well-formed ZIP whose document part is cut
+    mid-element: LibreOffice cannot load it."""
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        zip_entry(z, "[Content_Types].xml", '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>')
+        zip_entry(z, "_rels/.rels", '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>')
+        zip_entry(z, "word/document.xml", '<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>cut')
+    return out.getvalue()
+
+
 def odt(text, media=None):
     """An OpenDocument text: `text` on an A4 page and, with a media file, a
     frame that shows it."""
@@ -294,6 +305,7 @@ def main():
         "image.odt": odt("", small_png),
         # Real documents, for the converter: two pages, a letter, a table.
         "pages.docx": docx("Page {page} of a two-page report.", pages=2),
+        "broken.docx": broken_docx(),
         "text.odt": odt("Bonjour, ceci est une lettre."),
         "table.xlsx": xlsx(TABLE),
         "table.ods": ods(TABLE),

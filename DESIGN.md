@@ -1825,9 +1825,15 @@ the fallback runs once the preview has declined, like the PDF first page.
 Over `media.max_source_size`, or without a converter, it declines and the
 representation is `unavailable`, which is what office files got before. A
 LibreOffice that exits non-zero or runs out of time is a rejection, as
-for the other tools; one that exits zero without writing a PDF, which is
-how it reports a file it cannot load, declines. How it runs, and what it
-costs, is under "Sandboxing".
+for the other tools, and a file it cannot load is one ("source file could
+not be loaded", exit 1, on 26.2 and 26.8): a broken DOCX is `failed`
+like a broken PDF, which the integration tests pin with a well-formed
+ZIP whose document part is cut mid-element (`fixtures/broken.docx`). An
+exit of zero with no PDF, which no version has been seen to produce,
+declines rather than failing the blob for a fault nothing names. Note
+that LibreOffice converts a file that is not a ZIP at all as plain text,
+so garbage named `.docx` gets a page of its bytes, not a failure. How it
+runs, and what it costs, is under "Sandboxing".
 
 ### Preview
 
