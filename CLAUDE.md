@@ -85,7 +85,7 @@ See "Crates" in `DESIGN.md` for the dependency graph.
   mix with Linux ones:
   `~/.dory/bin/docker run --rm -v "$PWD":/work -w /work -e CARGO_TARGET_DIR=/work/target/linux rust:1-trixie cargo test -p agrafe-sandbox`.
   Dory's kernel (6.12, `-dory`) is built without the Landlock LSM, so
-  seccomp is exercised there but the Landlock refusal tests skip; do not set
+  the seccomp refusal tests run there and the Landlock ones skip; do not set
   `AGRAFE_SANDBOX_REQUIRED=1` in it. CI (`ubuntu-26.04`) has both and
   sets that variable, so a pushed bookmark with a draft PR is the full
   Linux run. `cargo clippy --target x86_64-unknown-linux-gnu` (target

@@ -769,19 +769,23 @@ mod tests {
         assert_eq!(status.to_string(), "no landlock, seccomp, rlimits");
     }
 
-    /// What is refused, on a kernel that can refuse it. Elsewhere the tests
+    /// What is refused, on a kernel that can refuse it: the Landlock tests
+    /// need both layers, the seccomp tests the filter alone. Elsewhere they
     /// skip with a message, unless `AGRAFE_SANDBOX_REQUIRED=1`, which CI
-    /// sets so that a regression is not a green empty suite.
+    /// sets so that a regression is not a green empty suite. Docker's
+    /// default profile already refuses `unshare`, so the namespace test
+    /// discriminates only on a bare host.
     #[cfg(target_os = "linux")]
     mod refusals {
         use super::*;
 
-        /// The configuration the tests run under, or `None` with a message
-        /// when this kernel cannot confine and the tests are not required.
-        async fn confined() -> Option<Config> {
+        /// The configuration the tests run under when the sandbox has the
+        /// layers `need` asks for, or `None` with a message when this kernel
+        /// does not and the tests are not required.
+        async fn confined_with(need: fn(&Status) -> bool) -> Option<Config> {
             let config = config();
             let status = probe(&config).await.unwrap();
-            if status.landlock.is_some() && status.seccomp {
+            if need(&status) {
                 return Some(config);
             }
             if std::env::var_os("AGRAFE_SANDBOX_REQUIRED").is_some_and(|v| v == "1") {
@@ -789,6 +793,17 @@ mod tests {
             }
             eprintln!("skipped: the sandbox is {status}");
             None
+        }
+
+        /// Both layers, for what Landlock refuses.
+        async fn confined() -> Option<Config> {
+            confined_with(|status| status.landlock.is_some() && status.seccomp).await
+        }
+
+        /// The seccomp filter alone, for what it refuses: these run on a
+        /// kernel without Landlock too.
+        async fn filtered() -> Option<Config> {
+            confined_with(|status| status.seccomp).await
         }
 
         fn has(program: &str) -> bool {
@@ -833,10 +848,12 @@ mod tests {
             assert!(matches!(run(cat, &config).await.unwrap(), Outcome::Success));
 
             // The parent's environment is not where the secrets live, but a
-            // configuration file next to the binary would be.
+            // configuration file next to the binary would be: a directory
+            // is not listable either.
+            let beside = tempdir();
+            std::fs::write(beside.path().join("agrafe.toml"), b"[keys]").unwrap();
             let mut ls = Command::new("ls");
-            ls.arg(std::env::current_dir().unwrap())
-                .writable(work.path());
+            ls.arg(beside.path()).writable(work.path());
             assert!(matches!(
                 run(ls, &config).await.unwrap(),
                 Outcome::Failed { .. }
@@ -889,7 +906,7 @@ mod tests {
 
         #[tokio::test]
         async fn connects_are_refused() {
-            let Some(config) = confined().await else {
+            let Some(config) = filtered().await else {
                 return;
             };
             if !has("bash") {
@@ -921,7 +938,7 @@ mod tests {
 
         #[tokio::test]
         async fn namespaces_are_refused() {
-            let Some(config) = confined().await else {
+            let Some(config) = filtered().await else {
                 return;
             };
             if !has("unshare") {
@@ -977,7 +994,7 @@ mod tests {
         /// it is how glibc reads and sets limits, so it keeps working.
         #[tokio::test]
         async fn limits_of_other_processes_are_refused() {
-            let Some(config) = confined().await else {
+            let Some(config) = filtered().await else {
                 return;
             };
             if !has("prlimit") {
@@ -1002,7 +1019,7 @@ mod tests {
         /// `EPERM`, so it falls back to `clone`.
         #[tokio::test]
         async fn threads_still_work() {
-            let Some(config) = confined().await else {
+            let Some(config) = filtered().await else {
                 return;
             };
             let work = tempdir();
