@@ -45,7 +45,7 @@ pub struct Signer {
 
 impl Signer {
     /// Build from config, validating everything the signer depends on.
-    pub fn from_config(config: &SigningConfig) -> Result<Self, ConfigError> {
+    pub(crate) fn from_config(config: &SigningConfig) -> Result<Self, ConfigError> {
         let invalid = ConfigError::Invalid;
         if config.window.is_zero() {
             return Err(invalid("signing.window must be positive".into()));
@@ -110,7 +110,7 @@ impl Signer {
 
     /// Expiry for a URL minted now: rounded up to the next window boundary,
     /// then the TTL is added. Every mint inside one window yields the same value.
-    pub fn expiry_for(&self, ttl: Duration, now: SystemTime) -> u64 {
+    pub(crate) fn expiry_for(&self, ttl: Duration, now: SystemTime) -> u64 {
         let now = unix(now);
         let window = self.window.as_secs().max(1);
         let boundary = now.div_ceil(window) * window;

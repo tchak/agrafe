@@ -49,13 +49,13 @@ pub fn check(headers: &HeaderMap, uri: &Uri) -> Result<(), String> {
 }
 
 /// Whether `method` can change anything: the check applies to it.
-pub fn is_unsafe(method: &Method) -> bool {
+pub(crate) fn is_unsafe(method: &Method) -> bool {
     !matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
 }
 
 /// A layer on the private router: `403` for an unsafe request from
 /// another site.
-pub async fn refuse_cross_site(req: Request, next: Next) -> Result<Response, ApiError> {
+pub(crate) async fn refuse_cross_site(req: Request, next: Next) -> Result<Response, ApiError> {
     if is_unsafe(req.method())
         && let Err(why) = check(req.headers(), req.uri())
     {

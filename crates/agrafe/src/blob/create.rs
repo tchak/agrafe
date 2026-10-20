@@ -113,7 +113,7 @@ pub struct CreateBlobRequest {
 
 /// A validated blob, ready to insert.
 #[derive(Debug, Clone)]
-pub struct NewBlob {
+pub(crate) struct NewBlob {
     pub id: Uuid,
     pub filename: String,
     pub content_type: String,
@@ -141,7 +141,7 @@ pub const MAX_FILENAME_LEN: usize = 255;
 /// Longest `content_type` accepted, in bytes.
 pub const MAX_CONTENT_TYPE_LEN: usize = 255;
 
-pub fn validate(
+pub(crate) fn validate(
     req: CreateBlobRequest,
     upload: &UploadConfig,
     blobs: &BlobsConfig,
@@ -317,7 +317,7 @@ pub(crate) fn validate_filename(filename: &str) -> Result<String, CreateError> {
 /// Parse and reduce to `type/subtype`, lowercase, parameters dropped. The
 /// error is a message; callers pick the status (422 on create, 400 as a
 /// list filter).
-pub fn normalize_content_type(raw: &str) -> Result<String, &'static str> {
+pub(crate) fn normalize_content_type(raw: &str) -> Result<String, &'static str> {
     // Registered types are far shorter; the bound keeps the value fit for
     // a header and for the envelope's length-prefixed fields.
     if raw.len() > MAX_CONTENT_TYPE_LEN {

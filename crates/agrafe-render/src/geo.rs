@@ -28,13 +28,13 @@ use crate::vips::{self, Fit};
 use crate::{Config, Error, Rejection, Verdict, helpers};
 
 /// The helper's SVG in the work directory.
-pub const PATHS: &str = "paths.svg";
+pub(crate) const PATHS: &str = "paths.svg";
 /// The helper's extent in the work directory.
-pub const EXTENT: &str = "extent.json";
+pub(crate) const EXTENT: &str = "extent.json";
 /// The server's spec for the helper in the work directory.
-pub const SPEC: &str = "spec.json";
+pub(crate) const SPEC: &str = "spec.json";
 /// The composited map in the work directory, in vips's native format.
-pub const MAP: &str = "map.v";
+pub(crate) const MAP: &str = "map.v";
 
 /// Painted under the geometry when no layer applies.
 const BACKGROUND: Color = Color {

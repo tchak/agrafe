@@ -8,13 +8,15 @@
 //! [`dashboard_router`] wherever it likes, behind its own authentication;
 //! `agrafe-server` puts it under `/dashboard` on the private listener.
 
-pub mod attachments;
-pub mod blobs;
-pub mod error;
-pub mod filters;
+mod attachments;
+mod blobs;
+mod error;
+mod filters;
+// Public for the census test in `tests/`, not part of the API.
+#[doc(hidden)]
 pub mod jobs;
-pub mod layout;
-pub mod origin;
+mod layout;
+mod origin;
 
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::LazyLock;
@@ -28,8 +30,8 @@ use tower_http::trace::TraceLayer;
 
 use agrafe::Agrafe;
 
-pub use error::DashboardError;
-pub use layout::Base;
+use error::DashboardError;
+use layout::Base;
 
 /// daisyUI's reset, themes and the components the templates use, MIT,
 /// assembled by `scripts/daisyui.sh`; see `assets/daisyui.css.LICENSE`.

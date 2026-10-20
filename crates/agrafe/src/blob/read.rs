@@ -56,7 +56,7 @@ impl ReadError {
     /// Whether reading again would fail the same way: the row or the object
     /// is damaged. A store error, or an object ending short of what its
     /// length promised, may be the connection's.
-    pub fn is_permanent(&self) -> bool {
+    pub(crate) fn is_permanent(&self) -> bool {
         match self {
             ReadError::Incomplete { .. }
             | ReadError::Header { .. }
@@ -94,7 +94,7 @@ struct Columns<'a> {
 }
 
 impl Stored {
-    pub fn from_blob(blob: &Blob) -> Result<Self, ReadError> {
+    pub(crate) fn from_blob(blob: &Blob) -> Result<Self, ReadError> {
         Self::from_columns(Columns {
             blob_id: blob.id,
             storage_key: blob.storage_key.as_deref(),
@@ -252,7 +252,7 @@ impl Reader {
     /// row carries the data key and the layout, fixed by the first part;
     /// the part's own header is read off the object, and its length comes
     /// from the object's.
-    pub async fn open_part(state: &Agrafe, blob: &Blob, n: u32) -> Result<Self, ReadError> {
+    pub(crate) async fn open_part(state: &Agrafe, blob: &Blob, n: u32) -> Result<Self, ReadError> {
         let missing = |what| ReadError::Incomplete {
             blob_id: blob.id,
             what,

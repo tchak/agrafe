@@ -54,7 +54,7 @@ impl Event {
     /// The event a blob's new state implies, for the transitions that
     /// end a job: `ready` and `infected`. `failed` and `expired` are
     /// raised where they happen, `jobs::fail` and the reaper.
-    pub fn of(blob: &Blob) -> Option<Self> {
+    pub(crate) fn of(blob: &Blob) -> Option<Self> {
         match blob.state {
             BlobState::Ready => Some(Event::Ready),
             BlobState::Infected => Some(Event::Infected),
@@ -65,7 +65,7 @@ impl Event {
 
 /// What a notify job carries in `jobs.payload`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Payload {
+pub(crate) struct Payload {
     /// The delivery's `webhook-id`: minted when the event is enqueued,
     /// the same on every attempt of it, a new one when a newer event
     /// replaces it, so a receiver deduplicating on the header never
@@ -78,7 +78,7 @@ pub struct Payload {
 
 /// The request body.
 #[derive(Debug, Serialize)]
-pub struct Body {
+pub(crate) struct Body {
     pub event: Event,
     pub occurred_at: Timestamp,
     /// Deliveries of this event so far, this one included.
@@ -109,6 +109,8 @@ fn payload(event: Event, now: Timestamp) -> serde_json::Value {
 /// Enqueue the delivery of `event` for the blob, due at `now`, at
 /// `priority`, the blob's. A notify job pending for the blob is replaced,
 /// see `ON_CONFLICT`. The caller checks `WebhookConfig::wants` first.
+// Public for the integration tests, not part of the API.
+#[doc(hidden)]
 pub async fn enqueue(
     exec: impl PgExecutor<'_>,
     blob_id: Uuid,
@@ -139,7 +141,7 @@ pub async fn enqueue(
 /// `enqueue` for each of `blob_ids`, each at its blob's priority, in one
 /// statement: the reaper's expiries, which can be many after an outage.
 /// An id without a row is skipped.
-pub async fn enqueue_each(
+pub(crate) async fn enqueue_each(
     exec: impl PgExecutor<'_>,
     blob_ids: &[Uuid],
     event: Event,
@@ -172,6 +174,8 @@ pub async fn enqueue_each(
 
 /// Why a delivery failed. The message is what `last_error` keeps.
 #[derive(Debug, thiserror::Error)]
+// Public for the integration tests, not part of the API.
+#[doc(hidden)]
 pub enum WebhookError {
     /// The job's payload is not one of ours: another attempt would read
     /// the same thing.
@@ -197,6 +201,8 @@ const MAX_ERROR_BODY: usize = 1000;
 /// The client every delivery of this process goes through, built from
 /// `[webhook]` when a URL is set.
 #[derive(Clone)]
+// Public for the integration tests, not part of the API.
+#[doc(hidden)]
 pub struct Client {
     inner: reqwest::Client,
     url: String,
@@ -220,10 +226,6 @@ impl Client {
             url: url.to_string(),
             key,
         })
-    }
-
-    pub fn url(&self) -> &str {
-        &self.url
     }
 
     /// `POST` `body` as delivery `id`, signed over the timestamp of now.
@@ -271,6 +273,8 @@ async fn head_of(mut response: reqwest::Response) -> String {
 /// The `webhook-signature` of a delivery: `v1,` and the base64 of the
 /// HMAC-SHA256 of `id.timestamp.body` under `key`, as Standard Webhooks
 /// specifies.
+// Public for the integration tests, not part of the API.
+#[doc(hidden)]
 pub fn sign(key: &[u8], id: &str, timestamp: i64, body: &str) -> String {
     let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("hmac accepts any key length");
     mac.update(id.as_bytes());
@@ -295,7 +299,7 @@ fn describe(err: reqwest::Error) -> String {
     message
 }
 
-pub async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
+pub(crate) async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
     let id = job.blob_id.ok_or(JobError::NoBlob(job.kind))?;
     let payload: Payload = serde_json::from_value(job.payload.clone())
         .map_err(|err| WebhookError::Payload(err.to_string()))?;

@@ -22,7 +22,7 @@ pub enum MetricsError {
 
 /// Outcome label of a job run.
 #[derive(Debug, Clone, Copy)]
-pub enum Outcome {
+pub(crate) enum Outcome {
     Ok,
     Retry,
     Dead,
@@ -164,14 +164,14 @@ impl Metrics {
     }
 
     /// A read route looked a row up, and the cache had it or not.
-    pub fn head_cache(&self, hit: bool) {
+    pub(crate) fn head_cache(&self, hit: bool) {
         self.head_cache
             .with_label_values(&[if hit { "hit" } else { "miss" }])
             .inc();
     }
 
     /// A delivery of `event` was attempted and the receiver took it or not.
-    pub fn webhook_delivery(&self, event: Event, delivered: bool) {
+    pub(crate) fn webhook_delivery(&self, event: Event, delivered: bool) {
         self.webhook_deliveries
             .with_label_values(&[
                 event.as_str(),
@@ -181,7 +181,7 @@ impl Metrics {
     }
 
     /// An attempt at a job of `kind` finished with `outcome` after `took`.
-    pub fn job_run(&self, kind: JobKind, outcome: Outcome, took: Duration) {
+    pub(crate) fn job_run(&self, kind: JobKind, outcome: Outcome, took: Duration) {
         self.job_runs
             .with_label_values(&[kind.as_str(), outcome.as_str()])
             .inc();
@@ -190,7 +190,7 @@ impl Metrics {
             .observe(took.as_secs_f64());
     }
 
-    pub fn set_workers(&self, kind: JobKind, count: usize) {
+    pub(crate) fn set_workers(&self, kind: JobKind, count: usize) {
         self.workers
             .with_label_values(&[kind.as_str()])
             .set(count as i64);

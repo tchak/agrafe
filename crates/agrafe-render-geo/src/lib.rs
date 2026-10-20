@@ -234,7 +234,7 @@ pub fn render(bytes: &[u8], spec: &Spec) -> Option<Rendered> {
 /// The style a feature's properties ask for. A value of the wrong type or
 /// out of the vocabulary is ignored, never an error: nothing from the file
 /// reaches the SVG as it came.
-pub fn style_of(properties: &JsonObject) -> Style {
+pub(crate) fn style_of(properties: &JsonObject) -> Style {
     let color = |key: &str| {
         properties
             .get(key)

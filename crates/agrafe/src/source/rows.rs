@@ -44,7 +44,7 @@ pub const DEFAULT_SHEET_NAME: &str = "Sheet1";
 
 /// Whether `content_type` is a sheet format, with its row and column
 /// limits, rather than CSV.
-pub fn is_sheet(content_type: &str) -> bool {
+pub(crate) fn is_sheet(content_type: &str) -> bool {
     matches!(content_type, classify::XLSX | classify::ODS)
 }
 
@@ -82,7 +82,7 @@ pub struct Sheet {
 }
 
 /// Why a declared sheet name is not one Excel accepts.
-pub fn check_sheet_name(name: &str) -> Result<(), &'static str> {
+pub(crate) fn check_sheet_name(name: &str) -> Result<(), &'static str> {
     if name.trim().is_empty() {
         return Err("must not be empty");
     }
@@ -111,7 +111,7 @@ pub fn check_sheet_name(name: &str) -> Result<(), &'static str> {
 /// after `current` in workbook order: the source is grouped by sheet, so
 /// a sheet is written whole before the next. The message says what is
 /// wrong with the switch.
-pub fn switch_target(sheets: &[Sheet], current: usize, name: &str) -> Result<usize, String> {
+pub(crate) fn switch_target(sheets: &[Sheet], current: usize, name: &str) -> Result<usize, String> {
     let Some(index) = sheets.iter().position(|s| s.name == name) else {
         return Err(format!("no sheet named {name:?} is declared"));
     };
@@ -137,7 +137,7 @@ pub fn switch_target(sheets: &[Sheet], current: usize, name: &str) -> Result<usi
 /// characters, forbids `[ ] : * ? / \` and a leading or trailing
 /// apostrophe, reserves `History` for its change tracking, and wants
 /// something there.
-pub fn sheet_name(filename: &str) -> String {
+pub(crate) fn sheet_name(filename: &str) -> String {
     let stem = match filename.rsplit_once('.') {
         Some((stem, _)) if !stem.is_empty() => stem,
         _ => filename,
@@ -178,7 +178,7 @@ fn truncate_sheet_name(s: &str) -> &str {
 /// from the line wherever it can, so that accept checks a row without
 /// copying it and the build escapes a text straight from the source.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Cell<'a> {
+pub(crate) enum Cell<'a> {
     Null,
     Bool(bool),
     /// The JSON lexeme, written as given rather than parsed to a float
@@ -194,7 +194,7 @@ pub enum Cell<'a> {
 /// One line of the source: a row of the current sheet, or a switch to the
 /// sheet named.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Line<'a> {
+pub(crate) enum Line<'a> {
     Row(Vec<Cell<'a>>),
     Switch(String),
 }
@@ -209,7 +209,10 @@ struct SwitchLine {
 /// `columns`, or `{"sheet": "..."}`. The message names what is wrong with
 /// it. Which sheet a switch may name is the caller's to check, with
 /// [`switch_target`].
-pub fn parse_source_line<'a>(line: &'a [u8], columns: &[Column]) -> Result<Line<'a>, String> {
+pub(crate) fn parse_source_line<'a>(
+    line: &'a [u8],
+    columns: &[Column],
+) -> Result<Line<'a>, String> {
     let first = line.iter().find(|b| !b.is_ascii_whitespace()).copied();
     if first == Some(b'{') {
         let switch: SwitchLine = serde_json::from_slice(line)
@@ -221,7 +224,7 @@ pub fn parse_source_line<'a>(line: &'a [u8], columns: &[Column]) -> Result<Line<
 
 /// Parse and check one row against `columns`. The message names what is
 /// wrong with it.
-pub fn parse_line<'a>(line: &'a [u8], columns: &[Column]) -> Result<Vec<Cell<'a>>, String> {
+pub(crate) fn parse_line<'a>(line: &'a [u8], columns: &[Column]) -> Result<Vec<Cell<'a>>, String> {
     let values: Vec<&'a RawValue> = serde_json::from_slice(line)
         .map_err(|e| format!("expected a JSON array of cell values: {e}"))?;
     if values.len() != columns.len() {
@@ -243,7 +246,7 @@ pub fn parse_line<'a>(line: &'a [u8], columns: &[Column]) -> Result<Vec<Cell<'a>
 }
 
 /// Whether `text` fits a sheet cell.
-pub fn fits_sheet_cell(text: &str) -> bool {
+pub(crate) fn fits_sheet_cell(text: &str) -> bool {
     // Every UTF-16 unit is at least one byte of UTF-8, so a short text
     // needs no counting.
     text.len() <= MAX_SHEET_CELL_LEN || text.encode_utf16().count() <= MAX_SHEET_CELL_LEN
@@ -251,7 +254,7 @@ pub fn fits_sheet_cell(text: &str) -> bool {
 
 /// The check a sheet format adds to a parsed row: no text longer than a
 /// cell holds. The message names the cell, as `parse_line`'s do.
-pub fn check_sheet_cells(cells: &[Cell<'_>], columns: &[Column]) -> Result<(), String> {
+pub(crate) fn check_sheet_cells(cells: &[Cell<'_>], columns: &[Column]) -> Result<(), String> {
     for (i, (cell, column)) in cells.iter().zip(columns).enumerate() {
         if let Cell::Text(text) = cell
             && !fits_sheet_cell(text)
@@ -326,7 +329,7 @@ fn decode_string(raw: &str) -> Result<Cow<'_, str>, String> {
 }
 
 /// `YYYY-MM-DD`, a valid calendar date.
-pub fn parse_date(s: &str) -> Option<civil::Date> {
+pub(crate) fn parse_date(s: &str) -> Option<civil::Date> {
     let b = s.as_bytes();
     if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
         return None;
@@ -341,7 +344,7 @@ pub fn parse_date(s: &str) -> Option<civil::Date> {
 /// optional offset in any ISO 8601 form, `Z`, `±HH`, `±HHMM` or `±HH:MM`,
 /// which is dropped: a spreadsheet has no timezone, and what the backend
 /// sends is what shows.
-pub fn parse_datetime(s: &str) -> Option<civil::DateTime> {
+pub(crate) fn parse_datetime(s: &str) -> Option<civil::DateTime> {
     let (date, rest) = s.split_at_checked(10)?;
     let date = parse_date(date)?;
     let rest = rest.strip_prefix('T')?;
@@ -404,7 +407,7 @@ fn digits(b: &[u8]) -> Option<u32> {
 /// against the current sheet's columns, within the sheet's limits. Where
 /// the part leaves the source, the sheet and the rows in it, goes on the
 /// row for the next part.
-pub struct Accept {
+pub(crate) struct Accept {
     sheets: Vec<Sheet>,
     /// `upload.max_size`, the bound on one part.
     max_part: u64,

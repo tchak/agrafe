@@ -334,7 +334,7 @@ pub struct UploadConfig {
 
 impl UploadConfig {
     /// When an object released at `now` may be purged.
-    pub fn purge_at(&self, now: Timestamp) -> Timestamp {
+    pub(crate) fn purge_at(&self, now: Timestamp) -> Timestamp {
         SignedDuration::try_from(self.purge_delay)
             .ok()
             .and_then(|d| now.checked_add(d).ok())
@@ -401,7 +401,7 @@ impl BlobsConfig {
     pub const MIN_EXPIRES_IN: Duration = Duration::from_secs(3600);
 
     /// When a blob left without an expiry at `now` expires.
-    pub fn default_expires_at(&self, now: Timestamp) -> Timestamp {
+    pub(crate) fn default_expires_at(&self, now: Timestamp) -> Timestamp {
         SignedDuration::try_from(self.default_expires_in)
             .ok()
             .and_then(|d| now.checked_add(d).ok())
@@ -605,7 +605,7 @@ pub struct WebhookConfig {
 impl WebhookConfig {
     /// Whether `event` is to be delivered: a URL is set and the event is
     /// not filtered out.
-    pub fn wants(&self, event: Event) -> bool {
+    pub(crate) fn wants(&self, event: Event) -> bool {
         self.url.is_some()
             && self
                 .events
@@ -614,7 +614,7 @@ impl WebhookConfig {
     }
 
     /// The key the signature is computed with: the secret decoded.
-    pub fn key(&self) -> Result<Vec<u8>, ConfigError> {
+    pub(crate) fn key(&self) -> Result<Vec<u8>, ConfigError> {
         use base64::Engine;
         let secret = self
             .secret
@@ -801,7 +801,7 @@ pub struct JobsConfig {
 impl JobsConfig {
     /// Workers for `kind`: the configured count, else a default suited to
     /// what the kind waits on.
-    pub fn concurrency_for(&self, kind: JobKind) -> usize {
+    pub(crate) fn concurrency_for(&self, kind: JobKind) -> usize {
         if let Some(n) = self.concurrency.get(&kind) {
             return *n;
         }
@@ -814,7 +814,7 @@ impl JobsConfig {
 
     /// The kinds this process handles, in the order of `JobKind::ALL`, each
     /// once.
-    pub fn kinds(&self) -> Vec<JobKind> {
+    pub(crate) fn kinds(&self) -> Vec<JobKind> {
         match &self.kinds {
             None => JobKind::ALL.to_vec(),
             Some(kinds) => JobKind::ALL
@@ -823,12 +823,6 @@ impl JobsConfig {
                 .filter(|k| kinds.contains(k))
                 .collect(),
         }
-    }
-
-    pub fn handles(&self, kind: JobKind) -> bool {
-        self.kinds
-            .as_ref()
-            .is_none_or(|kinds| kinds.contains(&kind))
     }
 }
 
@@ -1022,11 +1016,11 @@ mod tests {
     fn kinds_select_the_workers_a_process_runs() {
         let cfg = jobs("").unwrap();
         assert_eq!(cfg.kinds(), JobKind::ALL);
-        assert!(cfg.handles(JobKind::Archive));
+        assert!(cfg.kinds().contains(&JobKind::Archive));
 
         let cfg = jobs(r#"kinds = ["archive", "scan", "scan"]"#).unwrap();
         assert_eq!(cfg.kinds(), [JobKind::Scan, JobKind::Archive]);
-        assert!(!cfg.handles(JobKind::Render));
+        assert!(!cfg.kinds().contains(&JobKind::Render));
         assert!(jobs(r#"kinds = ["scann"]"#).is_none(), "a typo is an error");
 
         Jail::expect_with(|jail| {

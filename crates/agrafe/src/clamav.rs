@@ -23,6 +23,8 @@ const CHUNK: usize = 64 * 1024;
 const MAX_REPLY: usize = 4096;
 
 #[derive(Debug, Clone)]
+// Public for the integration tests, not part of the API.
+#[doc(hidden)]
 pub struct Clamd {
     addr: String,
     timeout: Duration,
@@ -35,6 +37,8 @@ pub struct Clamd {
 
 /// What clamd said about the bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
+// Public for the integration tests, not part of the API.
+#[doc(hidden)]
 pub enum Verdict {
     Clean,
     /// The signature name, such as `Eicar-Test-Signature`.
@@ -58,7 +62,7 @@ pub enum Error {
 }
 
 impl Clamd {
-    pub fn from_config(config: &ClamavConfig) -> Self {
+    pub(crate) fn from_config(config: &ClamavConfig) -> Self {
         Self {
             addr: config.addr.clone(),
             timeout: config.timeout,
@@ -131,6 +135,8 @@ impl Clamd {
 }
 
 /// An open `INSTREAM` session. Feed it the plaintext, then `finish`.
+// Public for the integration tests, not part of the API.
+#[doc(hidden)]
 pub struct Session {
     clamd: Clamd,
     stream: TcpStream,

@@ -26,7 +26,7 @@ pub async fn migrate(pool: &PgPool) -> Result<(), sqlx::migrate::MigrateError> {
 /// convert through `#[sqlx(try_from = "jiff_sqlx::Timestamp")]`. The derive
 /// has no way to lift that through `Option`, so nullable columns use
 /// `#[sqlx(try_from = "crate::db::NullableTimestamp")]` instead.
-pub struct NullableTimestamp(Option<jiff_sqlx::Timestamp>);
+pub(crate) struct NullableTimestamp(Option<jiff_sqlx::Timestamp>);
 
 impl Type<Postgres> for NullableTimestamp {
     fn type_info() -> PgTypeInfo {

@@ -94,7 +94,7 @@ pub async fn render_document(
 /// Run `agrafe-render-geo` on `original`, a GeoJSON file, as `spec`
 /// asks, writing the geometry as SVG paths to `svg` and the extent it
 /// chose to `extent` when the file holds any geometry.
-pub async fn render_geo(
+pub(crate) async fn render_geo(
     config: &Config,
     original: &Path,
     spec: &Path,

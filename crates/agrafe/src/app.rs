@@ -103,31 +103,37 @@ impl Agrafe {
         &self.0.signer
     }
 
+    // Public for the integration tests, not part of the API.
+    #[doc(hidden)]
     pub fn keks(&self) -> &Keks {
         &self.0.keks
     }
 
+    // Public for the integration tests, not part of the API.
+    #[doc(hidden)]
     pub fn clamd(&self) -> &Clamd {
         &self.0.clamd
     }
 
     /// The client `url` blobs are fetched through.
-    pub fn fetcher(&self) -> &fetch::Client {
+    pub(crate) fn fetcher(&self) -> &fetch::Client {
         &self.0.fetcher
     }
 
     /// The client the background layers of a map are fetched through.
-    pub fn maps(&self) -> &agrafe_render::geo::Client {
+    pub(crate) fn maps(&self) -> &agrafe_render::geo::Client {
         &self.0.maps
     }
 
     /// The client deliveries go through; `None` without a `[webhook]` URL.
+    // Public for the integration tests, not part of the API.
+    #[doc(hidden)]
     pub fn webhook(&self) -> Option<&notify::Client> {
         self.0.webhook.as_ref()
     }
 
     /// The rows the read routes served lately.
-    pub fn heads(&self) -> &HeadCache {
+    pub(crate) fn heads(&self) -> &HeadCache {
         &self.0.heads
     }
 

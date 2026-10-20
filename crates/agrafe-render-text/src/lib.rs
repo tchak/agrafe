@@ -29,7 +29,7 @@ const INK: u8 = 0x30;
 /// Decode a sample as UTF-8, or as Windows-1252 when it is not, which is
 /// what Latin-1 files from older systems are in practice. `None` when the
 /// bytes do not look like text at all.
-pub fn decode(bytes: &[u8]) -> Option<String> {
+pub(crate) fn decode(bytes: &[u8]) -> Option<String> {
     if bytes.contains(&0) {
         return None;
     }
@@ -69,7 +69,7 @@ fn windows_1252(byte: u8) -> char {
 
 /// The first `ROWS` lines, tabs expanded, cut at `COLUMNS`, with control
 /// and invisible formatting characters dropped.
-pub fn lines(text: &str) -> Vec<String> {
+pub(crate) fn lines(text: &str) -> Vec<String> {
     text.trim_start_matches('\u{FEFF}')
         .lines()
         .take(ROWS)

@@ -20,8 +20,8 @@ use agrafe_types::geojson::GEOJSON;
 use agrafe_types::sniff;
 use serde::Deserialize;
 
-pub use agrafe_types::classify::{DOCX, ODT};
-pub use geo::GeoJson;
+use agrafe_types::classify::{DOCX, ODT};
+use geo::GeoJson;
 pub use probe::{ProbeError, probe, probe_document, probe_sandbox};
 
 /// The tools and boxes the renderer works with. Flattened into the

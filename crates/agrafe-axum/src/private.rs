@@ -13,8 +13,8 @@ use agrafe::Agrafe;
 use agrafe::attachment::Attachment;
 use agrafe::blob::Blob;
 use agrafe::blob::create::CreateBlobRequest;
-use agrafe::blob::repo::{self, ListParams};
 use agrafe::blob::urls::{BlobUrls, MintOptions};
+use agrafe::blob::{self, ListParams};
 use agrafe::blob::{BlobState, Representation, ScanState};
 use agrafe::classify::Category;
 
@@ -114,7 +114,7 @@ async fn list_blobs(
         attached: q.attached,
         failed: q.failed,
         cursor: q.cursor,
-        limit: q.limit.unwrap_or(repo::DEFAULT_LIMIT),
+        limit: q.limit.unwrap_or(blob::DEFAULT_LIMIT),
     };
     let page = agrafe.list_blobs(params).await?;
     let items = respond_many(&agrafe, &page.items).await?;

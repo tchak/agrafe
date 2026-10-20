@@ -19,7 +19,7 @@ use crate::encryption::Envelope;
 use crate::jobs::notify::{self, Event};
 use crate::jobs::{self, JobKind, Priority};
 
-pub async fn insert(exec: impl PgExecutor<'_>, new: &NewBlob) -> sqlx::Result<Blob> {
+pub(crate) async fn insert(exec: impl PgExecutor<'_>, new: &NewBlob) -> sqlx::Result<Blob> {
     let scan_state = if new.skip_virus_scan {
         ScanState::Skipped
     } else {
@@ -74,7 +74,10 @@ pub async fn find(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Result<Option<Bl
 
 /// The one query on the read path: the columns of a [`BlobHead`], listed
 /// so a download never ships `source_columns` or the rest of the row.
-pub async fn find_head(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Result<Option<BlobHead>> {
+pub(crate) async fn find_head(
+    exec: impl PgExecutor<'_>,
+    id: Uuid,
+) -> sqlx::Result<Option<BlobHead>> {
     sqlx::query_as::<_, BlobHead>(
         "SELECT id, state, filename, content_type, category, checksum_sha256, size, \
          expires_at, scan_state, storage_key, kek_id, wrapped_key, encryption_header, \
@@ -89,7 +92,7 @@ pub async fn find_head(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Result<Opti
 }
 
 /// The blobs among `ids` that exist, in no particular order.
-pub async fn find_many(exec: impl PgExecutor<'_>, ids: &[Uuid]) -> sqlx::Result<Vec<Blob>> {
+pub(crate) async fn find_many(exec: impl PgExecutor<'_>, ids: &[Uuid]) -> sqlx::Result<Vec<Blob>> {
     sqlx::query_as::<_, Blob>("SELECT * FROM blobs WHERE id = ANY($1)")
         .bind(ids)
         .fetch_all(exec)
@@ -120,7 +123,7 @@ pub struct Page {
 }
 
 /// Newest first, keyset paginated on the UUID v7 id.
-pub async fn list(exec: impl PgExecutor<'_>, params: &ListParams) -> sqlx::Result<Page> {
+pub(crate) async fn list(exec: impl PgExecutor<'_>, params: &ListParams) -> sqlx::Result<Page> {
     let limit = params.limit;
     let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("SELECT * FROM blobs WHERE true");
     if let Some(ct) = &params.content_type {
@@ -227,7 +230,7 @@ pub async fn begin_upload(conn: &mut PgConnection, blob: &Blob) -> sqlx::Result<
 /// first part fixes the blob's data key and segment layout, which every
 /// part and the built original then share; `envelope` is what to record
 /// when the row has none yet.
-pub async fn begin_part(
+pub(crate) async fn begin_part(
     conn: &mut PgConnection,
     blob: &Blob,
     n: u32,
@@ -309,7 +312,7 @@ pub async fn touch_upload(
 
 /// Everything an upload writes onto the row when it completes.
 #[derive(Debug, Clone)]
-pub struct Completed {
+pub(crate) struct Completed {
     pub storage_key: String,
     pub kek_id: String,
     pub wrapped_key: Vec<u8>,
@@ -329,7 +332,7 @@ pub struct Completed {
 /// Points the row at the object and enqueues what comes next in the same
 /// transaction. Only the upload that began it, identified by `started`,
 /// its `upload_started_at`, may complete it.
-pub async fn complete_upload(
+pub(crate) async fn complete_upload(
     pool: &PgPool,
     webhook: &WebhookConfig,
     blob: &Blob,
@@ -389,7 +392,7 @@ pub async fn complete_upload(
 
 /// What a part adds to its blob's source once stored.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct PartAccepted {
+pub(crate) struct PartAccepted {
     /// Lines in the part.
     pub rows: u64,
     /// Bytes in the part.
@@ -407,7 +410,7 @@ pub struct PartAccepted {
 /// The position of a `rows` source within its workbook, carried across
 /// parts because the row limit is per sheet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SheetPosition {
+pub(crate) struct SheetPosition {
     /// Index of the sheet, from zero.
     pub index: u32,
     /// Lines accepted into it so far.
@@ -417,7 +420,7 @@ pub struct SheetPosition {
 /// Part `n` is stored: `uploading` back to `created`, the part counted on
 /// the row. Only the upload that began it, identified by `started`, may
 /// record it.
-pub async fn complete_part(
+pub(crate) async fn complete_part(
     conn: &mut PgConnection,
     id: Uuid,
     started: Timestamp,
@@ -460,7 +463,7 @@ pub async fn complete_part(
 /// Seal a source: `created` to `uploaded`, with the build job enqueued in
 /// the same transaction. Refused unless the blob is a generated one holding
 /// at least one part; the caller reads the reason off the returned row.
-pub async fn finish_source(
+pub(crate) async fn finish_source(
     pool: &PgPool,
     webhook: &WebhookConfig,
     id: Uuid,
@@ -497,7 +500,7 @@ pub async fn finish_source(
 
 /// What a build writes onto the row when the generated file is stored.
 #[derive(Debug, Clone)]
-pub struct Built {
+pub(crate) struct Built {
     pub storage_key: String,
     pub encryption_header: Vec<u8>,
     pub checksum_sha256: Vec<u8>,
@@ -510,7 +513,7 @@ pub struct Built {
 /// The build is done: `uploaded` to `ready`, the row pointed at the object
 /// with its final checksum and size, the representations enqueued. The
 /// data key and layout were fixed by the first part and are not touched.
-pub async fn complete_build(
+pub(crate) async fn complete_build(
     pool: &PgPool,
     webhook: &WebhookConfig,
     id: Uuid,
@@ -549,7 +552,7 @@ pub async fn complete_build(
 
 /// The deferred scan's verdict: `uploaded` to `ready` or `infected`, with the
 /// representations enqueued once the file is known clean.
-pub async fn finish_scan(
+pub(crate) async fn finish_scan(
     pool: &PgPool,
     webhook: &WebhookConfig,
     id: Uuid,
@@ -651,13 +654,13 @@ async fn enqueue_kinds(
 
 /// Outcome of `retry`.
 #[derive(Debug)]
-pub enum Retry {
+pub(crate) enum Retry {
     /// Jobs of these kinds were enqueued; the blob as it is after.
     Enqueued(Blob, Vec<JobKind>),
     /// The blob waits on no job in its state as of `now`, terminal included.
     Nothing(Blob),
     /// Every job the blob waits on is pending already.
-    Pending(Blob),
+    Pending,
     Missing,
 }
 
@@ -667,7 +670,7 @@ pub enum Retry {
 /// removed on the way, superseded; a pending one is left to do the work.
 /// The row is locked so a concurrent transition cannot slip in between
 /// the reading of its state and the enqueue.
-pub async fn retry(pool: &PgPool, id: Uuid, now: Timestamp) -> sqlx::Result<Retry> {
+pub(crate) async fn retry(pool: &PgPool, id: Uuid, now: Timestamp) -> sqlx::Result<Retry> {
     let mut tx = pool.begin().await?;
     let blob = sqlx::query_as::<_, Blob>("SELECT * FROM blobs WHERE id = $1 FOR UPDATE")
         .bind(id)
@@ -706,7 +709,7 @@ pub async fn retry(pool: &PgPool, id: Uuid, now: Timestamp) -> sqlx::Result<Retr
         .collect();
     let inserted = enqueue_kinds(&mut tx, &blob, &waiting).await?;
     if inserted.is_empty() {
-        return Ok(Retry::Pending(blob));
+        return Ok(Retry::Pending);
     }
     // The enqueue cleared the failure on the row; read it back as it is.
     let blob = sqlx::query_as::<_, Blob>("SELECT * FROM blobs WHERE id = $1")
@@ -719,7 +722,7 @@ pub async fn retry(pool: &PgPool, id: Uuid, now: Timestamp) -> sqlx::Result<Retr
 
 /// Outcome of a soft delete.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Delete {
+pub(crate) enum Delete {
     /// Deleted, or deleted already.
     Done,
     /// The blob has attachments, and was left alone.
@@ -731,7 +734,11 @@ pub enum Delete {
 /// stored objects at `purge_at`. The row is locked before the attachments
 /// are counted, so an attach cannot slip in between the check and the
 /// transition.
-pub async fn soft_delete(pool: &PgPool, id: Uuid, purge_at: Timestamp) -> sqlx::Result<Delete> {
+pub(crate) async fn soft_delete(
+    pool: &PgPool,
+    id: Uuid,
+    purge_at: Timestamp,
+) -> sqlx::Result<Delete> {
     let mut tx = pool.begin().await?;
     let locked: Option<Uuid> = sqlx::query_scalar("SELECT id FROM blobs WHERE id = $1 FOR UPDATE")
         .bind(id)
@@ -800,7 +807,7 @@ pub async fn expire(conn: &mut PgConnection, now: Timestamp) -> sqlx::Result<Vec
 /// has touched since then, a file that never arrived. An unattached blob
 /// with no parts is left to its own `expires_at`, which it always has.
 /// Whatever parts there are go with the purge of the prefix.
-pub async fn expire_abandoned(
+pub(crate) async fn expire_abandoned(
     conn: &mut PgConnection,
     before: Timestamp,
 ) -> sqlx::Result<Vec<Uuid>> {
@@ -826,7 +833,10 @@ pub async fn expire_abandoned(
 /// the original or the source parts a generated blob held, see
 /// `Blob::holds_objects`. The states are spelled into the SQL so that
 /// `blobs_unpurged_idx` applies, see `state_literals`.
-pub async fn awaiting_purge(conn: &mut PgConnection, now: Timestamp) -> sqlx::Result<Vec<Uuid>> {
+pub(crate) async fn awaiting_purge(
+    conn: &mut PgConnection,
+    now: Timestamp,
+) -> sqlx::Result<Vec<Uuid>> {
     let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
         "SELECT id FROM blobs \
          WHERE (storage_key IS NOT NULL OR source_parts > 0) AND purged_at IS NULL \
@@ -857,7 +867,7 @@ fn state_literals(states: impl IntoIterator<Item = BlobState>) -> String {
 }
 
 /// The purge is done: nothing of the blob is left in the bucket.
-pub async fn mark_purged(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Result<()> {
+pub(crate) async fn mark_purged(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Result<()> {
     sqlx::query("UPDATE blobs SET purged_at = COALESCE(purged_at, now()) WHERE id = $1")
         .bind(id)
         .execute(exec)
@@ -874,7 +884,7 @@ pub async fn mark_purged(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Result<()
 /// rather than in one transaction holding every row and its cascades. The
 /// states are spelled into the SQL so that `blobs_empty_tombstone_idx`
 /// applies, see `state_literals`.
-pub async fn prune_tombstones(
+pub(crate) async fn prune_tombstones(
     conn: &mut PgConnection,
     before: Timestamp,
     limit: i64,
@@ -900,7 +910,7 @@ pub async fn prune_tombstones(
 /// rule for a failed upload, applied by the reaper to the ones a crashed
 /// process left behind. A live upload touches its row as it runs, however
 /// long it takes.
-pub async fn reset_stale_uploads(
+pub(crate) async fn reset_stale_uploads(
     conn: &mut PgConnection,
     before: Timestamp,
 ) -> sqlx::Result<Vec<Uuid>> {
@@ -920,7 +930,7 @@ pub async fn reset_stale_uploads(
 /// version it was built with and, for `ready`, what was rendered. Blob
 /// state is untouched: the representation is written even if the blob was
 /// deleted meanwhile, and the purge takes it with the rest of the prefix.
-pub async fn finish_representation(
+pub(crate) async fn finish_representation(
     exec: impl PgExecutor<'_>,
     id: Uuid,
     kind: Representation,
@@ -962,7 +972,7 @@ pub async fn finish_representation(
 /// `pending` and a job is enqueued, if the blob is still `ready` and the
 /// representation was not disabled at creation. The lazy path of the
 /// `GET` handler, for a missing object or a stale variant version.
-pub async fn request_representation(
+pub(crate) async fn request_representation(
     pool: &PgPool,
     id: Uuid,
     kind: Representation,

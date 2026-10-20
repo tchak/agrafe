@@ -93,7 +93,7 @@ pub struct MintOptions {
 
 /// Check the query parameters a backend asks to sign into representation
 /// URLs: a bad value is the backend's mistake and is refused now.
-pub fn validate_query(query: &BTreeMap<String, String>) -> Result<(), MintError> {
+pub(crate) fn validate_query(query: &BTreeMap<String, String>) -> Result<(), MintError> {
     for (name, value) in query {
         match name.as_str() {
             "disposition" => {
@@ -129,7 +129,7 @@ pub fn disposition_kind(value: Option<&str>) -> Result<&'static str, String> {
 }
 
 /// The `wait` parameter: milliseconds, at most `MAX_WAIT`.
-pub fn validate_wait(value: &str) -> Result<Duration, String> {
+pub(crate) fn validate_wait(value: &str) -> Result<Duration, String> {
     let ms: u64 = value
         .parse()
         .map_err(|_| format!("wait must be a number of milliseconds, not `{value}`"))?;
@@ -141,12 +141,12 @@ pub fn validate_wait(value: &str) -> Result<Duration, String> {
 }
 
 /// The signed query parameter carrying the envelope of a sealed URL.
-pub const ENVELOPE_PARAM: &str = "e";
+pub(crate) const ENVELOPE_PARAM: &str = "e";
 
 /// Mint at `now`, for callers that want several blobs to share one expiry.
 /// The read URLs of a `ready` blob are sealed: they carry its envelope,
 /// and expire no later than the blob does.
-pub fn mint(state: &Agrafe, blob: &Blob, opts: &MintOptions, now: SystemTime) -> BlobUrls {
+pub(crate) fn mint(state: &Agrafe, blob: &Blob, opts: &MintOptions, now: SystemTime) -> BlobUrls {
     let signer = state.signer();
     let ttl = &state.config().signing.ttl;
     let mut read_expires = signer.expiry_for(opts.ttl.unwrap_or(ttl.read), now);

@@ -172,7 +172,7 @@ pub struct AttachmentRequest {
 
 /// A validated request, ready to insert.
 #[derive(Debug, Clone)]
-pub struct NewAttachment {
+pub(crate) struct NewAttachment {
     pub record_type: String,
     pub record_id: String,
     pub name: String,
@@ -256,7 +256,7 @@ pub struct Page {
 pub const MAX_FIELD_LEN: usize = 255;
 
 /// The error is the message; the callers wrap it in their own error.
-pub fn validate(req: AttachmentRequest) -> Result<NewAttachment, String> {
+pub(crate) fn validate(req: AttachmentRequest) -> Result<NewAttachment, String> {
     validate_field("record_type", &req.record_type)?;
     validate_field("record_id", &req.record_id)?;
     validate_field("name", &req.name)?;
@@ -330,7 +330,7 @@ async fn insert(
 /// The attachment a blob is created with, in the creating transaction.
 /// The blob was just inserted without an expiry, so there is nothing to
 /// clear.
-pub async fn insert_with_blob(
+pub(crate) async fn insert_with_blob(
     conn: &mut PgConnection,
     blob_id: Uuid,
     new: &NewAttachment,
@@ -363,7 +363,7 @@ async fn set_expiry(
     Ok(())
 }
 
-pub async fn find(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Result<Option<Attachment>> {
+pub(crate) async fn find(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Result<Option<Attachment>> {
     sqlx::query_as::<_, Attachment>("SELECT * FROM attachments WHERE id = $1")
         .bind(id)
         .fetch_optional(exec)
@@ -379,7 +379,10 @@ async fn delete(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Result<bool> {
 }
 
 /// The attachments of every blob among `ids`, oldest first.
-pub async fn for_blobs(exec: impl PgExecutor<'_>, ids: &[Uuid]) -> sqlx::Result<Vec<Attachment>> {
+pub(crate) async fn for_blobs(
+    exec: impl PgExecutor<'_>,
+    ids: &[Uuid],
+) -> sqlx::Result<Vec<Attachment>> {
     sqlx::query_as::<_, Attachment>("SELECT * FROM attachments WHERE blob_id = ANY($1) ORDER BY id")
         .bind(ids)
         .fetch_all(exec)
@@ -388,7 +391,7 @@ pub async fn for_blobs(exec: impl PgExecutor<'_>, ids: &[Uuid]) -> sqlx::Result<
 
 /// Newest first, keyset paginated on the UUID v7 id, each row with its
 /// blob's state.
-pub async fn list(exec: impl PgExecutor<'_>, params: &ListParams) -> sqlx::Result<Page> {
+pub(crate) async fn list(exec: impl PgExecutor<'_>, params: &ListParams) -> sqlx::Result<Page> {
     let limit = params.limit;
     let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
         "SELECT a.*, b.state AS blob_state, b.failed_at AS blob_failed_at FROM attachments a \
@@ -425,7 +428,10 @@ pub async fn list(exec: impl PgExecutor<'_>, params: &ListParams) -> sqlx::Resul
 /// Whether any attachment references `blob_id`: the last-detach check and
 /// delete's refusal. The caller holds the blob row lock when the answer
 /// decides something.
-pub async fn exists_for_blob(exec: impl PgExecutor<'_>, blob_id: Uuid) -> sqlx::Result<bool> {
+pub(crate) async fn exists_for_blob(
+    exec: impl PgExecutor<'_>,
+    blob_id: Uuid,
+) -> sqlx::Result<bool> {
     sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM attachments WHERE blob_id = $1)")
         .bind(blob_id)
         .fetch_one(exec)

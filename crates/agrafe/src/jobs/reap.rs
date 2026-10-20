@@ -18,7 +18,7 @@ use super::{Job, JobError, JobKind, Priority};
 use crate::app::Agrafe;
 use crate::blob::repo;
 
-pub async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
+pub(crate) async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
     if job.kind != JobKind::Reap {
         return Err(JobError::Unhandled(job.kind));
     }
@@ -85,7 +85,7 @@ pub struct Report {
 /// cascading to attachments and jobs, so a backlog (the first run on an
 /// old table, or after an outage) drains at this rate rather than in one
 /// transaction: ten thousand a minute is over fourteen million a day.
-pub const TOMBSTONE_BATCH: i64 = 10_000;
+pub(crate) const TOMBSTONE_BATCH: i64 = 10_000;
 
 pub async fn reap(state: &Agrafe, now: Timestamp) -> Result<Report, JobError> {
     let config = state.config();

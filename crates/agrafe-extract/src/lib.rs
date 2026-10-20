@@ -10,8 +10,8 @@
 //! `max_output`, and anything doubtful answers `None`: the caller then falls
 //! back to rendering the page, or to no preview.
 
-pub mod office;
-pub mod pdf;
+mod office;
+mod pdf;
 
 use agrafe_types::classify::{self, DOCX, ODT};
 

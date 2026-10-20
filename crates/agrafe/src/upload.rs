@@ -128,7 +128,7 @@ impl Agrafe {
 }
 
 /// Object key of a blob's original. Blobs are write-once, so there is one.
-pub fn object_key(blob_id: Uuid) -> String {
+pub(crate) fn object_key(blob_id: Uuid) -> String {
     format!("{blob_id}/original")
 }
 

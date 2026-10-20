@@ -2,17 +2,19 @@
 //! `FOR UPDATE SKIP LOCKED` and woken by `NOTIFY`. The workers live in
 //! `runner`, the handlers in their own modules.
 
-pub mod archive;
-pub mod build;
-pub mod document;
-pub mod fetch;
+pub(crate) mod archive;
+pub(crate) mod build;
+pub(crate) mod document;
+pub(crate) mod fetch;
 pub mod notify;
-pub mod purge;
+pub(crate) mod purge;
+// Public for the integration tests, not part of the API.
+#[doc(hidden)]
 pub mod reap;
-pub mod render;
-pub mod rows;
+pub(crate) mod render;
+pub(crate) mod rows;
 pub mod runner;
-pub mod scan;
+pub(crate) mod scan;
 
 use std::time::Duration;
 
@@ -77,6 +79,8 @@ impl Agrafe {
 
 /// Why one attempt at a job failed. The message is what `last_error` keeps.
 #[derive(Debug, thiserror::Error)]
+// Public for the integration tests, not part of the API.
+#[doc(hidden)]
 pub enum JobError {
     #[error("{0} job has no blob")]
     NoBlob(JobKind),
@@ -111,7 +115,7 @@ impl JobError {
     /// inputs are wrong, not the world around it. Such a job is marked dead
     /// at once rather than retried through the backoff, so the blob it
     /// leaves behind is visible in the dead jobs now and not an hour on.
-    pub fn is_permanent(&self) -> bool {
+    pub(crate) fn is_permanent(&self) -> bool {
         match self {
             JobError::NoBlob(_) | JobError::Unhandled(_) => true,
             JobError::Purge(purge::PurgeError::NotTerminal(_)) => true,
@@ -125,7 +129,7 @@ impl JobError {
     /// A delay the failure asks for before the next attempt, when the
     /// world said so: a remote's `Retry-After`. `fail` waits at least this
     /// long on top of its own backoff.
-    pub fn retry_after(&self) -> Option<Duration> {
+    pub(crate) fn retry_after(&self) -> Option<Duration> {
         match self {
             JobError::Fetch(err) => err.retry_after(),
             _ => None,
@@ -134,7 +138,7 @@ impl JobError {
 }
 
 /// Channel every enqueue notifies; the payload is the job kind.
-pub const CHANNEL: &str = "agrafe_jobs";
+pub(crate) const CHANNEL: &str = "agrafe_jobs";
 
 /// Delay before the first retry; doubles with every failure.
 const BACKOFF_BASE: Duration = Duration::from_secs(30);
@@ -197,7 +201,7 @@ impl JobKind {
     /// representations. Its death is recorded on the blob; a purge or a
     /// reap is housekeeping, a notify is the news of the blob and not
     /// its progress, and both leave the blob's row alone.
-    pub fn finishes_blob(self) -> bool {
+    pub(crate) fn finishes_blob(self) -> bool {
         matches!(
             self,
             JobKind::Fetch
@@ -212,6 +216,8 @@ impl JobKind {
 
 impl Priority {
     /// What the `jobs.priority` column holds; the claim orders on it.
+    // Public for the integration tests, not part of the API.
+    #[doc(hidden)]
     pub fn rank(self) -> i16 {
         match self {
             Priority::High => 1,
@@ -284,7 +290,7 @@ agrafe_types::str_enum!(JobState {
 });
 
 impl Job {
-    pub fn state(&self, lease: Duration, now: Timestamp) -> JobState {
+    pub(crate) fn state(&self, lease: Duration, now: Timestamp) -> JobState {
         if self.failed_at.is_some() {
             return JobState::Dead;
         }
@@ -333,7 +339,7 @@ pub struct Count {
 
 /// Count the jobs by kind, priority and state. Combinations with nothing
 /// in them have no row.
-pub async fn counts(exec: impl PgExecutor<'_>, lease: Duration) -> sqlx::Result<Vec<Count>> {
+pub(crate) async fn counts(exec: impl PgExecutor<'_>, lease: Duration) -> sqlx::Result<Vec<Count>> {
     let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
         "SELECT kind, priority, state, count(*) AS count, \
                 EXTRACT(EPOCH FROM now() - min(run_at))::float8 AS oldest_seconds \
@@ -364,7 +370,7 @@ pub struct Page {
 }
 
 /// Newest first, keyset paginated on the id.
-pub async fn list(
+pub(crate) async fn list(
     exec: impl PgExecutor<'_>,
     params: &ListParams,
     lease: Duration,
@@ -400,6 +406,8 @@ pub async fn list(
     Ok(Page { items, next_cursor })
 }
 
+// Public for the integration tests, not part of the API.
+#[doc(hidden)]
 pub async fn find(exec: impl PgExecutor<'_>, id: i64) -> sqlx::Result<Option<Job>> {
     sqlx::query_as::<_, Job>("SELECT * FROM jobs WHERE id = $1")
         .bind(id)
@@ -420,7 +428,7 @@ pub enum Action {
 }
 
 /// Give a dead job its attempts back and run it now. Workers are notified.
-pub async fn retry(conn: &mut PgConnection, id: i64) -> sqlx::Result<Action> {
+pub(crate) async fn retry(conn: &mut PgConnection, id: i64) -> sqlx::Result<Action> {
     let result = sqlx::query_as::<_, Job>(
         "UPDATE jobs SET failed_at = NULL, locked_at = NULL, locked_by = NULL, \
                          attempts = 0, run_at = now() \
@@ -468,7 +476,7 @@ async fn clear_failure(exec: impl PgExecutor<'_>, blob_id: Uuid) -> sqlx::Result
 
 /// Remove a dead job. A live one is left alone: a pending job is the only
 /// thing that will finish its blob.
-pub async fn discard(conn: &mut PgConnection, id: i64) -> sqlx::Result<Action> {
+pub(crate) async fn discard(conn: &mut PgConnection, id: i64) -> sqlx::Result<Action> {
     let deleted = sqlx::query_as::<_, Job>(
         "DELETE FROM jobs WHERE id = $1 AND failed_at IS NOT NULL RETURNING *",
     )
@@ -489,6 +497,8 @@ pub async fn discard(conn: &mut PgConnection, id: i64) -> sqlx::Result<Action> {
 /// whether a row was inserted. Workers are notified when the surrounding
 /// transaction commits. A job that finishes its blob clears the failure a
 /// dead predecessor left on the blob's row, see `fail`.
+// Public for the integration tests, not part of the API.
+#[doc(hidden)]
 pub async fn enqueue(
     exec: impl PgExecutor<'_>,
     kind: JobKind,
@@ -524,6 +534,8 @@ pub async fn enqueue(
 /// Lock the highest-priority, then oldest, runnable job of one of `kinds`
 /// for `worker`. A job is runnable when it is due, not dead, and either
 /// unlocked or held by a lease older than `lease`.
+// Public for the integration tests, not part of the API.
+#[doc(hidden)]
 pub async fn claim(
     exec: impl PgExecutor<'_>,
     kinds: &[JobKind],
@@ -553,6 +565,8 @@ pub async fn claim(
 /// Extend `worker`'s lease on a job it is running. Returns whether the job
 /// was still held by `worker`: a lapsed lease may have let another worker
 /// claim it, or the job may be gone.
+// Public for the integration tests, not part of the API.
+#[doc(hidden)]
 pub async fn touch(exec: impl PgExecutor<'_>, id: i64, worker: &str) -> sqlx::Result<bool> {
     let result = sqlx::query(
         "UPDATE jobs SET locked_at = now() \
@@ -567,7 +581,10 @@ pub async fn touch(exec: impl PgExecutor<'_>, id: i64, worker: &str) -> sqlx::Re
 
 /// Remove the dead jobs that failed before `before`: they have been around
 /// long enough to have been looked at.
-pub async fn prune_failed(exec: impl PgExecutor<'_>, before: Timestamp) -> sqlx::Result<u64> {
+pub(crate) async fn prune_failed(
+    exec: impl PgExecutor<'_>,
+    before: Timestamp,
+) -> sqlx::Result<u64> {
     let result = sqlx::query("DELETE FROM jobs WHERE failed_at IS NOT NULL AND failed_at <= $1")
         .bind(before.to_sqlx())
         .execute(exec)
@@ -578,6 +595,8 @@ pub async fn prune_failed(exec: impl PgExecutor<'_>, before: Timestamp) -> sqlx:
 /// A finished job leaves the table. One that finishes its blob clears the
 /// verdict a dead twin may have left on the row meanwhile: the twin was
 /// enqueued while this one ran, and the blob is not stuck after all.
+// Public for the integration tests, not part of the API.
+#[doc(hidden)]
 pub async fn succeed(conn: &mut PgConnection, job: &Job) -> sqlx::Result<()> {
     sqlx::query("DELETE FROM jobs WHERE id = $1")
         .bind(job.id)
@@ -591,6 +610,8 @@ pub async fn succeed(conn: &mut PgConnection, job: &Job) -> sqlx::Result<()> {
 
 /// What became of a failed job.
 #[derive(Debug, Clone, PartialEq, Eq)]
+// Public for the integration tests, not part of the API.
+#[doc(hidden)]
 pub enum Failure {
     /// Unlocked again, due at the given time.
     Retry(Timestamp),
@@ -608,6 +629,8 @@ pub enum Failure {
 /// blob is reported to the webhook, when `webhook` wants `failed`; the
 /// caller runs this in a transaction so the stamp and its notification
 /// commit together.
+// Public for the integration tests, not part of the API.
+#[doc(hidden)]
 pub async fn fail(
     conn: &mut PgConnection,
     job: &Job,

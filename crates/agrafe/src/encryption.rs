@@ -23,6 +23,8 @@ pub enum UnwrapError {
 }
 
 /// Every KEK in config, one of them current for wrapping new data keys.
+// Public for the integration tests, not part of the API.
+#[doc(hidden)]
 pub struct Keks {
     keks: HashMap<String, Kek>,
     current: String,
@@ -37,7 +39,7 @@ pub struct Envelope {
 }
 
 impl Keks {
-    pub fn from_config(config: &EncryptionConfig) -> Result<Self, ConfigError> {
+    pub(crate) fn from_config(config: &EncryptionConfig) -> Result<Self, ConfigError> {
         let invalid = ConfigError::Invalid;
         let mut keks = HashMap::new();
         for (id, secret) in &config.keks {
@@ -77,12 +79,12 @@ impl Keks {
     }
 
     /// The segment layout new objects are written with.
-    pub fn layout(&self) -> Layout {
+    pub(crate) fn layout(&self) -> Layout {
         self.layout
     }
 
     /// Generate a data key for `blob_id` and wrap it under the current KEK.
-    pub fn new_envelope(&self, blob_id: Uuid) -> Envelope {
+    pub(crate) fn new_envelope(&self, blob_id: Uuid) -> Envelope {
         let key = Key::generate();
         let wrapped = self.keks[&self.current].wrap(&key, wrap_aad(blob_id).as_bytes());
         Envelope {

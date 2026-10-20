@@ -12,8 +12,8 @@
 //! with the same [`Lines`], so what accept let through, the build parses
 //! the same way.
 
-pub mod archive;
-pub mod document;
+pub(crate) mod archive;
+pub(crate) mod document;
 pub mod rows;
 
 use agrafe_crypto::Key;
@@ -246,7 +246,7 @@ impl Tap for SourceTap {
 /// backslash, control or bidirectional formatting character (the filename
 /// rule), and at most `max_len` bytes. What an archive entry and a
 /// workspace file have in common; each adds its own rules.
-pub fn normalize_relative_path(raw: &str, max_len: usize) -> Result<String, String> {
+pub(crate) fn normalize_relative_path(raw: &str, max_len: usize) -> Result<String, String> {
     let path: String = if is_nfc(raw) {
         raw.to_string()
     } else {
@@ -282,7 +282,7 @@ pub fn normalize_relative_path(raw: &str, max_len: usize) -> Result<String, Stri
 
 /// Why a stored source could not be read back.
 #[derive(Debug, thiserror::Error)]
-pub enum SourceError {
+pub(crate) enum SourceError {
     /// A line does not parse: accept let something through, or the object
     /// is not what accept stored.
     #[error("part {part}, line {line}: {reason}")]
@@ -298,15 +298,14 @@ pub enum SourceError {
 /// One line of a stored source, numbered within its part as accept
 /// numbered it.
 #[derive(Debug, Clone)]
-pub struct SourceLine {
-    pub part: u32,
+pub(crate) struct SourceLine {
     pub line: u64,
     pub bytes: Bytes,
 }
 
 /// A blob's source read back part by part through the same line splitter
 /// accept used, so every line the build sees is one accept checked.
-pub struct Source<'a> {
+pub(crate) struct Source<'a> {
     state: &'a Agrafe,
     blob: &'a Blob,
     /// The part being read, zero before the first.
@@ -334,11 +333,7 @@ impl<'a> Source<'a> {
                 .next_line()
                 .map_err(|e| self.malformed(e.line, e.reason))?
             {
-                return Ok(Some(SourceLine {
-                    part: self.part,
-                    line,
-                    bytes,
-                }));
+                return Ok(Some(SourceLine { line, bytes }));
             }
             let reader = match &mut self.reader {
                 Some(reader) => reader,
@@ -378,7 +373,7 @@ impl<'a> Source<'a> {
 /// one within its part. The build reads the stored parts through the same
 /// splitter, so what accept let through, the build parses the same way.
 #[derive(Debug, Default)]
-pub struct Lines {
+pub(crate) struct Lines {
     buf: BytesMut,
     /// Bytes at the front of `buf` already searched for a newline, so a
     /// line arriving in many chunks is scanned once, not once per chunk.
@@ -389,7 +384,7 @@ pub struct Lines {
 
 /// A line the rules refused, and which one.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LineError {
+pub(crate) struct LineError {
     pub line: u64,
     pub reason: String,
 }

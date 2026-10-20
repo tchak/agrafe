@@ -225,7 +225,7 @@ oldest due job; below it the listing with a tab per state and the `kind`,
 `priority` and `blob_id` filters, and the first line of `last_error` on
 each row. The detail shows the payload pretty-printed, the whole error,
 and on a dead job the retry and discard buttons. **Blobs**: the six
-filters of `repo::ListParams`; the detail embeds the thumbnail (always
+filters of `blob::ListParams`; the detail embeds the thumbnail (always
 `200`, so no special case), lists the attachments and the jobs of the
 blob, and shows the retry button when `failed_at` is set. **Attachments**:
 the four filters of `attachment::ListParams`, each row with the state and

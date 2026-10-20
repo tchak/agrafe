@@ -1,10 +1,12 @@
 //! Blob model and state machine.
 
-pub mod cache;
+pub(crate) mod cache;
 pub mod create;
 pub mod envelope;
 pub mod metadata;
 pub mod read;
+// Public for the integration tests, not part of the API.
+#[doc(hidden)]
 pub mod repo;
 pub mod representation;
 pub mod urls;
@@ -17,7 +19,7 @@ use crate::app::Agrafe;
 use crate::classify::Category;
 use crate::jobs::Priority;
 use crate::source::rows::Sheet;
-use repo::{ListParams, Page};
+pub use repo::{DEFAULT_LIMIT, ListParams, MAX_LIMIT, Page};
 
 /// Why a blob could not be deleted.
 #[derive(Debug, thiserror::Error)]
@@ -115,7 +117,7 @@ impl Agrafe {
                     Err(RetryError::Nothing(state))
                 }
             }
-            repo::Retry::Pending(_) => Err(RetryError::Pending),
+            repo::Retry::Pending => Err(RetryError::Pending),
             repo::Retry::Missing => Err(RetryError::NotFound),
         }
     }
@@ -238,7 +240,7 @@ agrafe_types::str_enum!(ScanState {
 /// How an upload ended with respect to scanning, which decides the state the
 /// blob lands in.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ScanOutcome {
+pub(crate) enum ScanOutcome {
     /// `skip_virus_scan`: the backend vouches for the bytes.
     Skipped,
     /// Scanned inline, nothing found.
@@ -250,7 +252,7 @@ pub enum ScanOutcome {
 }
 
 impl ScanOutcome {
-    pub fn states(&self) -> (BlobState, ScanState) {
+    pub(crate) fn states(&self) -> (BlobState, ScanState) {
         match self {
             ScanOutcome::Skipped => (BlobState::Ready, ScanState::Skipped),
             ScanOutcome::Clean => (BlobState::Ready, ScanState::Clean),
@@ -259,11 +261,11 @@ impl ScanOutcome {
         }
     }
 
-    pub fn is_scanned(&self) -> bool {
+    pub(crate) fn is_scanned(&self) -> bool {
         matches!(self, ScanOutcome::Clean | ScanOutcome::Infected(_))
     }
 
-    pub fn signature(&self) -> Option<&str> {
+    pub(crate) fn signature(&self) -> Option<&str> {
         match self {
             ScanOutcome::Infected(name) => Some(name),
             _ => None,
@@ -306,34 +308,34 @@ agrafe_types::str_enum!(Representation {
 
 impl Representation {
     /// Object key of the representation, under the blob's prefix.
-    pub fn object_key(self, blob_id: Uuid) -> String {
+    pub(crate) fn object_key(self, blob_id: Uuid) -> String {
         format!("{blob_id}/{self}")
     }
 
     /// The `blobs` column holding its state. Code-owned names, safe to
     /// splice into SQL.
-    pub fn state_column(self) -> &'static str {
+    pub(crate) fn state_column(self) -> &'static str {
         match self {
             Representation::Thumbnail => "thumbnail_state",
             Representation::Preview => "preview_state",
         }
     }
 
-    pub fn version_column(self) -> &'static str {
+    pub(crate) fn version_column(self) -> &'static str {
         match self {
             Representation::Thumbnail => "thumbnail_variant_version",
             Representation::Preview => "preview_variant_version",
         }
     }
 
-    pub fn digest_column(self) -> &'static str {
+    pub(crate) fn digest_column(self) -> &'static str {
         match self {
             Representation::Thumbnail => "thumbnail_sha256",
             Representation::Preview => "preview_sha256",
         }
     }
 
-    pub fn size_column(self) -> &'static str {
+    pub(crate) fn size_column(self) -> &'static str {
         match self {
             Representation::Thumbnail => "thumbnail_size",
             Representation::Preview => "preview_size",
@@ -528,14 +530,14 @@ impl Blob {
     }
 
     /// Blobs are write-once: a `PUT` may start only before any bytes exist.
-    pub fn accepts_upload(&self, now: Timestamp) -> bool {
+    pub(crate) fn accepts_upload(&self, now: Timestamp) -> bool {
         self.state_at(now) == BlobState::Created
     }
 
     /// Whether something of the blob is in the bucket: the original, or the
     /// source parts a generated blob holds while it is still `created`. A
     /// delete or an expiry of such a blob needs a purge.
-    pub fn holds_objects(&self) -> bool {
+    pub(crate) fn holds_objects(&self) -> bool {
         self.storage_key.is_some() || self.source_parts > 0
     }
 
@@ -570,12 +572,14 @@ impl Blob {
     }
 
     /// Object key of source part `n` of a generated blob.
+    // Public for the integration tests, not part of the API.
+    #[doc(hidden)]
     pub fn source_key(id: Uuid, n: u32) -> String {
         format!("{id}/source/{n}")
     }
 
     /// The sheets of a `rows` blob, in workbook order: at least one.
-    pub fn sheets(&self) -> Option<&[Sheet]> {
+    pub(crate) fn sheets(&self) -> Option<&[Sheet]> {
         self.source_columns
             .as_ref()
             .map(|sheets| sheets.0.as_slice())
@@ -637,7 +641,7 @@ pub struct BlobHead {
 impl BlobHead {
     /// What the row records of the rendered `kind`, when it records both
     /// the digest and the size.
-    pub fn rendered(&self, kind: Representation) -> Option<Rendered> {
+    pub(crate) fn rendered(&self, kind: Representation) -> Option<Rendered> {
         match kind {
             Representation::Thumbnail => {
                 Rendered::from_columns(self.thumbnail_sha256.as_deref(), self.thumbnail_size)

@@ -127,7 +127,7 @@ const BLEND_OVER: &str = "2";
 /// what makes it line up with the layers. vips never declines: the
 /// verdict is `Rendered` or `Rejected`. The names must not contain spaces
 /// or brackets, which vips reads as a separator and as options.
-pub async fn composite(
+pub(crate) async fn composite(
     config: &Config,
     dir: &Path,
     layers: &[String],
@@ -169,7 +169,7 @@ pub async fn composite(
 /// than refused. An image already that size is copied. This is also
 /// where a layer that does not decode is found out, one layer at a time,
 /// before the composite. `Rejected` is the layer's fault.
-pub async fn fit_layer(
+pub(crate) async fn fit_layer(
     config: &Config,
     dir: &Path,
     layer: &str,

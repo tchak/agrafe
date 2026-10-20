@@ -3,19 +3,19 @@
 //! the database. Each router carries its state, so a host application can
 //! nest one under a prefix and keep the private API in Rust.
 
-pub mod attachments;
-pub mod body;
-pub mod error;
-pub mod extract;
+mod attachments;
+mod body;
+mod error;
+mod extract;
 pub mod host;
-pub mod jobs;
-pub mod json;
+mod jobs;
+mod json;
 pub mod origin;
-pub mod original;
-pub mod private;
-pub mod public;
-pub mod representation;
-pub mod signed;
+mod original;
+mod private;
+mod public;
+mod representation;
+mod signed;
 
 use axum::Router;
 use axum::body::Body;

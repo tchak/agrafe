@@ -108,6 +108,8 @@ where
 
 /// Claim and run one job of `kind`. Returns whether there was one. This is
 /// one turn of a worker, and what tests call.
+// Public for the integration tests, not part of the API.
+#[doc(hidden)]
 pub async fn run_one(state: &Agrafe, kind: JobKind, worker: &str) -> sqlx::Result<bool> {
     let lease = state.config().jobs.lease_timeout;
     let Some(job) = super::claim(state.pool(), &[kind], worker, lease).await? else {

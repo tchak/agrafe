@@ -1,4 +1,4 @@
-//! The blobs: the listing with the six filters of `repo::ListParams`, the
+//! The blobs: the listing with the six filters of `blob::ListParams`, the
 //! detail with the thumbnail, the attachments and the jobs of one blob,
 //! and the retry action for a blob whose job died.
 
@@ -17,8 +17,8 @@ use uuid::Uuid;
 
 use agrafe::Agrafe;
 use agrafe::attachment::Attachment;
-use agrafe::blob::repo::{self, ListParams};
 use agrafe::blob::urls::encode_segment;
+use agrafe::blob::{self, ListParams};
 use agrafe::blob::{Blob, BlobState, RetryError, ScanState};
 use agrafe::classify::Category;
 use agrafe::jobs;
@@ -94,7 +94,7 @@ impl BlobsQuery {
             attached: self.attached,
             failed: self.failed,
             cursor: self.cursor,
-            limit: repo::DEFAULT_LIMIT,
+            limit: blob::DEFAULT_LIMIT,
         }
     }
 
