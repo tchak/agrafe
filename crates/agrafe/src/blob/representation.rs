@@ -45,9 +45,27 @@ pub enum Error {
         /// Why decryption failed.
         source: agrafe_crypto::Error,
     },
-    /// The object store failed, reading or writing.
-    #[error("writing the object: {0}")]
-    Store(#[from] object_store::Error),
+    /// The object store failed writing the rendered object.
+    #[error("writing the {kind} of blob {blob_id}: {source}")]
+    Put {
+        /// The representation being stored.
+        kind: Representation,
+        /// Its blob.
+        blob_id: Uuid,
+        /// Why the write failed.
+        source: object_store::Error,
+    },
+    /// The object store failed reading the rendered object back, for a
+    /// reason other than its absence.
+    #[error("reading the {kind} of blob {blob_id}: {source}")]
+    Get {
+        /// The representation being loaded.
+        kind: Representation,
+        /// Its blob.
+        blob_id: Uuid,
+        /// Why the read failed.
+        source: object_store::Error,
+    },
     /// The query queueing a render failed.
     #[error("database: {0}")]
     Db(#[from] sqlx::Error),
@@ -152,7 +170,12 @@ pub async fn store(
     state
         .store()
         .put(&ObjectPath::from(object_key), sealed.into())
-        .await?;
+        .await
+        .map_err(|source| Error::Put {
+            kind,
+            blob_id,
+            source,
+        })?;
     Ok(Rendered {
         sha256: Sha256::digest(plaintext).into(),
         size: plaintext.len() as u64,
@@ -168,14 +191,19 @@ pub async fn load(
 ) -> Result<Option<Bytes>, Error> {
     let blob_id = stored.blob_id;
     let object_key = kind.object_key(blob_id);
+    let get = |source| Error::Get {
+        kind,
+        blob_id,
+        source,
+    };
     let sealed = match state
         .store()
         .get(&ObjectPath::from(object_key.as_str()))
         .await
     {
-        Ok(result) => result.bytes().await?,
+        Ok(result) => result.bytes().await.map_err(get)?,
         Err(object_store::Error::NotFound { .. }) => return Ok(None),
-        Err(err) => return Err(err.into()),
+        Err(err) => return Err(get(err)),
     };
     let key = state
         .keks()

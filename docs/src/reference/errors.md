@@ -212,7 +212,7 @@ on the job, and, for a job that was to finish its blob, on the blob as
 | Prefix | Source |
 |---|---|
 | `clamd at …` | The virus scanner: unreachable, timed out, or replied an error |
-| `reading the object: …`, `blob …: …`, `writing the object: …` | The bucket, or an object that fails to decrypt |
+| `reading the object: …`, `blob …: …`, `reading the … of blob …`, `writing the … of blob …` | The bucket, or an object that fails to decrypt |
 | `database: …` | Postgres |
 | `fetch: …` | A `url` blob's download; the URL itself is never included |
 | `build: …` | A `rows`, `archive` or `document` build, including a document's compiler diagnostics as `path:line:column: error: message` |
