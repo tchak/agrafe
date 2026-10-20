@@ -120,11 +120,12 @@ const BLEND_OVER: &str = "2";
 
 /// Stack `layers`, bottom to top, and `svg` over them into `output`, all
 /// of them file names in `dir`, in vips's native format for `to_webp` to
-/// pick up. The SVG is rendered at 72 dpi, where its pixel `width` and
-/// `height` are its size, which is what makes it line up with the layers.
-/// vips never declines: the verdict is `Rendered` or `Rejected`. The
-/// names must not contain spaces or brackets, which vips reads as a
-/// separator and as options.
+/// pick up. The output takes the size of the bottom image, so the layers
+/// must already be the SVG's size, see [`fit_layer`]. The SVG is rendered
+/// at 72 dpi, where its pixel `width` and `height` are its size, which is
+/// what makes it line up with the layers. vips never declines: the
+/// verdict is `Rendered` or `Rejected`. The names must not contain spaces
+/// or brackets, which vips reads as a separator and as options.
 pub async fn composite(
     config: &Config,
     dir: &Path,
@@ -159,20 +160,40 @@ pub async fn composite(
     })
 }
 
-/// Whether `file`, a name in `dir`, decodes whole: `vips avg` reads every
-/// pixel. Run on the layers of a map once the composite failed, to tell a
-/// background the provider corrupted from a failure of the drawing.
-pub async fn decodes(config: &Config, dir: &Path, file: &str) -> Result<bool, Error> {
+/// Decode `layer`, a background image in `dir`, into `output` in vips's
+/// native format at exactly `width` by `height`, whatever size it came
+/// in: a WMS may cap or round the size it was asked for, and the image
+/// still covers the bounding box, so it is stretched to the box rather
+/// than refused. An image already that size is copied. This is also
+/// where a layer that does not decode is found out, one layer at a time,
+/// before the composite. `Rejected` is the layer's fault.
+pub async fn fit_layer(
+    config: &Config,
+    dir: &Path,
+    layer: &str,
+    output: &str,
+    width: u32,
+    height: u32,
+) -> Result<Verdict<()>, Error> {
+    debug_assert!(!layer.contains(['[', ' ']) && !output.contains(['[', ' ']));
     let mut command = sandbox::command(&config.vips_command);
     command
         .current_dir(dir)
         .env("TMPDIR", dir)
         .env("VIPS_WARNING", "0")
         .env("VIPS_CONCURRENCY", VIPS_CONCURRENCY)
-        .arg("avg")
-        .arg(format!("{file}[fail-on=error]"));
+        .arg("thumbnail")
+        .arg(format!("{layer}[fail-on=error]"))
+        .arg(output)
+        .arg(width.to_string())
+        .args(["--height", &height.to_string()])
+        .args(["--size", "force"])
+        .args(["--fail-on", "error"]);
     let outcome = sandbox::run(command, &config.sandbox).await?;
-    Ok(Rejection::of(&outcome).is_none())
+    Ok(match Rejection::of(&outcome) {
+        None => Verdict::Rendered(()),
+        Some(rejection) => Verdict::Rejected(rejection),
+    })
 }
 
 /// The first `LOADER_SNIFF_LEN` bytes of `path`, fewer for a shorter file.

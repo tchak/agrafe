@@ -207,6 +207,11 @@ pub enum Rejection {
     },
     #[error("the tool exceeded the time limit")]
     TimedOut,
+    /// A helper ran to completion and wrote something other than what it
+    /// was asked for: it is the untrusted side, and what drove it off
+    /// course is the file.
+    #[error("the helper's output is not what it was asked for: {0}")]
+    Output(String),
 }
 
 impl Rejection {

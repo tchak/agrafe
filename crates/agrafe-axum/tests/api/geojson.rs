@@ -36,6 +36,9 @@ enum Answer {
     Garbage,
     /// A PNG far larger than `max_layer_size`.
     Huge,
+    /// A black PNG of half the requested size, as a WMS that caps or
+    /// rounds the size answers.
+    Half,
 }
 
 type Requests = Arc<Mutex<Vec<HashMap<String, String>>>>;
@@ -107,6 +110,14 @@ async fn get_map(
             let mut bytes = png("4", "4").await;
             bytes.extend(std::iter::repeat_n(0u8, 100 * 1024));
             ([(header::CONTENT_TYPE, "image/png")], bytes).into_response()
+        }
+        Answer::Half => {
+            let half = |side: &str| (side.parse::<u32>().unwrap() / 2).to_string();
+            (
+                [(header::CONTENT_TYPE, "image/png")],
+                png(&half(width), &half(height)).await,
+            )
+                .into_response()
         }
     }
 }
@@ -235,6 +246,28 @@ async fn the_background_comes_from_the_layers_that_apply(pool: PgPool) {
     assert_eq!(wms.requests().len(), 3);
     let id = id_of(&world);
     assert_eq!(get_blob(&app, id).await["preview_state"], "ready");
+}
+
+/// A layer that comes back at another size than asked still covers the
+/// bounding box: it is fitted to the map, which keeps the size the drawing
+/// was made for, instead of taking the layer's size.
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn a_layer_of_another_size_is_fitted_to_the_map(pool: PgPool) {
+    let wms = Wms::start(Answer::Half).await;
+    let clamd = fake_clamd().await;
+    let app = setup_tuned(pool, clamd, |c| {
+        c.media.render.geojson.layers = vec![wms.layer()];
+    })
+    .await;
+    let point = geojson_blob(&app, "point.geojson", "application/geo+json").await;
+    render_all(&app).await;
+    let requests = wms.requests();
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    assert_eq!(requests[0]["WIDTH"], "400");
+    let id = id_of(&point);
+    assert_eq!(get_blob(&app, id).await["preview_state"], "ready");
+    let size = rendered(&app, &format!("/blobs/{id}/preview/point.geojson")).await;
+    assert_eq!(size, (400, 400));
 }
 
 /// A provider that fails is not the file's fault: the attempt fails, the

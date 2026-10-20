@@ -45,9 +45,12 @@ A GeoJSON file, `application/geo+json`, gets its geometry drawn over a map
 as its preview, and that map fitted into the thumbnail box. A `.geojson`
 uploaded as `application/json` or `text/plain`, which is how they tend to
 arrive, is recognised by its first KiB and its `content_type` becomes
-`application/geo+json` as the upload completes. A file with no geometry,
-or with a coordinate off the globe, has no map and gets the text thumbnail
-instead.
+`application/geo+json` as the upload completes. The recognition is a look
+at that first KiB for a `"type"` of `Feature` or `FeatureCollection` at
+any depth, so a JSON document that merely embeds a feature there is
+refined too; it holds no GeoJSON at the top level and gets the text
+thumbnail. A file with no geometry, or with a coordinate off the globe,
+has no map and gets the text thumbnail instead.
 
 The map shows the geometry's bounding box, padded by `media.geojson.padding`
 (a tenth of its larger side) and at least `min_span` (200 m) wide, so a

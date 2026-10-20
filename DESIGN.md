@@ -1797,17 +1797,26 @@ on "has preview", never on category. Sources, in order:
    geometry as SVG paths in the pixel box, and `extent.json`, the
    bounding box it chose in EPSG:3857 metres with the pixel size and the
    layers that apply to it; the `geojson` parser lives only there. The
-   worker, trusted code, fetches one WMS `GetMap` image per applicable
-   layer, concurrently, into the work directory. Then `vips composite`
-   stacks the layers and the SVG, in the sandbox, into a `.v` that goes
+   worker checks the extent against the spec it wrote (the pixel box it
+   asked for, layer indices that exist, in order, a box that is a box)
+   before acting on it, since the helper is the untrusted side and a
+   compromised one must not choose what the worker fetches or indexes:
+   a mismatch is a rejection. The worker, trusted code, then fetches one
+   WMS `GetMap` image per applicable layer, concurrently, into the work
+   directory, and decodes each into a `.v` at exactly the pixel box with
+   `vips thumbnail` forced to that size: a WMS may cap or round the size
+   it was asked for, and `vips composite` takes the size of its bottom
+   image, so an unfitted layer of another size would crop or misalign
+   the drawing silently; the image still covers the bounding box, so it
+   is stretched rather than refused. Then `vips composite` stacks the
+   fitted layers and the SVG, in the sandbox, into a `.v` that goes
    through `to_webp` as a raster like any picture: the background PNGs
    are untrusted bytes decoded where untrusted bytes are decoded, and the
    SVG goes through the rsvg loader the `image/svg+xml` source already
    relies on. At 72 dpi an SVG with `width` and `height` in pixels renders
    at exactly those pixels, which is what makes the composite line up.
-   One render costs one helper run, one request per applicable layer and
-   two vips runs, three when the composite fails and the layers are
-   decoded one by one to tell whose fault it was.
+   One render costs one helper run, one request and one vips run per
+   applicable layer, and two vips runs.
 
    The helper projects every coordinate to Web Mercator, clamping the
    latitude to the projection's edge; a coordinate that is not finite or
@@ -1872,8 +1881,9 @@ on "has preview", never on category. Sources, in order:
    and must not be a burst against the provider. The response is an image
    only if its `Content-Type` says so and the loader sniff agrees: the
    Géoplateforme answers an XML `ServiceException` with a `200`. A
-   failure to fetch, a layer that does not decode included, is not the
-   file's fault: it is an `Error`, the job attempt fails and is retried
+   failure to fetch, a layer that does not decode included, which the
+   fit of that one layer finds out, is not the file's fault: it is an
+   `Error`, the job attempt fails and is retried
    with the backoff, and the representations stay `pending` meanwhile. The
    file never gets `failed` for the provider's downtime, and the provider's
    URL, which carries the extent, never reaches a log line: errors name

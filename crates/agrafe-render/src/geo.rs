@@ -278,11 +278,11 @@ pub enum FetchError {
     },
     #[error("layer {layer} from {host} answered bytes that are not an image the renderer may load")]
     Unloadable { layer: usize, host: String },
-    #[error("layer {layer} from {host} answered an image vips could not decode: {stderr}")]
+    #[error("layer {layer} from {host} answered an image vips could not decode: {why}")]
     Undecodable {
         layer: usize,
         host: String,
-        stderr: String,
+        why: String,
     },
     #[error("writing a layer: {0}")]
     Io(#[from] std::io::Error),
@@ -393,16 +393,48 @@ impl Client {
     }
 }
 
-/// The file of layer `index` in the work directory.
+/// The file of layer `index` in the work directory, as it came.
 fn layer_file(index: usize) -> String {
     format!("layer-{index}.png")
 }
 
+/// The file of layer `index` decoded at the map's size, for the composite.
+fn fitted_file(index: usize) -> String {
+    format!("layer-{index}.v")
+}
+
+/// What is wrong with the extent the helper wrote for `spec`, if
+/// anything. The helper is the untrusted side: its pixel box must be the
+/// one asked for, its layers must be the spec's, in order, and its box
+/// must be a box, or the server would fetch, index and composite on a
+/// compromised helper's say-so.
+fn check_extent(extent: &Extent, spec: &Spec) -> Result<(), String> {
+    if (extent.width, extent.height) != (spec.width, spec.height) {
+        return Err(format!(
+            "a {}x{} box, not the {}x{} asked for",
+            extent.width, extent.height, spec.width, spec.height
+        ));
+    }
+    if !(extent.minx < extent.maxx && extent.miny < extent.maxy) {
+        return Err("an empty or inverted bounding box".into());
+    }
+    let in_order = extent.layers.windows(2).all(|pair| pair[0] < pair[1]);
+    if !in_order || extent.layers.iter().any(|&i| i >= spec.layers.len()) {
+        return Err(format!(
+            "layers {:?}, of the {} configured",
+            extent.layers,
+            spec.layers.len()
+        ));
+    }
+    Ok(())
+}
+
 /// Render the map of the GeoJSON at `original` into `MAP` under
 /// `workdir`, at `fit` or `media.geojson.max_size`, whichever is smaller:
-/// the helper, the fetch, the composite. `Declined` when the file holds
-/// no geometry, `Rejected` when the helper or vips fail on it, an error
-/// when a layer cannot be fetched.
+/// the helper, the fetch, each layer fitted to the box, the composite.
+/// `Declined` when the file holds no geometry, `Rejected` when the helper
+/// or vips fail on it, an error when a layer cannot be fetched or
+/// decoded.
 pub async fn render_map(
     config: &Config,
     client: &Client,
@@ -411,16 +443,17 @@ pub async fn render_map(
     fit: Fit,
 ) -> Result<Verdict<PathBuf>, Error> {
     let geojson = &config.geojson;
-    let spec = workdir.join(SPEC);
+    let spec = geojson.spec(fit);
+    let spec_path = workdir.join(SPEC);
     tokio::fs::write(
-        &spec,
-        serde_json::to_vec(&geojson.spec(fit)).expect("a spec serialises"),
+        &spec_path,
+        serde_json::to_vec(&spec).expect("a spec serialises"),
     )
     .await
     .map_err(Error::Input)?;
     let svg = workdir.join(PATHS);
     let extent_path = workdir.join(EXTENT);
-    match helpers::render_geo(config, original, &spec, &svg, &extent_path).await? {
+    match helpers::render_geo(config, original, &spec_path, &svg, &extent_path).await? {
         Verdict::Rendered(()) => {}
         Verdict::Declined => return Ok(Verdict::Declined),
         Verdict::Rejected(rejection) => return Ok(Verdict::Rejected(rejection)),
@@ -428,34 +461,45 @@ pub async fn render_map(
     let extent: Extent =
         serde_json::from_slice(&tokio::fs::read(&extent_path).await.map_err(Error::Output)?)
             .map_err(Error::Extent)?;
-    let layers: Vec<String> = extent.layers.iter().map(|&i| layer_file(i)).collect();
+    if let Err(what) = check_extent(&extent, &spec) {
+        return Ok(Verdict::Rejected(Rejection::Output(format!(
+            "an extent with {what}"
+        ))));
+    }
     let fetches = extent.layers.iter().map(|&index| {
         let path = workdir.join(layer_file(index));
         let extent = &extent;
         async move { client.fetch(geojson, index, extent, &path).await }
     });
     futures::future::try_join_all(fetches).await?;
+    // Each layer decoded at the box's size, one at a time: a layer that
+    // passed the sniff but does not decode is the provider's fault, not
+    // the file's, and the attempt is retried.
+    for &index in &extent.layers {
+        let fitted = vips::fit_layer(
+            config,
+            workdir,
+            &layer_file(index),
+            &fitted_file(index),
+            extent.width,
+            extent.height,
+        )
+        .await?;
+        if let Verdict::Rejected(rejection) = fitted {
+            return Err(Error::Fetch(FetchError::Undecodable {
+                layer: index,
+                host: host_of(&geojson.layers[index].url_for(&extent)),
+                why: rejection.to_string(),
+            }));
+        }
+    }
     tracing::debug!(
         span = extent.span(),
         layers = extent.layers.len(),
         "compositing the map"
     );
+    let layers: Vec<String> = extent.layers.iter().map(|&i| fitted_file(i)).collect();
     let verdict = vips::composite(config, workdir, &layers, PATHS, MAP).await?;
-    // A layer that passed the sniff but does not decode is the provider's
-    // fault, not the file's, and the attempt is retried. vips does not say
-    // which input failed it, so each layer is decoded on its own, on this
-    // path only.
-    if let Verdict::Rejected(Rejection::Failed { stderr, .. }) = &verdict {
-        for &index in &extent.layers {
-            if !vips::decodes(config, workdir, &layer_file(index)).await? {
-                return Err(Error::Fetch(FetchError::Undecodable {
-                    layer: index,
-                    host: host_of(&geojson.layers[index].url_for(&extent)),
-                    stderr: stderr.clone(),
-                }));
-            }
-        }
-    }
     Ok(verdict.map(|()| workdir.join(MAP)))
 }
 
@@ -552,6 +596,75 @@ mod tests {
             layer.url_for(&extent),
             "https://wms.example/?BBOX=1.5,-2,3,4.25&WIDTH=640&HEIGHT=480&FORMAT=image/png"
         );
+    }
+
+    #[test]
+    fn checks_the_extent_against_the_spec() {
+        let config = GeoJson {
+            layers: vec![
+                Layer {
+                    url: "https://wms.example/?{bbox}{width}{height}".into(),
+                    attribution: None,
+                    min_span: None,
+                    max_span: None,
+                };
+                2
+            ],
+            ..GeoJson::default()
+        };
+        let spec = config.spec(Fit {
+            width: 400,
+            height: 300,
+            quality: 80,
+        });
+        let good = Extent {
+            minx: 0.0,
+            miny: 0.0,
+            maxx: 400.0,
+            maxy: 300.0,
+            width: 400,
+            height: 300,
+            layers: vec![0, 1],
+        };
+        assert_eq!(check_extent(&good, &spec), Ok(()));
+        let none = Extent {
+            layers: Vec::new(),
+            ..good.clone()
+        };
+        assert_eq!(check_extent(&none, &spec), Ok(()));
+        let bad = [
+            Extent {
+                width: 4000,
+                ..good.clone()
+            },
+            Extent {
+                height: 1,
+                ..good.clone()
+            },
+            Extent {
+                maxx: 0.0,
+                ..good.clone()
+            },
+            Extent {
+                miny: 300.0,
+                ..good.clone()
+            },
+            Extent {
+                layers: vec![2],
+                ..good.clone()
+            },
+            Extent {
+                layers: vec![1, 0],
+                ..good.clone()
+            },
+            Extent {
+                layers: vec![0, 0],
+                ..good.clone()
+            },
+        ];
+        for extent in bad {
+            assert!(check_extent(&extent, &spec).is_err(), "{extent:?}");
+        }
     }
 
     #[test]
