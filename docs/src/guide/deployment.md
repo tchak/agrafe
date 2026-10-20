@@ -44,6 +44,17 @@ worker's log. A host that keeps fonts or poppler's data outside `/usr`,
 `media.sandbox.readable`; without them a PDF whose fonts are not embedded
 renders blank, and the startup probe does not catch that.
 
+Under confinement the subprocess's home and cache directory are its work
+directory, deleted after the job, so fontconfig cannot keep a cache of
+its own between jobs: it reads the system one in `/var/cache/fontconfig`
+and, if that is missing or stale, rebuilds it on every PDF render, which
+costs seconds a job and nothing reports. Build it in the image, after the
+fonts are installed:
+
+```dockerfile
+RUN fc-cache -f
+```
+
 ## libvips
 
 libvips decodes untrusted files, so its version matters more than its

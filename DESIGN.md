@@ -2030,7 +2030,10 @@ execute on the file the child executes; `media.vips_command` and the
 helper settings keep accepting a bare name. Under confinement `HOME` and
 `XDG_CACHE_HOME` point at the work directory, so a fontconfig cache
 rebuild lands there and is removed with it instead of failing on a
-read-only home.
+read-only home. The flip side is that nothing persists between jobs: a
+host whose `/var/cache/fontconfig` is missing or stale rebuilds the cache
+on every PDF render, seconds a job that the probe does not notice, so the
+deployment guide has the image run `fc-cache -f`.
 
 *What runs where.* The ruleset is built in the parent, where opening
 paths and allocating are fine; the BPF is compiled in the parent once.
