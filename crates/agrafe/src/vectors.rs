@@ -155,7 +155,7 @@ fn sample_envelope() -> Envelope {
         content_type: "image/jpeg".into(),
         category: Category::Image,
         scan_state: ScanState::Clean,
-        uploaded_at: Some("2026-10-16T08:44:26Z".parse().unwrap()),
+        uploaded_at: Some("2026-10-16T08:44:26.123456Z".parse().unwrap()),
         thumbnail: SealedRepresentation {
             state: RepresentationState::Ready,
             variant_version: Some(1),

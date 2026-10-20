@@ -9,13 +9,15 @@
 //! str kek_id, bytes wrapped_key, bytes header     (u16 length each)
 //! u32 chunk_size, u64 size, bytes checksum (32)
 //! str content_type, str category, str scan_state
-//! u8 has uploaded_at, i64 uploaded_at (unix seconds, when present)
+//! u8 has uploaded_at, i64 uploaded_at (unix microseconds, when present)
 //! thumbnail, preview:
-//!   str state, i32 variant_version (0 when none),
-//!   u8 rendered, bytes sha256 (32), u32 size  (when rendered)
+//!   str state,
+//!   u8 has variant_version, i32 variant_version  (when present)
+//!   u8 rendered, bytes sha256 (32), u64 size     (when rendered)
 //! ```
 //!
-//! Integers are big endian. The envelope is signed with the rest of the
+//! Integers are big endian. Every value round-trips: microseconds are
+//! what Postgres keeps of a timestamp, and nothing stands in for `None`. The envelope is signed with the rest of the
 //! URL, and the wrapped key is bound to the blob id, so nothing in it
 //! needs authenticating on its own.
 
@@ -28,6 +30,7 @@ use uuid::Uuid;
 use super::{BlobHead, BlobState, Rendered, Representation, RepresentationState, ScanState};
 use crate::classify::Category;
 
+/// The version [`Envelope::encode`] writes.
 const VERSION: u8 = 1;
 
 /// Why an envelope could not be read back.
@@ -41,7 +44,7 @@ pub struct SealedRepresentation {
     /// The representation's state when the URL was minted.
     pub state: RepresentationState,
     /// The variant version it was rendered with; `None` before its first
-    /// render, carried as `0` on the wire.
+    /// render.
     pub variant_version: Option<i32>,
     /// The digest and size of the rendered WebP, when the row recorded
     /// both.
@@ -160,18 +163,24 @@ impl Envelope {
         match self.uploaded_at {
             Some(at) => {
                 w.u8(1);
-                w.i64(at.as_second());
+                w.i64(at.as_microsecond());
             }
             None => w.u8(0),
         }
         for rep in [&self.thumbnail, &self.preview] {
             w.str(rep.state.as_str());
-            w.i32(rep.variant_version.unwrap_or(0));
+            match rep.variant_version {
+                Some(version) => {
+                    w.u8(1);
+                    w.i32(version);
+                }
+                None => w.u8(0),
+            }
             match rep.rendered {
                 Some(r) => {
                     w.u8(1);
                     w.bytes(&r.sha256);
-                    w.u32(r.size as u32);
+                    w.u64(r.size);
                 }
                 None => w.u8(0),
             }
@@ -200,17 +209,21 @@ impl Envelope {
         let scan_state = r.str()?.parse().map_err(|_| EnvelopeError)?;
         let uploaded_at = match r.u8()? {
             0 => None,
-            1 => Some(Timestamp::from_second(r.i64()?).map_err(|_| EnvelopeError)?),
+            1 => Some(Timestamp::from_microsecond(r.i64()?).map_err(|_| EnvelopeError)?),
             _ => return Err(EnvelopeError),
         };
         let mut rep = || -> Result<SealedRepresentation, EnvelopeError> {
             let state = r.str()?.parse().map_err(|_| EnvelopeError)?;
-            let variant_version = Some(r.i32()?).filter(|v| *v != 0);
+            let variant_version = match r.u8()? {
+                0 => None,
+                1 => Some(r.i32()?),
+                _ => return Err(EnvelopeError),
+            };
             let rendered = match r.u8()? {
                 0 => None,
                 1 => Some(Rendered {
                     sha256: r.bytes()?.try_into().map_err(|_| EnvelopeError)?,
-                    size: r.u32()? as u64,
+                    size: r.u64()?,
                 }),
                 _ => return Err(EnvelopeError),
             };
@@ -336,7 +349,7 @@ mod tests {
             content_type: "image/jpeg".into(),
             category: Category::Image,
             scan_state: ScanState::Clean,
-            uploaded_at: Some("2026-10-16T08:44:26Z".parse().unwrap()),
+            uploaded_at: Some("2026-10-16T08:44:26.123456Z".parse().unwrap()),
             thumbnail: SealedRepresentation {
                 state: RepresentationState::Ready,
                 variant_version: Some(3),
@@ -368,6 +381,26 @@ mod tests {
         );
     }
 
+    /// What a sentinel or a narrower integer would lose: a version of `0`,
+    /// a size past `u32::MAX`, the microseconds of the upload.
+    #[test]
+    fn keeps_every_value() {
+        let mut env = sample();
+        env.thumbnail.variant_version = Some(0);
+        env.thumbnail.rendered = Some(Rendered {
+            sha256: [4u8; 32],
+            size: u64::from(u32::MAX) + 1,
+        });
+        let decoded = Envelope::decode(&env.encode()).unwrap();
+        assert_eq!(decoded.thumbnail.variant_version, Some(0));
+        assert_eq!(
+            decoded.thumbnail.rendered.unwrap().size,
+            u64::from(u32::MAX) + 1
+        );
+        assert_eq!(decoded.uploaded_at.unwrap().subsec_microsecond(), 123_456);
+        assert_eq!(decoded, env);
+    }
+
     #[test]
     fn rejects_damage() {
         let encoded = sample().encode();
@@ -376,7 +409,7 @@ mod tests {
         assert!(Envelope::decode(&encoded[..encoded.len() - 4]).is_err());
         assert!(Envelope::decode(&format!("{encoded}AAAA")).is_err());
         let mut other = URL_SAFE_NO_PAD.decode(&encoded).unwrap();
-        other[0] = 2;
+        other[0] = VERSION + 1;
         assert!(Envelope::decode(&URL_SAFE_NO_PAD.encode(other)).is_err());
     }
 
