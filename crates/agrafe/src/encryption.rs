@@ -47,7 +47,7 @@ pub struct Keks {
 }
 
 /// A freshly wrapped data key and where it came from.
-pub struct Envelope {
+pub(crate) struct Envelope {
     /// The data key in clear, the blob's objects are encrypted with.
     pub key: Key,
     /// The id of the KEK it was wrapped under, the current one.

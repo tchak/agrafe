@@ -255,7 +255,7 @@ impl Encryptor {
     /// Start a stream with explicit parameters. Reusing a (salt, prefix) pair
     /// under one key breaks the security of the mode; only tests should pick
     /// them.
-    pub fn with_params(
+    pub(crate) fn with_params(
         key: &Key,
         associated_data: &[u8],
         layout: Layout,

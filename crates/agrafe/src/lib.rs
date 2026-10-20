@@ -33,6 +33,8 @@
 pub mod app;
 pub mod attachment;
 pub mod blob;
+// Public for the integration tests, not part of the API.
+#[doc(hidden)]
 pub mod clamav;
 pub mod config;
 pub mod db;
