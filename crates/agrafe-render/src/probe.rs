@@ -58,6 +58,32 @@ pub enum ProbeError {
         /// What it did instead of converting.
         what: String,
     },
+    /// `media.office.command` is set, but the sandbox has no Landlock and
+    /// isolation is not `off`: nothing would keep a document from reading
+    /// what the worker can.
+    #[error(
+        "media.office.command is set but the sandbox is {status}: without Landlock, \
+         LibreOffice reads every file the worker can, the configuration and the keys \
+         included, and a document can lay one out on its first page; set \
+         media.sandbox.isolation = \"off\" to accept that on a development machine"
+    )]
+    OfficeUnconfined {
+        /// The sandbox status, as the boot line prints it.
+        status: String,
+    },
+    /// `media.office.command` is set and the work directories are under
+    /// the directory LibreOffice may remove files in.
+    #[error(
+        "media.office.command is set and the work directories are under {tmp_dir}, \
+         where the sandbox lets LibreOffice remove files for its pipe: set \
+         media.tmp_dir to a directory outside {pipe_dir}"
+    )]
+    OfficeTmpDir {
+        /// The effective `media.tmp_dir`.
+        tmp_dir: String,
+        /// Where LibreOffice puts its pipe.
+        pipe_dir: &'static str,
+    },
     /// A helper could not be run at all.
     #[error(transparent)]
     Run(#[from] Error),
@@ -103,6 +129,47 @@ pub async fn probe_sandbox(
     config: &agrafe_sandbox::Config,
 ) -> Result<agrafe_sandbox::Status, ProbeError> {
     Ok(agrafe_sandbox::probe(config).await?)
+}
+
+/// Check that the host confines the office converter, before it runs
+/// anything: with `media.office.command` set, the sandbox must have
+/// Landlock, and the work directories must be outside the directory
+/// LibreOffice puts its pipe in. A document names files to LibreOffice
+/// (linked sections, DDE, linked images), and Landlock is what keeps that
+/// to the work directory: without it the configuration and the keys are
+/// a 72-point paragraph away from the thumbnail. And since Landlock has
+/// no "remove sockets only" right, the pipe directory is one LibreOffice
+/// may remove files in, so no other job's files may be there. Isolation
+/// `off` is the operator accepting both, on a development machine.
+pub fn check_office_host(
+    config: &Config,
+    tmp_dir: Option<&Path>,
+    sandbox: &agrafe_sandbox::Status,
+) -> Result<(), ProbeError> {
+    if config.office.command.is_none() || config.sandbox.isolation == agrafe_sandbox::Isolation::Off
+    {
+        return Ok(());
+    }
+    if sandbox.landlock.is_none() {
+        return Err(ProbeError::OfficeUnconfined {
+            status: sandbox.to_string(),
+        });
+    }
+    let pipe_dir = office::pipe_dir();
+    let work = tmp_dir.map_or_else(std::env::temp_dir, Path::to_path_buf);
+    if canonical(&work).starts_with(canonical(Path::new(pipe_dir))) {
+        return Err(ProbeError::OfficeTmpDir {
+            tmp_dir: work.display().to_string(),
+            pipe_dir,
+        });
+    }
+    Ok(())
+}
+
+/// `path` with its symlinks resolved, so that `/tmp` and `/private/tmp`
+/// compare equal; the path as given when it cannot be.
+fn canonical(path: &Path) -> std::path::PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Render a text sample, a one-pixel PNG, a one-page PDF and the map of a
@@ -331,4 +398,69 @@ pub async fn probe_document(config: &Config, tmp_dir: Option<&Path>) -> Result<(
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Office;
+
+    fn with_office(isolation: agrafe_sandbox::Isolation) -> Config {
+        Config {
+            office: Office {
+                command: Some("soffice".into()),
+                ..Office::default()
+            },
+            sandbox: agrafe_sandbox::Config {
+                isolation,
+                ..agrafe_sandbox::Config::default()
+            },
+            ..Config::default()
+        }
+    }
+
+    fn status(landlock: Option<i32>) -> agrafe_sandbox::Status {
+        agrafe_sandbox::Status {
+            landlock,
+            seccomp: true,
+            rlimits_only: None,
+        }
+    }
+
+    #[test]
+    fn the_office_converter_needs_landlock() {
+        // Outside the pipe directory, which the system temporary directory
+        // is on Linux: under the crate, removed on drop.
+        let elsewhere = tempfile::Builder::new()
+            .prefix(".agrafe-probe-test-")
+            .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+            .unwrap();
+        let config = with_office(agrafe_sandbox::Isolation::Auto);
+        let err = check_office_host(&config, Some(elsewhere.path()), &status(None)).unwrap_err();
+        assert!(matches!(err, ProbeError::OfficeUnconfined { .. }), "{err}");
+        assert!(err.to_string().contains("no landlock"), "{err}");
+        check_office_host(&config, Some(elsewhere.path()), &status(Some(4))).unwrap();
+
+        // No converter, or isolation off: nothing to check.
+        check_office_host(&Config::default(), None, &status(None)).unwrap();
+        let off = with_office(agrafe_sandbox::Isolation::Off);
+        check_office_host(&off, None, &status(None)).unwrap();
+    }
+
+    #[test]
+    fn the_work_directories_stay_out_of_the_pipe_directory() {
+        let config = with_office(agrafe_sandbox::Isolation::Auto);
+        let inside = tempfile::tempdir_in(office::pipe_dir()).unwrap();
+        let err = check_office_host(&config, Some(inside.path()), &status(Some(4))).unwrap_err();
+        assert!(matches!(err, ProbeError::OfficeTmpDir { .. }), "{err}");
+        assert!(err.to_string().contains("media.tmp_dir"), "{err}");
+        // The pipe directory itself, as the default is on Linux.
+        let err = check_office_host(
+            &config,
+            Some(Path::new(office::pipe_dir())),
+            &status(Some(4)),
+        )
+        .unwrap_err();
+        assert!(matches!(err, ProbeError::OfficeTmpDir { .. }), "{err}");
+    }
 }

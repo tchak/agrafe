@@ -100,6 +100,13 @@ LibreOffice runs as one short-lived process per document, sandboxed like
 it is a far larger attack surface than anything else in the sandbox,
 which is why it is off by default. Where it is on:
 
+- it needs Landlock: a document names files to LibreOffice (linked
+  sections, DDE fields, linked images), and Landlock is what keeps those
+  inside the work directory rather than the configuration and the keys,
+  which a document could lay out on its first page. A worker with the
+  converter configured refuses to start when the sandbox has no Landlock,
+  unless `media.sandbox.isolation` is `"off"`, which is you accepting
+  that on a development machine;
 - run it on a worker that handles `render` only (`jobs.kinds`) with no
   outbound network: LibreOffice follows linked images and OLE links in a
   document, and the sandbox bounds resources, not egress. The API image
@@ -112,7 +119,9 @@ which is why it is off by default. Where it is on:
   is no such socket;
 - the pipe lives in `/tmp`, where the sandbox lets LibreOffice create and
   remove socket files: set `media.tmp_dir` to a directory outside `/tmp`,
-  so that no other job's files are there;
+  so that no other job's files are there. The default is the system
+  temporary directory, `/tmp` itself, and the worker refuses to start
+  with the converter configured until it is moved;
 - `[media.office.sandbox]` gives it its own limits, 2 GiB of address space
   and 120 s by default; the rest of its sandbox is `[media.sandbox]`'s.
   Debian's `/etc/libreoffice` is readable to it; another layout that keeps

@@ -2075,9 +2075,12 @@ sockets the child can see, such as a local Postgres's, are no longer
 closed to it, since no Landlock ABI governs them (ABI 6 scopes abstract
 sockets only), and that a compromised LibreOffice may remove files under
 `/tmp` that its uid owns, since Landlock has no "remove sockets only"
-right. Hence the deployment advice under "Thumbnail": a render-only
-worker, no local Postgres socket, and `media.tmp_dir` outside `/tmp` so
-that other jobs' files are not there. Nothing else asks for sockets, and
+right. Hence the deployment advice under "Thumbnail", a render-only
+worker and no local Postgres socket, and a boot check
+(`check_office_host`) that `media.tmp_dir` is outside the pipe directory,
+so that no other job's decrypted original is where the converter may
+remove files: the default work directory is the system temporary
+directory, which is `/tmp` itself. Nothing else asks for sockets, and
 the default filter is unchanged. The two filter variants are compiled
 once each.
 
@@ -2202,7 +2205,16 @@ Its limits are `[media.office.sandbox]`, 2 GiB and 120 s by default
 enough for the probe files, not for a document with pictures), the rest
 of its sandbox is `[media.sandbox]`'s. LibreOffice is a far larger attack
 surface than anything else in the sandbox, which is why it is off by
-default. Where it is on, it belongs on a worker that handles `render`
+default. It is also only as contained as Landlock makes it: a document
+names files to LibreOffice (a linked section, a DDE field, a linked
+image), and under Landlock those resolve to nothing outside the work
+directory, while without it the configuration and the KEK file, readable
+to the worker's uid, are a 72-point paragraph away from the thumbnail,
+which is small but fits a key. So a worker with `media.office.command`
+set refuses to start when the sandbox probe found no Landlock
+(`check_office_host`, next to the boot line), unless
+`media.sandbox.isolation` is `off`, which is the operator accepting that
+on a development machine. Where it is on, it belongs on a worker that handles `render`
 only (`jobs.kinds`), with no outbound network: LibreOffice follows linked
 images and OLE links in a document, Landlock refuses TCP only from ABI 4,
 and the sandbox bounds resources, not egress (#3 closes that properly).

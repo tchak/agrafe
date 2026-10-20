@@ -24,7 +24,9 @@ use serde::Deserialize;
 use agrafe_types::classify::{DOCX, ODS, ODT, XLSX};
 use geo::GeoJson;
 pub use office::Office;
-pub use probe::{ProbeError, probe, probe_document, probe_office, probe_sandbox};
+pub use probe::{
+    ProbeError, check_office_host, probe, probe_document, probe_office, probe_sandbox,
+};
 
 /// The tools and boxes the renderer works with. Flattened into the
 /// server's `[media]` section.

@@ -275,7 +275,10 @@ max_text_chars = 50
 # `variant_version` bump. Debian: libreoffice-writer-nogui,
 # libreoffice-calc-nogui, fonts-dejavu-core and fonts-liberation; LibreOffice
 # follows links in documents, so run it on a render-only worker with no
-# outbound network. See README.md, "Previews and thumbnails".
+# outbound network. It needs Landlock: with `command` set, the worker
+# refuses to start when the sandbox has none (unless `isolation = "off"`),
+# and when `media.tmp_dir` is under /tmp, where LibreOffice may remove
+# files for its pipe. See README.md, "Thumbnails for office files".
 # command = "soffice"
 # A user profile warmed at image build time, copied into the work directory
 # for every run instead of being created there: a copy is milliseconds, a

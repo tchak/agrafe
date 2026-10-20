@@ -224,7 +224,7 @@ first-page thumbnail; see [LibreOffice](../guide/deployment.md#libreoffice).
 
 | Key | Default | Description |
 |---|---|---|
-| `command` | unset | The LibreOffice binary, a name on the `PATH` or a path. Unset, office files get the icon |
+| `command` | unset | The LibreOffice binary, a name on the `PATH` or a path. Unset, office files get the icon. Set, the worker needs Landlock (unless `media.sandbox.isolation` is `"off"`) and a `media.tmp_dir` outside `/tmp` |
 | `profile_template` | unset | A warmed user profile copied into the work directory for every run; unset, LibreOffice creates one per run |
 
 ### `[media.office.sandbox]`

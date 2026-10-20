@@ -60,6 +60,11 @@ where
         // and a log line otherwise.
         let sandbox = agrafe_render::probe_sandbox(&state.config().media.render.sandbox).await?;
         tracing::info!("sandbox: {sandbox}");
+        // The office converter is only as contained as Landlock makes it,
+        // so a host without it, or with the work directories where the
+        // converter may remove files, does not get to run it.
+        let media = &state.config().media;
+        agrafe_render::check_office_host(&media.render, media.tmp_dir.as_deref(), &sandbox)?;
     }
     if handled.contains(&JobKind::Render) {
         let media = &state.config().media;

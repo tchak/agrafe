@@ -117,7 +117,7 @@ const PIPE_DIRS: [&str; 2] = ["/tmp", "/var/tmp"];
 /// The directory LibreOffice will put its pipe in, mirroring its choice:
 /// the first of [`PIPE_DIRS`] this process, which is the same user, can
 /// write to.
-fn pipe_dir() -> &'static str {
+pub(crate) fn pipe_dir() -> &'static str {
     PIPE_DIRS
         .into_iter()
         .find(|dir| tempfile::tempfile_in(dir).is_ok())
