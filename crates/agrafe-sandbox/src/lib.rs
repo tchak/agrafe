@@ -280,7 +280,8 @@ impl Layers {
     }
 }
 
-/// What a spawn actually set up.
+/// What a spawn planned to install; see `confine::Plan::applied` for what
+/// that does and does not say about the child.
 #[derive(Debug, Clone, Copy, Default)]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 struct Applied {

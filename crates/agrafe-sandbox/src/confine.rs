@@ -105,6 +105,11 @@ impl Plan {
         })
     }
 
+    /// The layers this plan will install, decided in the parent. Whether
+    /// the child managed each is known only by what it then refuses: under
+    /// strict a failure fails the spawn, otherwise the layer is skipped
+    /// without a report, and [`probe`](crate::probe) is what checks, at
+    /// startup, that the refusals are real.
     pub(crate) fn applied(&self) -> Applied {
         Applied {
             landlock: self.ruleset.is_some(),
