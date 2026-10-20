@@ -15,8 +15,8 @@ use tracing::Instrument as _;
 use uuid::Uuid;
 
 use super::{
-    Failure, Job, JobError, JobKind, archive, document, fetch, notify, purge, reap, render, rows,
-    scan,
+    Failure, Job, JobError, JobKind, archive, audit, document, fetch, notify, purge, reap, render,
+    rows, scan,
 };
 use crate::app::Agrafe;
 use crate::metrics::Outcome;
@@ -42,8 +42,9 @@ pub enum Error {
     /// run.
     #[error("the renderer failed its startup probe: {0}")]
     Probe(#[from] agrafe_render::ProbeError),
-    /// The first reap could not be enqueued, for a process handling `reap`.
-    #[error("scheduling the first reap: {0}")]
+    /// The first reap or audit could not be enqueued, for a process
+    /// handling `reap` or `audit`.
+    #[error("scheduling the periodic jobs: {0}")]
     Schedule(sqlx::Error),
 }
 
@@ -84,6 +85,17 @@ where
         reap::schedule(state.pool(), Timestamp::now())
             .await
             .map_err(Error::Schedule)?;
+    }
+    if handled.contains(&JobKind::Audit) {
+        // One interval out, not now: a sweep of the bucket on every
+        // restart is not wanted, and a pending one survives the restart
+        // anyway, the duplicate dropped.
+        audit::schedule(
+            state.pool(),
+            Timestamp::now() + state.config().jobs.audit_interval,
+        )
+        .await
+        .map_err(Error::Schedule)?;
     }
 
     let wakeups: HashMap<JobKind, Arc<Notify>> = handled
@@ -214,6 +226,7 @@ async fn handle(state: &Agrafe, job: &Job) -> Result<(), JobError> {
         JobKind::Purge => purge::run(state, job).await,
         JobKind::Reap => reap::run(state, job).await,
         JobKind::Notify => notify::run(state, job).await,
+        JobKind::Audit => audit::run(state, job).await,
     }
 }
 

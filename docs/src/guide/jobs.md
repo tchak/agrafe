@@ -18,6 +18,7 @@ enqueued in the same transaction as the state change that calls for it.
 | `purge` | Deletes a terminal blob's objects | 4 |
 | `reap` | Periodic housekeeping | 1 |
 | `notify` | Delivers a webhook | 4 |
+| `audit` | Weekly sweep of the bucket against the `blobs` table | 1 |
 
 Each kind has its own pool, sized by `jobs.concurrency`. However many slow
 jobs of one kind are queued, the others keep flowing. There is no priority
@@ -125,6 +126,46 @@ run, in one transaction:
 Expiry itself never waits for the reaper: reads compare `expires_at` with
 the clock. One reap is pending at a time across the deployment, and an
 advisory lock keeps two runs from overlapping.
+
+## The audit
+
+The `audit` job checks that the bucket and the `blobs` table agree, every
+`jobs.audit_interval`, seven days by default, the first run one interval
+after the workers start. It is for the mismatches nothing else sees: a
+bucket or a database restored from backup, a lifecycle rule, a bad purge.
+It streams the bucket listing, one request per thousand objects, and
+looks the blobs up a thousand at a time. The listing's sizes are enough
+to catch a truncated object; nothing is decrypted.
+
+What it finds, one `warn` line per finding and a tally in the metrics:
+
+| Finding | What it is | What the job does |
+|---|---|---|
+| `missing_original` | A blob that is not expired, deleted or infected has no `<id>/original` | Stamps `failed_at` and `last_error` on the blob, so it shows in `GET /blobs?failed=true` |
+| `damaged_original` | The original has a length its size does not produce (or, under `--deep`, does not decrypt to its checksum) | The same stamp |
+| `missing_representation` | A thumbnail or preview the row says is `ready` is missing or the wrong length | Sets it back to `pending` and enqueues the render |
+| `missing_source` | A source part a generated blob still needs is missing or truncated | Reports; the build fails on it itself |
+| `orphan` | An object no row accounts for: no row, a purged blob, an original under a row that never recorded it | Reports |
+| `foreign` | A key that is not `<blob id>/<name>` | Reports |
+
+The job never deletes. Deleting is `agrafe audit --fix` on the command
+line, the operator with the report in front of them, and even then only
+orphans older than `upload.stale_after`, so an upload or a render that
+has written its object and not yet updated its row is left alone. A blob
+awaiting its purge is skipped: its prefix is the purge's.
+
+```sh
+agrafe --config agrafe.toml audit            # report
+agrafe --config agrafe.toml audit --fix      # and delete the old orphans
+agrafe --config agrafe.toml audit --deep     # and decrypt every original
+agrafe --config agrafe.toml audit --deep --sample 100   # one in a hundred
+```
+
+The command prints the tally and exits non-zero when anything was found.
+One audit runs at a time: the command reports a running job, and a job
+that finds the command running steps aside until its next interval. See
+[Command line](../reference/cli.md#agrafe-audit) and
+[Monitoring](monitoring.md#the-audit).
 
 ## Where jobs run
 

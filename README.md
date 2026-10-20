@@ -158,8 +158,12 @@ reasoning behind every decision.
 - **Postgres job queue** with `SKIP LOCKED` and `LISTEN/NOTIFY`, enqueued
   in the same transaction as the state change it follows.
 - **Per-kind worker pools** for fetch, scan, render, rows, archive,
-  document, purge, reap and notify, so a slow kind never holds up another,
+  document, purge, reap, notify and audit, so a slow kind never holds up another,
   with retries with backoff and dead-job inspection.
+- **Audit** of the bucket against the `blobs` table, weekly as a job and
+  on demand as `agrafe audit`: a missing or truncated original is stamped
+  on its blob, a lost representation is rendered again, orphan objects
+  are reported, and deleted only by `agrafe audit --fix`.
 - **Webhook** telling the backend when a blob is `ready`, `infected`,
   `failed` or `expired`, carrying the blob's full metadata, signed the
   Standard Webhooks way, enqueued with the state change it reports and

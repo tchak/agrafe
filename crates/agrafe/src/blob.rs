@@ -720,7 +720,11 @@ pub fn public_upload_allowed(skip_virus_scan: bool, input_type: InputType) -> bo
 }
 
 /// See [`Blob::state_at`].
-fn state_at(state: BlobState, expires_at: Option<Timestamp>, now: Timestamp) -> BlobState {
+pub(crate) fn state_at(
+    state: BlobState,
+    expires_at: Option<Timestamp>,
+    now: Timestamp,
+) -> BlobState {
     match expires_at {
         Some(at) if at <= now && !state.is_terminal() => BlobState::Expired,
         _ => state,

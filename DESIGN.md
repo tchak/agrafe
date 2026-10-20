@@ -2286,8 +2286,9 @@ blobs"), `scan`, `render` (thumbnail and preview, whichever is pending),
 `rows`, `archive` and `document` (generate a blob of that input type from
 its stored source, see "Generated blobs"), `purge`
 (delete the objects under a blob's prefix), `reap`, the periodic
-housekeeping, and `notify` (deliver one event of a blob to the webhook,
-see "Webhooks"). One reap, in one transaction, in this order: record
+housekeeping, `notify` (deliver one event of a blob to the webhook,
+see "Webhooks"), and `audit`, the weekly sweep of the bucket against the
+`blobs` table, see "Audit". One reap, in one transaction, in this order: record
 `expired` on every non-terminal blob past its `expires_at`; expire the
 abandoned `created` blobs, holding source parts untouched for
 `upload.abandoned_after` or attached and untouched altogether for as long
@@ -2377,10 +2378,11 @@ dead jobs; the blob's retry is for the backend looking at its records.
 travels with the commit. One listener per process wakes the pollers of that
 kind; `jobs.poll_interval` is the fallback for a missed wakeup. Concurrency is
 per kind in `jobs.concurrency` (defaults: `fetch` 2, `scan` 4, `render` 4,
-`rows` 2, `archive` 1, `document` 2, `purge` 4, `reap` 1, `notify` 4):
-rendering and compiling are CPU bound, scanning waits on clamd, a rows or
-archive build, a fetch and a delivery on the network, and one reaper per
-process is plenty since a row is pending at a time anyway.
+`rows` 2, `archive` 1, `document` 2, `purge` 4, `reap` 1, `notify` 4,
+`audit` 1): rendering and compiling are CPU bound, scanning waits on
+clamd, a rows or archive build, a fetch and a delivery on the network,
+and one reaper or auditor per process is plenty since a row is pending at
+a time anyway.
 
 Isolation is by kind. Every kind has its own workers, so however many slow
 jobs of one kind are queued, the others keep flowing; that is the property
@@ -2401,7 +2403,87 @@ move to separate machines without code changes, and `jobs.kinds` (or
 omitted. That is how the archive builders get machines of their own, or
 the renderers more of them. A kind no process handles only piles up, which
 the oldest-due metric shows; a process not handling `render` skips the
-renderer probe, one not handling `reap` does not schedule the first reap.
+renderer probe, one not handling `reap` does not schedule the first reap,
+and one not handling `audit` does not schedule the first audit.
+
+### Audit
+
+Nothing on the request path checks that the `blobs` table and the bucket
+agree, and the mismatches worth catching are fleet-wide: a bucket or a
+database restored from backup, a bad purge, a lifecycle rule. A per-blob
+`POST /blobs/:id/verify` was considered and rejected as the shape: the
+backend has no reason to ask about one id. The `audit` job sweeps instead,
+weekly (`jobs.audit_interval`), scheduled like the reaper: each run
+enqueues the next before doing its work, the runner enqueues the first one
+an interval out (not now: a restart is not a reason to list the bucket,
+and a pending one survives it, the duplicate dropped), and `agrafe audit`
+on the command line runs the same sweep on demand, for the operator who
+just did a restore.
+
+Three things can be wrong, at different costs. A row says present and the
+bucket says missing: a non-terminal blob without its `<id>/original`, or
+a representation `ready` without its WebP. The bucket has objects no row
+accounts for: a prefix with no row or a purged one, an original under a
+row that never recorded it (a `PUT` whose row update failed), a part or
+a representation the row says is not there. And an object present but
+wrong: truncated or corrupted ciphertext.
+
+The sweep streams the bucket listing, one request per thousand objects,
+and takes the objects of a blob as one group, which holds for the sorted
+listings of S3, GCS and Azure and for the directory walk of the local
+backend alike; a backend that scattered a prefix would be refused, not
+misread. A thousand prefixes at a time are looked up in one query and
+checked against their rows, and recorded in a temporary table of the
+session the audit holds; at the end the rows that should have objects
+(an original, source parts, a `ready` representation; not terminal, not
+purged) and whose prefix never came up are read back by an anti-join
+against that table. No order is assumed of the listing and nothing is
+held in memory for the length of the bucket. The listing carries sizes,
+so truncation is caught without a read: the expected ciphertext length
+of the original and of each representation follows from the plaintext
+size and `chunk_size` (`Layout::ciphertext_len`), and a source part's
+length must be one a stream of that layout produces. The deep check,
+`agrafe audit --deep`, decrypts the originals and compares their SHA-256
+with `checksum_sha256`, every one or one in N (`--sample N`), which is
+reading the bucket and is never the job's.
+
+What it does with a finding, each one a `warn` line in the log:
+
+- Missing or damaged original on a non-terminal blob: report only. There
+  is no repair, the client sent the bytes once. The row gets `failed_at`
+  and `last_error` (`audit: ...`) unless a verdict is on it already, so
+  the blob shows in `GET /blobs?failed=true` and on the attachments
+  listing; no new state, and no `failed` webhook event, which is the
+  news of a dead job.
+- Representation `ready` but the object missing or the wrong length: set
+  back to `pending` and the render enqueued, the read path's own repair.
+- Missing or truncated source part under a `created` or `uploaded`
+  generated blob: report only; the build fails on it itself. The parts
+  stay after the build and go with the purge, so under a `ready` blob
+  they are accounted for and not required.
+- Orphan object: report by default. Deleted only by `agrafe audit --fix`,
+  and only when older than `upload.stale_after`, so an upload or a render
+  that has written its object and not yet updated its row is never
+  touched. A terminal blob awaiting its purge is skipped altogether, its
+  prefix is the purge's. A key outside the layout, not `<blob id>/<name>`,
+  is reported as foreign and never deleted: it is not agrafe's.
+
+The decision taken up front is that the job never deletes. The
+destructive path is always a human running a command with the report in
+front of them, as the reaper only ever acts on what a row already says.
+The command exits non-zero when anything was found, so a restore
+procedure can end with it.
+
+Results go to the log and to gauges, see "Observability": counts per
+finding kind from the last run, what it listed and checked, and when it
+finished. No new table. One audit runs at a time: the session holds an
+advisory lock, keyed with the database's name since advisory locks are
+the server's, and a job finding it held logs and steps aside, the command
+line reports it.
+
+Later, once the sweep exists, a `?verify=true` on the private
+`GET /blobs/:id` that `HEAD`s the blob's objects is a few lines over the
+same check; for the person debugging one file, not the design.
 
 ### Observability
 
@@ -2417,7 +2499,14 @@ higher ones starve it. A lapsed lease counts as unclaimed, as the claim query se
 it. Per process: `agrafe_job_runs_total{kind,outcome}` with `ok`, `retry`,
 `dead` and `superseded`, `agrafe_job_duration_seconds{kind}`,
 `agrafe_workers{kind}` and `agrafe_webhook_deliveries_total{event,result}`
-with `delivered` or `failed`, see "Webhooks". A `worker` process has no API; it binds
+with `delivered` or `failed`, see "Webhooks". The last audit this process
+ran, see "Audit": `agrafe_audit_findings{kind}` with `missing_original`,
+`damaged_original`, `missing_representation`, `missing_source`, `orphan`
+and `foreign`, `agrafe_audit_objects` and `agrafe_audit_blobs` for what
+it listed and checked, and `agrafe_audit_last_run_timestamp_seconds`,
+zero until one has run; gauges, since a sweep is a census and not a
+rate, and per process, since the one worker handling `audit` is the one
+that knows. A `worker` process has no API; it binds
 `server.private_addr` all the same, serving `/healthz` and `/metrics` only.
 
 `GET /jobs` lists jobs newest first, cursor paginated on the id, filtered by

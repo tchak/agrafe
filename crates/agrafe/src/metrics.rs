@@ -5,11 +5,13 @@
 
 use std::time::Duration;
 
+use jiff::Timestamp;
 use prometheus::{
-    Encoder, GaugeVec, HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry,
-    TextEncoder,
+    Encoder, GaugeVec, HistogramOpts, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec, Opts,
+    Registry, TextEncoder,
 };
 
+use crate::jobs::audit::{Finding, Report};
 use crate::jobs::notify::Event;
 use crate::jobs::{Count, JobKind, JobState, Priority};
 
@@ -47,8 +49,8 @@ const DURATION_BUCKETS: &[f64] = &[
 ];
 
 /// The registry of this process's Prometheus metrics: job runs and
-/// durations, workers, the queue census, the read cache and webhook
-/// deliveries. Rendered by `render` for `/metrics`.
+/// durations, workers, the queue census, the read cache, webhook
+/// deliveries and the last audit. Rendered by `render` for `/metrics`.
 pub struct Metrics {
     registry: Registry,
     job_runs: IntCounterVec,
@@ -58,6 +60,10 @@ pub struct Metrics {
     oldest_due: GaugeVec,
     head_cache: IntCounterVec,
     webhook_deliveries: IntCounterVec,
+    audit_findings: IntGaugeVec,
+    audit_objects: IntGauge,
+    audit_blobs: IntGauge,
+    audit_last_run: IntGauge,
 }
 
 impl Default for Metrics {
@@ -124,7 +130,30 @@ impl Metrics {
             &["event", "result"],
         )
         .expect("valid metric");
-        let collectors: [Box<dyn prometheus::core::Collector>; 7] = [
+        let audit_findings = IntGaugeVec::new(
+            Opts::new(
+                "agrafe_audit_findings",
+                "Mismatches between the bucket and the blobs table found by the last audit this process ran, by kind",
+            ),
+            &["kind"],
+        )
+        .expect("valid metric");
+        let audit_objects = IntGauge::new(
+            "agrafe_audit_objects",
+            "Objects the last audit this process ran listed in the bucket",
+        )
+        .expect("valid metric");
+        let audit_blobs = IntGauge::new(
+            "agrafe_audit_blobs",
+            "Blobs the last audit this process ran checked",
+        )
+        .expect("valid metric");
+        let audit_last_run = IntGauge::new(
+            "agrafe_audit_last_run_timestamp_seconds",
+            "When the last audit this process ran finished, as a Unix time; zero until one has",
+        )
+        .expect("valid metric");
+        let collectors: [Box<dyn prometheus::core::Collector>; 11] = [
             Box::new(job_runs.clone()),
             Box::new(job_duration.clone()),
             Box::new(workers.clone()),
@@ -132,6 +161,10 @@ impl Metrics {
             Box::new(oldest_due.clone()),
             Box::new(head_cache.clone()),
             Box::new(webhook_deliveries.clone()),
+            Box::new(audit_findings.clone()),
+            Box::new(audit_objects.clone()),
+            Box::new(audit_blobs.clone()),
+            Box::new(audit_last_run.clone()),
         ];
         for c in collectors {
             registry.register(c).expect("metric names are unique");
@@ -156,6 +189,9 @@ impl Metrics {
                 webhook_deliveries.with_label_values(&[event.as_str(), result]);
             }
         }
+        for finding in Finding::ALL {
+            audit_findings.with_label_values(&[finding.as_str()]);
+        }
         Self {
             registry,
             job_runs,
@@ -165,7 +201,24 @@ impl Metrics {
             oldest_due,
             head_cache,
             webhook_deliveries,
+            audit_findings,
+            audit_objects,
+            audit_blobs,
+            audit_last_run,
         }
+    }
+
+    /// An audit finished at `at` with `report`: what it saw and found, as
+    /// of the last run, for the alert on any finding at all.
+    pub(crate) fn audit(&self, report: &Report, at: Timestamp) {
+        for finding in Finding::ALL {
+            self.audit_findings
+                .with_label_values(&[finding.as_str()])
+                .set(report.count(*finding) as i64);
+        }
+        self.audit_objects.set(report.objects as i64);
+        self.audit_blobs.set(report.blobs as i64);
+        self.audit_last_run.set(at.as_second());
     }
 
     /// A read route looked a row up, and the cache had it or not.

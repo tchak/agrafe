@@ -115,15 +115,15 @@ pub struct Stored {
 
 /// The nullable columns `Stored` is assembled from, as either row carries
 /// them.
-struct Columns<'a> {
-    blob_id: Uuid,
-    storage_key: Option<&'a str>,
-    kek_id: Option<&'a str>,
-    wrapped_key: Option<&'a [u8]>,
-    encryption_header: Option<&'a [u8]>,
-    chunk_size: Option<i32>,
-    checksum_sha256: Option<&'a [u8]>,
-    size: Option<i64>,
+pub(crate) struct Columns<'a> {
+    pub(crate) blob_id: Uuid,
+    pub(crate) storage_key: Option<&'a str>,
+    pub(crate) kek_id: Option<&'a str>,
+    pub(crate) wrapped_key: Option<&'a [u8]>,
+    pub(crate) encryption_header: Option<&'a [u8]>,
+    pub(crate) chunk_size: Option<i32>,
+    pub(crate) checksum_sha256: Option<&'a [u8]>,
+    pub(crate) size: Option<i64>,
 }
 
 impl Stored {
@@ -175,7 +175,7 @@ impl Stored {
         })
     }
 
-    fn from_columns(c: Columns<'_>) -> Result<Self, ReadError> {
+    pub(crate) fn from_columns(c: Columns<'_>) -> Result<Self, ReadError> {
         let blob_id = c.blob_id;
         let missing = |what| ReadError::Incomplete { blob_id, what };
         let header = Header::parse(

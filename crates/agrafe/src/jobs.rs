@@ -3,6 +3,7 @@
 //! `runner`, the handlers in their own modules.
 
 pub(crate) mod archive;
+pub mod audit;
 pub(crate) mod build;
 pub(crate) mod document;
 pub(crate) mod fetch;
@@ -111,6 +112,8 @@ pub enum JobError {
     Fetch(#[from] fetch::FetchError),
     #[error("webhook: {0}")]
     Webhook(#[from] notify::WebhookError),
+    #[error("audit: {0}")]
+    Audit(#[from] audit::AuditError),
 }
 
 impl JobError {
@@ -171,6 +174,9 @@ pub enum JobKind {
     Reap,
     /// Deliver one event of a blob to the webhook. See `notify`.
     Notify,
+    /// The reconciliation sweep of the bucket against the `blobs` table,
+    /// weekly, each run scheduling the next. See `audit`.
+    Audit,
 }
 
 agrafe_types::str_enum!(JobKind {
@@ -183,6 +189,7 @@ agrafe_types::str_enum!(JobKind {
     Purge => "purge",
     Reap => "reap",
     Notify => "notify",
+    Audit => "audit",
 });
 
 /// Order within a kind's queue. A blob's priority is copied onto its jobs;
@@ -210,9 +217,9 @@ impl JobKind {
     /// Whether a job of this kind is what moves its blob along: the fetch
     /// that takes a `url` blob out of `created`, the scan or the build that
     /// takes it out of `uploaded`, the render that fills its
-    /// representations. Its death is recorded on the blob; a purge or a
-    /// reap is housekeeping, a notify is the news of the blob and not
-    /// its progress, and both leave the blob's row alone.
+    /// representations. Its death is recorded on the blob; a purge, a
+    /// reap or an audit is housekeeping, a notify is the news of the blob
+    /// and not its progress, and all of those leave the blob's row alone.
     pub(crate) fn finishes_blob(self) -> bool {
         matches!(
             self,

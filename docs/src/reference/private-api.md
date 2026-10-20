@@ -427,9 +427,9 @@ Detaches. The last detach sets the blob's expiry to
 
 | Field | Description |
 |---|---|
-| `kind` | `fetch`, `scan`, `render`, `rows`, `archive`, `document`, `purge`, `reap`, `notify` |
+| `kind` | `fetch`, `scan`, `render`, `rows`, `archive`, `document`, `purge`, `reap`, `notify`, `audit` |
 | `state` | `due`, `scheduled`, `running`, `dead` |
-| `blob_id` | Null for `reap` |
+| `blob_id` | Null for `reap` and `audit` |
 | `payload` | Kind-specific, such as the event of a `notify` job |
 | `run_at` | When the job becomes due |
 | `attempts`, `max_attempts` | Attempts made, and allowed |

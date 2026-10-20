@@ -42,6 +42,20 @@ These count what one process did, so sum them across processes.
 | `agrafe_blob_head_cache_total` | `result` | Row lookups by the read routes, `hit` or `miss` |
 | `agrafe_webhook_deliveries_total` | `event`, `result` | Webhook attempts, `delivered` or `failed` |
 
+### The audit
+
+The last audit this process ran, see [Jobs and
+retries](jobs.md#the-audit). Gauges, not counters: a sweep is a census.
+Only the process whose worker ran the audit has values; the others report
+zero.
+
+| Metric | Labels | Meaning |
+|---|---|---|
+| `agrafe_audit_findings` | `kind` | Mismatches found, by kind: `missing_original`, `damaged_original`, `missing_representation`, `missing_source`, `orphan`, `foreign` |
+| `agrafe_audit_objects` | | Objects the last audit listed in the bucket |
+| `agrafe_audit_blobs` | | Blobs the last audit checked |
+| `agrafe_audit_last_run_timestamp_seconds` | | When the last audit finished, as a Unix time; zero until one has run |
+
 ## What to alert on
 
 **The oldest due job** is the number that tells whether a kind keeps up. It
@@ -76,7 +90,23 @@ groups:
       - alert: AgrafeNoWorkers
         expr: sum by (kind) (agrafe_workers) == 0
         for: 5m
+
+      - alert: AgrafeAuditFindings
+        expr: sum by (kind) (agrafe_audit_findings{kind!="orphan"}) > 0
+        annotations:
+          summary: "the last agrafe audit found {{ $labels.kind }} mismatches: GET /blobs?failed=true, or the audit log lines"
+
+      - alert: AgrafeAuditStale
+        expr: time() - max(agrafe_audit_last_run_timestamp_seconds) > 8 * 86400
+        annotations:
+          summary: "no agrafe audit has run for over eight days"
 ```
+
+A missing original is an incident: the bytes cannot be recovered from
+agrafe's side, and the blob is listed under `GET /blobs?failed=true` with
+`audit:` at the head of its `last_error`. Orphans only cost storage; look
+at them before the next restore, with `agrafe audit --fix` once you know
+what they are.
 
 Thresholds depend on your traffic. Scans and renders normally run within
 seconds of the upload. A large archive can legitimately take hours, and

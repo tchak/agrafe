@@ -364,12 +364,18 @@ reap_interval = "1m"
 # A job that used up its attempts stays in the table, with its last error,
 # for this long before the reaper removes it.
 keep_failed = "7d"
+# How often the audit sweeps the bucket against the blobs table: one
+# listing request per thousand objects, and one query per thousand blobs.
+# It reports what disagrees, re-renders a representation whose object is
+# gone, and deletes nothing; `agrafe audit --fix` is the one that deletes.
+# The first run is one interval after the process starts.
+audit_interval = "7d"
 
 # The job kinds this process runs workers for; every kind when omitted.
 # A worker process dedicated to archive builds would say ["archive"]. Every
 # kind must be handled by some process of the deployment. The --kinds flag
 # takes precedence.
-# kinds = ["fetch", "scan", "render", "rows", "archive", "document", "purge", "reap", "notify"]
+# kinds = ["fetch", "scan", "render", "rows", "archive", "document", "purge", "reap", "notify", "audit"]
 
 # Workers per job kind; these are the defaults. Each kind has its own pool,
 # which is what keeps slow archive builds from holding up scans and renders.
@@ -383,6 +389,7 @@ document = 2
 purge = 4
 reap = 1
 notify = 4
+audit = 1
 
 [webhook]
 # Where state changes are POSTed, as one JSON body per event with the

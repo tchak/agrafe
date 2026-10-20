@@ -1,15 +1,18 @@
 //! The `agrafe` binary. `agrafe migrate` applies the pending database
 //! migrations; `agrafe serve` runs what `server.role` names: the private
 //! and public interfaces (the dashboard under `/dashboard` on the private
-//! one, when enabled), the job workers, or both.
+//! one, when enabled), the job workers, or both; `agrafe audit` checks
+//! the bucket against the `blobs` table once, on demand.
 
 use std::net::SocketAddr;
+use std::num::NonZeroU32;
 use std::path::PathBuf;
 
 use agrafe::Agrafe;
 use agrafe::app::InitError;
 use agrafe::config::{Config, ConfigError, Role};
 use agrafe::jobs::JobKind;
+use agrafe::jobs::audit::{self, AuditError};
 use agrafe::{db, jobs};
 use agrafe_axum as api;
 use clap::{Parser, Subcommand};
@@ -40,12 +43,29 @@ enum Command {
         role: Option<Role>,
         /// Overrides jobs.kinds: the job kinds this process runs workers
         /// for, comma separated (fetch, scan, render, rows, archive,
-        /// document, purge, reap, notify).
+        /// document, purge, reap, notify, audit).
         #[arg(long, value_delimiter = ',')]
         kinds: Option<Vec<JobKind>>,
     },
     /// Apply pending database migrations.
     Migrate,
+    /// Check the bucket against the blobs table once, as the weekly audit
+    /// job does: one log line per mismatch, the tally on stdout, and a
+    /// non-zero exit when anything was found.
+    Audit {
+        /// Delete the orphan objects older than upload.stale_after. Without
+        /// it they are reported and left alone.
+        #[arg(long)]
+        fix: bool,
+        /// Decrypt the originals and compare their SHA-256 with the rows',
+        /// which reads the whole bucket; the listing alone catches a
+        /// missing or truncated object.
+        #[arg(long)]
+        deep: bool,
+        /// With --deep: read one original in N, chosen at random.
+        #[arg(long, value_name = "N", requires = "deep")]
+        sample: Option<NonZeroU32>,
+    },
 }
 
 /// Why the process stopped.
@@ -76,6 +96,10 @@ enum Error {
     Workers(#[from] jobs::runner::Error),
     #[error("task panicked: {0}")]
     Panicked(#[from] tokio::task::JoinError),
+    #[error(transparent)]
+    Audit(#[from] AuditError),
+    #[error("the audit found {0} mismatches, listed above")]
+    Findings(u64),
 }
 
 /// `main` reports an error through `Debug`; print the message instead.
@@ -142,6 +166,20 @@ async fn main() -> Result<(), Error> {
                 config.jobs.kinds = Some(kinds);
             }
             serve(config).await
+        }
+        Command::Audit { fix, deep, sample } => {
+            let pool = db::connect(&config.database).await?;
+            let state = Agrafe::new(config, pool)?;
+            let options = audit::Options {
+                fix,
+                deep: deep.then(|| sample.unwrap_or(NonZeroU32::MIN)),
+            };
+            let report = state.audit(options).await?;
+            println!("{report}");
+            match report.findings() {
+                0 => Ok(()),
+                n => Err(Error::Findings(n)),
+            }
         }
     }
 }

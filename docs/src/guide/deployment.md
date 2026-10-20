@@ -269,8 +269,8 @@ agrafe --config agrafe.toml serve --role worker --kinds archive
 `--kinds`, or `jobs.kinds`, narrows the job kinds a worker runs. Dedicated
 pools are how archive builds get machines of their own, or renders more of
 them. Every kind must be handled somewhere. A worker that does not handle
-`render` skips the renderer probe, and one that does not handle `reap` does
-not schedule the reaper.
+`render` skips the renderer probe, and one that does not handle `reap` or `audit` does
+not schedule the reaper or the audit.
 
 API processes are stateless and scale horizontally. A sticky session is not
 needed: the read cache is per process and short-lived.

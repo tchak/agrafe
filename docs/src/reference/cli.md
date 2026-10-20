@@ -31,7 +31,28 @@ agrafe --config agrafe.toml serve [--role <ROLE>] [--kinds <KIND,...>]
 | Option | Overrides | Description |
 |---|---|---|
 | `--role <ROLE>` | `server.role` | `api`, `worker` or `all` |
-| `--kinds <KIND,...>` | `jobs.kinds` | Comma-separated job kinds this process runs workers for: `fetch`, `scan`, `render`, `rows`, `archive`, `document`, `purge`, `reap`, `notify` |
+| `--kinds <KIND,...>` | `jobs.kinds` | Comma-separated job kinds this process runs workers for: `fetch`, `scan`, `render`, `rows`, `archive`, `document`, `purge`, `reap`, `notify`, `audit` |
+
+## `agrafe audit`
+
+Checks the bucket against the `blobs` table once, as the weekly `audit`
+job does, then exits. One `warn` log line per mismatch, the tally on
+standard output, and a non-zero status when anything was found. See
+[Jobs and retries](../guide/jobs.md#the-audit).
+
+```sh
+agrafe --config agrafe.toml audit [--fix] [--deep [--sample <N>]]
+```
+
+| Option | Description |
+|---|---|
+| `--fix` | Delete the orphan objects older than `upload.stale_after`. Without it they are reported and left alone. Nothing else is ever deleted |
+| `--deep` | Decrypt the originals and compare their SHA-256 with the rows'. Reads the whole bucket; the listing alone catches a missing or truncated object |
+| `--sample <N>` | With `--deep`: read one original in N, chosen at random |
+
+It needs the database and the bucket, and the KEKs for `--deep`. It runs
+on its own connection and holds a lock the job honours: a job starting
+meanwhile steps aside, and the command reports a running job and exits.
 
 ## Environment
 
@@ -53,4 +74,5 @@ the `media.*_command` keys.
 The process exits with a non-zero status and a one-line message when it
 cannot start: a missing configuration file, an invalid configuration, an
 unreachable database, a failed migration, an address already in use, or a
-failed renderer probe.
+failed renderer probe. `agrafe audit` also exits non-zero when it found
+mismatches, or when another audit was running.

@@ -11,6 +11,7 @@ mod support;
 
 mod archive;
 mod attachments;
+mod audit;
 mod blobs;
 mod cache;
 mod document;

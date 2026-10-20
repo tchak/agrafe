@@ -284,6 +284,7 @@ Background layers, composited bottom to top. None by default.
 | `lease_timeout` | `"10m"` | A job locked for longer is claimed again. Running workers renew it |
 | `reap_interval` | `"1m"` | How often the reaper runs |
 | `keep_failed` | `"7d"` | How long dead jobs are kept |
+| `audit_interval` | `"7d"` | How often the audit sweeps the bucket against the `blobs` table; the first run is one interval after the workers start |
 | `kinds` | every kind | The kinds this process runs workers for. `serve --kinds` takes precedence |
 
 ### `[jobs.concurrency]`
@@ -301,6 +302,7 @@ Workers per kind, per process. An unknown kind is a configuration error.
 | `purge` | `4` |
 | `reap` | `1` |
 | `notify` | `4` |
+| `audit` | `1` |
 
 ## `[webhook]`
 

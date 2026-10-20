@@ -965,6 +965,10 @@ pub struct JobsConfig {
     /// seven days by default.
     #[serde(with = "humantime_serde", default = "default_keep_failed")]
     pub keep_failed: Duration,
+    /// How often the audit sweeps the bucket against the `blobs` table;
+    /// seven days by default.
+    #[serde(with = "humantime_serde", default = "default_audit_interval")]
+    pub audit_interval: Duration,
     #[serde(default)]
     /// Workers per job kind, each kind its own pool; a kind left out gets
     /// its default (`concurrency_for`). Keyed by kind, so an unknown name is
@@ -985,7 +989,7 @@ impl JobsConfig {
         match kind {
             JobKind::Scan | JobKind::Render | JobKind::Purge | JobKind::Notify => 4,
             JobKind::Fetch | JobKind::Rows | JobKind::Document => 2,
-            JobKind::Archive | JobKind::Reap => 1,
+            JobKind::Archive | JobKind::Reap | JobKind::Audit => 1,
         }
     }
 
@@ -1015,6 +1019,9 @@ fn default_reap_interval() -> Duration {
 fn default_keep_failed() -> Duration {
     Duration::from_secs(7 * 24 * 3600)
 }
+fn default_audit_interval() -> Duration {
+    Duration::from_secs(7 * 24 * 3600)
+}
 
 impl Default for JobsConfig {
     fn default() -> Self {
@@ -1023,6 +1030,7 @@ impl Default for JobsConfig {
             lease_timeout: default_lease_timeout(),
             reap_interval: default_reap_interval(),
             keep_failed: default_keep_failed(),
+            audit_interval: default_audit_interval(),
             concurrency: HashMap::new(),
             kinds: None,
         }
@@ -1066,6 +1074,8 @@ mod tests {
             assert!(!config.webhook.wants(Event::Ready));
             assert_eq!(config.webhook.timeout.as_secs(), 10);
             assert_eq!(config.jobs.concurrency_for(JobKind::Notify), 4);
+            assert_eq!(config.jobs.concurrency_for(JobKind::Audit), 1);
+            assert_eq!(config.jobs.audit_interval.as_secs(), 7 * 24 * 3600);
             Ok(())
         });
     }

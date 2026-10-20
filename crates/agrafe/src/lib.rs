@@ -8,8 +8,9 @@
 //! [`Agrafe::find_blob`], [`Agrafe::delete_blob`]), uploads
 //! ([`Agrafe::upload`], [`Agrafe::upload_part`], [`Agrafe::finish_source`]),
 //! URLs ([`Agrafe::urls`], [`Agrafe::mint_urls`]), attachments
-//! ([`Agrafe::attach_blob`], [`Agrafe::detach_blob`]) and jobs
-//! ([`Agrafe::list_jobs`], [`Agrafe::retry_job`]). The workers that scan,
+//! ([`Agrafe::attach_blob`], [`Agrafe::detach_blob`]), jobs
+//! ([`Agrafe::list_jobs`], [`Agrafe::retry_job`]) and the audit of the
+//! bucket against the table ([`Agrafe::audit`]). The workers that scan,
 //! render and build run with [`jobs::runner::run`], in the same process or
 //! another one sharing the database.
 //!
