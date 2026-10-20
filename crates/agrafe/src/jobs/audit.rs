@@ -7,8 +7,17 @@
 //! anyway (a representation whose object is gone is rendered again); it
 //! never deletes. `agrafe audit --fix` on the command line is the one that
 //! deletes orphan objects, and `--deep` the one that reads the originals
-//! back. Like the reaper, each run schedules the next one
-//! `jobs.audit_interval` later before doing its work.
+//! back. Each run schedules the next one `jobs.audit_interval` after it
+//! finishes.
+//!
+//! A sweep of a large bucket takes days, and the job keeps its place: the
+//! last key listed, the last row passed and the tally so far go into the
+//! job's payload every minute (`Progress`), and the attempt that finds
+//! them there carries on from that point, after a restart that let the
+//! lease lapse or a failure the runner retries. Acting on a finding never
+//! stops the sweep: a stamp, a render or a delete that fails is logged,
+//! counted in the report and left for the next run; only the listing and
+//! the rows failing ends an attempt.
 //!
 //! The listing and the table are merged in id order, one pass over each:
 //! the cloud backends list their keys sorted, and the hyphenated lowercase
@@ -21,13 +30,16 @@
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::num::NonZeroU32;
+use std::time::{Duration, Instant};
 
 use agrafe_crypto::streaming::Layout;
 use futures::stream::{self, BoxStream};
 use futures::{StreamExt as _, TryFutureExt as _, TryStreamExt as _};
 use jiff::Timestamp;
 use jiff_sqlx::ToSqlx as _;
+use object_store::path::Path;
 use object_store::{ObjectMeta, ObjectStoreExt as _};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{Connection as _, PgConnection, PgExecutor};
 use uuid::Uuid;
@@ -51,16 +63,12 @@ pub enum AuditError {
     /// the table in id order.
     #[error("the store lists blob {0} out of order; the audit needs the listing sorted by key")]
     Unsorted(Uuid),
-    /// Listing the bucket, or deleting an orphan, failed.
+    /// Listing the bucket failed.
     #[error("object store: {0}")]
     Store(#[from] object_store::Error),
     /// A query failed.
     #[error("database: {0}")]
     Db(#[from] sqlx::Error),
-    /// The deep check could not read an original for a reason other than
-    /// the original's own state.
-    #[error("reading an original back: {0}")]
-    Read(ReadError),
 }
 
 /// What an audit may do beyond reporting.
@@ -113,8 +121,10 @@ agrafe_types::str_enum!(Finding {
     Foreign => "foreign",
 });
 
-/// What one audit saw and did.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+/// What one audit saw and did. Serialized into the job's payload as part
+/// of its `Progress`, so every field has a default.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Report {
     /// Objects listed.
     pub objects: u64,
@@ -133,6 +143,11 @@ pub struct Report {
     /// of the listing passing them, left for the next run: an upload or
     /// a render whose row does not say so yet.
     pub young: u64,
+    /// Findings the audit could not act on: a stamp, a render request or
+    /// a delete that failed, or an original the deep check could not
+    /// read. Each is an `error` line in the log, and the next run finds
+    /// it again.
+    pub errors: u64,
     /// Findings by kind, in the order of `Finding::ALL`.
     counts: [u64; Finding::ALL.len()],
 }
@@ -190,7 +205,8 @@ impl fmt::Display for Report {
         )?;
         writeln!(f, "orphans deleted:         {}", self.deleted)?;
         writeln!(f, "rows left for next run:  {}", self.unsettled)?;
-        write!(f, "young objects left:      {}", self.young)
+        writeln!(f, "young objects left:      {}", self.young)?;
+        write!(f, "findings not acted on:   {}", self.errors)
     }
 }
 
@@ -200,18 +216,64 @@ impl Agrafe {
     /// finding is one `warn` line in the log; the report is the tally.
     /// [`AuditError::Running`] when another audit holds the lock.
     pub async fn audit(&self, options: Options) -> Result<Report, AuditError> {
-        audit(self, options).await
+        audit(self, options, Progress::default(), None).await
     }
+}
+
+/// Where a sweep stands, kept in the job's payload so the next attempt
+/// carries on from there; `{}` is a sweep not started.
+// Public for the integration tests, not part of the API.
+#[doc(hidden)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Progress {
+    /// The last key listed and checked; the listing resumes after it.
+    pub after: Option<String>,
+    /// The last row the listing passed; the rows resume after it.
+    pub cursor: Uuid,
+    /// The tally so far.
+    pub report: Report,
+}
+
+/// How often a running job saves its `Progress`.
+const CHECKPOINT_EVERY: Duration = Duration::from_secs(60);
+
+/// The job the sweep saves its progress to, as the worker that holds it.
+struct Checkpoint {
+    job: i64,
+    worker: String,
+    saved: Instant,
 }
 
 pub(crate) async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
     if job.kind != JobKind::Audit {
         return Err(JobError::Unhandled(job.kind));
     }
-    let now = Timestamp::now();
-    schedule(state.pool(), now + state.config().jobs.audit_interval).await?;
-    match audit(state, Options::default()).await {
+    let progress = match serde_json::from_value::<Progress>(job.payload.clone()) {
+        Ok(progress) => progress,
+        Err(err) => {
+            tracing::warn!(error = %err, "the audit job's progress does not parse, starting over");
+            Progress::default()
+        }
+    };
+    if progress.after.is_some() || !progress.cursor.is_nil() {
+        tracing::info!(after = ?progress.after, cursor = %progress.cursor, "resuming the audit");
+    }
+    let checkpoint = job.locked_by.clone().map(|worker| Checkpoint {
+        job: job.id,
+        worker,
+        saved: Instant::now(),
+    });
+    let result = audit(state, Options::default(), progress, checkpoint).await;
+    // The next run is scheduled once this one is over, not before: a
+    // pending twin would make a failed attempt redundant instead of
+    // retried (`fail`), and the retry is what carries the progress on.
+    // The last attempt and a run that stepped aside schedule it too, so
+    // a dead job does not end the weekly sweep.
+    let next = Timestamp::now() + state.config().jobs.audit_interval;
+    match result {
         Ok(report) => {
+            schedule(state.pool(), next).await?;
             tracing::info!(
                 objects = report.objects,
                 blobs = report.blobs,
@@ -223,15 +285,22 @@ pub(crate) async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
                 foreign = report.count(Finding::Foreign),
                 unsettled = report.unsettled,
                 young = report.young,
+                errors = report.errors,
                 "audited"
             );
             Ok(())
         }
         Err(AuditError::Running) => {
+            schedule(state.pool(), next).await?;
             tracing::info!("another audit is running, skipped this one");
             Ok(())
         }
-        Err(err) => Err(err.into()),
+        Err(err) => {
+            if job.attempts >= job.max_attempts {
+                schedule(state.pool(), next).await?;
+            }
+            Err(err.into())
+        }
     }
 }
 
@@ -264,7 +333,12 @@ const PAGE: i64 = 1000;
 /// Stamp left on a blob whose original the audit found missing or damaged.
 const STAMP: &str = "audit: ";
 
-async fn audit(state: &Agrafe, options: Options) -> Result<Report, AuditError> {
+async fn audit(
+    state: &Agrafe,
+    options: Options,
+    progress: Progress,
+    checkpoint: Option<Checkpoint>,
+) -> Result<Report, AuditError> {
     let now = Timestamp::now();
     // One session for the run: it holds the lock and reads the rows, and
     // closing it, however the run ends, releases the lock.
@@ -277,7 +351,7 @@ async fn audit(state: &Agrafe, options: Options) -> Result<Report, AuditError> {
     if !held {
         return Err(AuditError::Running);
     }
-    let result = sweep(state, &mut conn, options, now).await;
+    let result = sweep(state, &mut conn, options, now, progress, checkpoint).await;
     // Released here rather than by the close: the server lets go of a
     // closed session's locks only once it has seen the socket go, and an
     // audit started right after this one would find the lock still held.
@@ -307,17 +381,23 @@ async fn sweep(
     conn: &mut PgConnection,
     options: Options,
     now: Timestamp,
+    progress: Progress,
+    checkpoint: Option<Checkpoint>,
 ) -> Result<Report, AuditError> {
+    let after = progress.after.map(Path::from);
     let mut sweep = Sweep {
         state,
         options,
         listed_at: now,
         last: None,
-        report: Report::default(),
+        after: after.clone(),
+        cursor: progress.cursor,
+        checkpoint,
+        report: progress.report,
     };
-    let mut rows = Rows::new(conn, now);
+    let mut rows = Rows::new(conn, now, progress.cursor);
 
-    let mut listing = listing(state);
+    let mut listing = listing(state, after);
     let mut current: Option<Group> = None;
     while let Some(object) = listing.try_next().await? {
         sweep.report.objects += 1;
@@ -342,27 +422,42 @@ async fn sweep(
     if let Some(done) = current {
         sweep.merge(&mut rows, done).await?;
     }
+    // The listing is done, which is most of the work: worth saving.
+    sweep.save(true).await;
 
     // The rows after the last prefix listed: the listing passed them all
     // when it ended, with nothing for them.
     sweep.listed_at = Timestamp::now();
     while let Some(row) = rows.next().await? {
-        sweep.check(&row, &[]).await?;
+        sweep.check(&row, &[]).await;
+        sweep.cursor = row.id;
+        sweep.save(false).await;
     }
     Ok(sweep.report)
 }
 
-/// The bucket's objects in key order. The cloud backends list sorted;
-/// the local backend walks its directory in whatever order the filesystem
+/// The bucket's objects in key order, after `after` when resuming. The
+/// cloud backends list sorted, and S3 and GCS start after a key on the
+/// server (Azure lists from the start and the rest is skipped here); the
+/// local backend walks its directory in whatever order the filesystem
 /// gives, so its listing, development-sized, is sorted in memory.
-fn listing(state: &Agrafe) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
+fn listing(
+    state: &Agrafe,
+    after: Option<Path>,
+) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
     let store = state.store().clone();
     if !matches!(state.config().storage, StorageConfig::Local { .. }) {
-        return store.list(None);
+        return match after {
+            Some(after) => store.list_with_offset(None, &after),
+            None => store.list(None),
+        };
     }
     async move {
         let mut objects: Vec<ObjectMeta> = store.list(None).try_collect().await?;
         objects.sort_by(|a, b| a.location.cmp(&b.location));
+        if let Some(after) = after {
+            objects.retain(|o| o.location > after);
+        }
         Ok(stream::iter(objects.into_iter().map(Ok)))
     }
     .try_flatten_stream()
@@ -457,12 +552,12 @@ struct Rows<'c> {
 }
 
 impl<'c> Rows<'c> {
-    fn new(conn: &'c mut PgConnection, now: Timestamp) -> Self {
+    fn new(conn: &'c mut PgConnection, now: Timestamp, after: Uuid) -> Self {
         Self {
             conn,
             now,
             page: VecDeque::new(),
-            cursor: Uuid::nil(),
+            cursor: after,
             done: false,
         }
     }
@@ -526,6 +621,12 @@ struct Sweep<'a> {
     listed_at: Timestamp,
     /// The last prefix listed, which the next must follow.
     last: Option<Uuid>,
+    /// The last key checked and the last row passed, what a resumed
+    /// attempt starts after.
+    after: Option<Path>,
+    cursor: Uuid,
+    /// The job to save them to, when running as one.
+    checkpoint: Option<Checkpoint>,
     report: Report,
 }
 
@@ -541,43 +642,82 @@ impl Sweep<'_> {
         self.listed_at = group.listed_at;
         while rows.peek().await?.is_some_and(|row| row.id < group.id) {
             let row = rows.next().await?.expect("peeked");
-            self.check(&row, &[]).await?;
+            self.check(&row, &[]).await;
         }
         if rows.peek().await?.is_some_and(|row| row.id == group.id) {
             let row = rows.next().await?.expect("peeked");
-            return self.check(&row, &group.objects).await;
-        }
-        // Not among the rows that require objects: a tombstone, a blob
-        // awaiting its purge, a `created` one with nothing yet, or no row
-        // at all. The lookup also covers a row that appeared after its
-        // page was read.
-        match find(self.state.pool(), group.id).await? {
-            Some(row) => self.check(&row, &group.objects).await,
-            None => {
-                for object in &group.objects {
-                    self.orphan(object, "no row has this id").await?;
+            self.check(&row, &group.objects).await;
+        } else {
+            // Not among the rows that require objects: a tombstone, a
+            // blob awaiting its purge, a `created` one with nothing yet,
+            // or no row at all. The lookup also covers a row that appeared
+            // after its page was read.
+            match find(self.state.pool(), group.id).await? {
+                Some(row) => self.check(&row, &group.objects).await,
+                None => {
+                    for object in &group.objects {
+                        self.orphan(object, "no row has this id").await;
+                    }
                 }
-                Ok(())
             }
+        }
+        self.after = group.objects.last().map(|o| o.location.clone());
+        self.cursor = group.id;
+        self.save(false).await;
+        Ok(())
+    }
+
+    /// Save the progress to the job, every `CHECKPOINT_EVERY` unless
+    /// `now`. A save is progress made, and gives the job its attempts
+    /// back: the attempts guard against failing without getting anywhere,
+    /// and a restart or a retry should not cost a day-long sweep its
+    /// life. Not saving is logged, as a lost lease is by the heartbeat;
+    /// the sweep goes on.
+    async fn save(&mut self, now: bool) {
+        let Some(checkpoint) = &mut self.checkpoint else {
+            return;
+        };
+        if !now && checkpoint.saved.elapsed() < CHECKPOINT_EVERY {
+            return;
+        }
+        checkpoint.saved = Instant::now();
+        let progress = Progress {
+            after: self.after.as_ref().map(ToString::to_string),
+            cursor: self.cursor,
+            report: self.report,
+        };
+        let result = sqlx::query(
+            "UPDATE jobs SET payload = $2, attempts = 1 \
+             WHERE id = $1 AND locked_by = $3 AND failed_at IS NULL",
+        )
+        .bind(checkpoint.job)
+        .bind(serde_json::to_value(&progress).expect("a progress serializes"))
+        .bind(&checkpoint.worker)
+        .execute(self.state.pool())
+        .await;
+        match result {
+            Ok(done) if done.rows_affected() == 1 => {}
+            Ok(_) => tracing::warn!("audit progress not saved: the job was reclaimed or removed"),
+            Err(err) => tracing::warn!(error = %err, "could not save the audit's progress"),
         }
     }
 
     /// One blob against the objects under its prefix.
-    async fn check(&mut self, row: &Row, objects: &[ObjectMeta]) -> Result<(), AuditError> {
+    async fn check(&mut self, row: &Row, objects: &[ObjectMeta]) {
         self.report.blobs += 1;
         let state = blob::state_at(row.state, row.expires_at, self.listed_at);
         if row.purged_at.is_some() {
             // A tombstone: the purge took everything, so anything left is
             // an orphan.
             for object in objects {
-                self.orphan(object, "the blob was purged").await?;
+                self.orphan(object, "the blob was purged").await;
             }
-            return Ok(());
+            return;
         }
         if state.is_terminal() {
             // Awaiting its purge, which takes the whole prefix: nothing to
             // require and nothing to delete.
-            return Ok(());
+            return;
         }
         // What the row requires is checked only once the row has stood
         // still for `upload.stale_after` before the listing passed it; an
@@ -606,7 +746,7 @@ impl Sweep<'_> {
                         Finding::MissingOriginal,
                         "the original is missing from the store".to_owned(),
                     )
-                    .await?;
+                    .await;
                 }
                 (Some(object), true) => {
                     let want = layout
@@ -622,11 +762,11 @@ impl Sweep<'_> {
                                     object.size
                                 ),
                             )
-                            .await?;
+                            .await;
                         }
                         _ => {
                             if self.sampled() {
-                                self.deep(row).await?;
+                                self.deep(row).await;
                             }
                         }
                     }
@@ -652,19 +792,19 @@ impl Sweep<'_> {
                             kind,
                             &format!("{} bytes, not the {want} its size calls for", object.size),
                         )
-                        .await?;
+                        .await;
                     }
                 }
                 (None, RepresentationState::Ready) => {
                     if state == BlobState::Ready && settled {
-                        self.rerender(row, kind, "missing from the store").await?;
+                        self.rerender(row, kind, "missing from the store").await;
                     }
                 }
                 // A render is going to replace it.
                 (Some(_), RepresentationState::Pending) => {}
                 (Some(object), _) => {
                     self.orphan(object, &format!("the row says the {kind} is {rep_state}"))
-                        .await?;
+                        .await;
                 }
                 (None, _) => {}
             }
@@ -699,10 +839,8 @@ impl Sweep<'_> {
 
         let rest: Vec<&ObjectMeta> = seen.into_values().collect();
         for object in rest {
-            self.orphan(object, "the row does not account for it")
-                .await?;
+            self.orphan(object, "the row does not account for it").await;
         }
-        Ok(())
     }
 
     /// A row that last changed before this stood still for
@@ -732,11 +870,11 @@ impl Sweep<'_> {
 
     /// Decrypt the original and compare its SHA-256 with the row's. What
     /// the row or the object is at fault for is a finding; a store that
-    /// cannot be read is an error.
-    async fn deep(&mut self, row: &Row) -> Result<(), AuditError> {
+    /// cannot be read is an error, the original is left for the next run.
+    async fn deep(&mut self, row: &Row) {
         self.report.deep += 1;
         match read_back(self.state, row).await {
-            Ok(digest) if row.checksum_sha256.as_deref() == Some(&digest[..]) => Ok(()),
+            Ok(digest) if row.checksum_sha256.as_deref() == Some(&digest[..]) => {}
             Ok(digest) => {
                 self.stamp(
                     row,
@@ -746,10 +884,10 @@ impl Sweep<'_> {
                         hex(&digest)
                     ),
                 )
-                .await
+                .await;
             }
             Err(ReadError::Store(err)) if !matches!(err, object_store::Error::NotFound { .. }) => {
-                Err(AuditError::Read(ReadError::Store(err)))
+                self.failed(row.id, "reading the original back", &err);
             }
             Err(err) => {
                 self.stamp(
@@ -757,9 +895,16 @@ impl Sweep<'_> {
                     Finding::DamagedOriginal,
                     format!("the original does not read back: {err}"),
                 )
-                .await
+                .await;
             }
         }
+    }
+
+    /// The audit could not act on what it found: logged, counted, and the
+    /// next run finds it again.
+    fn failed(&mut self, blob: Uuid, doing: &str, err: &dyn fmt::Display) {
+        self.report.errors += 1;
+        tracing::error!(%blob, error = %err, "audit: {doing} failed");
     }
 
     /// Record a finding on the original: the log line, the count, and the
@@ -767,10 +912,10 @@ impl Sweep<'_> {
     /// already, or the row moved on since it was read. Nothing clears
     /// the stamp but a retry, which a blob with its original gone has
     /// nothing to retry; the first one stands.
-    async fn stamp(&mut self, row: &Row, finding: Finding, what: String) -> Result<(), AuditError> {
+    async fn stamp(&mut self, row: &Row, finding: Finding, what: String) {
         self.report.add(finding);
         tracing::warn!(blob = %row.id, finding = %finding, "audit: {what}");
-        sqlx::query(
+        let result = sqlx::query(
             "UPDATE blobs SET failed_at = now(), last_error = $2 \
              WHERE id = $1 AND failed_at IS NULL AND state = $3 AND purged_at IS NULL",
         )
@@ -778,24 +923,22 @@ impl Sweep<'_> {
         .bind(format!("{STAMP}{what}"))
         .bind(row.state.as_str())
         .execute(self.state.pool())
-        .await?;
-        Ok(())
+        .await;
+        if let Err(err) = result {
+            self.failed(row.id, "stamping the blob", &err);
+        }
     }
 
     /// The representation is not what the row says: back to `pending`
     /// and rendered again, as the read path does when it finds the object
     /// gone.
-    async fn rerender(
-        &mut self,
-        row: &Row,
-        kind: Representation,
-        what: &str,
-    ) -> Result<(), AuditError> {
+    async fn rerender(&mut self, row: &Row, kind: Representation, what: &str) {
         self.report.add(Finding::MissingRepresentation);
         tracing::warn!(blob = %row.id, finding = %Finding::MissingRepresentation, "audit: the {kind} is {what}, rendering it again");
-        repo::request_representation(self.state.pool(), row.id, kind).await?;
-        self.state.heads().invalidate(row.id);
-        Ok(())
+        match repo::request_representation(self.state.pool(), row.id, kind).await {
+            Ok(_) => self.state.heads().invalidate(row.id),
+            Err(err) => self.failed(row.id, "requesting the render", &err),
+        }
     }
 
     fn missing_source(&mut self, row: &Row, n: u32, what: &str) {
@@ -812,23 +955,26 @@ impl Sweep<'_> {
     /// One younger than `upload.stale_after` is left for the next run: an
     /// upload or a render that has written its object and not yet updated
     /// its row looks the same.
-    async fn orphan(&mut self, object: &ObjectMeta, why: &str) -> Result<(), AuditError> {
+    async fn orphan(&mut self, object: &ObjectMeta, why: &str) {
         if self.young(object) {
             self.report.young += 1;
-            return Ok(());
+            return;
         }
         self.report.add(Finding::Orphan);
         if self.options.fix {
             match self.state.store().delete(&object.location).await {
                 Ok(()) | Err(object_store::Error::NotFound { .. }) => {}
-                Err(err) => return Err(err.into()),
+                Err(err) => {
+                    self.report.errors += 1;
+                    tracing::error!(key = %object.location, error = %err, "audit: deleting the orphan failed");
+                    return;
+                }
             }
             self.report.deleted += 1;
             tracing::warn!(key = %object.location, size = object.size, finding = %Finding::Orphan, "audit: orphan object deleted, {why}");
         } else {
             tracing::warn!(key = %object.location, size = object.size, modified = %object.last_modified, finding = %Finding::Orphan, "audit: orphan object, {why}");
         }
-        Ok(())
     }
 }
 

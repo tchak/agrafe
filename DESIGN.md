@@ -2413,12 +2413,37 @@ agree, and the mismatches worth catching are fleet-wide: a bucket or a
 database restored from backup, a bad purge, a lifecycle rule. A per-blob
 `POST /blobs/:id/verify` was considered and rejected as the shape: the
 backend has no reason to ask about one id. The `audit` job sweeps instead,
-weekly (`jobs.audit_interval`), scheduled like the reaper: each run
-enqueues the next before doing its work, the runner enqueues the first one
-an interval out (not now: a restart is not a reason to list the bucket,
-and a pending one survives it, the duplicate dropped), and `agrafe audit`
-on the command line runs the same sweep on demand, for the operator who
-just did a restore.
+weekly (`jobs.audit_interval`): each run enqueues the next once it is
+over, the runner enqueues the first one an interval out (not now: a
+restart is not a reason to list the bucket, and a pending one survives
+it, the duplicate dropped), and `agrafe audit` on the command line runs
+the same sweep on demand, for the operator who just did a restore. Unlike
+the reaper, the next run is scheduled at the end and not the start: a
+blob-less job that fails while its twin is pending is redundant, not
+retried (`fail`, "superseded"), and the retry is what carries a sweep
+on. The last attempt and a run that stepped aside schedule it too, so a
+dead job does not end the weekly cadence.
+
+A sweep of a billion blobs is days of listing, and a deploy or a
+transient error must not send it back to the start. The job keeps its
+place in its payload (`Progress`: the last key listed and checked, the
+last row passed, the tally so far), saved every minute and when the
+listing ends, and the attempt that finds it there resumes from it, the
+listing with `list_with_offset` (S3 and GCS start after a key on the
+server; Azure lists from the start and the rest is skipped) and the rows
+with their cursor. A save is progress made and gives the job its
+attempts back, since the attempts guard against failing without getting
+anywhere, and a restart that lets the lease lapse costs an attempt
+(`claim` counts it). What is between the last save and the failure is
+done twice, which every action tolerates: the stamp is conditional, the
+render request is conditional, the delete takes `NotFound` as done; the
+counts of that stretch are added twice, which a tally lives with. Acting
+on a finding never ends an attempt: a stamp, a render request or a delete
+that fails, or an original the deep check cannot read, is logged at
+`error`, counted as not acted on (`errors`, the `agrafe_audit_errors`
+gauge, a non-zero exit of the command) and left for the next run; only
+the listing and the rows failing do, and the runner retries from the
+last save.
 
 Three things can be wrong, at different costs. A row says present and the
 bucket says missing: a non-terminal blob without its `<id>/original`, or

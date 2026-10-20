@@ -54,6 +54,7 @@ zero.
 | `agrafe_audit_findings` | `kind` | Mismatches found, by kind: `missing_original`, `damaged_original`, `missing_representation`, `missing_source`, `orphan`, `foreign` |
 | `agrafe_audit_objects` | | Objects the last audit listed in the bucket |
 | `agrafe_audit_blobs` | | Blobs the last audit checked |
+| `agrafe_audit_errors` | | Findings the last audit could not act on: a stamp, a render request, a delete or a read back that failed; the next run finds them again |
 | `agrafe_audit_last_run_timestamp_seconds` | | When the last audit finished, as a Unix time; zero until one has run |
 
 ## What to alert on

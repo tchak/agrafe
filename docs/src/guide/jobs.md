@@ -131,7 +131,8 @@ advisory lock keeps two runs from overlapping.
 
 The `audit` job checks that the bucket and the `blobs` table agree, every
 `jobs.audit_interval`, seven days by default, the first run one interval
-after the workers start. It is for the mismatches nothing else sees: a
+after the workers start and each one scheduling the next when it is done.
+It is for the mismatches nothing else sees: a
 bucket or a database restored from backup, a lifecycle rule, a bad purge.
 It merges the bucket listing, one request per thousand objects, with the
 blobs table, one query per thousand rows, both in id order; nothing is
@@ -169,9 +170,20 @@ agrafe --config agrafe.toml audit --deep     # and decrypt every original
 agrafe --config agrafe.toml audit --deep --sample 100   # one in a hundred
 ```
 
-The command prints the tally and exits non-zero when anything was found.
-One audit runs at a time: the command reports a running job, and a job
-that finds the command running steps aside until its next interval. See
+A sweep of a large bucket takes days, and the job keeps its place: every
+minute it saves the last key listed, the last row passed and the tally so
+far into its payload (visible in `GET /jobs`), and the attempt that finds
+them there carries on from that point, after a restart that let the lease
+lapse or a failure the runner retries; a save gives the job its attempts
+back, so only failing repeatedly without getting anywhere kills it.
+Acting on a finding never stops the sweep: a stamp, a render request or
+a delete that fails is logged at `error`, counted as not acted on, and
+the next run finds it again.
+
+The command prints the tally and exits non-zero when anything was found
+or could not be acted on. One audit runs at a time: the command reports
+a running job, and a job that finds the command running steps aside
+until its next interval. See
 [Command line](../reference/cli.md#agrafe-audit) and
 [Monitoring](monitoring.md#the-audit).
 

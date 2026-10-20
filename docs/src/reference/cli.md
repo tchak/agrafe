@@ -37,7 +37,8 @@ agrafe --config agrafe.toml serve [--role <ROLE>] [--kinds <KIND,...>]
 
 Checks the bucket against the `blobs` table once, as the weekly `audit`
 job does, then exits. One `warn` log line per mismatch, the tally on
-standard output, and a non-zero status when anything was found. See
+standard output, and a non-zero status when anything was found or could
+not be acted on. See
 [Jobs and retries](../guide/jobs.md#the-audit).
 
 ```sh
@@ -75,4 +76,5 @@ The process exits with a non-zero status and a one-line message when it
 cannot start: a missing configuration file, an invalid configuration, an
 unreachable database, a failed migration, an address already in use, or a
 failed renderer probe. `agrafe audit` also exits non-zero when it found
-mismatches, or when another audit was running.
+mismatches, when a stamp, a render request or a delete failed and the
+finding stands for the next run, or when another audit was running.

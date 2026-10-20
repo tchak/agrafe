@@ -63,6 +63,7 @@ pub struct Metrics {
     audit_findings: IntGaugeVec,
     audit_objects: IntGauge,
     audit_blobs: IntGauge,
+    audit_errors: IntGauge,
     audit_last_run: IntGauge,
 }
 
@@ -148,12 +149,17 @@ impl Metrics {
             "Blobs the last audit this process ran checked",
         )
         .expect("valid metric");
+        let audit_errors = IntGauge::new(
+            "agrafe_audit_errors",
+            "Findings the last audit this process ran could not act on: a stamp, a render request, a delete or a read back that failed",
+        )
+        .expect("valid metric");
         let audit_last_run = IntGauge::new(
             "agrafe_audit_last_run_timestamp_seconds",
             "When the last audit this process ran finished, as a Unix time; zero until one has",
         )
         .expect("valid metric");
-        let collectors: [Box<dyn prometheus::core::Collector>; 11] = [
+        let collectors: [Box<dyn prometheus::core::Collector>; 12] = [
             Box::new(job_runs.clone()),
             Box::new(job_duration.clone()),
             Box::new(workers.clone()),
@@ -164,6 +170,7 @@ impl Metrics {
             Box::new(audit_findings.clone()),
             Box::new(audit_objects.clone()),
             Box::new(audit_blobs.clone()),
+            Box::new(audit_errors.clone()),
             Box::new(audit_last_run.clone()),
         ];
         for c in collectors {
@@ -204,6 +211,7 @@ impl Metrics {
             audit_findings,
             audit_objects,
             audit_blobs,
+            audit_errors,
             audit_last_run,
         }
     }
@@ -218,6 +226,7 @@ impl Metrics {
         }
         self.audit_objects.set(report.objects as i64);
         self.audit_blobs.set(report.blobs as i64);
+        self.audit_errors.set(report.errors as i64);
         self.audit_last_run.set(at.as_second());
     }
 

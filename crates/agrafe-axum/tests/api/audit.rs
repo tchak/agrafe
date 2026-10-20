@@ -478,6 +478,57 @@ async fn a_row_that_just_changed_is_left_for_the_next_run(pool: PgPool) {
     assert!(get_blob(&app, id).await["failed_at"].is_string());
 }
 
+/// A job whose payload holds a `Progress` carries on from it: the rows up
+/// to its cursor and the keys up to its last one are done, the tally so
+/// far is added to.
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn the_job_resumes_from_its_progress(pool: PgPool) {
+    let app = settled_setup(pool).await;
+    let mut ids = Vec::new();
+    for _ in 0..3 {
+        ids.push(id_of(&ready_blob(&app, &png_bytes(100)).await).to_string());
+    }
+    for id in &ids {
+        delete_object(&app, &storage_key(&app, id).await).await;
+    }
+    // Planted as the one before the cursor: it is never listed again.
+    put_object(&app, &format!("{}/junk", ids[0]), vec![1]).await;
+
+    let done = audit::Progress {
+        after: Some(format!("{}/junk", ids[0])),
+        cursor: ids[1].parse().unwrap(),
+        report: {
+            let mut report = Report::default();
+            report.objects = 7;
+            report.blobs = 2;
+            report
+        },
+    };
+    sqlx::query("INSERT INTO jobs (kind, payload, run_at) VALUES ('audit', $1, now())")
+        .bind(serde_json::to_value(&done).unwrap())
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+    assert!(run_job(&app, JobKind::Audit).await);
+
+    for (i, id) in ids.iter().enumerate() {
+        let stamped = get_blob(&app, id).await["failed_at"].is_string();
+        assert_eq!(stamped, i == 2, "blob {i}: only the one after the cursor");
+    }
+    let (_, body) = call(&app.private, req(Method::GET, "/metrics")).await;
+    let text = body.as_str().unwrap();
+    assert!(text.contains("agrafe_audit_objects 7"), "{text}");
+    assert!(text.contains("agrafe_audit_blobs 3"), "{text}");
+    assert!(
+        text.contains("agrafe_audit_findings{kind=\"missing_original\"} 1"),
+        "{text}"
+    );
+    assert!(
+        text.contains("agrafe_audit_findings{kind=\"orphan\"} 0"),
+        "the planted key is behind the resumed listing: {text}"
+    );
+}
+
 #[sqlx::test(migrator = "MIGRATOR")]
 async fn the_job_schedules_the_next_run_and_yields_to_a_running_one(pool: PgPool) {
     let app = settled_setup(pool).await;
@@ -513,11 +564,16 @@ async fn the_job_schedules_the_next_run_and_yields_to_a_running_one(pool: PgPool
         .await
         .unwrap();
     assert!(run_job(&app, JobKind::Audit).await);
-    let dead: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE failed_at IS NOT NULL")
-        .fetch_one(app.state.pool())
-        .await
-        .unwrap();
+    let (dead, pending): (i64, i64) = sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE failed_at IS NOT NULL), \
+                count(*) FILTER (WHERE failed_at IS NULL AND locked_at IS NULL) \
+         FROM jobs WHERE kind = 'audit'",
+    )
+    .fetch_one(app.state.pool())
+    .await
+    .unwrap();
     assert_eq!(dead, 0, "skipping is not failing");
+    assert_eq!(pending, 1, "stepping aside still schedules the next run");
     sqlx::query("SELECT pg_advisory_unlock(hashtext(current_database()), $1)")
         .bind(audit::LOCK)
         .execute(&mut *holder)

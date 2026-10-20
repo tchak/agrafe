@@ -100,6 +100,8 @@ enum Error {
     Audit(#[from] AuditError),
     #[error("the audit found {0} mismatches, listed above")]
     Findings(u64),
+    #[error("the audit could not act on {0} of its findings, see the log")]
+    Unacted(u64),
 }
 
 /// `main` reports an error through `Debug`; print the message instead.
@@ -176,9 +178,10 @@ async fn main() -> Result<(), Error> {
             };
             let report = state.audit(options).await?;
             println!("{report}");
-            match report.findings() {
-                0 => Ok(()),
-                n => Err(Error::Findings(n)),
+            match (report.errors, report.findings()) {
+                (0, 0) => Ok(()),
+                (0, n) => Err(Error::Findings(n)),
+                (n, _) => Err(Error::Unacted(n)),
             }
         }
     }
