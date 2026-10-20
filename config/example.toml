@@ -244,6 +244,10 @@ max_size = 2048
 # Vertices drawn at most over the whole file, after simplification to the
 # pixel, so a huge file cannot produce a huge drawing.
 max_vertices = 200000
+# Shapes drawn at most over the whole file. A point is one vertex but one
+# element, and the rasteriser pays per element: at this many points a map
+# still takes well under a second to draw.
+max_shapes = 20000
 # The whole of one layer request, connect to last byte. A provider that
 # fails or stalls fails the render attempt, which is retried; the file is
 # never blamed for it.

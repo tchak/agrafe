@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use agrafe_types::geojson::{Color, Extent, LayerRule, Spec, Style};
+use agrafe_types::geojson::{Color, DEFAULT_COLOR, Extent, LayerRule, Spec, Style};
 use agrafe_types::sniff::{LOADER_SNIFF_LEN, loader_for};
 use bytesize::ByteSize;
 use reqwest::Url;
@@ -64,6 +64,9 @@ pub struct GeoJson {
     /// Vertices drawn at most over the whole file, so a huge file cannot
     /// produce a huge SVG.
     pub max_vertices: usize,
+    /// Shapes drawn at most over the whole file: a point costs one vertex
+    /// but one element, and the rasteriser pays per element.
+    pub max_shapes: usize,
     /// The whole of one layer request, connect to last byte.
     #[serde(with = "humantime_serde")]
     pub fetch_timeout: Duration,
@@ -79,16 +82,13 @@ pub struct GeoJson {
 
 impl Default for GeoJson {
     fn default() -> Self {
-        let yellow = Color {
-            r: 0xff,
-            g: 0xd4,
-            b: 0x00,
-        };
+        let yellow = DEFAULT_COLOR;
         Self {
             padding: 0.1,
             min_span: Metres(200.0),
             max_size: 2048,
             max_vertices: 200_000,
+            max_shapes: 20_000,
             fetch_timeout: Duration::from_secs(10),
             max_layer_size: ByteSize::mib(8),
             style: Style {
@@ -194,6 +194,7 @@ impl GeoJson {
             padding: self.padding,
             min_span: self.min_span.0,
             max_vertices: self.max_vertices,
+            max_shapes: self.max_shapes,
             style: self.style.clone(),
             background: BACKGROUND,
             layers: self.layers.iter().map(Layer::rule).collect(),
@@ -351,7 +352,11 @@ impl Client {
             .and_then(|v| v.to_str().ok())
             .unwrap_or_default()
             .to_string();
-        if !content_type.trim_start().starts_with("image/") {
+        let is_image = content_type
+            .trim_start()
+            .get(..6)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("image/"));
+        if !is_image {
             return Err(FetchError::NotAnImage {
                 layer: index,
                 host,

@@ -11,7 +11,9 @@
 
 use std::fmt::Write as _;
 
-use agrafe_types::geojson::{Color, Extent, MAX_STROKE_WIDTH, MarkerSize, Spec, Style};
+use agrafe_types::geojson::{
+    Color, DEFAULT_COLOR, Extent, MAX_STROKE_WIDTH, MarkerSize, Spec, Style,
+};
 use geojson::{GeoJson, Geometry, GeometryValue, JsonObject, Position};
 
 /// The Earth's radius of the spherical Mercator, EPSG:3857, in metres.
@@ -145,13 +147,21 @@ fn project_all(positions: &[Position]) -> Result<Vec<P>, RenderError> {
     positions.iter().map(project).collect()
 }
 
+/// The shapes of `geometry`, projected, onto `out`. A line or a ring
+/// without positions is nothing to draw and is dropped, so that a file
+/// made of them declines instead of getting a map of nowhere.
 fn project_geometry(geometry: &Geometry, out: &mut Vec<Shape>) -> Result<(), RenderError> {
-    let polygon = |rings: &[Vec<Position>]| {
-        rings
+    let line = |positions: &[Position]| -> Result<Option<Shape>, RenderError> {
+        let line = project_all(positions)?;
+        Ok((!line.is_empty()).then_some(Shape::Line(line)))
+    };
+    let polygon = |rings: &[Vec<Position>]| -> Result<Option<Shape>, RenderError> {
+        let rings: Vec<Vec<P>> = rings
             .iter()
-            .map(|r| project_all(r))
-            .collect::<Result<_, _>>()
-            .map(Shape::Polygon)
+            .filter(|ring| !ring.is_empty())
+            .map(|ring| project_all(ring))
+            .collect::<Result<_, _>>()?;
+        Ok((!rings.is_empty()).then_some(Shape::Polygon(rings)))
     };
     match &geometry.value {
         GeometryValue::Point { coordinates } => out.push(Shape::Point(project(coordinates)?)),
@@ -160,18 +170,16 @@ fn project_geometry(geometry: &Geometry, out: &mut Vec<Shape>) -> Result<(), Ren
                 out.push(Shape::Point(project(p)?));
             }
         }
-        GeometryValue::LineString { coordinates } => {
-            out.push(Shape::Line(project_all(coordinates)?));
-        }
+        GeometryValue::LineString { coordinates } => out.extend(line(coordinates)?),
         GeometryValue::MultiLineString { coordinates } => {
-            for line in coordinates {
-                out.push(Shape::Line(project_all(line)?));
+            for positions in coordinates {
+                out.extend(line(positions)?);
             }
         }
-        GeometryValue::Polygon { coordinates } => out.push(polygon(coordinates)?),
+        GeometryValue::Polygon { coordinates } => out.extend(polygon(coordinates)?),
         GeometryValue::MultiPolygon { coordinates } => {
             for rings in coordinates {
-                out.push(polygon(rings)?);
+                out.extend(polygon(rings)?);
             }
         }
         GeometryValue::GeometryCollection { geometries } => {
@@ -281,7 +289,9 @@ fn simplify(line: &[P]) -> Vec<P> {
 
 /// The SVG: a flat background when no layer applies, each shape in its
 /// style, the attribution in a corner. Shapes are drawn in file order
-/// until `max_vertices` are placed.
+/// until `max_vertices` are placed or `max_shapes` are drawn: the
+/// rasteriser pays per vertex and per element alike, and a point is one
+/// vertex but one element.
 fn draw(shapes: &[(Shape, Style)], extent: &Extent, spec: &Spec) -> String {
     let (width, height) = (f64::from(extent.width), f64::from(extent.height));
     let to_pixels = |p: &P| P {
@@ -304,7 +314,10 @@ fn draw(shapes: &[(Shape, Style)], extent: &Extent, spec: &Spec) -> String {
         );
     }
     let mut vertices = 0usize;
-    for (shape, style) in shapes {
+    for (count, (shape, style)) in shapes.iter().enumerate() {
+        if count >= spec.max_shapes {
+            break;
+        }
         let drawn = Drawn::new(style);
         match shape {
             Shape::Point(p) => {
@@ -331,7 +344,7 @@ fn draw(shapes: &[(Shape, Style)], extent: &Extent, spec: &Spec) -> String {
                     break;
                 }
                 let d = path_of(&[line], false);
-                drawn.casing(&mut svg, &d, None);
+                drawn.casing(&mut svg, &d, false);
                 drawn.stroke(&mut svg, &d);
             }
             Shape::Polygon(rings) => {
@@ -344,7 +357,7 @@ fn draw(shapes: &[(Shape, Style)], extent: &Extent, spec: &Spec) -> String {
                     break;
                 }
                 let d = path_of(&rings, true);
-                drawn.casing(&mut svg, &d, Some(&drawn));
+                drawn.casing(&mut svg, &d, true);
                 drawn.stroke(&mut svg, &d);
             }
         }
@@ -405,35 +418,31 @@ impl Drawn {
             Some(v) if v.is_finite() => v.clamp(0.0, max),
             _ => default,
         };
-        let yellow = Color {
-            r: 255,
-            g: 212,
-            b: 0,
-        };
         Self {
-            stroke: style.stroke.unwrap_or(yellow),
+            stroke: style.stroke.unwrap_or(DEFAULT_COLOR),
             stroke_width: clamp(style.stroke_width, MAX_STROKE_WIDTH, 4.0),
             stroke_opacity: clamp(style.stroke_opacity, 1.0, 1.0),
-            fill: style.fill.unwrap_or(yellow),
+            fill: style.fill.unwrap_or(DEFAULT_COLOR),
             fill_opacity: clamp(style.fill_opacity, 1.0, 0.35),
-            marker: style.marker_color.unwrap_or(yellow),
+            marker: style.marker_color.unwrap_or(DEFAULT_COLOR),
             marker_size: style.marker_size.unwrap_or(MarkerSize::Medium),
         }
     }
 
     /// The darker, wider line under the stroke, carrying the fill when
-    /// the shape has one.
-    fn casing(&self, svg: &mut String, d: &str, fill: Option<&Drawn>) {
-        let fill_attributes = match fill {
-            Some(drawn) => format!(
+    /// the shape is `filled`, a polygon.
+    fn casing(&self, svg: &mut String, d: &str, filled: bool) {
+        let fill_attributes = if filled {
+            format!(
                 r##"fill="{}" fill-opacity="{}" fill-rule="evenodd""##,
-                drawn.fill, drawn.fill_opacity
-            ),
-            None => r##"fill="none""##.to_string(),
+                self.fill, self.fill_opacity
+            )
+        } else {
+            r##"fill="none""##.to_string()
         };
         if self.stroke_width == 0.0 {
             // No line: the fill alone, or nothing.
-            if fill.is_some() {
+            if filled {
                 let _ = writeln!(svg, r##"<path d="{d}" {fill_attributes}/>"##);
             }
             return;
@@ -492,6 +501,7 @@ mod tests {
             padding: 0.1,
             min_span: 200.0,
             max_vertices: 200_000,
+            max_shapes: 20_000,
             style: Style {
                 stroke: Some("#ffd400".parse().unwrap()),
                 stroke_width: Some(4.0),
@@ -657,6 +667,31 @@ mod tests {
             .unwrap(),
             None
         );
+        // A line or a ring without positions is nothing to draw, not a
+        // map of nowhere.
+        for empty in [
+            br##"{"type": "LineString", "coordinates": []}"## as &[u8],
+            br##"{"type": "MultiLineString", "coordinates": [[]]}"##,
+            br##"{"type": "Polygon", "coordinates": []}"##,
+            br##"{"type": "Polygon", "coordinates": [[]]}"##,
+            br##"{"type": "MultiPolygon", "coordinates": [[[]], []]}"##,
+            br##"{"type": "MultiPoint", "coordinates": []}"##,
+        ] {
+            assert_eq!(
+                render(empty, &spec).unwrap(),
+                None,
+                "{}",
+                String::from_utf8_lossy(empty)
+            );
+        }
+        // An empty hole is dropped, the polygon around it stays.
+        let map = render(
+            br##"{"type": "Polygon", "coordinates": [[[0, 0], [0.01, 0], [0.01, 0.01], [0, 0]], []]}"##,
+            &spec,
+        )
+        .unwrap()
+        .expect("rendered");
+        assert_eq!(map.svg.matches('M').count(), 2, "{}", map.svg);
         // Off the globe is the file's fault.
         let err = render(&fixture("off-earth.geojson"), &spec).unwrap_err();
         assert_eq!(err.to_string(), "the coordinate (200, 95) is not on Earth");
@@ -739,6 +774,23 @@ mod tests {
         };
         let map = rendered("multiline.geojson", &none);
         assert_eq!(map.svg.matches("<path").count(), 0);
+        // Shapes are budgeted too: a point is one vertex but one element.
+        let one_shape = Spec {
+            max_shapes: 1,
+            ..spec()
+        };
+        let map = rendered("collection.geojson", &one_shape);
+        assert_eq!(
+            (
+                map.svg.matches("<circle").count(),
+                map.svg.matches("<path").count()
+            ),
+            (1, 0),
+            "{}",
+            map.svg
+        );
+        let map = rendered("multiline.geojson", &one_shape);
+        assert_eq!(map.svg.matches("<path").count(), 2, "{}", map.svg);
     }
 
     #[test]

@@ -204,6 +204,7 @@ How the map of a GeoJSON file is drawn; see [Maps](../guide/representations.md#m
 | `min_span` | `"200 m"` | The smallest extent drawn; metres, or a string with `m` or `km` |
 | `max_size` | `2048` | The largest side of a background request, in pixels; the map is the preview box or this, whichever is smaller |
 | `max_vertices` | `200000` | Vertices drawn at most over the whole file |
+| `max_shapes` | `20000` | Shapes drawn at most over the whole file |
 | `fetch_timeout` | `"10s"` | The whole of one layer request |
 | `max_layer_size` | `"8 MiB"` | A larger layer response is a failure |
 

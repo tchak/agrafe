@@ -1818,8 +1818,15 @@ on "has preview", never on category. Sources, in order:
    the box: the image is the whole box, never letterboxed. The map is
    drawn at the preview box or `max_size`, whichever is smaller. Rings and
    lines are simplified with Douglas–Peucker at half a pixel, and the
-   drawing stops at `max_vertices`, so a 60 MiB file cannot produce a
-   60 MiB SVG or make rsvg crawl; the sandbox timeout bounds the rest.
+   drawing stops at `max_vertices` or `max_shapes`, whichever comes
+   first, so a 60 MiB file cannot produce a 60 MiB SVG or make rsvg
+   crawl; the sandbox timeout bounds the rest. Both budgets, because
+   rsvg pays per element as well as per vertex: 200 000 points are
+   within the vertex budget and take rsvg five seconds and half a
+   gigabyte, 20 000 shapes well under a second. A line or a ring
+   without positions is dropped before the extent is chosen, so a file
+   made of them declines instead of getting a map of nowhere and a
+   request to the provider for it.
    Points are discs with a ring, lines and polygons get a darker casing
    under the stroke, polygons use `fill-rule="evenodd"` so holes stay
    holes, and the first drawn layer's attribution is burned into a corner

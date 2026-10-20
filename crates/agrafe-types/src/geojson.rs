@@ -153,6 +153,14 @@ impl FromStr for MarkerSize {
 /// The widest stroke drawn, in pixels, so a file cannot paint the whole map.
 pub const MAX_STROKE_WIDTH: f64 = 20.0;
 
+/// The colour of a feature that sets none, and the configured default's
+/// default: the yellow a form's map field prints in.
+pub const DEFAULT_COLOR: Color = Color {
+    r: 0xff,
+    g: 0xd4,
+    b: 0x00,
+};
+
 /// How features are drawn, in the simplestyle-spec vocabulary: the keys
 /// of `[media.geojson.style]` and of a feature's properties alike. Every
 /// key is optional, so one feature's style can be laid over the default.
@@ -220,6 +228,9 @@ pub struct Spec {
     pub min_span: f64,
     /// Vertices drawn at most, over the whole file.
     pub max_vertices: usize,
+    /// Shapes drawn at most, over the whole file: a point costs one
+    /// vertex but one element, and the rasteriser pays per element.
+    pub max_shapes: usize,
     /// The default style, under each feature's own.
     pub style: Style,
     /// Painted under the geometry when no layer applies.
