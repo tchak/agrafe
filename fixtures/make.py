@@ -142,6 +142,8 @@ def square(lon, lat, side):
 
 
 PARIS = [2.3522, 48.8566]
+# The same, in RGF93 / Lambert-93 metres, from PROJ.
+PARIS_L93 = [652469.023, 6862035.259]
 LYON = [4.8357, 45.7640]
 
 GEOJSON = {
@@ -171,6 +173,19 @@ GEOJSON = {
         feature({"type": "Polygon", "coordinates": [[[113, -39], [153, -39], [153, -10], [113, -10], [113, -39]]]}),
     ),
     "empty.geojson": collection(),
+    # What QGIS exports from a Lambert-93 layer: the legacy crs member, and
+    # metres. Paris, and a 100 m square around it.
+    "lambert93.geojson": dict(
+        collection(
+            feature({"type": "Point", "coordinates": PARIS_L93}, {"name": "Paris"}),
+            feature({"type": "Polygon", "coordinates": [[
+                [PARIS_L93[0] - 50, PARIS_L93[1] - 50], [PARIS_L93[0] + 50, PARIS_L93[1] - 50],
+                [PARIS_L93[0] + 50, PARIS_L93[1] + 50], [PARIS_L93[0] - 50, PARIS_L93[1] + 50],
+                [PARIS_L93[0] - 50, PARIS_L93[1] - 50],
+            ]]}),
+        ),
+        crs={"type": "name", "properties": {"name": "urn:ogc:def:crs:EPSG::2154"}},
+    ),
     # A coordinate off the globe.
     "off-earth.geojson": feature({"type": "Point", "coordinates": [200, 95]}),
     # What geojson.io exports: simplestyle properties on each feature.

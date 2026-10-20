@@ -49,8 +49,15 @@ arrive, is recognised by its first KiB and its `content_type` becomes
 at that first KiB for a `"type"` of `Feature` or `FeatureCollection` at
 any depth, so a JSON document that merely embeds a feature there is
 refined too; it holds no GeoJSON at the top level and gets the text
-thumbnail. A file with no geometry, or with a coordinate off the globe,
-has no map and gets the text thumbnail instead.
+thumbnail. A file with no geometry has no map and gets the text thumbnail
+instead.
+
+Coordinates are longitude and latitude in degrees, as RFC 7946 requires.
+A file that declares another system with the legacy `crs` member, as QGIS
+and GDAL write it for a layer that is not WGS 84, is drawn when that
+system is Lambert-93 (EPSG:2154) or Web Mercator (EPSG:3857). Any other
+declared system, or coordinates that are not degrees with no declaration,
+is nothing the renderer can place: no map, the text thumbnail.
 
 The map shows the geometry's bounding box, padded by `media.geojson.padding`
 (a tenth of its larger side) and at least `min_span` (200 m) wide, so a

@@ -1,0 +1,55 @@
+{
+ "type": "FeatureCollection",
+ "features": [
+  {
+   "type": "Feature",
+   "properties": {
+    "name": "Paris"
+   },
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     652469.023,
+     6862035.259
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {},
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       652419.023,
+       6861985.259
+      ],
+      [
+       652519.023,
+       6861985.259
+      ],
+      [
+       652519.023,
+       6862085.259
+      ],
+      [
+       652419.023,
+       6862085.259
+      ],
+      [
+       652419.023,
+       6861985.259
+      ]
+     ]
+    ]
+   }
+  }
+ ],
+ "crs": {
+  "type": "name",
+  "properties": {
+   "name": "urn:ogc:def:crs:EPSG::2154"
+  }
+ }
+}

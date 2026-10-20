@@ -18,6 +18,8 @@ use geojson::{GeoJson, Geometry, GeometryValue, JsonObject, Position};
 
 /// The Earth's radius of the spherical Mercator, EPSG:3857, in metres.
 const EARTH_RADIUS: f64 = 6_378_137.0;
+/// Half the width of the Web Mercator square, in metres: the x of 180°.
+const HALF_WORLD: f64 = std::f64::consts::PI * EARTH_RADIUS;
 /// The latitude the projection stops at, where the square map ends.
 const MAX_LATITUDE: f64 = 85.051_128_78;
 /// How far a drawn vertex may stray from the exact line, in pixels.
@@ -27,14 +29,139 @@ const CASING: f64 = 3.0;
 /// The ring around a point's disc, in pixels.
 const MARKER_RING: f64 = 2.0;
 
-/// A coordinate that is not a longitude and a latitude in degrees: the
-/// file is in some projected system, Lambert-93 as French administrations
-/// export it, or has a hole in it. Either way there is no map to draw
-/// from it, and the file declines like one with no geometry.
+/// A coordinate that is not on Earth in the file's coordinate system:
+/// the file is in some projected system it does not declare, Lambert-93
+/// as French administrations export it, or has a hole in it. Either way
+/// there is no map to draw from it, and the file declines like one with
+/// no geometry.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct OffEarth {
-    lon: f64,
-    lat: f64,
+    x: f64,
+    y: f64,
+}
+
+/// The coordinate system of a file. RFC 7946 allows only longitude and
+/// latitude in degrees, but the 2008 specification had a `crs` member,
+/// and GDAL and QGIS still write it for a layer in another system; the
+/// few that French data comes in are honoured, anything else declines.
+#[derive(Debug, Clone, PartialEq)]
+enum Crs {
+    /// WGS 84 longitude and latitude in degrees, EPSG:4326 or CRS84, the
+    /// default and the only conformant one.
+    Degrees,
+    /// RGF93 / Lambert-93, EPSG:2154, the legal system of metropolitan
+    /// France: eastings and northings in metres.
+    Lambert93(Lcc),
+    /// Web Mercator, EPSG:3857, the projection drawn in: metres.
+    WebMercator,
+}
+
+impl Crs {
+    /// The system the `crs` member among `foreign_members` declares, or
+    /// degrees when there is none or it is `null`. `None` when it names
+    /// a system that is not handled or is not a named CRS.
+    fn of(foreign_members: Option<&JsonObject>) -> Option<Crs> {
+        let crs = match foreign_members.and_then(|members| members.get("crs")) {
+            None | Some(serde_json::Value::Null) => return Some(Crs::Degrees),
+            Some(crs) => crs,
+        };
+        if crs.get("type").and_then(serde_json::Value::as_str) != Some("name") {
+            return None;
+        }
+        let name = crs.get("properties")?.get("name")?.as_str()?;
+        Crs::named(name)
+    }
+
+    /// The system `name` spells, in any of the spellings in use:
+    /// `urn:ogc:def:crs:EPSG::2154`, `EPSG:2154`,
+    /// `urn:ogc:def:crs:OGC:1.3:CRS84`, an OpenGIS URL.
+    fn named(name: &str) -> Option<Crs> {
+        let name = name.trim().to_ascii_lowercase();
+        if name.ends_with("crs84") {
+            return Some(Crs::Degrees);
+        }
+        match name.rsplit([':', '/']).next()?.parse::<u32>().ok()? {
+            4326 => Some(Crs::Degrees),
+            2154 => Some(Crs::Lambert93(Lcc::lambert93())),
+            3857 | 900_913 | 102_100 => Some(Crs::WebMercator),
+            _ => None,
+        }
+    }
+}
+
+/// A Lambert conformal conic projection with two standard parallels on
+/// an ellipsoid, EPSG method 9802, reduced to what its inverse needs.
+#[derive(Debug, Clone, PartialEq)]
+struct Lcc {
+    /// The eccentricity of the ellipsoid.
+    e: f64,
+    /// The cone constant.
+    n: f64,
+    /// The semi-major axis times the mapping radius at the equator.
+    af: f64,
+    /// The radius of the latitude of origin.
+    r0: f64,
+    lon0: f64,
+    x0: f64,
+    y0: f64,
+}
+
+impl Lcc {
+    /// RGF93 / Lambert-93 (EPSG:2154): GRS 80, parallels at 44° and 49°,
+    /// origin at 46.5° N 3° E, false origin (700 000, 6 600 000).
+    fn lambert93() -> Lcc {
+        Lcc::new(
+            6_378_137.0,
+            1.0 / 298.257_222_101,
+            46.5_f64.to_radians(),
+            3.0_f64.to_radians(),
+            44.0_f64.to_radians(),
+            49.0_f64.to_radians(),
+            700_000.0,
+            6_600_000.0,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new(a: f64, f: f64, lat0: f64, lon0: f64, lat1: f64, lat2: f64, x0: f64, y0: f64) -> Lcc {
+        let e = (2.0 * f - f * f).sqrt();
+        let m = |lat: f64| lat.cos() / (1.0 - e * e * lat.sin() * lat.sin()).sqrt();
+        let t = |lat: f64| Lcc::t(e, lat);
+        let n = (m(lat1).ln() - m(lat2).ln()) / (t(lat1).ln() - t(lat2).ln());
+        let big_f = m(lat1) / (n * t(lat1).powf(n));
+        let af = a * big_f;
+        Lcc {
+            e,
+            n,
+            af,
+            r0: af * t(lat0).powf(n),
+            lon0,
+            x0,
+            y0,
+        }
+    }
+
+    /// The isometric latitude function of the method.
+    fn t(e: f64, lat: f64) -> f64 {
+        let es = e * lat.sin();
+        (std::f64::consts::FRAC_PI_4 - lat / 2.0).tan() / ((1.0 - es) / (1.0 + es)).powf(e / 2.0)
+    }
+
+    /// Longitude and latitude in degrees of the easting and northing
+    /// `x`, `y` in metres.
+    fn inverse(&self, x: f64, y: f64) -> (f64, f64) {
+        let (dx, dy) = (x - self.x0, self.r0 - (y - self.y0));
+        let r = (dx * dx + dy * dy).sqrt().copysign(self.n);
+        let t = (r / self.af).powf(1.0 / self.n);
+        let lon = dx.atan2(dy) / self.n + self.lon0;
+        let mut lat = std::f64::consts::FRAC_PI_2 - 2.0 * t.atan();
+        for _ in 0..10 {
+            let es = self.e * lat.sin();
+            lat = std::f64::consts::FRAC_PI_2
+                - 2.0 * (t * ((1.0 - es) / (1.0 + es)).powf(self.e / 2.0)).atan();
+        }
+        (lon.to_degrees(), lat.to_degrees())
+    }
 }
 
 /// The SVG and the extent it is drawn on.
@@ -67,6 +194,11 @@ enum Shape {
 /// cannot be drawn today would not be drawn tomorrow either.
 pub fn render(bytes: &[u8], spec: &Spec) -> Option<Rendered> {
     let geojson = serde_json::from_slice::<GeoJson>(bytes).ok()?;
+    let crs = Crs::of(match &geojson {
+        GeoJson::Geometry(geometry) => geometry.foreign_members.as_ref(),
+        GeoJson::Feature(feature) => feature.foreign_members.as_ref(),
+        GeoJson::FeatureCollection(collection) => collection.foreign_members.as_ref(),
+    })?;
     let mut shapes: Vec<(Shape, Style)> = Vec::new();
     let mut collect = |geometry: Option<&Geometry>, properties: Option<&JsonObject>| {
         let style = properties
@@ -75,7 +207,7 @@ pub fn render(bytes: &[u8], spec: &Spec) -> Option<Rendered> {
             .over(&spec.style);
         if let Some(geometry) = geometry {
             let mut out = Vec::new();
-            project_geometry(geometry, &mut out)?;
+            project_geometry(geometry, &crs, &mut out)?;
             shapes.extend(out.into_iter().map(|shape| (shape, style.clone())));
         }
         Ok::<(), OffEarth>(())
@@ -124,15 +256,32 @@ pub fn style_of(properties: &JsonObject) -> Style {
     }
 }
 
-/// A position on Earth projected to Web Mercator. The latitude is clamped
-/// to where the projection ends.
-fn project(position: &Position) -> Result<P, OffEarth> {
-    let (lon, lat) = match position.as_slice() {
-        [lon, lat, ..] => (*lon, *lat),
+/// A position in `crs` projected to Web Mercator. The latitude is
+/// clamped to where the projection ends.
+fn project(position: &Position, crs: &Crs) -> Result<P, OffEarth> {
+    let (x, y) = match position.as_slice() {
+        [x, y, ..] => (*x, *y),
         _ => (f64::NAN, f64::NAN),
     };
+    let off = OffEarth { x, y };
+    if !x.is_finite() || !y.is_finite() {
+        return Err(off);
+    }
+    let (lon, lat) = match crs {
+        Crs::Degrees => (x, y),
+        Crs::Lambert93(lcc) => lcc.inverse(x, y),
+        Crs::WebMercator => {
+            if x.abs() > HALF_WORLD * (1.0 + 1e-9) {
+                return Err(off);
+            }
+            return Ok(P {
+                x,
+                y: y.clamp(-HALF_WORLD, HALF_WORLD),
+            });
+        }
+    };
     if !lon.is_finite() || !lat.is_finite() || lon.abs() > 180.0 || lat.abs() > 90.0 {
-        return Err(OffEarth { lon, lat });
+        return Err(off);
     }
     let lat = lat.clamp(-MAX_LATITUDE, MAX_LATITUDE);
     Ok(P {
@@ -144,31 +293,31 @@ fn project(position: &Position) -> Result<P, OffEarth> {
     })
 }
 
-fn project_all(positions: &[Position]) -> Result<Vec<P>, OffEarth> {
-    positions.iter().map(project).collect()
+fn project_all(positions: &[Position], crs: &Crs) -> Result<Vec<P>, OffEarth> {
+    positions.iter().map(|p| project(p, crs)).collect()
 }
 
 /// The shapes of `geometry`, projected, onto `out`. A line or a ring
 /// without positions is nothing to draw and is dropped, so that a file
 /// made of them declines instead of getting a map of nowhere.
-fn project_geometry(geometry: &Geometry, out: &mut Vec<Shape>) -> Result<(), OffEarth> {
+fn project_geometry(geometry: &Geometry, crs: &Crs, out: &mut Vec<Shape>) -> Result<(), OffEarth> {
     let line = |positions: &[Position]| -> Result<Option<Shape>, OffEarth> {
-        let line = project_all(positions)?;
+        let line = project_all(positions, crs)?;
         Ok((!line.is_empty()).then_some(Shape::Line(line)))
     };
     let polygon = |rings: &[Vec<Position>]| -> Result<Option<Shape>, OffEarth> {
         let rings: Vec<Vec<P>> = rings
             .iter()
             .filter(|ring| !ring.is_empty())
-            .map(|ring| project_all(ring))
+            .map(|ring| project_all(ring, crs))
             .collect::<Result<_, _>>()?;
         Ok((!rings.is_empty()).then_some(Shape::Polygon(rings)))
     };
     match &geometry.value {
-        GeometryValue::Point { coordinates } => out.push(Shape::Point(project(coordinates)?)),
+        GeometryValue::Point { coordinates } => out.push(Shape::Point(project(coordinates, crs)?)),
         GeometryValue::MultiPoint { coordinates } => {
             for p in coordinates {
-                out.push(Shape::Point(project(p)?));
+                out.push(Shape::Point(project(p, crs)?));
             }
         }
         GeometryValue::LineString { coordinates } => out.extend(line(coordinates)?),
@@ -185,7 +334,7 @@ fn project_geometry(geometry: &Geometry, out: &mut Vec<Shape>) -> Result<(), Off
         }
         GeometryValue::GeometryCollection { geometries } => {
             for geometry in geometries {
-                project_geometry(geometry, out)?;
+                project_geometry(geometry, crs, out)?;
             }
         }
     }
@@ -532,7 +681,7 @@ mod tests {
 
     #[test]
     fn projects_to_web_mercator() {
-        let at = |lon: f64, lat: f64| project(&Position::from([lon, lat])).unwrap();
+        let at = |lon: f64, lat: f64| project(&Position::from([lon, lat]), &Crs::Degrees).unwrap();
         let origin = at(0.0, 0.0);
         assert!(origin.x.abs() < 1e-6 && origin.y.abs() < 1e-6, "{origin:?}");
         let paris = at(2.3522, 48.8566);
@@ -551,8 +700,91 @@ mod tests {
             vec![1.0],
             vec![],
         ] {
-            assert!(project(&Position::from(bad.clone())).is_err(), "{bad:?}");
+            assert!(
+                project(&Position::from(bad.clone()), &Crs::Degrees).is_err(),
+                "{bad:?}"
+            );
         }
+    }
+
+    #[test]
+    fn inverts_lambert_93() {
+        // Reference values from PROJ (`cs2cs EPSG:4326 EPSG:2154`).
+        let lcc = Lcc::lambert93();
+        for (x, y, lon, lat) in [
+            (700_000.0, 6_600_000.0, 3.0, 46.5),
+            (652_469.023, 6_862_035.259, 2.3522, 48.8566),
+            (146_632.979, 6_836_262.327, -4.4861, 48.3904),
+            (1_050_362.695, 6_840_899.647, 7.7521, 48.5734),
+            (1_226_126.037, 6_228_981.055, 9.45, 42.9667),
+        ] {
+            let (got_lon, got_lat) = lcc.inverse(x, y);
+            assert!((got_lon - lon).abs() < 2e-8, "{x} {y}: {got_lon} vs {lon}");
+            assert!((got_lat - lat).abs() < 2e-8, "{x} {y}: {got_lat} vs {lat}");
+        }
+    }
+
+    #[test]
+    fn honours_a_declared_crs() {
+        let spec = spec();
+        let degrees = rendered("point.geojson", &spec);
+        let centre = |map: &Rendered| {
+            (
+                (map.extent.minx + map.extent.maxx) / 2.0,
+                (map.extent.miny + map.extent.maxy) / 2.0,
+            )
+        };
+        // Paris in Lambert-93, as QGIS exports it, lands on Paris.
+        let lambert = rendered("lambert93.geojson", &spec);
+        let (dx, dy) = (
+            centre(&lambert).0 - centre(&degrees).0,
+            centre(&lambert).1 - centre(&degrees).1,
+        );
+        assert!(dx.abs() < 0.5 && dy.abs() < 0.5, "{dx} {dy}");
+        assert_eq!(lambert.svg.matches("<circle").count(), 1);
+        assert_eq!(lambert.svg.matches("<path").count(), 2);
+        // Web Mercator metres are taken as they are.
+        let (x, y) = (centre(&degrees).0, centre(&degrees).1);
+        let point_in = |crs: &str| {
+            format!(
+                r##"{{"type": "Feature", "crs": {crs}, "properties": null, "geometry": {{"type": "Point", "coordinates": [{x}, {y}]}}}}"##
+            )
+        };
+        let named =
+            |name: &str| format!(r##"{{"type": "name", "properties": {{"name": "{name}"}}}}"##);
+        let mercator = render(point_in(&named("EPSG:3857")).as_bytes(), &spec).expect("rendered");
+        assert_eq!(mercator.extent, degrees.extent);
+        // Degrees under any of their names; null is degrees too.
+        for name in [
+            "urn:ogc:def:crs:OGC:1.3:CRS84",
+            "urn:ogc:def:crs:EPSG::4326",
+            "EPSG:4326",
+            "http://www.opengis.net/def/crs/EPSG/0/4326",
+        ] {
+            assert_eq!(Crs::named(name), Some(Crs::Degrees), "{name}");
+        }
+        assert_eq!(
+            Crs::named("urn:ogc:def:crs:EPSG::2154"),
+            Some(Crs::Lambert93(Lcc::lambert93()))
+        );
+        assert_eq!(Crs::of(None), Some(Crs::Degrees));
+        assert!(
+            render(point_in("null").as_bytes(), &spec).is_none(),
+            "metres are not degrees"
+        );
+        // A system that is not handled, or not a named one, declines.
+        for crs in [
+            named("EPSG:27572"),
+            named("urn:ogc:def:crs:EPSG::32631"),
+            named("Lambert 93"),
+            r##"{"type": "link", "properties": {"href": "https://example.org/crs"}}"##.to_string(),
+            "5".to_string(),
+        ] {
+            assert!(render(point_in(&crs).as_bytes(), &spec).is_none(), "{crs}");
+        }
+        // Off the globe in the declared system declines as well.
+        let far = r##"{"type": "Point", "crs": {"type": "name", "properties": {"name": "EPSG:3857"}}, "coordinates": [30000000, 0]}"##;
+        assert!(render(far.as_bytes(), &spec).is_none());
     }
 
     #[test]

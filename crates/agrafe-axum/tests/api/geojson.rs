@@ -159,8 +159,9 @@ async fn geojson_files_get_a_map_preview_and_thumbnail(pool: PgPool) {
     let styled = geojson_blob(&app, "styled.geojson", "application/geo+json").await;
     let hostile = geojson_blob(&app, "hostile-style.geojson", "application/geo+json").await;
     let world = geojson_blob(&app, "world.geojson", "application/geo+json").await;
+    let lambert = geojson_blob(&app, "lambert93.geojson", "application/geo+json").await;
     render_all(&app).await;
-    for blob in [&parcel, &styled, &hostile, &world] {
+    for blob in [&parcel, &styled, &hostile, &world, &lambert] {
         let id = id_of(blob);
         let name = blob["filename"].as_str().unwrap();
         let blob = get_blob(&app, id).await;

@@ -1819,13 +1819,23 @@ on "has preview", never on category. Sources, in order:
    applicable layer, and two vips runs.
 
    The helper projects every coordinate to Web Mercator, clamping the
-   latitude to the projection's edge. A coordinate that is not finite or
-   not a longitude and a latitude in degrees is a decline, not a
-   rejection: the file is most likely in a projected system, Lambert-93
-   as French administrations and QGIS export it, with eastings in the
-   hundreds of thousands and northings in the millions, which is valid
-   data for its producer and nothing this helper can place. Such a file
-   gets the text thumbnail and no preview, never `failed`. The extent is the
+   latitude to the projection's edge. RFC 7946 allows only longitude and
+   latitude in degrees and has no way to declare another system, but the
+   2008 specification had a top-level `crs` member, and GDAL, hence
+   QGIS, still writes it for a layer that is not WGS 84, which is how
+   most French administrative data arrives: Lambert-93 (EPSG:2154), with
+   eastings in the hundreds of thousands and northings in the millions.
+   The helper reads that member and honours a short list, by EPSG code
+   in any of its spellings: 4326 and CRS84 are degrees, 2154 goes
+   through the inverse Lambert conformal conic on GRS 80, thirty lines
+   of arithmetic checked against PROJ, 3857 is the target itself. A
+   `crs` naming anything else, or not a named CRS, is a decline. So is
+   a coordinate that is not finite or not on Earth in its system,
+   without a `crs`, most likely a projected file that did not say so:
+   valid data for its producer, nothing this helper can place. Nothing
+   is guessed from the ranges of the numbers, which would be right for
+   France and silently wrong elsewhere. A decline, not a rejection: the
+   file gets the text thumbnail and no preview, never `failed`. The extent is the
    geometry's bounding box padded by `media.geojson.padding` of its larger
    side, grown to at least `min_span` metres so a single point or a tiny
    parcel still gets a readable map, then widened to the aspect ratio of
