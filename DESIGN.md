@@ -2034,9 +2034,10 @@ read-only home.
 
 *What runs where.* The ruleset is built in the parent, where opening
 paths and allocating are fine; the BPF is compiled in the parent once.
-The child, between `fork` and `exec`, only duplicates the ruleset's
-descriptor, calls `landlock_restrict_self`, and installs the filters with
-`prctl` and `seccomp`: nothing on that path allocates or takes a lock.
+The child, between `fork` and `exec`, only calls
+`landlock_restrict_self` on the ruleset's descriptor and installs the
+filters with `prctl` and `seccomp`: nothing on that path allocates or
+takes a lock.
 `chdir` happens before, so a `current_dir` under the writable directory
 works, and the environment is applied after.
 

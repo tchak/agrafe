@@ -2,8 +2,8 @@
 //! between `fork` and `exec`.
 //!
 //! The ruleset is built here, where opening paths and allocating are
-//! fine; the child only duplicates its descriptor and makes the
-//! `landlock_restrict_self`, `prctl` and `seccomp` calls. Both layers set
+//! fine; the child only makes the `landlock_restrict_self`, `prctl` and
+//! `seccomp` calls. Both layers set
 //! `no_new_privs`, so the child cannot regain anything through a setuid
 //! binary either.
 
@@ -115,13 +115,17 @@ impl Plan {
     /// Install the layers in the calling process, which is the child
     /// between `fork` and `exec`: nothing here allocates or takes a lock
     /// on the happy path. A layer that fails is skipped unless strict.
+    ///
+    /// The ruleset is taken, not cloned: a [`Command`](crate::Command) is
+    /// spawned once, so the closure runs once, and `restrict_self`
+    /// consumes it.
     pub(crate) fn install(&mut self) -> io::Result<()> {
-        if let Some(ruleset) = &self.ruleset {
-            let enforced = ruleset
-                .try_clone()
-                .ok()
-                .and_then(|ruleset| ruleset.restrict_self().ok())
-                .is_some_and(|status| status.ruleset != RulesetStatus::NotEnforced);
+        if let Some(ruleset) = self.ruleset.take() {
+            let enforced = match ruleset.restrict_self() {
+                Ok(status) => status.ruleset != RulesetStatus::NotEnforced,
+                Err(err) if self.strict => return Err(io::Error::from_raw_os_error(errno(&err))),
+                Err(_) => false,
+            };
             if !enforced && self.strict {
                 return Err(io::Error::from_raw_os_error(libc::EPERM));
             }
@@ -145,6 +149,20 @@ impl Plan {
         }
         Ok(())
     }
+}
+
+/// The errno behind a failed `restrict_self`, `EPERM` when there is none.
+/// Walks the source chain without formatting anything, since this runs in
+/// the child.
+fn errno(err: &RulesetError) -> i32 {
+    let mut source = std::error::Error::source(err);
+    while let Some(err) = source {
+        if let Some(io) = err.downcast_ref::<io::Error>() {
+            return io.raw_os_error().unwrap_or(libc::EPERM);
+        }
+        source = err.source();
+    }
+    libc::EPERM
 }
 
 /// The Landlock ABI the running kernel implements, `None` when it has no

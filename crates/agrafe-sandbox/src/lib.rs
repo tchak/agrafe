@@ -385,8 +385,8 @@ fn apply_confinement(
     }
     let mut plan = plan;
     // SAFETY: the ruleset and the filter were built here; the child only
-    // dups a descriptor and makes the `landlock_restrict_self`, `prctl`
-    // and `seccomp` calls, none of which touches the heap or a lock.
+    // makes the `landlock_restrict_self`, `prctl` and `seccomp` calls,
+    // none of which touches the heap or a lock.
     unsafe {
         command.inner.pre_exec(move || plan.install());
     }
