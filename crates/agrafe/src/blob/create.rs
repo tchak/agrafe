@@ -25,6 +25,7 @@ pub enum CreateError {
     /// The request is well formed but not acceptable; the message says why.
     #[error("{0}")]
     Invalid(String),
+    /// The query or the transaction failed.
     #[error("database: {0}")]
     Db(#[from] sqlx::Error),
 }
@@ -66,11 +67,19 @@ impl Agrafe {
     }
 }
 
+/// The body of `POST /blobs`, as [`Agrafe::create_blob`] takes it. See
+/// DESIGN.md, "Creation".
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateBlobRequest {
+    /// The file's name, trimmed: at most `MAX_FILENAME_LEN` bytes, not `.`
+    /// or `..`, no path separators, control or bidirectional formatting
+    /// characters.
     pub filename: String,
+    /// The media type, normalised to `type/subtype` and classified into a
+    /// category. A generated blob takes one its build can produce.
     pub content_type: String,
+    /// How the bytes will arrive.
     pub input_type: InputType,
     /// SHA-256 of the bytes, base64. Required for `raw` and `multipart`,
     /// optional for `url`, where it is checked when given and computed
@@ -94,9 +103,15 @@ pub struct CreateBlobRequest {
     /// The entry file of a `document` workspace, a path relative to its
     /// root; `main.typ` by default. Refused on any other input type.
     pub main: Option<String>,
+    /// The backend vouches for the bytes: no scan, and no public upload.
+    /// Implied for a generated blob.
     #[serde(default)]
     pub skip_virus_scan: bool,
+    /// When the blob expires, in the future. `blobs.default_expires_in`
+    /// from now when neither this nor `expires_in` is given.
     pub expires_at: Option<Timestamp>,
+    /// How long until the blob expires, such as `7d`; the alternative to
+    /// `expires_at`.
     #[serde(default, with = "humantime_serde")]
     pub expires_in: Option<Duration>,
     /// Where the blob's jobs go in their kind's queue.
@@ -137,7 +152,9 @@ pub(crate) struct NewBlob {
     pub attachment: Option<NewAttachment>,
 }
 
+/// Longest `filename` accepted, in bytes, once trimmed.
 pub const MAX_FILENAME_LEN: usize = 255;
+
 /// Longest `content_type` accepted, in bytes.
 pub const MAX_CONTENT_TYPE_LEN: usize = 255;
 

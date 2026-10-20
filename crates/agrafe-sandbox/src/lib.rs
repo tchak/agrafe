@@ -101,33 +101,51 @@ impl Default for Config {
 /// Bytes of stderr kept, from the end: the error comes after the warnings.
 const STDERR_KEEP: usize = 4096;
 
+/// Why a command could not be run to an [`Outcome`].
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// The process did not start: the program is missing or not
+    /// executable, or the child failed to install a confinement layer
+    /// before `exec`.
     #[error("starting `{program}`: {source}")]
     Spawn {
+        /// The resolved program.
         program: String,
+        /// What the operating system reported.
         source: std::io::Error,
     },
+    /// Waiting for the process to exit, or reading its stderr, failed.
     #[error("waiting for `{program}`: {source}")]
     Wait {
+        /// The resolved program.
         program: String,
+        /// What the operating system reported.
         source: std::io::Error,
     },
     /// A confinement layer `isolation = "required"` demands cannot be set
     /// up on this kernel.
     #[error("confining `{program}`: {reason}")]
-    Confine { program: String, reason: String },
+    Confine {
+        /// The resolved program.
+        program: String,
+        /// What is missing, or why the ruleset or the filter could not be
+        /// built.
+        reason: String,
+    },
 }
 
 /// How a sandboxed process ended.
 #[derive(Debug)]
 pub enum Outcome {
+    /// Exited with status zero.
     Success,
     /// A non-zero exit or a signal, with what the process said on stderr.
     Failed {
         /// The exit code, `None` for a signal.
         code: Option<i32>,
+        /// The exit status as `std::process::ExitStatus` displays it.
         status: String,
+        /// The last 4 KiB of stderr, decoded lossily and trimmed.
         stderr: String,
     },
     /// Killed at the wall-clock limit.
@@ -178,11 +196,13 @@ impl Command {
         }
     }
 
+    /// An argument for the program.
     pub fn arg(&mut self, arg: impl AsRef<OsStr>) -> &mut Self {
         self.inner.arg(arg);
         self
     }
 
+    /// Arguments for the program.
     pub fn args<I, S>(&mut self, args: I) -> &mut Self
     where
         I: IntoIterator<Item = S>,
@@ -192,6 +212,8 @@ impl Command {
         self
     }
 
+    /// A variable for the child's environment, on top of the inherited
+    /// `PATH` and `HOME`.
     pub fn env(&mut self, name: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> &mut Self {
         self.inner.env(name, value);
         self
@@ -456,12 +478,15 @@ impl fmt::Display for Status {
 /// Why the sandbox is not fit to run a worker.
 #[derive(Debug, thiserror::Error)]
 pub enum ProbeError {
+    /// A probe command could not be run.
     #[error(transparent)]
     Run(#[from] Error),
     /// The seccomp filter does not install, and `isolation = "required"`.
     #[error("confining `{program}`: the seccomp filter does not install: {source}")]
     Seccomp {
+        /// The resolved `cat`.
         program: String,
+        /// Why the child could not start under the filter.
         source: std::io::Error,
     },
     /// A read the probe granted was refused: the system set misses
@@ -471,17 +496,27 @@ pub enum ProbeError {
          check media.sandbox.readable"
     )]
     Granted {
+        /// The resolved `cat`.
         program: String,
+        /// How it ended, as in [`Outcome::Failed`], or `timed out`.
         status: String,
+        /// The end of what it said on stderr.
         stderr: String,
     },
     /// A read the probe did not grant went through although Landlock
     /// claimed to be enforced.
     #[error("the sandbox let `{program}` read outside the directories it was granted")]
-    NotRefused { program: String },
+    NotRefused {
+        /// The resolved `cat`.
+        program: String,
+    },
     /// The probe reads a file with `cat`, which this host does not have.
     #[error("the sandbox probe needs `{program}` on PATH, and this host has none")]
-    Tool { program: String },
+    Tool {
+        /// The name looked up, `cat`.
+        program: String,
+    },
+    /// The probe's temporary directories or files could not be created.
     #[error("temporary files for the sandbox probe: {0}")]
     Io(#[from] std::io::Error),
 }

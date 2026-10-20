@@ -46,10 +46,14 @@ pub struct Config {
     /// default.
     #[serde(default = "default_render_geo_command")]
     pub render_geo_command: String,
+    /// The thumbnail box and quality, the `[media.thumbnail]` table.
     #[serde(default)]
     pub thumbnail: Thumbnail,
+    /// The preview box and quality, the `[media.preview]` table.
     #[serde(default)]
     pub preview: Preview,
+    /// When a document counts as a wrapped image, the
+    /// `[media.embedded_image]` table.
     #[serde(default)]
     pub embedded_image: EmbeddedImage,
     /// How the map of a GeoJSON file is drawn, and what it is drawn over.
@@ -97,8 +101,11 @@ impl Default for Config {
 /// The thumbnail box and encoder quality.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Thumbnail {
+    /// The box's width in pixels, 256 by default.
     pub width: u32,
+    /// The box's height in pixels, 256 by default.
     pub height: u32,
+    /// The WebP quality, 80 by default.
     pub quality: u8,
 }
 
@@ -115,7 +122,9 @@ impl Default for Thumbnail {
 /// The preview box (square) and encoder quality.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Preview {
+    /// The side of the box in pixels, 2048 by default.
     pub max_dimension: u32,
+    /// The WebP quality, 85 by default.
     pub quality: u8,
 }
 
@@ -151,14 +160,20 @@ impl Default for EmbeddedImage {
 /// are a [`Verdict::Rejected`].
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// A tool could not be started, waited for or confined.
     #[error(transparent)]
     Sandbox(#[from] agrafe_sandbox::Error),
+    /// The input could not be read, or the helper's spec written.
     #[error("reading the file to render: {0}")]
     Input(std::io::Error),
+    /// What the tool wrote could not be read back.
     #[error("reading the rendered file: {0}")]
     Output(std::io::Error),
+    /// The map helper's `extent.json` does not parse as an
+    /// [`Extent`](agrafe_types::geojson::Extent).
     #[error("reading the extent the map helper wrote: {0}")]
     Extent(serde_json::Error),
+    /// A background layer of a map could not be fetched or decoded.
     #[error("fetching a background layer: {0}")]
     Fetch(#[from] geo::FetchError),
 }
@@ -168,6 +183,7 @@ pub enum Error {
 /// end the same way.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict<T> {
+    /// The tool succeeded, with what it produced.
     Rendered(T),
     /// The file's fault: the tool rejected it, crashed on it, or ran out of
     /// time.
@@ -177,6 +193,7 @@ pub enum Verdict<T> {
 }
 
 impl<T> Verdict<T> {
+    /// The verdict with `f` applied to what was rendered, if anything was.
     pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Verdict<U> {
         match self {
             Verdict::Rendered(value) => Verdict::Rendered(f(value)),
@@ -197,15 +214,21 @@ impl<T> Verdict<T> {
 /// Why a tool would not render a file.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Rejection {
+    /// The file's magic bytes match no loader on the allowlist, so `vips`
+    /// is never run on it.
     #[error("the file is not in a format the renderer may load")]
     Unsupported,
+    /// The tool exited non-zero or was killed by a signal.
     #[error("the tool failed ({status}): {stderr}")]
     Failed {
         /// The exit code, `None` for a signal.
         code: Option<i32>,
+        /// The exit status, as the system describes it.
         status: String,
+        /// The end of what the tool wrote on stderr.
         stderr: String,
     },
+    /// The tool was killed at `media.sandbox.timeout`.
     #[error("the tool exceeded the time limit")]
     TimedOut,
     /// A helper ran to completion and wrote something other than what it

@@ -16,6 +16,7 @@ use crate::jobs::{Count, JobKind, JobState, Priority};
 /// What a scrape can fail on.
 #[derive(Debug, thiserror::Error)]
 pub enum MetricsError {
+    /// The registry could not be written out in the text format.
     #[error("encoding metrics: {0}")]
     Encode(#[from] prometheus::Error),
 }
@@ -45,6 +46,9 @@ const DURATION_BUCKETS: &[f64] = &[
     0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1800.0, 3600.0,
 ];
 
+/// The registry of this process's Prometheus metrics: job runs and
+/// durations, workers, the queue census, the read cache and webhook
+/// deliveries. Rendered by `render` for `/metrics`.
 pub struct Metrics {
     registry: Registry,
     job_runs: IntCounterVec,
@@ -63,6 +67,7 @@ impl Default for Metrics {
 }
 
 impl Metrics {
+    /// A registry with every metric registered and at zero.
     pub fn new() -> Self {
         let registry = Registry::new();
         let job_runs = IntCounterVec::new(

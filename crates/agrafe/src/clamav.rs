@@ -45,20 +45,47 @@ pub enum Verdict {
     Infected(String),
 }
 
+/// A scan that gave no verdict. Each is retried by the scan job: none
+/// says anything about the bytes.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// Connecting to clamd, writing to it or reading its reply failed: it
+    /// is down, or it hung up.
     #[error("clamd at {addr}: {source}")]
     Io {
+        /// `clamav.addr`.
         addr: String,
+        /// The socket error.
         #[source]
         source: std::io::Error,
     },
+    /// The connect, a write or the wait for the verdict outlasted its
+    /// timeout, `clamav.connect_timeout` or `clamav.timeout`.
     #[error("clamd at {addr}: no answer within {timeout:?}")]
-    Timeout { addr: String, timeout: Duration },
+    Timeout {
+        /// `clamav.addr`.
+        addr: String,
+        /// The timeout that ran out.
+        timeout: Duration,
+    },
+    /// clamd answered with neither `OK` nor `FOUND`, such as an `ERROR`
+    /// when the stream exceeds its `StreamMaxLength`.
     #[error("clamd at {addr} replied `{reply}`")]
-    Reply { addr: String, reply: String },
+    Reply {
+        /// `clamav.addr`.
+        addr: String,
+        /// The reply, trimmed.
+        reply: String,
+    },
+    /// Every one of the `clamav.max_inline_scans` inline sessions is in
+    /// use; the upload goes on and its scan is deferred to a job.
     #[error("clamd at {addr}: all {limit} inline sessions are taken")]
-    Busy { addr: String, limit: usize },
+    Busy {
+        /// `clamav.addr`.
+        addr: String,
+        /// `clamav.max_inline_scans`.
+        limit: usize,
+    },
 }
 
 impl Clamd {

@@ -16,10 +16,25 @@ pub const MAX_CHUNK_SIZE: u64 = 16 * 1024 * 1024;
 /// A stored data key that cannot be unwrapped.
 #[derive(Debug, thiserror::Error)]
 pub enum UnwrapError {
+    /// The blob's key was wrapped under a KEK no longer, or never, in
+    /// `encryption.keks`.
     #[error("blob {blob_id} is wrapped with unknown KEK `{kek_id}`")]
-    UnknownKek { blob_id: Uuid, kek_id: String },
+    UnknownKek {
+        /// The blob whose key it is.
+        blob_id: Uuid,
+        /// The KEK id stored with the wrapped key.
+        kek_id: String,
+    },
+    /// The KEK is known but the wrapped key does not open under it: the
+    /// key bytes are damaged, the KEK under that id changed, or the key was
+    /// wrapped for another blob.
     #[error("unwrapping the data key of blob {blob_id}: {source}")]
-    Crypto { blob_id: Uuid, source: CryptoError },
+    Crypto {
+        /// The blob whose key it is.
+        blob_id: Uuid,
+        /// Why unwrapping failed.
+        source: CryptoError,
+    },
 }
 
 /// Every KEK in config, one of them current for wrapping new data keys.
@@ -33,8 +48,12 @@ pub struct Keks {
 
 /// A freshly wrapped data key and where it came from.
 pub struct Envelope {
+    /// The data key in clear, the blob's objects are encrypted with.
     pub key: Key,
+    /// The id of the KEK it was wrapped under, the current one.
     pub kek_id: String,
+    /// The data key wrapped under that KEK, bound to its blob, as stored
+    /// in the blob's row.
     pub wrapped: Vec<u8>,
 }
 

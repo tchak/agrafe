@@ -24,12 +24,16 @@ const VIPS_CONCURRENCY: &str = "2";
 /// box, never cropped.
 #[derive(Debug, Clone, Copy)]
 pub struct Fit {
+    /// The box's width, in pixels.
     pub width: u32,
+    /// The box's height, in pixels.
     pub height: u32,
+    /// The WebP encoder's quality, `0..=100`.
     pub quality: u8,
 }
 
 impl Fit {
+    /// The `[media.thumbnail]` box and quality.
     pub fn thumbnail(config: &Config) -> Self {
         Self {
             width: config.thumbnail.width,
@@ -38,6 +42,7 @@ impl Fit {
         }
     }
 
+    /// The `[media.preview]` box, a square, and quality.
     pub fn preview(config: &Config) -> Self {
         Self {
             width: config.preview.max_dimension,

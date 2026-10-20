@@ -22,11 +22,13 @@ pub const MAX_WAIT: Duration = Duration::from_secs(30);
 /// Why URLs could not be minted.
 #[derive(Debug, thiserror::Error)]
 pub enum MintError {
+    /// No blob has this id.
     #[error("no such blob")]
     NotFound,
     /// The options are not acceptable; the message says why.
     #[error("{0}")]
     Invalid(String),
+    /// The query failed.
     #[error("database: {0}")]
     Db(#[from] sqlx::Error),
 }
@@ -62,18 +64,28 @@ const PATH_SEGMENT: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'_')
     .remove(b'~');
 
+/// Percent-encode `s` as one path segment, everything but RFC 3986
+/// unreserved characters encoded, as the minted URLs carry the filename.
 pub fn encode_segment(s: &str) -> String {
     utf8_percent_encode(s, PATH_SEGMENT).to_string()
 }
 
+/// The signed public URLs of a blob. The read URLs of a `ready` blob are
+/// sealed: they carry its envelope, and expire no later than the blob.
 #[derive(Debug, Clone, Serialize)]
 pub struct BlobUrls {
-    /// Absent when the blob may not be uploaded through the public port.
+    /// The `PUT` of the bytes, signed for `signing.ttl.upload`. Absent when
+    /// the blob may not be uploaded through the public port.
     pub upload: Option<String>,
+    /// The public metadata, signed for `signing.ttl.metadata`.
     pub metadata: String,
+    /// The original, under the blob's filename.
     pub original: String,
+    /// The preview, under the blob's filename.
     pub preview: String,
+    /// The thumbnail, under the blob's filename.
     pub thumbnail: String,
+
     /// Unix timestamp the read URLs expire at.
     pub expires_at: u64,
 }

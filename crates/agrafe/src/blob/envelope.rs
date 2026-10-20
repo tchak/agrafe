@@ -38,24 +38,43 @@ pub struct EnvelopeError;
 /// A representation as the envelope recorded it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SealedRepresentation {
+    /// The representation's state when the URL was minted.
     pub state: RepresentationState,
+    /// The variant version it was rendered with; `None` before its first
+    /// render, carried as `0` on the wire.
     pub variant_version: Option<i32>,
+    /// The digest and size of the rendered WebP, when the row recorded
+    /// both.
     pub rendered: Option<Rendered>,
 }
 
+/// What serving a `ready` blob needs of its row, sealed into a signed URL
+/// so the read path needs no database lookup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Envelope {
+    /// The key-encryption key that unwraps `wrapped_key`.
     pub kek_id: String,
+    /// The blob's data key, wrapped and bound to the blob id.
     pub wrapped_key: Vec<u8>,
+    /// The streaming AEAD header of the original.
     pub header: Header,
+    /// Segment size of the streaming AEAD in bytes.
     pub chunk_size: u32,
+    /// Plaintext size of the original in bytes.
     pub size: u64,
+    /// SHA-256 of the original.
     pub checksum: [u8; 32],
+    /// The blob's normalised media type.
     pub content_type: String,
+    /// What the content type classifies as.
     pub category: Category,
+    /// How the scan ended: `clean` or `skipped` for a `ready` blob.
     pub scan_state: ScanState,
+    /// When the bytes landed, to the second.
     pub uploaded_at: Option<Timestamp>,
+    /// The thumbnail as the row recorded it.
     pub thumbnail: SealedRepresentation,
+    /// The preview as the row recorded it.
     pub preview: SealedRepresentation,
 }
 
@@ -87,6 +106,7 @@ impl Envelope {
         })
     }
 
+    /// The `kind` representation as the envelope recorded it.
     pub fn representation(&self, kind: Representation) -> SealedRepresentation {
         match kind {
             Representation::Thumbnail => self.thumbnail,
@@ -124,6 +144,7 @@ impl Envelope {
         }
     }
 
+    /// The envelope in its wire format, base64url without padding.
     pub fn encode(&self) -> String {
         let mut w = Writer(Vec::with_capacity(320));
         w.u8(VERSION);
@@ -158,6 +179,9 @@ impl Envelope {
         URL_SAFE_NO_PAD.encode(w.0)
     }
 
+    /// Read back what [`Envelope::encode`] wrote. Fails on another version,
+    /// a truncated or overlong string, an unknown enum value, or an
+    /// invalid header or segment size.
     pub fn decode(encoded: &str) -> Result<Self, EnvelopeError> {
         let bytes = URL_SAFE_NO_PAD.decode(encoded).map_err(|_| EnvelopeError)?;
         let mut r = Reader(&bytes);

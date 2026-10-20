@@ -25,24 +25,48 @@ use crate::encryption::UnwrapError;
 /// Why a stored original could not be read back.
 #[derive(Debug, thiserror::Error)]
 pub enum ReadError {
+    /// The row lacks a column a read needs, or its chunk size is not a
+    /// valid segment size.
     #[error("blob {blob_id} is stored but has no {what}")]
-    Incomplete { blob_id: Uuid, what: &'static str },
+    Incomplete {
+        /// The blob whose row is incomplete.
+        blob_id: Uuid,
+        /// What is missing, such as `wrapped key`.
+        what: &'static str,
+    },
+    /// The streaming AEAD header, from the row or the object, does not
+    /// parse.
     #[error("blob {blob_id}: {source}")]
     Header {
+        /// The blob being read.
         blob_id: Uuid,
+        /// Why the header was refused.
         source: agrafe_crypto::Error,
     },
+    /// The data key does not unwrap.
     #[error(transparent)]
     Key(#[from] UnwrapError),
+    /// The object store failed, or has no such object.
     #[error("reading the object: {0}")]
     Store(#[from] object_store::Error),
+    /// The object's bytes stopped before the given segment was complete.
     #[error("object ended before segment {0}")]
     Truncated(u64),
+    /// The object's length is not one an encrypted stream can have.
     #[error("object {key} is {len} bytes, which no stream of this layout produces")]
-    Length { key: String, len: u64 },
+    Length {
+        /// The object's key.
+        key: String,
+        /// Its length in bytes.
+        len: u64,
+    },
+    /// A segment failed to decrypt: a wrong key, or a tampered or
+    /// truncated object.
     #[error("opening segment {segment}: {source}")]
     Segment {
+        /// Index of the segment, from zero.
         segment: u64,
+        /// Why it did not open.
         source: agrafe_crypto::Error,
     },
 }
@@ -70,13 +94,22 @@ impl ReadError {
 
 /// Everything the row must carry once an object is stored.
 pub struct Stored {
+    /// The blob, which the wrapped key is bound to.
     pub blob_id: Uuid,
+    /// Object key of the original, `<id>/original`; also the stream's
+    /// associated data.
     pub storage_key: String,
+    /// The key-encryption key that unwraps `wrapped_key`.
     pub kek_id: String,
+    /// The blob's wrapped data key.
     pub wrapped_key: Vec<u8>,
+    /// The streaming AEAD header, cached from the object.
     pub header: Header,
+    /// The segment layout the chunk size gives.
     pub layout: Layout,
+    /// SHA-256 of the plaintext.
     pub checksum: Vec<u8>,
+    /// Plaintext size in bytes.
     pub size: u64,
 }
 
@@ -127,6 +160,8 @@ impl Stored {
         })
     }
 
+    /// From the row as the read routes fetch it. [`ReadError::Incomplete`]
+    /// or [`ReadError::Header`] when it lacks what a read needs.
     pub fn from_head(blob: &BlobHead) -> Result<Self, ReadError> {
         Self::from_columns(Columns {
             blob_id: blob.id,

@@ -25,12 +25,15 @@ pub struct Kek {
 }
 
 impl Kek {
+    /// A key-encryption key using `key` directly as its AES-256-GCM key.
     pub fn new(key: &Key) -> Self {
         Self {
             cipher: Aes256Gcm::new(key.as_bytes().into()),
         }
     }
 
+    /// `data_key` sealed under a fresh random nonce, bound to
+    /// `associated_data`: [`WRAPPED_LEN`] bytes.
     pub fn wrap(&self, data_key: &Key, associated_data: &[u8]) -> Vec<u8> {
         let mut nonce = [0u8; NONCE_LEN];
         rand::fill(&mut nonce);
@@ -51,6 +54,9 @@ impl Kek {
         out
     }
 
+    /// The data key in `wrapped`, sealed by this KEK with the same
+    /// `associated_data`, or [`Error::Corrupt`] when the length, the KEK,
+    /// the associated data or the bytes do not match.
     pub fn unwrap(&self, wrapped: &[u8], associated_data: &[u8]) -> Result<Key, Error> {
         if wrapped.len() != WRAPPED_LEN {
             return Err(Error::Corrupt);

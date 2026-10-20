@@ -21,6 +21,9 @@ license = "MIT OR Apache-2.0"
 rust-version = "1.94"
 
 [workspace.lints.rust]
+# Everything public is documented: the crates are published, and docs.rs
+# is their reference.
+missing_docs = "warn"
 # Set by cargo-llvm-cov.
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage)"] }
 

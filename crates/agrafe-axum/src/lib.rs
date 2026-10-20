@@ -1,7 +1,15 @@
-//! The HTTP interfaces of agrafe as axum routers. `private` is unsigned and
-//! trusted; `public` verifies a signature on every route before touching
-//! the database. Each router carries its state, so a host application can
-//! nest one under a prefix and keep the private API in Rust.
+//! The HTTP interfaces of agrafe as axum routers. [`private_router`] is
+//! unsigned and trusted; [`public_router`] verifies a signature on every
+//! route before touching the database. Every failure answers as an
+//! [`ApiError`], a JSON body with a stable code.
+//!
+//! A host application builds an `agrafe::Agrafe` from a configuration and
+//! a pool, nests [`public_router`] under a prefix of its own and calls the
+//! private API in Rust, on the handle. It may also serve [`private_router`]
+//! on an internal listener, or [`ops_router`] there when the process runs
+//! workers only. Each router comes with its state applied, so nesting needs
+//! no state plumbing. The [`host`] and [`origin`] checks are exported for
+//! routes the host adds next to the private interface.
 
 mod attachments;
 mod body;
@@ -31,6 +39,13 @@ use agrafe::upload;
 
 pub use error::{ApiError, ApiResult};
 
+/// The private interface: creating, uploading, listing, deleting and
+/// retrying blobs, minting their URLs and serving their bytes, attachments,
+/// jobs, `/healthz` and `/metrics`. Unsigned, for trusted networks only:
+/// a request must name one of `server.private_hosts` when it is set
+/// (`/healthz` and `/metrics` aside), and an unsafe one a browser marks as
+/// cross-site is refused. The state is applied, so it can be nested under
+/// a prefix as is.
 pub fn private_router(state: Agrafe) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
@@ -49,6 +64,13 @@ pub fn private_router(state: Agrafe) -> Router {
         .with_state(state)
 }
 
+/// The public interface: the upload, metadata, original, preview and
+/// thumbnail of one blob under `/blobs/{token}/{id}`, each verifying its
+/// signature before touching the database, and `/healthz`. Request spans
+/// record the path with the token redacted. The state is applied, so it
+/// can be nested under a prefix as is; minted URLs are
+/// `server.public_base_url` followed by `/blobs/...`, so the base must end
+/// with that prefix.
 pub fn public_router(state: Agrafe) -> Router {
     // Public URLs carry bearer tokens; the span records a redacted path
     // instead of the full URI so tokens never reach log storage.

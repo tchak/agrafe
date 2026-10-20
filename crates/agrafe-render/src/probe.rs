@@ -9,29 +9,47 @@ use crate::{Config, Error, Rejection, Verdict, geo, helpers};
 /// good.
 #[derive(Debug, thiserror::Error)]
 pub enum ProbeError {
+    /// `vips` could not be run on a probe file, or its output not read.
     #[error("rendering {what} with `{vips}`: {source}")]
     Render {
+        /// The probe file, as `"a PNG"` or `"a map"`.
         what: &'static str,
+        /// The configured `vips_command`.
         vips: String,
+        /// Why it could not run.
         source: Error,
     },
+    /// `vips` ran and rejected a probe file: a loader or an option this
+    /// build of libvips lacks.
     #[error("rendering {what} with `{vips}`: {rejection}")]
     Rejected {
+        /// The probe file, as `"a PNG"` or `"a map"`.
         what: &'static str,
+        /// The configured `vips_command`.
         vips: String,
+        /// How it failed.
         rejection: Rejection,
     },
+    /// A helper declined or rejected its probe file: the command
+    /// configured is likely not that helper.
     #[error("`{command}` {what}; is media.{setting} the {helper} helper?")]
     Helper {
+        /// The command configured.
         command: String,
+        /// The `[media]` key that names it.
         setting: &'static str,
+        /// The helper it should be.
         helper: &'static str,
+        /// What it did instead of rendering.
         what: String,
     },
+    /// A helper could not be run at all.
     #[error(transparent)]
     Run(#[from] Error),
+    /// The sandbox does not confine as it should.
     #[error("sandbox: {0}")]
     Sandbox(#[from] agrafe_sandbox::ProbeError),
+    /// The probe's work directory or files could not be written.
     #[error("temporary files: {0}")]
     Io(#[from] std::io::Error),
 }

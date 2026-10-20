@@ -53,8 +53,11 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 /// it came.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Color {
+    /// The red channel.
     pub r: u8,
+    /// The green channel.
     pub g: u8,
+    /// The blue channel.
     pub b: u8,
 }
 
@@ -70,6 +73,8 @@ impl Color {
     }
 }
 
+/// Error returned when a string is not a hex colour of 3 or 6 digits, with
+/// or without its `#`.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("`{0}` is not a hex colour of 3 or 6 digits")]
 pub struct ColorError(String);
@@ -121,8 +126,11 @@ impl<'de> Deserialize<'de> for Color {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MarkerSize {
+    /// A radius of 5 pixels.
     Small,
+    /// A radius of 8 pixels, the default.
     Medium,
+    /// A radius of 12 pixels.
     Large,
 }
 
@@ -168,15 +176,20 @@ pub const DEFAULT_COLOR: Color = Color {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub struct Style {
+    /// The colour of lines and of polygon outlines; their casing is it
+    /// darkened.
     pub stroke: Option<Color>,
     /// In pixels, clamped to `0..=MAX_STROKE_WIDTH`.
     pub stroke_width: Option<f64>,
     /// Clamped to `0..=1`.
     pub stroke_opacity: Option<f64>,
+    /// The colour inside polygons.
     pub fill: Option<Color>,
     /// Clamped to `0..=1`.
     pub fill_opacity: Option<f64>,
+    /// The colour of the disc drawn for a point.
     pub marker_color: Option<Color>,
+    /// The size of the disc drawn for a point.
     pub marker_size: Option<MarkerSize>,
 }
 
@@ -201,8 +214,12 @@ impl Style {
 /// fetches. Spans in metres, EPSG:3857.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct LayerRule {
+    /// The layer is drawn only on an extent at least this wide.
     pub min_span: Option<f64>,
+    /// The layer is drawn only on an extent narrower than this.
     pub max_span: Option<f64>,
+    /// The credit burned into a corner of the map when this is the first
+    /// applicable layer that has one.
     pub attribution: Option<String>,
 }
 
@@ -221,6 +238,7 @@ impl LayerRule {
 pub struct Spec {
     /// The pixel box; the extent is widened to its aspect ratio.
     pub width: u32,
+    /// The height of the pixel box.
     pub height: u32,
     /// Added around the geometry, as a fraction of its larger side.
     pub padding: f64,
@@ -245,11 +263,17 @@ pub struct Spec {
 /// box in EPSG:3857 metres, the pixel size, and the layers that apply.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Extent {
+    /// The western edge, in metres.
     pub minx: f64,
+    /// The southern edge, in metres.
     pub miny: f64,
+    /// The eastern edge, in metres.
     pub maxx: f64,
+    /// The northern edge, in metres.
     pub maxy: f64,
+    /// The width of the SVG, in pixels.
     pub width: u32,
+    /// The height of the SVG, in pixels.
     pub height: u32,
     /// Indices into the spec's layers, in drawing order.
     pub layers: Vec<usize>,

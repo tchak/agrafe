@@ -17,38 +17,60 @@ use crate::jobs::notify::Event;
 /// A configuration that cannot be loaded, or that loads but cannot be used.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
+    /// The file or the environment could not be read or parsed into a
+    /// `Config`: a syntax error, an unknown variant, a missing key.
     #[error("invalid configuration: {0}")]
     Load(Box<figment::Error>),
+    /// The configuration parsed but a value is unusable, alone or with
+    /// another; the message names the key and why.
     #[error("{0}")]
     Invalid(String),
 }
 
+/// The whole configuration, one field per table of the file. See
+/// `config/example.toml` for every key.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
+    /// `[server]`: the two interfaces and the role. Required.
     pub server: ServerConfig,
+    /// `[database]`: the Postgres connection. Required.
     pub database: DatabaseConfig,
+    /// `[storage]`: where the objects are kept. Required.
     pub storage: StorageConfig,
+    /// `[signing]`: the keys and lifetimes of public URLs. Required.
     pub signing: SigningConfig,
+    /// `[upload]`: size caps and the timings of uploads in flight.
     #[serde(default)]
     pub upload: UploadConfig,
+    /// `[encryption]`: the key-encryption keys objects are sealed under.
     #[serde(default)]
     pub encryption: EncryptionConfig,
+    /// `[clamav]`: the clamd that scans uploads.
     #[serde(default)]
     pub clamav: ClamavConfig,
+    /// `[media]`: the derived representations and the tools that render
+    /// them.
     #[serde(default)]
     pub media: MediaConfig,
+    /// `[jobs]`: the queue's timings and the workers this process runs.
     #[serde(default)]
     pub jobs: JobsConfig,
+    /// `[archive]`: limits on generated archives.
     #[serde(default)]
     pub archive: ArchiveConfig,
+    /// `[document]`: limits on generated documents.
     #[serde(default)]
     pub document: DocumentConfig,
+    /// `[blobs]`: expiries, tombstones and the read cache.
     #[serde(default)]
     pub blobs: BlobsConfig,
+    /// `[fetch]`: how `url` blobs are downloaded.
     #[serde(default)]
     pub fetch: FetchConfig,
+    /// `[dashboard]`: the HTML dashboard, off by default.
     #[serde(default)]
     pub dashboard: DashboardConfig,
+    /// `[webhook]`: where state changes are posted, none by default.
     #[serde(default)]
     pub webhook: WebhookConfig,
 }
@@ -124,11 +146,20 @@ impl Config {
     }
 }
 
+/// The two interfaces and what this process runs.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServerConfig {
+    /// Where the private interface listens: no signatures, trusted network
+    /// only. A worker-only process binds it too, for `/healthz` and
+    /// `/metrics` alone.
     pub private_addr: SocketAddr,
+    /// Where the public interface listens, every URL on it signed.
     pub public_addr: SocketAddr,
+    /// The base public URLs are minted under, as clients reach the public
+    /// interface (`https://files.example`). No trailing slash.
     pub public_base_url: String,
+    /// Which parts of the service this process runs; `all` by default. The
+    /// `--role` flag takes precedence.
     #[serde(default)]
     pub role: Role,
     /// The names and ports the private interface is reached under
@@ -142,9 +173,14 @@ pub struct ServerConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
+/// The parts of the service a process runs, `server.role`.
 pub enum Role {
+    /// The HTTP interfaces, no workers.
     Api,
+    /// The job workers, with the private interface for `/healthz` and
+    /// `/metrics` alone.
     Worker,
+    /// Both, the default.
     #[default]
     All,
 }
@@ -156,18 +192,23 @@ agrafe_types::str_enum!(Role {
 });
 
 impl Role {
+    /// Whether this role serves the HTTP interfaces: `api` or `all`.
     pub fn runs_api(self) -> bool {
         matches!(self, Role::Api | Role::All)
     }
+    /// Whether this role runs the job workers: `worker` or `all`.
     pub fn runs_worker(self) -> bool {
         matches!(self, Role::Worker | Role::All)
     }
 }
 
+/// The Postgres connection.
 #[derive(Debug, Clone, Deserialize)]
 pub struct DatabaseConfig {
-    /// Carries the password, so it is a `Secret`.
+    /// The connection URL, `postgres://…`. Carries the password, so it is
+    /// a `Secret`.
     pub url: Secret,
+    /// Connections the pool opens at most; 10 by default.
     #[serde(default = "default_max_connections")]
     pub max_connections: u32,
 }
@@ -178,39 +219,86 @@ fn default_max_connections() -> u32 {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "backend", rename_all = "lowercase")]
+/// The object store, chosen by `storage.backend`, with the settings of
+/// that backend in the table of the same name.
 pub enum StorageConfig {
-    Local { local: LocalStorageConfig },
-    S3 { s3: S3StorageConfig },
-    Azure { azure: AzureStorageConfig },
-    Gcs { gcs: GcsStorageConfig },
+    /// A directory on the local filesystem, `backend = "local"`.
+    Local {
+        /// `[storage.local]`.
+        local: LocalStorageConfig,
+    },
+    /// An S3-compatible bucket, `backend = "s3"`.
+    S3 {
+        /// `[storage.s3]`.
+        s3: S3StorageConfig,
+    },
+    /// An Azure Blob Storage container, `backend = "azure"`.
+    Azure {
+        /// `[storage.azure]`.
+        azure: AzureStorageConfig,
+    },
+    /// A Google Cloud Storage bucket, `backend = "gcs"`.
+    Gcs {
+        /// `[storage.gcs]`.
+        gcs: GcsStorageConfig,
+    },
 }
 
+/// Objects as files under a directory.
 #[derive(Debug, Clone, Deserialize)]
 pub struct LocalStorageConfig {
+    /// The directory the objects are kept under.
     pub path: String,
 }
 
+/// An S3-compatible bucket. It needs an `AbortIncompleteMultipartUpload`
+/// lifecycle rule: a crashed process cannot abort the multipart uploads it
+/// had open.
 #[derive(Debug, Clone, Deserialize)]
 pub struct S3StorageConfig {
+    /// The bucket's name.
     pub bucket: String,
+    /// The bucket's region (`fr-par`); `None` leaves it to the `AWS_*`
+    /// environment variables.
     pub region: Option<String>,
+    /// The endpoint of a provider other than AWS
+    /// (`https://s3.fr-par.scw.cloud`); `None` leaves it to the
+    /// environment, AWS by default.
     pub endpoint: Option<String>,
+    /// The access key id; `None` leaves the credentials to the `AWS_*`
+    /// environment variables. Prefer `AGRAFE_STORAGE__S3__ACCESS_KEY_ID`.
     pub access_key_id: Option<String>,
+    /// The secret paired with `access_key_id`. Prefer
+    /// `AGRAFE_STORAGE__S3__SECRET_ACCESS_KEY`.
     pub secret_access_key: Option<Secret>,
 }
 
+/// An Azure Blob Storage container. Azure discards uncommitted blocks after
+/// seven days, so no lifecycle rule is needed.
 #[derive(Debug, Clone, Deserialize)]
 pub struct AzureStorageConfig {
+    /// The storage account's name.
     pub account: String,
+    /// The container's name.
     pub container: String,
+    /// The account's shared key; `None` falls back to the `AZURE_*`
+    /// environment variables or a managed identity. Prefer
+    /// `AGRAFE_STORAGE__AZURE__ACCESS_KEY`.
     pub access_key: Option<Secret>,
+    /// An endpoint other than Azure's public one, for Azurite or a
+    /// sovereign cloud.
     pub endpoint: Option<String>,
 }
 
+/// A Google Cloud Storage bucket. It needs an
+/// `AbortIncompleteMultipartUpload` lifecycle rule, as on S3.
 #[derive(Debug, Clone, Deserialize)]
 pub struct GcsStorageConfig {
+    /// The bucket's name.
     pub bucket: String,
-    /// The JSON key of a service account, not a path to it.
+    /// The JSON key of a service account, not a path to it; `None` falls
+    /// back to `GOOGLE_SERVICE_ACCOUNT`, the application default
+    /// credentials or the metadata server.
     pub service_account_key: Option<Secret>,
 }
 
@@ -221,6 +309,7 @@ pub struct GcsStorageConfig {
 pub struct Secret(String);
 
 impl Secret {
+    /// The secret in clear, for the one place that needs it.
     pub fn expose(&self) -> &str {
         &self.0
     }
@@ -244,6 +333,8 @@ impl std::fmt::Debug for Secret {
 pub struct Base64Secret(String);
 
 impl Base64Secret {
+    /// The bytes the base64 stands for, surrounding whitespace ignored, or
+    /// the error that it is not base64.
     pub fn decoded(&self) -> Result<Vec<u8>, base64::DecodeError> {
         use base64::Engine;
         base64::engine::general_purpose::STANDARD.decode(self.0.trim())
@@ -262,12 +353,21 @@ impl std::fmt::Debug for Base64Secret {
     }
 }
 
+/// The keys and lifetimes of signed public URLs.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SigningConfig {
+    /// The id, in `keys`, of the key new tokens are minted with.
     pub current_key: String,
+    /// Every key a token may be verified with, by id: the current one and
+    /// those being rotated out. Ids appear in tokens, so letters, digits,
+    /// `-` and `_` only; values are at least 32 random bytes in base64.
     pub keys: HashMap<String, Base64Secret>,
+    /// Expiries are rounded up to the next multiple of this before the TTL
+    /// is added, so URLs minted inside one window are identical and
+    /// cacheable; an hour by default.
     #[serde(with = "humantime_serde", default = "default_window")]
     pub window: Duration,
+    /// `[signing.ttl]`: how long each kind of URL lives.
     #[serde(default)]
     pub ttl: SigningTtl,
 }
@@ -276,17 +376,21 @@ fn default_window() -> Duration {
     Duration::from_secs(3600)
 }
 
+/// How long minted URLs live, by kind.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SigningTtl {
+    /// Upload URLs; an hour by default.
     #[serde(with = "humantime_serde", default = "default_upload_ttl")]
     pub upload: Duration,
+    /// Metadata URLs; a day by default.
     #[serde(with = "humantime_serde", default = "default_read_ttl")]
     pub metadata: Duration,
+    /// Read URLs, the original and its representations; a day by default.
     #[serde(with = "humantime_serde", default = "default_read_ttl")]
     pub read: Duration,
     /// The longest any URL may live: a ceiling on the TTLs above, on the
     /// override `POST /blobs/:id/urls` accepts, and on the expiry of any
-    /// token presented to the public port.
+    /// token presented to the public port. A week by default.
     #[serde(with = "humantime_serde", default = "default_max_ttl")]
     pub max: Duration,
 }
@@ -312,22 +416,32 @@ impl Default for SigningTtl {
     }
 }
 
+/// Limits and timings of uploads.
 #[derive(Debug, Clone, Deserialize)]
 pub struct UploadConfig {
+    /// Hard cap on any upload; 5 GiB by default.
     #[serde(default = "default_max_size")]
     pub max_size: ByteSize,
+    /// Files up to this size are scanned inline as they are uploaded;
+    /// larger ones are stored first and scanned by a job. 25 MiB by
+    /// default.
     #[serde(default = "default_inline_scan_max_size")]
     pub inline_scan_max_size: ByteSize,
+    /// An upload in flight touches its blob every third of this; one left
+    /// untouched this long was abandoned by a crashed process, and the
+    /// reaper resets it. Ten minutes by default.
     #[serde(with = "humantime_serde", default = "default_stale_after")]
     pub stale_after: Duration,
     /// Grace period before the object a delete released is purged from the
     /// bucket: a download that started before the delete keeps its bytes.
+    /// An hour by default.
     #[serde(with = "humantime_serde", default = "default_purge_delay")]
     pub purge_delay: Duration,
     /// A `created` blob whose last source part is older than this is an
     /// abandoned export, and an attached `created` blob with no parts that
     /// nothing has touched for this long is a file that never came: the
-    /// reaper expires both, parts purged, attachments kept.
+    /// reaper expires both, parts purged, attachments kept. A day by
+    /// default.
     #[serde(with = "humantime_serde", default = "default_abandoned_after")]
     pub abandoned_after: Duration,
 }
@@ -377,20 +491,22 @@ pub struct BlobsConfig {
     /// Expiry of a blob created without one, and of a blob whose last
     /// attachment was removed, counted from that moment. A blob is either
     /// expiring or attached; there is no way to create one that is neither.
+    /// A day by default, at least `MIN_EXPIRES_IN`.
     #[serde(with = "humantime_serde", default = "default_expires_in")]
     pub default_expires_in: Duration,
     /// How long a terminal blob's row stays after its objects were purged,
     /// or after it went terminal with nothing to purge, so that the backend
     /// can tell a blob it deleted from an id that never existed. The reaper
-    /// removes it after, with its attachments and jobs.
+    /// removes it after, with its attachments and jobs. 90 days by
+    /// default.
     #[serde(with = "humantime_serde", default = "default_keep_purged")]
     pub keep_purged: Duration,
     /// How long the read routes keep a settled row they served, so a blob
     /// read many times costs one query per process per period; zero keeps
-    /// nothing. See `blob::cache`.
+    /// nothing. 30 seconds by default. See `blob::cache`.
     #[serde(with = "humantime_serde", default = "default_read_cache_ttl")]
     pub read_cache_ttl: Duration,
-    /// Rows kept at most.
+    /// Rows the read cache keeps at most, per process; 100 000 by default.
     #[serde(default = "default_read_cache_entries")]
     pub read_cache_entries: u64,
 }
@@ -438,7 +554,8 @@ impl Default for BlobsConfig {
 pub struct ArchiveConfig {
     /// Upper bound on the size of a generated archive, estimated at accept
     /// time from the members' sizes. A limit of its own: `upload.max_size`
-    /// is sized for one request, an archive for a whole export.
+    /// is sized for one request, an archive for a whole export. 100 GiB by
+    /// default, at most `MAX_SIZE_LIMIT`.
     #[serde(default = "default_archive_max_size")]
     pub max_size: ByteSize,
 }
@@ -473,14 +590,14 @@ pub struct DocumentConfig {
     /// out for the compiler, the members' sizes plus the inline files,
     /// checked at accept time and again by the build. A limit of its own:
     /// `upload.max_size` is sized for one request, and the workspace is
-    /// written to the worker's disk.
+    /// written to the worker's disk. 256 MiB by default.
     #[serde(default = "default_document_max_workspace_size")]
     pub max_workspace_size: ByteSize,
     /// Upper bound on the files of a workspace, the manifest's lines across
     /// its parts, checked at accept time and again by the build. Bytes
     /// alone do not bound a workspace: an empty file costs none, and a
     /// manifest of a few million of them costs the worker as many files
-    /// on disk.
+    /// on disk. 10 000 by default.
     #[serde(default = "default_document_max_files")]
     pub max_files: u64,
 }
@@ -505,24 +622,27 @@ impl Default for DocumentConfig {
 /// How `url` blobs are fetched. See DESIGN.md, "Fetched blobs".
 #[derive(Debug, Clone, Deserialize)]
 pub struct FetchConfig {
-    /// The TCP connect and the TLS handshake.
+    /// The TCP connect and the TLS handshake; 10 seconds by default.
     #[serde(with = "humantime_serde", default = "default_fetch_connect_timeout")]
     pub connect_timeout: Duration,
     /// The longest a read of the response may wait for the next bytes. The
     /// stall detector: a remote that trickles cannot hold a fetch worker,
     /// while a large file on a slow link gets as long as it keeps flowing.
+    /// 30 seconds by default.
     #[serde(with = "humantime_serde", default = "default_fetch_read_timeout")]
     pub read_timeout: Duration,
     /// The whole response, headers and body: a backstop behind
     /// `read_timeout`, generous enough for the largest file. A fetch that
-    /// runs past it fails the attempt and is retried from the start.
+    /// runs past it fails the attempt and is retried from the start. Six
+    /// hours by default.
     #[serde(with = "humantime_serde", default = "default_fetch_timeout")]
     pub timeout: Duration,
-    /// Redirects followed at most, every hop under the same checks.
+    /// Redirects followed at most, every hop under the same checks; 5 by
+    /// default.
     #[serde(default = "default_max_redirects")]
     pub max_redirects: usize,
     /// A `Retry-After` beyond this is not waited for: the fetch is dead at
-    /// once rather than parked.
+    /// once rather than parked. 15 minutes by default.
     #[serde(with = "humantime_serde", default = "default_max_retry_after")]
     pub max_retry_after: Duration,
     /// Allow URLs on loopback, private, link-local and the other refused
@@ -530,7 +650,8 @@ pub struct FetchConfig {
     /// never in production.
     #[serde(default)]
     pub allow_private_networks: bool,
-    /// The `User-Agent` sent with every fetch.
+    /// The `User-Agent` sent with every fetch; `agrafe/` and the crate's
+    /// version by default.
     #[serde(default = "default_user_agent")]
     pub user_agent: String,
 }
@@ -591,7 +712,9 @@ pub struct WebhookConfig {
     /// The signing secret, `whsec_` followed by base64, as Standard
     /// Webhooks hands it to a receiver. Required with `url`.
     pub secret: Option<Secret>,
-    /// The whole request, connect to the last byte of the response.
+    /// The whole request, connect to the last byte of the response;
+    /// anything but a `2xx` within it fails the attempt. 10 seconds by
+    /// default.
     #[serde(with = "humantime_serde", default = "default_webhook_timeout")]
     pub timeout: Duration,
     /// The events delivered; every event when omitted.
@@ -684,12 +807,22 @@ impl Default for WebhookConfig {
     }
 }
 
+/// The key-encryption keys each blob's data key is wrapped under, and the
+/// segment size of the streaming AEAD.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct EncryptionConfig {
+    /// The id, in `keks`, of the key new blobs are wrapped under. Optional
+    /// in the file, required to start: `Agrafe::new` fails without it.
     #[serde(default)]
     pub current_kek: Option<String>,
+    /// Every key a wrapped data key may be opened with, by id: the current
+    /// one and those being rotated out. Values are 32 random bytes in
+    /// base64.
     #[serde(default)]
     pub keks: HashMap<String, Base64Secret>,
+    /// The streaming AEAD segment size, at most 16 MiB: a segment is held
+    /// in memory whole per request in flight. Stored per blob, so it can
+    /// change later. 256 KiB by default.
     #[serde(default = "default_chunk_size")]
     pub chunk_size: ByteSize,
 }
@@ -698,18 +831,25 @@ fn default_chunk_size() -> ByteSize {
     ByteSize::kib(256)
 }
 
+/// The clamd that scans uploads. When it cannot be reached, uploads still
+/// succeed and their scan is deferred to a job.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ClamavConfig {
+    /// clamd's TCP socket, a host and port; `127.0.0.1:3310` by default.
     #[serde(default = "default_clamav_addr")]
     pub addr: String,
+    /// Bounds each write and the wait for the verdict, not a whole scan;
+    /// 60 seconds by default.
     #[serde(with = "humantime_serde", default = "default_clamav_timeout")]
     pub timeout: Duration,
     /// For the TCP connect alone. A clamd that drops packets rather than
-    /// refusing them must not hold every small upload for `timeout`.
+    /// refusing them must not hold every small upload for `timeout`. Five
+    /// seconds by default.
     #[serde(with = "humantime_serde", default = "default_clamav_connect_timeout")]
     pub connect_timeout: Duration,
     /// Inline scans hold a clamd connection for as long as the uploader
     /// takes; this caps how many at once. Beyond it the scan is deferred.
+    /// 4 by default.
     #[serde(default = "default_max_inline_scans")]
     pub max_inline_scans: usize,
 }
@@ -738,12 +878,17 @@ impl Default for ClamavConfig {
     }
 }
 
+/// The derived representations of blobs: thumbnails, previews and the
+/// tools that make them.
 #[derive(Debug, Clone, Deserialize)]
 pub struct MediaConfig {
+    /// The version of every derived representation; bumping it regenerates
+    /// them all on next request. At least 1, since zero means "none"
+    /// inside sealed URLs; 1 by default.
     #[serde(default = "default_variant_version")]
     pub variant_version: i32,
     /// Originals above this size get no representations, except the text
-    /// thumbnail, which reads only the first few KiB.
+    /// thumbnail, which reads only the first few KiB. 64 MiB by default.
     #[serde(default = "default_max_source_size")]
     pub max_source_size: ByteSize,
     /// Where the workers unpack originals while rendering; the system
@@ -777,21 +922,28 @@ impl Default for MediaConfig {
     }
 }
 
+/// The job queue and the workers this process runs.
 #[derive(Debug, Clone, Deserialize)]
 pub struct JobsConfig {
+    /// How often idle workers look for work when no `NOTIFY` woke them;
+    /// two seconds by default.
     #[serde(with = "humantime_serde", default = "default_poll_interval")]
     pub poll_interval: Duration,
+    /// A job locked for longer than this is assumed orphaned and claimed
+    /// again; running workers renew their lease. Ten minutes by default.
     #[serde(with = "humantime_serde", default = "default_lease_timeout")]
     pub lease_timeout: Duration,
-    /// How often the reaper runs.
+    /// How often the reaper runs; a minute by default.
     #[serde(with = "humantime_serde", default = "default_reap_interval")]
     pub reap_interval: Duration,
-    /// How long a dead job stays in the table before the reaper prunes it.
+    /// How long a dead job stays in the table before the reaper prunes it;
+    /// seven days by default.
     #[serde(with = "humantime_serde", default = "default_keep_failed")]
     pub keep_failed: Duration,
     #[serde(default)]
-    /// Keyed by kind, so an unknown name is a configuration error rather
-    /// than a silently ignored line.
+    /// Workers per job kind, each kind its own pool; a kind left out gets
+    /// its default (`concurrency_for`). Keyed by kind, so an unknown name is
+    /// a configuration error rather than a silently ignored line.
     pub concurrency: HashMap<JobKind, usize>,
     /// The kinds this process runs workers for; every kind when omitted.
     /// A deployment must cover each kind with some process.

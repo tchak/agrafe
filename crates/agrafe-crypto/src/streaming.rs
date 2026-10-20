@@ -34,9 +34,17 @@ use zeroize::Zeroizing;
 
 use crate::{Error, KEY_LEN, Key};
 
+/// Length of the HKDF salt in the header, the size of the derived key as
+/// in Tink.
 pub const SALT_LEN: usize = KEY_LEN;
+/// Length of the random nonce prefix in the header. With the 4-byte
+/// segment counter and the 1-byte last flag it makes the 12-byte AES-GCM
+/// nonce.
 pub const NONCE_PREFIX_LEN: usize = 7;
+/// Length of the stream header: the length byte, the salt and the nonce
+/// prefix.
 pub const HEADER_LEN: usize = 1 + SALT_LEN + NONCE_PREFIX_LEN;
+/// Length of the AES-GCM tag appended to every segment.
 pub const TAG_LEN: usize = 16;
 /// The first segment must be able to hold at least one plaintext byte.
 pub const MIN_SEGMENT_SIZE: usize = HEADER_LEN + TAG_LEN + 1;
@@ -56,6 +64,9 @@ impl Header {
         Self(bytes)
     }
 
+    /// The header in `bytes`, which must be exactly [`HEADER_LEN`] long and
+    /// start with that length, or [`Error::InvalidHeader`]. The salt and
+    /// prefix are not checked: a wrong one fails authentication later.
     pub fn parse(bytes: &[u8]) -> Result<Self, Error> {
         let bytes: [u8; HEADER_LEN] = bytes.try_into().map_err(|_| Error::InvalidHeader)?;
         if bytes[0] as usize != HEADER_LEN {
@@ -64,14 +75,17 @@ impl Header {
         Ok(Self(bytes))
     }
 
+    /// The header as it starts the stream.
     pub fn as_bytes(&self) -> &[u8; HEADER_LEN] {
         &self.0
     }
 
+    /// The HKDF salt.
     pub fn salt(&self) -> &[u8] {
         &self.0[1..1 + SALT_LEN]
     }
 
+    /// The nonce prefix shared by every segment of the stream.
     pub fn nonce_prefix(&self) -> [u8; NONCE_PREFIX_LEN] {
         self.0[1 + SALT_LEN..].try_into().expect("fixed width")
     }
@@ -90,6 +104,9 @@ pub struct Layout {
 }
 
 impl Layout {
+    /// The layout of ciphertext segments of `segment_size` bytes, tag
+    /// included, or [`Error::InvalidSegmentSize`] outside
+    /// [`MIN_SEGMENT_SIZE`]`..=`[`MAX_SEGMENT_SIZE`].
     pub fn new(segment_size: usize) -> Result<Self, Error> {
         if !(MIN_SEGMENT_SIZE..=MAX_SEGMENT_SIZE).contains(&segment_size) {
             return Err(Error::InvalidSegmentSize);
@@ -313,6 +330,9 @@ pub struct Decryptor {
 }
 
 impl Decryptor {
+    /// A decryptor for the stream `header` starts, under `key` and the
+    /// associated data it was encrypted with. Nothing is checked here: a
+    /// wrong key or associated data fails on the first segment opened.
     pub fn new(key: &Key, associated_data: &[u8], header: &Header, layout: Layout) -> Self {
         Self {
             cipher: derive(key, header.salt(), associated_data),
@@ -321,6 +341,7 @@ impl Decryptor {
         }
     }
 
+    /// The layout the segments are cut to.
     pub fn layout(&self) -> Layout {
         self.layout
     }

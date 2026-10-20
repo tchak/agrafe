@@ -53,7 +53,10 @@ pub(crate) fn is_sheet(content_type: &str) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ColumnType {
+    /// `null` or a `YYYY-MM-DD` string; written as a date cell.
     Date,
+    /// `null` or a `YYYY-MM-DDTHH:MM:SS` string, with an optional fraction
+    /// and offset; written as the wall-clock time given, the offset dropped.
     Datetime,
 }
 
@@ -68,6 +71,7 @@ agrafe_types::str_enum!(ColumnType {
 pub struct Column {
     /// The header text.
     pub name: String,
+    /// `type` in JSON; `None` takes the JSON scalar as it comes.
     #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
     pub kind: Option<ColumnType>,
 }
@@ -77,7 +81,9 @@ pub struct Column {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Sheet {
+    /// The sheet's name, validated as Excel wants it.
     pub name: String,
+    /// Its columns, in order; a line's values are positional against them.
     pub columns: Vec<Column>,
 }
 

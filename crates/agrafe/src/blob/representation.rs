@@ -18,24 +18,37 @@ use super::read::{ReadError, Stored};
 use super::{BlobHead, BlobState, Rendered, Representation, RepresentationState, repo};
 use crate::app::Agrafe;
 
+/// Why a representation could not be resolved, stored or loaded.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// The row lacks what reading needs, or the data key does not unwrap.
     #[error(transparent)]
     Read(#[from] ReadError),
+    /// Encrypting the rendered bytes failed.
     #[error("sealing the {kind} of blob {blob_id}: {source}")]
     Seal {
+        /// The representation being stored.
         kind: Representation,
+        /// Its blob.
         blob_id: Uuid,
+        /// Why encryption failed.
         source: agrafe_crypto::Error,
     },
+    /// The stored object does not decrypt: a wrong key, or a tampered or
+    /// truncated object.
     #[error("the {kind} of blob {blob_id} is corrupt: {source}")]
     Corrupt {
+        /// The representation being loaded.
         kind: Representation,
+        /// Its blob.
         blob_id: Uuid,
+        /// Why decryption failed.
         source: agrafe_crypto::Error,
     },
+    /// The object store failed, reading or writing.
     #[error("writing the object: {0}")]
     Store(#[from] object_store::Error),
+    /// The query queueing a render failed.
     #[error("database: {0}")]
     Db(#[from] sqlx::Error),
 }

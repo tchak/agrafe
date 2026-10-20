@@ -22,10 +22,15 @@ type HmacSha256 = Hmac<Sha256>;
 
 const VERSION: &str = "v1";
 
+/// Why a token presented to the public port is refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SignatureError {
+    /// The token is malformed, names an unknown key, or its MAC does not
+    /// match the method and request target. Nothing else is checked first,
+    /// so a forged token learns nothing more.
     #[error("invalid signature")]
     Invalid,
+    /// The signature is good but its expiry has passed.
     #[error("signature expired")]
     Expired,
     /// Signed by a known key, but for longer than `signing.ttl.max` allows:
@@ -35,6 +40,8 @@ pub enum SignatureError {
     TooLong,
 }
 
+/// Mints and verifies the HMAC tokens of public URLs, with the keys of
+/// `[signing]`: the current one to mint, any of them to verify.
 #[derive(Clone)]
 pub struct Signer {
     keys: HashMap<String, Vec<u8>>,

@@ -41,8 +41,10 @@ pub const REJECTED_EXIT: u8 = 2;
 /// usable before the compiler has looked at anything.
 #[derive(Debug, thiserror::Error)]
 pub enum OpenError {
+    /// The main file's path is not a valid path inside the workspace.
     #[error("main file `{0}` is not a valid path")]
     Main(String),
+    /// The workspace could not be read while gathering its fonts.
     #[error("reading the workspace: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -51,6 +53,7 @@ pub enum OpenError {
 /// each located in its file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompileError {
+    /// The compiler's diagnostics, in the order it reported them.
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -71,18 +74,24 @@ impl std::error::Error for CompileError {}
 /// One diagnostic of the compiler, as the job error shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
+    /// Whether it is an error or a warning.
     pub severity: Severity,
     /// `path:line:column` of the offending node, when it has one.
     pub location: Option<Location>,
+    /// What the compiler says is wrong.
     pub message: String,
+    /// The compiler's suggestions for fixing it, if any.
     pub hints: Vec<String>,
 }
 
 /// A place in a workspace file, line and column counted from one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Location {
+    /// The file's path relative to the workspace root.
     pub path: String,
+    /// The line, from one.
     pub line: usize,
+    /// The column, from one.
     pub column: usize,
 }
 

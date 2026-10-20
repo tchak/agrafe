@@ -2,17 +2,29 @@
 
 use serde::{Deserialize, Serialize};
 
+/// The coarse kind of a file, derived from its content type by
+/// [`classify`] and stored on the blob; it picks the thumbnail icon when
+/// nothing better can be rendered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Category {
+    /// Any `image/*` type.
     Image,
+    /// Word processing and page formats: PDF, Word, ODT, RTF, EPUB.
     Document,
+    /// Excel, ODS, CSV and TSV.
     Spreadsheet,
+    /// PowerPoint and ODP.
     Presentation,
+    /// ZIP, gzip, tar, 7z, RAR, bzip2 and zstd.
     Archive,
+    /// Any `audio/*` type.
     Audio,
+    /// Any `video/*` type.
     Video,
+    /// Any `text/*` type except CSV and TSV, plus JSON, XML and GeoJSON.
     Text,
+    /// Everything else, `application/octet-stream` included.
     Other,
 }
 
@@ -28,13 +40,20 @@ crate::str_enum!(Category {
     Other => "other",
 });
 
-/// Well-known content types.
+/// The content type of a PDF file.
 pub const PDF: &str = "application/pdf";
+/// The content type of a CSV file, a [`Category::Spreadsheet`].
 pub const CSV: &str = "text/csv";
+/// The content type of an Excel workbook (Office Open XML).
 pub const XLSX: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+/// The content type of an OpenDocument spreadsheet.
 pub const ODS: &str = "application/vnd.oasis.opendocument.spreadsheet";
+/// The content type of a ZIP archive, also the container of XLSX, DOCX,
+/// ODS and ODT.
 pub const ZIP: &str = "application/zip";
+/// The content type of a Word document (Office Open XML).
 pub const DOCX: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+/// The content type of an OpenDocument text.
 pub const ODT: &str = "application/vnd.oasis.opendocument.text";
 
 /// Classify a normalised `type/subtype` content type.

@@ -15,7 +15,9 @@ pub use classify::{Category, classify};
 #[derive(Debug, thiserror::Error)]
 #[error("unknown {kind} `{value}`")]
 pub struct ParseEnumError {
+    /// The enum's name, as written in the code.
     pub kind: &'static str,
+    /// The text that matched none of its variants.
     pub value: String,
 }
 
@@ -25,8 +27,10 @@ pub struct ParseEnumError {
 macro_rules! str_enum {
     ($name:ident { $($variant:ident => $s:literal),* $(,)? }) => {
         impl $name {
+            /// Every variant, in declaration order.
             pub const ALL: &'static [$name] = &[$($name::$variant),*];
 
+            /// The text the variant is stored and displayed as.
             pub fn as_str(self) -> &'static str {
                 match self { $($name::$variant => $s),* }
             }

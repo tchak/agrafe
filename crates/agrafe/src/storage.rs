@@ -10,19 +10,32 @@ use object_store::local::LocalFileSystem;
 
 use crate::config::StorageConfig;
 
+/// The object store every blob's objects live in, shared across the
+/// process.
 pub type Store = Arc<dyn ObjectStore>;
 
+/// A store that cannot be built from its configuration.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// The `local` backend's directory did not exist and could not be
+    /// created.
     #[error("creating storage directory {path}: {source}")]
     CreateDir {
+        /// The configured `storage.local.path`.
         path: String,
+        /// Why creating it failed.
         source: std::io::Error,
     },
+    /// The backend refused its settings: a malformed key, a missing bucket
+    /// name or region. Nothing is contacted, so an unreachable store is not
+    /// seen here.
     #[error("opening the object store: {0}")]
     Open(#[from] object_store::Error),
 }
 
+/// The store `config` describes, settings left out filled from the
+/// backend's own environment variables. Creates the `local` backend's
+/// directory if needed; connects to nothing.
 pub fn build(config: &StorageConfig) -> Result<Store, Error> {
     match config {
         StorageConfig::Local { local } => {

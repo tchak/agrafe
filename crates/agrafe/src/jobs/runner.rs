@@ -27,14 +27,22 @@ const LISTEN_RETRY: Duration = Duration::from_secs(1);
 /// Why the workers stopped. A failed job is not one of these.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// The connection for `LISTEN` could not be opened.
     #[error("connecting the job listener: {0}")]
     Connect(sqlx::Error),
+    /// Subscribing to the job channel failed.
     #[error("listening for jobs: {0}")]
     Listen(sqlx::Error),
+    /// A poller or the listener panicked; a handler's panic is a failed
+    /// job instead.
     #[error("worker panicked: {0}")]
     Panicked(#[from] tokio::task::JoinError),
+    /// The sandbox, renderer or document compiler probe failed, for a
+    /// process handling `render` or `document`: the tools are not fit to
+    /// run.
     #[error("the renderer failed its startup probe: {0}")]
     Probe(#[from] agrafe_render::ProbeError),
+    /// The first reap could not be enqueued, for a process handling `reap`.
     #[error("scheduling the first reap: {0}")]
     Schedule(sqlx::Error),
 }

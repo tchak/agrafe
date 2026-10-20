@@ -27,11 +27,16 @@ pub struct Thresholds {
 /// An image pulled out of a document, in a format libvips loads.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Extracted {
+    /// The encoded image as the document stores it, or a PNM wrapped
+    /// around the raw samples of a PDF image.
     pub bytes: Vec<u8>,
     /// `jpeg`, `png`, `ppm`, ... Informational: vips sniffs the bytes.
     pub format: &'static str,
 }
 
+/// The one image a PDF, DOCX or ODT wraps, if it is really an image by
+/// `thresholds` and fits in `max_output` bytes; `None` otherwise, and for
+/// any other content type.
 pub fn extract(
     content_type: &str,
     bytes: &[u8],

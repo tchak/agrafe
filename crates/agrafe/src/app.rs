@@ -20,14 +20,22 @@ use crate::storage::{self, Store};
 /// Why the state could not be built from a configuration that loaded.
 #[derive(Debug, thiserror::Error)]
 pub enum InitError {
+    /// The object store could not be built from `[storage]`.
     #[error(transparent)]
     Storage(#[from] storage::Error),
+    /// A section checked only when the state is built is unusable: the
+    /// signing keys and TTLs, the KEKs and chunk size, the webhook secret.
     #[error(transparent)]
     Config(#[from] ConfigError),
+    /// The HTTP client `url` blobs are fetched through could not be built
+    /// from `[fetch]`.
     #[error("building the fetch client: {0}")]
     Fetch(#[from] reqwest::Error),
+    /// The HTTP client the background layers of maps are fetched through
+    /// could not be built from `[media.geojson]`.
     #[error("building the map layer client: {0}")]
     Maps(reqwest::Error),
+    /// The HTTP client webhook deliveries go through could not be built.
     #[error("building the webhook client: {0}")]
     Webhook(reqwest::Error),
 }
@@ -51,6 +59,9 @@ struct Inner {
 }
 
 impl Agrafe {
+    /// The handle on `config`, with the object store `[storage]` describes
+    /// and `pool`, which must already be migrated. Connects to nothing but
+    /// checks every key the state depends on.
     pub fn new(config: Config, pool: PgPool) -> Result<Self, InitError> {
         let store = storage::build(&config.storage)?;
         Self::with_store(config, pool, store)
@@ -87,18 +98,22 @@ impl Agrafe {
         })))
     }
 
+    /// The configuration this instance was built from.
     pub fn config(&self) -> &Config {
         &self.0.config
     }
 
+    /// The database pool, shared by the routes and the workers.
     pub fn pool(&self) -> &PgPool {
         &self.0.pool
     }
 
+    /// The object store the blobs' objects live in.
     pub fn store(&self) -> &Store {
         &self.0.store
     }
 
+    /// The signer public URLs are minted and verified with.
     pub fn signer(&self) -> &Signer {
         &self.0.signer
     }
@@ -137,6 +152,7 @@ impl Agrafe {
         &self.0.heads
     }
 
+    /// The Prometheus metrics this process records.
     pub fn metrics(&self) -> &Metrics {
         &self.0.metrics
     }

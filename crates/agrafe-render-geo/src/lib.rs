@@ -167,7 +167,10 @@ impl Lcc {
 /// The SVG and the extent it is drawn on.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rendered {
+    /// The geometry as SVG paths, with the attribution, sized to the
+    /// extent's pixel box.
     pub svg: String,
+    /// What the helper writes back as `extent.json`.
     pub extent: Extent,
 }
 

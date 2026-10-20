@@ -1,3 +1,8 @@
+//! The `agrafe` binary. `agrafe migrate` applies the pending database
+//! migrations; `agrafe serve` runs what `server.role` names: the private
+//! and public interfaces (the dashboard under `/dashboard` on the private
+//! one, when enabled), the job workers, or both.
+
 use std::net::SocketAddr;
 use std::path::PathBuf;
 

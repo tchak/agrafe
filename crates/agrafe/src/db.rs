@@ -7,8 +7,11 @@ use sqlx::{PgPool, Postgres, Type};
 
 use crate::config::DatabaseConfig;
 
+/// The migrations under `migrations/`, embedded at build time.
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations");
 
+/// A pool of at most `max_connections` connections to `url`, the first one
+/// opened before returning.
 pub async fn connect(config: &DatabaseConfig) -> sqlx::Result<PgPool> {
     PgPoolOptions::new()
         .max_connections(config.max_connections)
@@ -16,6 +19,9 @@ pub async fn connect(config: &DatabaseConfig) -> sqlx::Result<PgPool> {
         .await
 }
 
+/// Applies the migrations `pool`'s database has not yet run. Fails on a
+/// migration whose file changed since it was applied, as sqlx checksums
+/// them.
 pub async fn migrate(pool: &PgPool) -> Result<(), sqlx::migrate::MigrateError> {
     MIGRATOR.run(pool).await
 }

@@ -23,6 +23,7 @@ use crate::text::is_bidi_control;
 /// Why a blob could not be attached.
 #[derive(Debug, thiserror::Error)]
 pub enum AttachError {
+    /// No blob has this id.
     #[error("no such blob")]
     NotFound,
     /// The request is well formed but not acceptable; the message says why.
@@ -32,6 +33,7 @@ pub enum AttachError {
     /// the reaper has recorded it.
     #[error("blob is {0} and cannot be attached")]
     Terminal(BlobState),
+    /// The query or the transaction failed.
     #[error("database: {0}")]
     Db(#[from] sqlx::Error),
 }
@@ -39,10 +41,14 @@ pub enum AttachError {
 /// Why an attachment listing was refused.
 #[derive(Debug, thiserror::Error)]
 pub enum ListError {
+    /// `limit` lies outside `1..=MAX_LIMIT`; carries `MAX_LIMIT`.
     #[error("limit must be between 1 and {0}")]
     Limit(usize),
+    /// `record_id` was given without `record_type`, which it means nothing
+    /// without.
     #[error("record_id is only accepted together with record_type")]
     RecordIdAlone,
+    /// The query failed.
     #[error("database: {0}")]
     Db(#[from] sqlx::Error),
 }
@@ -98,6 +104,7 @@ impl Agrafe {
         Ok(true)
     }
 
+    /// The attachment with this id, or `None`.
     pub async fn find_attachment(&self, id: Uuid) -> sqlx::Result<Option<Attachment>> {
         find(self.pool(), id).await
     }
@@ -165,8 +172,11 @@ impl Agrafe {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AttachmentRequest {
+    /// The kind of record, as the backend names it.
     pub record_type: String,
+    /// The record's identifier, as the backend writes it.
     pub record_id: String,
+    /// The role the blob plays for the record (`avatar`).
     pub name: String,
 }
 
@@ -178,13 +188,20 @@ pub(crate) struct NewAttachment {
     pub name: String,
 }
 
+/// A row of `attachments`: a record of the backend uses a blob.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Attachment {
+    /// A UUIDv7, so the listing's order and cursor.
     pub id: Uuid,
+    /// The blob in use.
     pub blob_id: Uuid,
+    /// The kind of record.
     pub record_type: String,
+    /// The record's identifier, as the backend writes it.
     pub record_id: String,
+    /// The role the blob plays for the record.
     pub name: String,
+    /// When the attachment was made.
     #[sqlx(try_from = "jiff_sqlx::Timestamp")]
     pub created_at: Timestamp,
 }
@@ -193,11 +210,14 @@ pub struct Attachment {
 /// that already existed for the triple.
 #[derive(Debug, Clone)]
 pub enum Attached {
+    /// The triple was new.
     Created(Attachment),
+    /// The triple was already attached to the blob.
     Existing(Attachment),
 }
 
 impl Attached {
+    /// The attachment, created or existing.
     pub fn attachment(&self) -> &Attachment {
         match self {
             Attached::Created(a) | Attached::Existing(a) => a,
@@ -211,42 +231,60 @@ impl Attached {
 /// without a second request.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Listed {
+    /// The attachment itself.
     #[sqlx(flatten)]
     pub attachment: Attachment,
+    /// The state of its blob.
     #[sqlx(try_from = "String")]
     pub blob_state: BlobState,
+    /// The blob's `failed_at`: set when the job that was to finish it ran
+    /// out of attempts.
     #[sqlx(try_from = "crate::db::NullableTimestamp")]
     pub blob_failed_at: Option<Timestamp>,
 }
 
+/// The filters and page of an attachment listing; every filter given must
+/// match.
 #[derive(Debug, Default, Clone)]
 pub struct ListParams {
+    /// Only attachments of this kind of record.
     pub record_type: Option<String>,
     /// Only together with `record_type`.
     pub record_id: Option<String>,
+    /// Only attachments under this name.
     pub name: Option<String>,
+    /// Only the attachments of this blob.
     pub blob_id: Option<Uuid>,
+    /// The `next_cursor` of the previous page: only attachments older than
+    /// it.
     pub cursor: Option<Uuid>,
-    /// Already validated to lie in `1..=MAX_LIMIT`.
+    /// The page size, in `1..=MAX_LIMIT`.
     pub limit: usize,
 }
 
+/// The page size when the request gives none.
 pub const DEFAULT_LIMIT: usize = 50;
+/// The largest page a listing hands back.
 pub const MAX_LIMIT: usize = 200;
 
 /// The values `record_type` and `name` take across the table; see
 /// `Agrafe::attachment_facets`.
 #[derive(Debug, Clone, Default)]
 pub struct Facets {
+    /// The distinct `record_type` values, sorted.
     pub record_types: Vec<String>,
+    /// The distinct `name` values across every record type, sorted.
     pub names: Vec<String>,
 }
 
 /// Distinct `(record_type, name)` pairs walked at most for the facets.
 pub const MAX_FACETS: usize = 500;
 
+/// A page of an attachment listing.
 pub struct Page {
+    /// The attachments, newest first.
     pub items: Vec<Listed>,
+    /// The cursor of the next page; `None` on the last one.
     pub next_cursor: Option<Uuid>,
 }
 

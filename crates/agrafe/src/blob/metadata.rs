@@ -28,54 +28,91 @@ impl Agrafe {
 /// Full metadata.
 #[derive(Debug, Serialize)]
 pub struct BlobMetadata {
+    /// The blob's id.
     pub id: Uuid,
+    /// The state as stored: a blob past `expires_at` the reaper has not
+    /// reached yet still reports its previous one.
     pub state: BlobState,
+    /// The filename given at creation, trimmed.
     pub filename: String,
+    /// The normalised media type.
     pub content_type: String,
+    /// What the content type classifies as.
     pub category: Category,
+    /// How the bytes arrive.
     pub input_type: InputType,
+    /// SHA-256 of the bytes, base64: as declared, or computed once the
+    /// bytes are in.
     pub checksum: Option<String>,
     /// MD5 of the bytes, base64: the `checksum` of an Active Storage blob,
     /// for a backend keeping records in both systems. As declared, or
     /// computed by the service once the bytes are in. See DESIGN.md,
     /// "Creation".
     pub checksum_md5: Option<String>,
+    /// Size of the file in bytes: as declared, or known once the bytes
+    /// are in.
     pub size: Option<i64>,
     /// Where a `url` blob is fetched from, until it has been. Private
     /// metadata only: a presigned URL is a secret.
     pub url: Option<String>,
+    /// The bytes are not scanned: the backend vouched for them, or the
+    /// blob is generated.
     pub skip_virus_scan: bool,
+    /// Whether the public port accepts the upload, computed by the
+    /// public upload rule.
     pub public_upload_allowed: bool,
+    /// When the blob expires; null while it is attached.
     pub expires_at: Option<Timestamp>,
+    /// Where the blob's jobs go in their kind's queue.
     pub priority: Priority,
+    /// Where the virus scan stands.
     pub scan_state: ScanState,
+    /// When the bytes were scanned; null until then and for a skipped scan.
     pub scanned_at: Option<Timestamp>,
+    /// What clamd found, for an `infected` blob. Private metadata only.
     pub scan_signature: Option<String>,
+    /// Where the thumbnail's rendering stands.
     pub thumbnail_state: RepresentationState,
+    /// Where the preview's rendering stands.
     pub preview_state: RepresentationState,
+    /// What the preview was rendered from, a `PreviewSource` value; null
+    /// without a rendered preview.
     pub preview_source: Option<String>,
-    /// The source of a generated blob: parts accepted, lines and bytes
-    /// across them. Null for `raw` and `multipart`.
+    /// Source parts accepted so far, for a generated blob. Null for
+    /// `raw`, `multipart` and `url`.
     pub source_parts: Option<i32>,
+    /// Lines across the source parts of a generated blob. Null for `raw`,
+    /// `multipart` and `url`.
     pub source_rows: Option<i64>,
+    /// Bytes across the source parts of a generated blob. Null for `raw`,
+    /// `multipart` and `url`.
     pub source_size: Option<i64>,
-    /// Set once an archive is built: members written and members skipped.
+    /// Members the archive build wrote; null until an archive is built.
     pub archive_entries: Option<i64>,
+    /// Members the archive build skipped because they were gone by then;
+    /// null until an archive is built.
     pub archive_errors: Option<i64>,
+    /// When the blob was created.
     pub created_at: Timestamp,
+    /// When the row last changed.
     pub updated_at: Timestamp,
+    /// When the bytes landed in the bucket.
     pub uploaded_at: Option<Timestamp>,
+    /// When the blob was soft deleted.
     pub deleted_at: Option<Timestamp>,
+    /// When the purge removed the blob's objects from the bucket.
     pub purged_at: Option<Timestamp>,
     /// Set when the job that was to finish the blob, a scan, a build or a
     /// render, ran out of attempts: the blob is stuck where it is until
     /// `POST /blobs/:id/retry` or a delete. Cleared when a job is enqueued
     /// for it again. See DESIGN.md, "Jobs".
     pub failed_at: Option<Timestamp>,
+    /// What the dead job last said, set and cleared with `failed_at`.
     pub last_error: Option<String>,
     /// The records using the blob, oldest first. A blob with any has no
     /// `expires_at`.
     pub attachments: Vec<AttachmentMetadata>,
+    /// The signed public URLs of the blob, with the default options.
     pub urls: BlobUrls,
     /// What a read of the blob needs of this row, once it is `ready`, as
     /// one opaque string: a backend holding the signing key mints sealed
@@ -84,6 +121,8 @@ pub struct BlobMetadata {
 }
 
 impl BlobMetadata {
+    /// The metadata of `blob`, with its `attachments` and the `urls`
+    /// minted for it.
     pub fn new(blob: &Blob, attachments: &[Attachment], urls: BlobUrls) -> Self {
         let generated = blob.input_type.is_generated();
         Self {
@@ -129,15 +168,22 @@ impl BlobMetadata {
 /// An attachment, as the full metadata lists it.
 #[derive(Debug, Serialize)]
 pub struct AttachmentMetadata {
+    /// The attachment's id, a UUIDv7.
     pub id: Uuid,
+    /// The blob in use.
     pub blob_id: Uuid,
+    /// The kind of record.
     pub record_type: String,
+    /// The record's identifier, as the backend writes it.
     pub record_id: String,
+    /// The role the blob plays for the record.
     pub name: String,
+    /// When the attachment was made.
     pub created_at: Timestamp,
 }
 
 impl AttachmentMetadata {
+    /// The metadata of `attachment`.
     pub fn new(attachment: &Attachment) -> Self {
         Self {
             id: attachment.id,

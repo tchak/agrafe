@@ -30,8 +30,10 @@ use crate::config::WebhookConfig;
 /// Why a job listing was refused.
 #[derive(Debug, thiserror::Error)]
 pub enum ListError {
+    /// `limit` lies outside `1..=MAX_LIMIT`; carries `MAX_LIMIT`.
     #[error("limit must be between 1 and {0}")]
     Limit(usize),
+    /// The query failed.
     #[error("database: {0}")]
     Db(#[from] sqlx::Error),
 }
@@ -48,6 +50,7 @@ impl Agrafe {
         Ok(list(self.pool(), params, self.config().jobs.lease_timeout).await?)
     }
 
+    /// The job with this id, in any state, or `None`.
     pub async fn find_job(&self, id: i64) -> sqlx::Result<Option<Job>> {
         find(self.pool(), id).await
     }
@@ -144,11 +147,14 @@ pub(crate) const CHANNEL: &str = "agrafe_jobs";
 const BACKOFF_BASE: Duration = Duration::from_secs(30);
 const BACKOFF_MAX: Duration = Duration::from_secs(3600);
 
+/// What a job does. Each kind has its own workers, so a backlog of one
+/// never holds up another.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JobKind {
     /// Download the bytes of a `url` blob.
     Fetch,
+    /// Scan an uploaded blob with clamd.
     Scan,
     /// Thumbnail and preview, whichever is pending.
     Render,
@@ -158,7 +164,10 @@ pub enum JobKind {
     Archive,
     /// Build a `document` blob from its stored source.
     Document,
+    /// Delete the objects under a terminal blob's prefix.
     Purge,
+    /// The periodic housekeeping: expiry, abandoned uploads, pruning, and
+    /// the purges they call for. Each run schedules the next.
     Reap,
     /// Deliver one event of a blob to the webhook. See `notify`.
     Notify,
@@ -182,9 +191,12 @@ agrafe_types::str_enum!(JobKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Priority {
+    /// Runs before the `normal` and `low` jobs of its kind.
     High,
+    /// The default, and what purges and blob-less jobs always run at.
     #[default]
     Normal,
+    /// Runs only when no `high` or `normal` job of its kind is due.
     Low,
 }
 
@@ -243,25 +255,43 @@ impl TryFrom<i16> for Priority {
     }
 }
 
+/// A row of `jobs`. Success deletes the row, so a job that is read is
+/// pending, running or dead.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Job {
+    /// From a sequence; the listing's order and cursor.
     pub id: i64,
+    /// What the job does.
     #[sqlx(try_from = "String")]
     pub kind: JobKind,
+    /// The blob it works on; `None` for a `reap`.
     pub blob_id: Option<Uuid>,
+    /// Copied from the blob; `normal` for a purge or a blob-less job.
     #[sqlx(try_from = "i16")]
     pub priority: Priority,
+    /// Kind-specific arguments: the event for a `notify`, `{}` otherwise.
     pub payload: serde_json::Value,
+    /// When the job is due: now, or later for a retry backing off or a
+    /// delayed purge.
     #[sqlx(try_from = "jiff_sqlx::Timestamp")]
     pub run_at: Timestamp,
+    /// Claims so far; the claim counts the attempt.
     pub attempts: i32,
+    /// Attempts before the job is dead.
     pub max_attempts: i32,
+    /// When a worker claimed or last renewed its lease; a lock older than
+    /// `jobs.lease_timeout` is no lock.
     #[sqlx(try_from = "crate::db::NullableTimestamp")]
     pub locked_at: Option<Timestamp>,
+    /// The worker that holds, or last held, the job.
     pub locked_by: Option<String>,
+    /// The message of the last failed attempt.
     pub last_error: Option<String>,
+    /// Set when the job ran out of attempts, or failed in a way another
+    /// attempt would repeat: it is dead and never claimed again.
     #[sqlx(try_from = "crate::db::NullableTimestamp")]
     pub failed_at: Option<Timestamp>,
+    /// When the job was enqueued.
     #[sqlx(try_from = "jiff_sqlx::Timestamp")]
     pub created_at: Timestamp,
 }
@@ -327,13 +357,20 @@ fn push_state(qb: &mut QueryBuilder<Postgres>, lease: Duration) {
 /// are in `state`, and for the due ones how long the oldest has waited.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Count {
+    /// The kind counted.
     #[sqlx(try_from = "String")]
     pub kind: JobKind,
+    /// The priority counted.
     #[sqlx(try_from = "i16")]
     pub priority: Priority,
+    /// The state counted.
     #[sqlx(try_from = "String")]
     pub state: JobState,
+    /// How many jobs there are; never zero, an empty combination has no
+    /// line.
     pub count: i64,
+    /// Seconds since the earliest `run_at` among them. Only the `due` line's
+    /// means something: the wait of the oldest due job.
     pub oldest_seconds: Option<f64>,
 }
 
@@ -350,22 +387,34 @@ pub(crate) async fn counts(exec: impl PgExecutor<'_>, lease: Duration) -> sqlx::
     qb.build_query_as().fetch_all(exec).await
 }
 
+/// The page size when the request gives none.
 pub const DEFAULT_LIMIT: usize = 50;
+/// The largest page a listing hands back.
 pub const MAX_LIMIT: usize = 200;
 
+/// The filters and page of a job listing; every filter given must match.
 #[derive(Debug, Clone, Default)]
 pub struct ListParams {
+    /// Only jobs of this kind.
     pub kind: Option<JobKind>,
+    /// Only jobs in this state, as `Agrafe::job_state` would tell it.
     pub state: Option<JobState>,
+    /// Only jobs at this priority.
     pub priority: Option<Priority>,
+    /// Only the jobs of this blob.
     pub blob_id: Option<Uuid>,
+    /// The `next_cursor` of the previous page: only jobs older than it.
     pub cursor: Option<i64>,
+    /// The page size, in `1..=MAX_LIMIT`.
     pub limit: usize,
 }
 
+/// A page of a job listing.
 #[derive(Debug)]
 pub struct Page {
+    /// The jobs, newest first.
     pub items: Vec<Job>,
+    /// The cursor of the next page; `None` on the last one.
     pub next_cursor: Option<i64>,
 }
 
@@ -418,12 +467,15 @@ pub async fn find(exec: impl PgExecutor<'_>, id: i64) -> sqlx::Result<Option<Job
 /// Outcome of an operator's action on a job.
 #[derive(Debug)]
 pub enum Action {
+    /// The job was retried or discarded; the row as it was left, or as it
+    /// was before the delete.
     Done(Job),
     /// Only a dead job can be acted on; this one is in another state.
     NotDead(Job),
     /// A pending job of the same kind already exists for the blob, so the
     /// dead one has nothing to add.
     Duplicate(Job),
+    /// No job has this id.
     Missing,
 }
 

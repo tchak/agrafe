@@ -10,7 +10,7 @@
 //! not a failed check: it is stored and the blob becomes `infected`, exactly
 //! as a deferred scan would leave it.
 //!
-//! The checks are a [`Tap`] on the plaintext; the encryptor, the multipart
+//! The checks are a `Tap` on the plaintext; the encryptor, the multipart
 //! upload, the heartbeat on the row and the abort on failure are the same
 //! whatever the tap, which is how a manifest part is stored by the same code
 //! as a file.
@@ -64,7 +64,9 @@ pub fn body_limit(config: &UploadConfig) -> usize {
 /// not is computed and written to the row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Declared {
+    /// The SHA-256 of the bytes, when declared.
     pub checksum: Option<Vec<u8>>,
+    /// The MD5 of the bytes, when declared; a `url` blob only.
     pub checksum_md5: Option<Vec<u8>>,
     /// The exact size, when declared.
     pub size: Option<u64>,
@@ -136,8 +138,11 @@ pub(crate) fn object_key(blob_id: Uuid) -> String {
 /// or the file's fault, the last the service's.
 #[derive(Debug, thiserror::Error)]
 pub enum UploadError {
+    /// No blob has this id, or it went while the upload ran.
     #[error("no such blob")]
     NotFound,
+    /// The blob is not in a state that takes this upload, or another upload
+    /// of it is in flight; carries the state it is in.
     #[error("blob is {0} and cannot be uploaded")]
     Conflict(BlobState),
     /// A `rows`, `archive` or `document` blob was handed to the file
@@ -152,6 +157,8 @@ pub enum UploadError {
     /// Parts and finish apply to generated blobs only.
     #[error("parts and finish apply to rows, archive and document blobs, not to a {0} blob")]
     NotGenerated(InputType),
+    /// A `raw` or `multipart` blob without its checksum and size: creation
+    /// never lets one through.
     #[error("blob has no declared checksum and size")]
     Undeclared,
     /// A `rows` blob without its columns: creation never lets one through.
@@ -160,52 +167,81 @@ pub enum UploadError {
     /// Parts are numbered from one and consecutive; this is the one the
     /// blob is waiting for.
     #[error("expected part {expected}")]
-    PartSequence { expected: u32 },
+    PartSequence {
+        /// The number of the next part.
+        expected: u32,
+    },
+    /// The part number is past `MAX_PARTS`, which it carries.
     #[error("a source has at most {0} parts")]
     TooManyParts(u32),
+    /// One part ran past `upload.max_size`, which it carries.
     #[error("part exceeds the maximum of {0} bytes")]
     PartTooLarge(u64),
     /// A line of a source failed its type's rules; the number is within the
     /// part, counted from one.
     #[error("line {line}: {reason}")]
-    Line { line: u64, reason: String },
+    Line {
+        /// The line within the part, counted from one.
+        line: u64,
+        /// What is wrong with it.
+        reason: String,
+    },
     /// Nothing to build: no part was accepted.
     #[error("the source has no parts")]
     NoParts,
+    /// The entries accepted so far, estimated as the zip will hold them,
+    /// run past `archive.max_size`, which it carries.
     #[error("the archive would exceed the maximum of {0} bytes (archive.max_size)")]
     ArchiveTooLarge(u64),
+    /// The files of a `document` source run past
+    /// `document.max_workspace_size`, which it carries.
     #[error("the workspace would exceed the maximum of {0} bytes (document.max_workspace_size)")]
     WorkspaceTooLarge(u64),
+    /// A `document` source holds more than `document.max_files` files,
+    /// which it carries.
     #[error("the workspace would exceed the maximum of {0} files (document.max_files)")]
     TooManyFiles(u64),
     /// The body stream failed; the boxed error is the caller's own.
     #[error(transparent)]
     Body(BoxError),
+    /// The body is longer or shorter than the size declared.
     #[error("body size does not match the declared size")]
     SizeMismatch,
     /// No size was declared and the body ran past `upload.max_size`.
     #[error("body exceeds the maximum of {0} bytes")]
     BodyTooLarge(u64),
+    /// The SHA-256 of the body is not the one declared.
     #[error("body checksum does not match the declared checksum")]
     ChecksumMismatch,
+    /// The MD5 of the body is not the one declared.
     #[error("body MD5 does not match the declared checksum_md5")]
     Md5Mismatch,
+    /// The magic bytes say the file is of a type the declared content type
+    /// does not cover.
     #[error("content looks like `{sniffed}`, not `{declared}`")]
     TypeMismatch {
+        /// The content type the blob was created with.
         declared: String,
+        /// The content type the first bytes point to.
         sniffed: &'static str,
     },
     /// The bytes were stored and the blob is `infected`, by this signature.
     #[error("file is infected: {0}")]
     Infected(String),
+    /// The object store refused a write.
     #[error("object store: {0}")]
     Store(#[from] object_store::Error),
+    /// The streaming encryptor failed.
     #[error("encryption: {0}")]
     Crypto(#[from] agrafe_crypto::Error),
+    /// The blob's data key could not be unwrapped.
     #[error(transparent)]
     Key(#[from] crate::encryption::UnwrapError),
+    /// A query or a transition failed.
     #[error("database: {0}")]
     Db(#[from] sqlx::Error),
+    /// The task that streams to the object store panicked or was
+    /// cancelled.
     #[error("upload task failed: {0}")]
     Task(#[from] tokio::task::JoinError),
 }

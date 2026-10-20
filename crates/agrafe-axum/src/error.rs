@@ -12,39 +12,62 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 
+/// A handler failure. On either port it answers its variant's status with
+/// a body `{"error": {"code": ..., "message": ...}}`, where the code is
+/// stable and the message, the `Display` text, is for humans.
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
+    /// `400`: the request does not parse, such as malformed JSON, an
+    /// unknown query value, an unreadable body or a bad filename.
     #[error("{0}")]
     BadRequest(String),
+    /// `413`: the body, or one part of it, exceeds the upload size limit.
     #[error("{0}")]
     PayloadTooLarge(String),
+    /// `415`: the body's `Content-Type` is not one the route accepts.
     #[error("{0}")]
     UnsupportedMediaType(String),
+    /// `422`: the request parses but is invalid, such as a creation that
+    /// breaks a rule or an upload whose size, checksum or type does not
+    /// match what was declared.
     #[error("{0}")]
     Unprocessable(String),
-    /// The upload was stored and the blob is `infected`. The signature name
+    /// `422`: the upload was stored and the blob is `infected`. The signature name
     /// is for the private port; the public port says only that it is.
     #[error("file is infected{}", .0.as_deref().map(|s| format!(": {s}")).unwrap_or_default())]
     Infected(Option<String>),
+    /// `404`: no such route or no such thing, or one the public port does
+    /// not show.
     #[error("not found")]
     NotFound,
     /// `404` with a reason: the thing exists but not in this form.
     #[error("{0}")]
     Missing(String),
+    /// `405`: the route exists, but not for this method.
     #[error("method not allowed")]
     MethodNotAllowed,
+    /// `409`: the request is valid but the state of the thing forbids it,
+    /// such as deleting an attached blob, uploading twice or retrying
+    /// what is not dead.
     #[error("{0}")]
     Conflict(String),
+    /// `403`: an invalid or not yet valid signature, a request the host or
+    /// cross-site check refuses, or a public upload the blob does not
+    /// allow.
     #[error("{0}")]
     Forbidden(String),
+    /// `410`: an expired signature, or an expired or deleted blob that a
+    /// retry or an attach cannot bring back.
     #[error("{0}")]
     Gone(String),
-    /// The server's fault: logged in full, answered as `internal error`.
+    /// `500`, the server's fault: logged in full, answered as `internal error`.
     #[error("{0}")]
     Internal(Box<dyn std::error::Error + Send + Sync>),
 }
 
 impl ApiError {
+    /// Any error as [`ApiError::Internal`]: the one type-erased boundary,
+    /// for failures the client can do nothing about.
     pub fn internal(err: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Self {
         ApiError::Internal(err.into())
     }
@@ -62,6 +85,7 @@ impl ApiError {
         }
     }
 
+    /// The HTTP status this error answers.
     pub fn status(&self) -> StatusCode {
         match self {
             ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
@@ -78,6 +102,8 @@ impl ApiError {
         }
     }
 
+    /// The stable `code` of the JSON body. [`ApiError::Missing`] shares
+    /// `not_found` with [`ApiError::NotFound`].
     pub fn code(&self) -> &'static str {
         match self {
             ApiError::BadRequest(_) => "bad_request",
@@ -267,4 +293,5 @@ impl IntoResponse for ApiError {
     }
 }
 
+/// What a handler returns: its response, or an [`ApiError`].
 pub type ApiResult<T> = Result<T, ApiError>;

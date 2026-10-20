@@ -3,13 +3,13 @@
 //! build. See DESIGN.md, "Generated blobs".
 //!
 //! A part goes through the same pipeline as a file (`upload`), with a
-//! [`Tap`] that parses it line by line instead of checking a checksum, to
+//! `Tap` that parses it line by line instead of checking a checksum, to
 //! `<blob id>/source/<n>`. The blob is `uploading` while the part is in
 //! flight and back in `created` after, with the part counted on the row.
 //! A failing part leaves nothing of itself, like any failed upload.
 //!
-//! The build reads the parts back through [`Source`], which splits them
-//! with the same [`Lines`], so what accept let through, the build parses
+//! The build reads the parts back through `Source`, which splits them
+//! with the same `Lines`, so what accept let through, the build parses
 //! the same way.
 
 pub(crate) mod archive;

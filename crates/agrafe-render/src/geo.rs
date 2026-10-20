@@ -252,45 +252,75 @@ impl std::str::FromStr for Metres {
 /// the network's, never the file's: the attempt fails and is retried.
 #[derive(Debug, thiserror::Error)]
 pub enum FetchError {
+    /// The request failed or timed out before a whole response came.
     #[error("requesting layer {layer} from {host}: {source}")]
     Request {
+        /// The layer's index in `[[media.geojson.layers]]`.
         layer: usize,
+        /// The provider's host; the rest of the URL carries the extent.
         host: String,
+        /// The client's error, stripped of the URL.
         source: reqwest::Error,
     },
+    /// The provider answered with a status other than a success.
     #[error("layer {layer} from {host} answered {status}")]
     Status {
+        /// The layer's index in `[[media.geojson.layers]]`.
         layer: usize,
+        /// The provider's host; the rest of the URL carries the extent.
         host: String,
+        /// The status it answered.
         status: reqwest::StatusCode,
     },
+    /// The response's `Content-Type` is not `image/*`, as a WMS
+    /// `ServiceException` is.
     #[error("layer {layer} from {host} answered `{content_type}`, not an image")]
     NotAnImage {
+        /// The layer's index in `[[media.geojson.layers]]`.
         layer: usize,
+        /// The provider's host; the rest of the URL carries the extent.
         host: String,
+        /// The `Content-Type` it answered, empty when it sent none.
         content_type: String,
     },
+    /// The response grew past `media.geojson.max_layer_size`.
     #[error("layer {layer} from {host} answered more than {max}")]
     TooLarge {
+        /// The layer's index in `[[media.geojson.layers]]`.
         layer: usize,
+        /// The provider's host; the rest of the URL carries the extent.
         host: String,
+        /// The configured `max_layer_size`.
         max: ByteSize,
     },
+    /// The bytes do not sniff as PNG, JPEG, WebP, GIF, TIFF or BMP,
+    /// whatever the `Content-Type` said.
     #[error("layer {layer} from {host} answered bytes that are not an image the renderer may load")]
-    Unloadable { layer: usize, host: String },
+    Unloadable {
+        /// The layer's index in `[[media.geojson.layers]]`.
+        layer: usize,
+        /// The provider's host; the rest of the URL carries the extent.
+        host: String,
+    },
+    /// The image passed the sniff but `vips` failed to decode it at the
+    /// map's size.
     #[error("layer {layer} from {host} answered an image vips could not decode: {why}")]
     Undecodable {
+        /// The layer's index in `[[media.geojson.layers]]`.
         layer: usize,
+        /// The provider's host; the rest of the URL carries the extent.
         host: String,
+        /// The rejection `vips` ended with.
         why: String,
     },
+    /// Writing the response into the work directory failed.
     #[error("writing a layer: {0}")]
     Io(#[from] std::io::Error),
 }
 
 /// The HTTP client background layers are fetched through: a timeout on
 /// the whole request, a few redirects, and at most
-/// [`CONCURRENT_FETCHES`] requests in flight per process. One per
+/// `CONCURRENT_FETCHES` requests in flight per process. One per
 /// process, built from `[media.geojson]`.
 #[derive(Clone)]
 pub struct Client {
@@ -299,6 +329,8 @@ pub struct Client {
 }
 
 impl Client {
+    /// A client with `fetch_timeout` on the connection and on the whole
+    /// request. Fails when reqwest cannot build the client.
     pub fn from_config(config: &GeoJson) -> Result<Self, reqwest::Error> {
         let inner = reqwest::Client::builder()
             .user_agent(concat!("agrafe/", env!("CARGO_PKG_VERSION")))
