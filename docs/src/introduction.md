@@ -19,7 +19,8 @@ again:
   [typst](https://typst.app) templates.
 
 It is written in Rust, keeps its metadata and its job queue in Postgres, and
-stores bytes on the local filesystem or in any S3-compatible bucket.
+stores bytes on the local filesystem, in any S3-compatible bucket, or on
+Azure Blob Storage or Google Cloud Storage.
 
 ## Who it is for
 

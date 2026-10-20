@@ -49,7 +49,7 @@ be left out.
 
 | Key | Default | Description |
 |---|---|---|
-| `backend` | **required** | `"local"` or `"s3"` |
+| `backend` | **required** | `"local"`, `"s3"`, `"azure"` or `"gcs"` |
 
 ### `[storage.local]`
 
@@ -66,6 +66,24 @@ be left out.
 | `endpoint` | none | Endpoint URL, for S3-compatible stores |
 | `access_key_id` | none | Access key |
 | `secret_access_key` | none | Secret key. A secret |
+
+The bucket needs an `AbortIncompleteMultipartUpload` lifecycle rule.
+
+### `[storage.azure]`
+
+| Key | Default | Description |
+|---|---|---|
+| `account` | **required** with `azure` | Storage account name |
+| `container` | **required** with `azure` | Container name |
+| `access_key` | none | Account key. A secret. Without it, the `AZURE_*` environment variables or a managed identity |
+| `endpoint` | none | Endpoint URL, for Azurite or a sovereign cloud |
+
+### `[storage.gcs]`
+
+| Key | Default | Description |
+|---|---|---|
+| `bucket` | **required** with `gcs` | Bucket name |
+| `service_account_key` | none | The JSON key of a service account, its content rather than a path. A secret. Without it, `GOOGLE_SERVICE_ACCOUNT`, the application default credentials or the metadata server |
 
 The bucket needs an `AbortIncompleteMultipartUpload` lifecycle rule.
 

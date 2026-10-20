@@ -159,5 +159,5 @@ Restart, then open <http://localhost:8080/dashboard>.
 - [Uploading files](uploads.md) covers browser uploads and multipart forms.
 - [Minting signed URLs from another project](signed-urls.md) shows how a
   backend builds download links without calling agrafe.
-- [Deployment](deployment.md) covers S3, ClamAV limits and splitting the API
+- [Deployment](deployment.md) covers object storage, ClamAV limits and splitting the API
   from the workers.

@@ -8,7 +8,8 @@
 
 A file storage service: encrypted at rest, virus scanned, with WebP previews
 and thumbnails, and server-side generation of spreadsheets, ZIP archives and
-PDF documents. Rust, Postgres, and any S3-compatible object store.
+PDF documents. Rust, Postgres, and an object store: S3-compatible, Azure
+Blob Storage or Google Cloud Storage.
 
 agrafe sits between your backend and a bucket. Your backend creates a blob,
 hands the browser a signed upload URL, and gets back signed URLs for the
@@ -174,7 +175,8 @@ reasoning behind every decision.
 - **Reaper** for expiry, stale uploads, abandoned exports, delayed purges
   of deleted and expired objects, and the pruning of old dead jobs and
   tombstones.
-- **Storage backends**: local filesystem or any S3-compatible store.
+- **Storage backends**: local filesystem, any S3-compatible store, Azure
+  Blob Storage or Google Cloud Storage.
 - **One TOML file**, every key overridable by `AGRAFE_` environment
   variables, secrets redacted from debug output.
 

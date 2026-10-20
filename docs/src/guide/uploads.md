@@ -156,7 +156,7 @@ the blob every third of `upload.stale_after` (ten minutes by default). The
 reaper resets a blob left in `uploading` without a touch for that long, so
 a slow upload is never reset and a dead one is reset within minutes.
 
-On S3, also configure an `AbortIncompleteMultipartUpload` lifecycle rule on
+On S3 and Google Cloud Storage, also configure an `AbortIncompleteMultipartUpload` lifecycle rule on
 the bucket, since a crashed process cannot abort the multipart uploads it
 had open.
 

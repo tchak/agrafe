@@ -765,12 +765,13 @@ sees the body end before the declared size, aborts the multipart upload and
 hands the blob back exactly as any other failed check does. Only a process
 crash leaves work behind, which is what the stale-upload reaper is for: the
 task touches the row while it runs, and a row untouched for
-`upload.stale_after` has no task behind it. On S3
+`upload.stale_after` has no task behind it. On S3 and Google Cloud Storage
 the bucket also needs an `AbortIncompleteMultipartUpload` lifecycle rule, since
 a crashed process cannot abort the multipart uploads it had open, and
 neither an upload nor a build can abort one whose completion request
 itself failed: the parts are in the bucket, the handle to them is gone,
-and only the rule reclaims them.
+and only the rule reclaims them. Azure needs no rule: it discards
+uncommitted blocks after seven days.
 
 Objects are keyed `<blob id>/original`. Blobs are write-once, so the key is
 written exactly once; a failed upload aborts its multipart upload and leaves
@@ -2373,7 +2374,7 @@ is redacted so a dumped config cannot leak them. See `config/example.toml`.
 |---|---|
 | HTTP | `axum` on `tokio`, two routers sharing state, two listeners |
 | Database | Postgres via `sqlx`, migrations in `migrations/` |
-| Object store | `object_store`, local filesystem or S3 |
+| Object store | `object_store`, local filesystem, S3, Azure Blob Storage or Google Cloud Storage |
 | Fetching `url` blobs, webhook deliveries | `reqwest` with rustls, a resolver of our own enforcing the address policy on fetches |
 | Config | `figment` with TOML and env providers |
 | Signing | `hmac` + `sha2` |

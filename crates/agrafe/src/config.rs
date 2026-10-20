@@ -181,6 +181,8 @@ fn default_max_connections() -> u32 {
 pub enum StorageConfig {
     Local { local: LocalStorageConfig },
     S3 { s3: S3StorageConfig },
+    Azure { azure: AzureStorageConfig },
+    Gcs { gcs: GcsStorageConfig },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -195,6 +197,21 @@ pub struct S3StorageConfig {
     pub endpoint: Option<String>,
     pub access_key_id: Option<String>,
     pub secret_access_key: Option<Secret>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AzureStorageConfig {
+    pub account: String,
+    pub container: String,
+    pub access_key: Option<Secret>,
+    pub endpoint: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GcsStorageConfig {
+    pub bucket: String,
+    /// The JSON key of a service account, not a path to it.
+    pub service_account_key: Option<Secret>,
 }
 
 /// A string that must not appear in logs: redacted by `Debug`, read through

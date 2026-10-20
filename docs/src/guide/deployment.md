@@ -108,6 +108,32 @@ Configure an **`AbortIncompleteMultipartUpload` lifecycle rule** on the
 bucket; one day is fine. A crashed process cannot abort the multipart
 uploads it had open, and only the rule reclaims their parts.
 
+Azure Blob Storage and Google Cloud Storage have backends of their own:
+
+```toml
+[storage]
+backend = "azure"
+
+[storage.azure]
+account = "agrafe"
+container = "agrafe"
+# access_key from AGRAFE_STORAGE__AZURE__ACCESS_KEY, or a managed identity
+```
+
+```toml
+[storage]
+backend = "gcs"
+
+[storage.gcs]
+bucket = "agrafe"
+# service_account_key from AGRAFE_STORAGE__GCS__SERVICE_ACCOUNT_KEY, or the
+# application default credentials
+```
+
+Google Cloud Storage needs the same `AbortIncompleteMultipartUpload`
+lifecycle rule. Azure needs none: it discards uncommitted blocks after
+seven days.
+
 Objects are keyed by blob: `<id>/original`, `<id>/preview`,
 `<id>/thumbnail`, and `<id>/source/<n>` for the parts of a generated blob.
 A purge deletes everything under `<id>/`.

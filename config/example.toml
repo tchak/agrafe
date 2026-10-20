@@ -28,7 +28,7 @@ url = "postgres://localhost/agrafe_dev"
 max_connections = 10
 
 [storage]
-# "local" or "s3".
+# "local", "s3", "azure" or "gcs".
 backend = "local"
 
 [storage.local]
@@ -42,6 +42,21 @@ path = "./data"
 # endpoint = "https://s3.fr-par.scw.cloud"
 # access_key_id = ""        # prefer AGRAFE_STORAGE__S3__ACCESS_KEY_ID
 # secret_access_key = ""    # prefer AGRAFE_STORAGE__S3__SECRET_ACCESS_KEY
+
+# Uncommitted blocks are discarded by Azure after seven days; no rule needed.
+# Without access_key, the AZURE_* environment variables or a managed identity.
+# [storage.azure]
+# account = "agrafe"
+# container = "agrafe"
+# access_key = ""           # prefer AGRAFE_STORAGE__AZURE__ACCESS_KEY
+# endpoint = ""             # Azurite or a sovereign cloud
+
+# The bucket needs an AbortIncompleteMultipartUpload lifecycle rule, as on S3.
+# Without service_account_key, GOOGLE_SERVICE_ACCOUNT, the application default
+# credentials or the metadata server.
+# [storage.gcs]
+# bucket = "agrafe"
+# service_account_key = ""  # the JSON key itself; prefer AGRAFE_STORAGE__GCS__SERVICE_ACCOUNT_KEY
 
 [signing]
 # Key used to mint new tokens. All keys in [signing.keys] remain valid for

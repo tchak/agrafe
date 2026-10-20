@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 use object_store::ObjectStore;
 use object_store::aws::AmazonS3Builder;
+use object_store::azure::MicrosoftAzureBuilder;
+use object_store::gcp::GoogleCloudStorageBuilder;
 use object_store::local::LocalFileSystem;
 
 use crate::config::StorageConfig;
@@ -48,6 +50,27 @@ pub fn build(config: &StorageConfig) -> Result<Store, Error> {
             let store = builder.build()?;
             Ok(Arc::new(store))
         }
+        StorageConfig::Azure { azure } => {
+            let mut builder = MicrosoftAzureBuilder::from_env()
+                .with_account(&azure.account)
+                .with_container_name(&azure.container);
+            if let Some(key) = &azure.access_key {
+                builder = builder.with_access_key(key.expose());
+            }
+            if let Some(endpoint) = &azure.endpoint {
+                builder = builder.with_endpoint(endpoint.clone());
+            }
+            let store = builder.build()?;
+            Ok(Arc::new(store))
+        }
+        StorageConfig::Gcs { gcs } => {
+            let mut builder = GoogleCloudStorageBuilder::from_env().with_bucket_name(&gcs.bucket);
+            if let Some(key) = &gcs.service_account_key {
+                builder = builder.with_service_account_key(key.expose());
+            }
+            let store = builder.build()?;
+            Ok(Arc::new(store))
+        }
     }
 }
 
@@ -81,6 +104,48 @@ mod tests {
         })))
         .unwrap();
         assert!(store.to_string().contains("agrafe-test"), "{store}");
+    }
+
+    #[test]
+    fn azure_store_from_every_setting() {
+        let store = build(&config(serde_json::json!({
+            "backend": "azure",
+            "azure": {
+                "account": "agrafeaccount",
+                "container": "agrafe-test",
+                "access_key": "c2VjcmV0",
+                "endpoint": "http://127.0.0.1:10000/agrafeaccount",
+            },
+        })))
+        .unwrap();
+        assert!(store.to_string().contains("agrafe-test"), "{store}");
+
+        let store = build(&config(serde_json::json!({
+            "backend": "azure",
+            "azure": { "account": "agrafeaccount", "container": "agrafe-test" },
+        })))
+        .unwrap();
+        assert!(store.to_string().contains("agrafe-test"), "{store}");
+    }
+
+    #[test]
+    fn gcs_store_checks_its_key() {
+        // Without a key, the credentials come from the environment or the
+        // metadata server, asked on the first request.
+        let store = build(&config(serde_json::json!({
+            "backend": "gcs",
+            "gcs": { "bucket": "agrafe-test" },
+        })))
+        .unwrap();
+        assert!(store.to_string().contains("agrafe-test"), "{store}");
+
+        let err = build(&config(serde_json::json!({
+            "backend": "gcs",
+            "gcs": { "bucket": "agrafe-test", "service_account_key": "not json" },
+        })))
+        .err()
+        .unwrap();
+        assert!(matches!(err, Error::Open(_)), "{err}");
     }
 
     #[test]
