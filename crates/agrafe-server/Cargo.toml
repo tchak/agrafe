@@ -32,3 +32,8 @@ thiserror = "2.0.21"
 tokio = { version = "1.54.0", features = ["rt-multi-thread", "macros", "signal", "net"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+
+[dev-dependencies]
+# `TestDatabase`: a database of its own for each test.
+agrafe = { version = "0.1.0", path = "../agrafe", features = ["test-support"] }
+tempfile = "3.27.0"

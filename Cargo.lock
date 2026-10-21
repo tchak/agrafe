@@ -282,6 +282,7 @@ dependencies = [
  "clap",
  "futures",
  "sqlx",
+ "tempfile",
  "thiserror",
  "tokio",
  "tracing",
