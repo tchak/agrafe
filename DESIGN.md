@@ -2642,7 +2642,10 @@ runner set it in a task-local for the duration of the unit, and
 `jobs::enqueue` (and the notify inserts) store the current one on the row
 as `traceparent`, naming the enqueuing unit as the job's parent. A run
 continues the stored context with an id of its own; a job without one
-starts a trace. Retries are further children of the same parent. A
+starts a trace. Retries are further children of the same parent, the
+operator's retry of a dead job included: `jobs::retry` leaves the stored
+context alone, so the run continues the trace of the work it was part of,
+not the retry request's, which is where the failure is being looked at. A
 duplicate dropped by `ON CONFLICT DO NOTHING` keeps the first enqueuer's
 context; a `notify` that replaces the pending one takes the newer event's,
 as it takes its payload.
