@@ -30,6 +30,55 @@ notify workers reach `webhook.url`, and the render workers reach the hosts
 of `media.map.layers`, if any are configured. Nothing else in agrafe
 talks to the network besides Postgres, the object store and `clamd`.
 
+## Docker images
+
+Every release publishes two images to the GitHub Container Registry, for
+`linux/amd64` and `linux/arm64`:
+
+| Image | Contents |
+|---|---|
+| `ghcr.io/tchak/agrafe:0.1.0` | The five binaries, `vips` and fonts, on Debian trixie |
+| `ghcr.io/tchak/agrafe:0.1.0-office` | The same, with LibreOffice and a warmed profile, office thumbnails on |
+
+`0.1` and `0.1-office` follow the latest patch release of `0.1`, `latest`
+and `latest-office` the latest release. Debian trixie is the base for
+its libvips (see [libvips](#libvips)). The images run as the unprivileged
+`agrafe` user, `agrafe serve` by default, and expose the private port,
+8080, and the public one, 8081. Use the `-office` image for the workers
+that handle `render`, and the plain one everywhere else.
+
+The image's settings for a container are in `/etc/agrafe/agrafe.toml`,
+which `AGRAFE_CONFIG` names: both addresses on `0.0.0.0`, local storage
+under `/var/lib/agrafe/data`, `media.tmp_dir` at `/var/tmp/agrafe` and,
+in the `-office` image, `media.office`. Configure the rest through
+`AGRAFE_*` variables, which override the file, or mount a file of your
+own over it, which replaces it whole:
+
+```sh
+docker run --rm --env-file agrafe.env ghcr.io/tchak/agrafe:0.1.0 migrate
+docker run -d --env-file agrafe.env -p 8080:8080 -p 8081:8081 \
+  ghcr.io/tchak/agrafe:0.1.0
+```
+
+```sh
+# agrafe.env
+AGRAFE_DATABASE__URL=postgres://agrafe:…@db/agrafe
+AGRAFE_SIGNING__CURRENT_KEY=k1
+AGRAFE_SIGNING__KEYS__K1=…
+AGRAFE_ENCRYPTION__CURRENT_KEK=kek1
+AGRAFE_ENCRYPTION__KEKS__KEK1=…
+AGRAFE_SERVER__PUBLIC_BASE_URL=https://files.example.org
+AGRAFE_CLAMAV__ADDR=clamd:3310
+AGRAFE_STORAGE__BACKEND=s3
+AGRAFE_MEDIA__SANDBOX__ISOLATION=required
+```
+
+`clamd` is not in the image: run the `clamav/clamav` image next to it,
+with the [limits below](#clamav). A default container gets Landlock and
+seccomp with nothing to configure, so `isolation = "required"` holds on
+any host kernel of 5.13 or newer; bubblewrap is [not for
+containers](#bubblewrap).
+
 ## The sandbox
 
 Each render runs under Landlock and seccomp on Linux (see [Security

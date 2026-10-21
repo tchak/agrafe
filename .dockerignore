@@ -1,0 +1,18 @@
+# The build needs the workspace's manifests and sources, and the assets
+# its crates embed. Not the build output, nor what only the tests read.
+target
+data
+fixtures
+config/agrafe.toml
+.env
+.env.local
+*.profraw
+.git
+.jj
+# Read by people, not by the build: editing them should not rebuild it.
+docs
+DESIGN.md
+CHANGELOG.md
+CLAUDE.md
+scripts
+.github

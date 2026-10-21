@@ -1,0 +1,21 @@
+# What the agrafe-office image changes from the defaults, for a container:
+# docker/default.toml's, and LibreOffice for office thumbnails. The image
+# points AGRAFE_CONFIG here: mount a file of your own over it, or point
+# AGRAFE_CONFIG at another, to replace it; AGRAFE_* variables override
+# either. See config/example.toml for every key.
+
+[server]
+private_addr = "0.0.0.0:8080"
+public_addr = "0.0.0.0:8081"
+
+[storage.local]
+path = "/var/lib/agrafe/data"
+
+[media]
+# Outside /tmp, which LibreOffice's pipe needs to itself.
+tmp_dir = "/var/tmp/agrafe"
+
+[media.office]
+command = "soffice"
+# Warmed when the image was built.
+profile_template = "/var/lib/agrafe/soffice-profile"
