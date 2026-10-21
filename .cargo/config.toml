@@ -6,9 +6,9 @@
 coverage = ["llvm-cov", "--workspace"]
 
 [env]
-# The server `#[sqlx::test]` creates each test's database on, and the
-# database it keeps its bookkeeping in: `agrafe_test` as the current OS
-# user, over the local Unix socket when there is one, else localhost. The
+# The server the tests create each test's database on, and the database
+# they connect to for that: `agrafe_test` as the current OS user, over
+# the local Unix socket when there is one, else localhost. The
 # socket matters with Postgres.app, which identifies the client of each
 # trust connection and, over TCP, now and then fails to under the many
 # connections parallel tests open. A `DATABASE_URL` in the environment wins.

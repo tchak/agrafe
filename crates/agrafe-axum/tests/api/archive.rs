@@ -92,9 +92,10 @@ async fn source_objects(app: &TestApp, id: &str) -> Vec<String> {
     keys
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn archive_is_built_from_a_manifest_in_parts(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn archive_is_built_from_a_manifest_in_parts() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let report = ready_file(&app, "Report.pdf", "application/pdf", &fixture("text.pdf")).await;
     let photo = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
     let empty = ready_file(&app, "empty.txt", "text/plain", b"").await;
@@ -220,9 +221,10 @@ async fn archive_is_built_from_a_manifest_in_parts(pool: PgPool) {
 }
 
 /// `PUT /blobs/:id` is part one and the finish in one call.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn whole_source_in_one_put(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn whole_source_in_one_put() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let member = ready_blob(&app, &png_bytes(3000)).await;
     let created = create(&app, archive_blob("one.zip")).await;
     let id = id_of(&created);
@@ -239,9 +241,10 @@ async fn whole_source_in_one_put(pool: PgPool) {
 }
 
 /// An empty manifest is a valid source and builds an empty archive.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn empty_manifest(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn empty_manifest() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let created = create(&app, archive_blob("nothing.zip")).await;
     let id = id_of(&created);
     let (status, body) = put_private(&app, id, vec![]).await;
@@ -261,9 +264,10 @@ async fn empty_manifest(pool: PgPool) {
 /// Every bad line answers 422 naming it, the part is discarded, the blob
 /// is back in `created` with the parts it had, and nothing of the part is
 /// in the store.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn manifest_rejections(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn manifest_rejections() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let good = ready_blob(&app, &png_bytes(100)).await;
     let good_id = id_of(&good).to_string();
     let pending = create(&app, blob_for(&png_bytes(100), "image/png", "raw")).await;
@@ -372,9 +376,10 @@ async fn manifest_rejections(pool: PgPool) {
     assert_eq!(body["source_parts"], 2);
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn parts_are_consecutive_and_finish_needs_them(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn parts_are_consecutive_and_finish_needs_them() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let member = ready_blob(&app, &png_bytes(100)).await;
     let line = manifest(&[("a.png", id_of(&member))]);
     let created = create(&app, archive_blob("seq.zip")).await;
@@ -464,9 +469,10 @@ async fn parts_are_consecutive_and_finish_needs_them(pool: PgPool) {
 
 /// Members are looked up in batches of a few hundred ids; a manifest longer
 /// than one batch is checked to the end, and the dedupe counter runs on.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn long_manifest_crosses_lookup_batches(pool: PgPool) {
-    let app = setup_tuned(pool, fake_clamd().await, |c| {
+#[tokio::test]
+async fn long_manifest_crosses_lookup_batches() {
+    let db = TestDatabase::new().await;
+    let app = setup_tuned(db, fake_clamd().await, |c| {
         c.upload.max_size = bytesize::ByteSize::kib(64);
     })
     .await;
@@ -503,9 +509,10 @@ async fn long_manifest_crosses_lookup_batches(pool: PgPool) {
     assert_eq!(entries[n - 1].0, format!("a-{}", n - 1));
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn archive_size_limit_is_checked_at_accept(pool: PgPool) {
-    let app = setup_tuned(pool, fake_clamd().await, |c| {
+#[tokio::test]
+async fn archive_size_limit_is_checked_at_accept() {
+    let db = TestDatabase::new().await;
+    let app = setup_tuned(db, fake_clamd().await, |c| {
         c.archive.max_size = bytesize::ByteSize::kib(2);
     })
     .await;
@@ -529,9 +536,10 @@ async fn archive_size_limit_is_checked_at_accept(pool: PgPool) {
 
 /// A member that was ready at accept and is gone at build time is skipped
 /// and listed; the archive is still built.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn members_gone_before_the_build_are_listed_in_errors_txt(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn members_gone_before_the_build_are_listed_in_errors_txt() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let kept = ready_blob(&app, &png_bytes(200)).await;
     let deleted = ready_blob(&app, &png_bytes(300)).await;
     let expired = ready_blob(&app, &png_bytes(400)).await;
@@ -578,9 +586,10 @@ async fn members_gone_before_the_build_are_listed_in_errors_txt(pool: PgPool) {
 
 /// The blob is deleted while its archive is being built: nothing is
 /// written and the job is done.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn delete_before_the_build_writes_nothing(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn delete_before_the_build_writes_nothing() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let member = ready_blob(&app, &png_bytes(200)).await;
     let created = create(&app, archive_blob("gone.zip")).await;
     let id = id_of(&created);
@@ -607,9 +616,10 @@ async fn delete_before_the_build_writes_nothing(pool: PgPool) {
 
 /// A `created` blob holding parts has objects: a delete purges them, and
 /// a source nobody finishes is expired by the reaper and purged.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn sources_are_purged_when_deleted_or_abandoned(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn sources_are_purged_when_deleted_or_abandoned() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let member = ready_blob(&app, &png_bytes(100)).await;
     let line = manifest(&[("a.png", id_of(&member))]);
 
@@ -652,9 +662,10 @@ async fn sources_are_purged_when_deleted_or_abandoned(pool: PgPool) {
 
 /// A part whose body stops midway is a failed upload: the blob goes back
 /// to `created` with the parts it had and nothing of the part remains.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn dropped_part_is_aborted(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn dropped_part_is_aborted() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let member = ready_blob(&app, &png_bytes(100)).await;
     let created = create(&app, archive_blob("dropped.zip")).await;
     let id = id_of(&created);
@@ -683,9 +694,10 @@ async fn dropped_part_is_aborted(pool: PgPool) {
 /// A member larger than the look-ahead reads whole is opened when its turn
 /// comes and streamed; small ones around it are prefetched. The archive
 /// comes out the same either way.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn large_members_are_streamed_when_reached(pool: PgPool) {
-    let app = setup_tuned(pool, fake_clamd().await, |c| {
+#[tokio::test]
+async fn large_members_are_streamed_when_reached() {
+    let db = TestDatabase::new().await;
+    let app = setup_tuned(db, fake_clamd().await, |c| {
         c.upload.max_size = bytesize::ByteSize::mib(10);
     })
     .await;
@@ -720,9 +732,10 @@ async fn large_members_are_streamed_when_reached(pool: PgPool) {
 /// A build that cannot succeed on a retry, here a row stripped of its key
 /// material, is dead after its first attempt rather than retried through
 /// the backoff; the blob stays `uploaded`.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn permanent_build_failures_die_at_once(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn permanent_build_failures_die_at_once() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let member = ready_blob(&app, &png_bytes(100)).await;
     let created = create(&app, archive_blob("broken.zip")).await;
     let id = id_of(&created);
@@ -750,12 +763,13 @@ async fn permanent_build_failures_die_at_once(pool: PgPool) {
 /// A member whose stored object is damaged fails the build for good at the
 /// first attempt: it is not gone, so it is not skipped, and another attempt
 /// would read the same bytes.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_damaged_member_kills_the_build(pool: PgPool) {
+#[tokio::test]
+async fn a_damaged_member_kills_the_build() {
+    let db = TestDatabase::new().await;
     use object_store::ObjectStoreExt;
     use object_store::path::Path as ObjectPath;
 
-    let app = setup(pool).await;
+    let app = setup(db).await;
     let member = ready_blob(&app, &png_bytes(100)).await;
     let key = ObjectPath::from(storage_key(&app, id_of(&member)).await);
     let mut stored = app

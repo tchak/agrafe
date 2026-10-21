@@ -14,6 +14,11 @@ categories = ["web-programming", "multimedia::images"]
 [lints]
 workspace = true
 
+[features]
+# `db::test::TestDatabase`, a database of its own for each test of the
+# crates downstream. For their dev-dependencies only.
+test-support = []
+
 [dependencies]
 agrafe-crypto = { version = "0.1.0", path = "../agrafe-crypto" }
 agrafe-render = { version = "0.1.0", path = "../agrafe-render" }

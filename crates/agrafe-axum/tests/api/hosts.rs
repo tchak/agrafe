@@ -14,9 +14,10 @@ fn with_host(method: Method, uri: &str, host: &str) -> Request<Body> {
         .unwrap()
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn unset_the_private_port_answers_any_host(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn unset_the_private_port_answers_any_host() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let (status, _) = call(
         &app.private,
         with_host(Method::GET, "/blobs", "evil.test:8080"),
@@ -25,9 +26,10 @@ async fn unset_the_private_port_answers_any_host(pool: PgPool) {
     assert_eq!(status, StatusCode::OK);
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn set_a_private_request_must_name_a_listed_host(pool: PgPool) {
-    let app = setup_tuned(pool, fake_clamd().await, |c| {
+#[tokio::test]
+async fn set_a_private_request_must_name_a_listed_host() {
+    let db = TestDatabase::new().await;
+    let app = setup_tuned(db, fake_clamd().await, |c| {
         c.server.private_hosts = vec!["agrafe.internal:8080".into(), "10.0.3.4:8080".into()];
     })
     .await;

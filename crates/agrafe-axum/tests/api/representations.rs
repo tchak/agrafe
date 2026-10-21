@@ -62,9 +62,10 @@ async fn no_preview(app: &TestApp, uri: &str, state: &str, message: &str) {
     assert_eq!(body["error"]["message"], message, "{uri}");
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn image_gets_a_thumbnail_and_a_preview(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn image_gets_a_thumbnail_and_a_preview() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     // 600x300 with EXIF orientation 6: upright it is 300x600.
     let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("rotated.jpg")).await;
     let id = id_of(&blob);
@@ -169,9 +170,10 @@ async fn image_gets_a_thumbnail_and_a_preview(pool: PgPool) {
     assert_ne!(&stored[..4], b"RIFF");
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn vector_images_fill_the_box(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn vector_images_fill_the_box() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     // 20x10 nominal: a raster that small would stay small.
     let svg = br#"<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><rect width="20" height="10" fill="red"/></svg>"#;
     let blob = ready_file(&app, "logo.svg", "image/svg+xml", svg).await;
@@ -185,9 +187,10 @@ async fn vector_images_fill_the_box(pool: PgPool) {
     assert_eq!(size, (400, 200));
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn pdf_previews_come_from_the_embedded_image_only(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn pdf_previews_come_from_the_embedded_image_only() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     // One JPEG covering a page a tenth of its size: the image itself is the
     // preview, at its own 600x300 fitted into 400.
     let wrapped = ready_file(&app, "scan.pdf", "application/pdf", &fixture("image.pdf")).await;
@@ -227,9 +230,10 @@ async fn pdf_previews_come_from_the_embedded_image_only(pool: PgPool) {
     }
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn office_documents_wrapping_a_picture(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn office_documents_wrapping_a_picture() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let docx = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
     let odt = "application/vnd.oasis.opendocument.text";
     let picture = ready_file(&app, "picture.docx", docx, &fixture("image.docx")).await;
@@ -297,13 +301,14 @@ fn soffice() -> Option<&'static str> {
     found.then_some("soffice")
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn office_documents_get_their_first_page_through_libreoffice(pool: PgPool) {
+#[tokio::test]
+async fn office_documents_get_their_first_page_through_libreoffice() {
+    let db = TestDatabase::new().await;
     let Some(soffice) = soffice() else {
         return;
     };
     let clamd = fake_clamd().await;
-    let app = setup_tuned(pool, clamd, |c| {
+    let app = setup_tuned(db, clamd, |c| {
         c.media.render.office.command = Some(soffice.to_string())
     })
     .await;
@@ -356,9 +361,10 @@ async fn office_documents_get_their_first_page_through_libreoffice(pool: PgPool)
     .await;
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn the_startup_probe_checks_libreoffice(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn the_startup_probe_checks_libreoffice() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let media = &app.state.config().media;
     let probe = |render| agrafe_render::probe(render, media.tmp_dir.as_deref());
     let with = |command: &str| agrafe_render::Config {
@@ -403,9 +409,10 @@ async fn the_startup_probe_checks_libreoffice(pool: PgPool) {
     }
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn text_files_get_a_thumbnail_and_no_preview(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn text_files_get_a_thumbnail_and_no_preview() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     // Latin-1, as administrative CSVs tend to be.
     let csv = b"nom;ville;montant\nDupont;Besan\xe7on;12,50\nMartin;Orl\xe9ans;7,00\n";
     let table = ready_file(&app, "export.csv", "text/csv", csv).await;
@@ -461,10 +468,11 @@ async fn text_files_get_a_thumbnail_and_no_preview(pool: PgPool) {
     .await;
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_crashing_helper_fails_the_file_not_the_job(pool: PgPool) {
+#[tokio::test]
+async fn a_crashing_helper_fails_the_file_not_the_job() {
+    let db = TestDatabase::new().await;
     let clamd = fake_clamd().await;
-    let app = setup_tuned(pool, clamd, |c| {
+    let app = setup_tuned(db, clamd, |c| {
         c.media.render.extract_command = "/usr/bin/false".into();
         c.media.render.render_text_command = "/usr/bin/false".into();
     })
@@ -513,14 +521,15 @@ async fn a_crashing_helper_fails_the_file_not_the_job(pool: PgPool) {
 /// A file that exhausts a tool's time limit is not handed to the next one
 /// for as long again: the PDF's first page is not tried once the
 /// extractor timed out on it, and both representations are failed.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_timed_out_helper_fails_both_representations(pool: PgPool) {
+#[tokio::test]
+async fn a_timed_out_helper_fails_both_representations() {
+    let db = TestDatabase::new().await;
     use std::os::unix::fs::PermissionsExt;
     let slow = std::env::temp_dir().join(format!("agrafe-slow-extract-{}", uuid::Uuid::now_v7()));
     std::fs::write(&slow, "#!/bin/sh\nsleep 5\n").unwrap();
     std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).unwrap();
     let clamd = fake_clamd().await;
-    let app = setup_tuned(pool, clamd, |c| {
+    let app = setup_tuned(db, clamd, |c| {
         c.media.render.extract_command = slow.to_string_lossy().into_owned();
         c.media.render.sandbox.timeout = std::time::Duration::from_millis(300);
     })
@@ -535,9 +544,10 @@ async fn a_timed_out_helper_fails_both_representations(pool: PgPool) {
     std::fs::remove_file(&slow).unwrap();
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn files_the_renderer_rejects_are_failed(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn files_the_renderer_rejects_are_failed() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let blob = ready_file(&app, "broken.jpg", "image/jpeg", &fixture("truncated.jpg")).await;
     let id = id_of(&blob);
     render_all(&app).await;
@@ -570,10 +580,11 @@ async fn files_the_renderer_rejects_are_failed(pool: PgPool) {
     assert_eq!(blob["preview_state"], "failed");
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn oversized_originals_get_no_representations(pool: PgPool) {
+#[tokio::test]
+async fn oversized_originals_get_no_representations() {
+    let db = TestDatabase::new().await;
     let clamd = fake_clamd().await;
-    let app = setup_tuned(pool, clamd, |c| {
+    let app = setup_tuned(db, clamd, |c| {
         c.media.max_source_size = bytesize::ByteSize::b(1000)
     })
     .await;
@@ -597,10 +608,11 @@ async fn oversized_originals_get_no_representations(pool: PgPool) {
     assert_eq!(pdf["preview_state"], "unavailable");
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_missing_renderer_fails_the_job_not_the_file(pool: PgPool) {
+#[tokio::test]
+async fn a_missing_renderer_fails_the_job_not_the_file() {
+    let db = TestDatabase::new().await;
     let clamd = fake_clamd().await;
-    let app = setup_tuned(pool, clamd, |c| {
+    let app = setup_tuned(db, clamd, |c| {
         c.media.render.vips_command = "/nonexistent/vips".into()
     })
     .await;
@@ -619,9 +631,10 @@ async fn a_missing_renderer_fails_the_job_not_the_file(pool: PgPool) {
     assert!(error.contains("starting `/nonexistent/vips`"), "{error}");
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn the_startup_probe_checks_vips_and_the_helper(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn the_startup_probe_checks_vips_and_the_helper() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let media = &app.state.config().media;
     let probe = |render| agrafe_render::probe(render, media.tmp_dir.as_deref());
     probe(&media.render).await.unwrap();
@@ -680,9 +693,10 @@ async fn the_startup_probe_checks_vips_and_the_helper(pool: PgPool) {
     );
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn blob_state_governs_the_representations(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn blob_state_governs_the_representations() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
 
     // No bytes yet: pending, with nothing to render from.
     let created = create(&app, raw_blob()).await;
@@ -748,9 +762,10 @@ async fn blob_state_governs_the_representations(pool: PgPool) {
     assert_eq!(jobs_for(&app, id).await, vec!["purge"]);
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn conditional_and_head_requests_are_answered_from_the_row(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn conditional_and_head_requests_are_answered_from_the_row() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
     let id = id_of(&blob);
     render_all(&app).await;
@@ -804,9 +819,10 @@ async fn conditional_and_head_requests_are_answered_from_the_row(pool: PgPool) {
     assert_eq!(jobs_for(&app, id).await, ["render"]);
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn representations_regenerate_when_missing_or_stale(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn representations_regenerate_when_missing_or_stale() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
     let id = id_of(&blob);
     render_all(&app).await;
@@ -858,9 +874,10 @@ async fn representations_regenerate_when_missing_or_stale(pool: PgPool) {
     assert_eq!(jobs_for(&app, id).await, ["render"]);
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn representations_disabled_at_creation_are_never_rendered(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn representations_disabled_at_creation_are_never_rendered() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let bytes = fixture("rotated.jpg");
     let mut neither = blob_for(&bytes, "image/jpeg", "raw");
     neither["filename"] = json!("neither.jpg");
@@ -933,9 +950,10 @@ async fn representations_disabled_at_creation_are_never_rendered(pool: PgPool) {
 
 /// A thumbnail regenerated on its own is made from the stored preview: the
 /// original is never read, which deleting it proves.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn thumbnails_regenerate_from_the_stored_preview(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn thumbnails_regenerate_from_the_stored_preview() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
     let id = id_of(&blob);
     render_all(&app).await;
@@ -958,9 +976,10 @@ async fn thumbnails_regenerate_from_the_stored_preview(pool: PgPool) {
 /// from this version: none from a failed preview, the text sample for a
 /// file with no preview, and a preview rendered again when its object is
 /// gone.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn thumbnails_regenerate_from_the_preview_verdict(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn thumbnails_regenerate_from_the_preview_verdict() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let broken = ready_file(&app, "broken.jpg", "image/jpeg", &fixture("truncated.jpg")).await;
     let notes = ready_file(&app, "notes.txt", "text/plain", b"Bonjour\n").await;
     let photo = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
@@ -1000,9 +1019,10 @@ async fn thumbnails_regenerate_from_the_preview_verdict(pool: PgPool) {
 
 /// A render job that finds nothing to do, because the blob is no longer
 /// readable or nothing is pending, finishes without touching it.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn render_jobs_with_nothing_to_do_finish(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn render_jobs_with_nothing_to_do_finish() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let photo = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
     let id = id_of(&photo);
     render_all(&app).await;
@@ -1038,9 +1058,10 @@ async fn render_jobs_with_nothing_to_do_finish(pool: PgPool) {
     assert_eq!(jobs_for(&app, id_of(&pending)).await, ["purge"]);
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn waiting_for_a_pending_representation(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn waiting_for_a_pending_representation() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
     let id = id_of(&blob);
     let (status, minted) = call(

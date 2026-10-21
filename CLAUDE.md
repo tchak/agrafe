@@ -137,10 +137,11 @@ See "Crates" in `DESIGN.md` for the dependency graph.
   call the handle and shape the response, nothing more.
 - `blobs.updated_at` is set by a trigger
   (`crates/agrafe/migrations/0001_blobs.sql`). Do not set it in queries.
-- Database tests are `#[sqlx::test(migrator = "MIGRATOR")]` taking a
-  `PgPool`, handed to `setup`: each gets a fresh, migrated database of its
-  own on the server `DATABASE_URL` names (default in `.cargo/config.toml`:
-  `agrafe_test` as the current OS user), so they run in parallel. Never
-  share state between tests through the database. The database is named
-  after the test: two test runs against one server at once (another
-  session, another workspace) fail each other, so run one at a time.
+- Database tests are `#[tokio::test]` and start with `let db =
+  TestDatabase::new().await`, handed to `setup`: each gets a fresh,
+  migrated database of its own on the server `DATABASE_URL` names
+  (default in `.cargo/config.toml`: `agrafe_test` as the current OS
+  user), named after a UUID and dropped with the app, so tests run in
+  parallel and so do runs (another session, another workspace). Never
+  share state between tests through the database. The helper is
+  `agrafe::db::test`, behind the `test-support` feature.

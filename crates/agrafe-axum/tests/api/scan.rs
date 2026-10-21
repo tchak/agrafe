@@ -13,9 +13,10 @@ use tokio::sync::Notify;
 use crate::support::*;
 
 /// Clean: straight to `ready`, scanned, representations queued.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn inline_scan_clean(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn inline_scan_clean() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let bytes = png_bytes(1500);
     let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
     let id = id_of(&created);
@@ -31,9 +32,10 @@ async fn inline_scan_clean(pool: PgPool) {
 
 /// Infected: the upload is refused with its own code, yet the bytes are kept
 /// and the blob is terminal, so the backend sees what happened.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn inline_scan_infected(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn inline_scan_infected() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let bytes = infected_png(1500);
     let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
     let id = id_of(&created);
@@ -72,9 +74,10 @@ async fn inline_scan_infected(pool: PgPool) {
 }
 
 /// The private port names the signature; the backend is who needs it.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn infected_upload_names_the_signature_privately(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn infected_upload_names_the_signature_privately() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let bytes = infected_png(1500);
     let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
     let id = id_of(&created);
@@ -88,9 +91,10 @@ async fn infected_upload_names_the_signature_privately(pool: PgPool) {
 
 /// The cheap checks come first: a wrong checksum is a plain 422 even when the
 /// bytes are infected, and nothing is stored.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn checksum_is_checked_before_the_verdict(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn checksum_is_checked_before_the_verdict() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let bytes = infected_png(1500);
     let mut blob = blob_for(&bytes, "image/png", "raw");
     blob["checksum"] = json!(STANDARD.encode([9u8; 32]));
@@ -103,17 +107,19 @@ async fn checksum_is_checked_before_the_verdict(pool: PgPool) {
 }
 
 /// Vouched-for bytes never reach clamd, even infected ones.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn vouched_bytes_skip_the_scan(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn vouched_bytes_skip_the_scan() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let body = ready_blob(&app, &infected_png(1500)).await;
     assert_eq!(body["scan_state"], "skipped");
 }
 
 /// Too large for the inline scan: stored, then scanned by the job.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn deferred_scan_clean(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn deferred_scan_clean() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     assert!(!run_scan_job(&app).await, "nothing queued yet");
 
     let bytes = png_bytes(5000);
@@ -136,9 +142,10 @@ async fn deferred_scan_clean(pool: PgPool) {
 }
 
 /// Infected: terminal, object kept, nothing rendered.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn deferred_scan_infected(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn deferred_scan_infected() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let bytes = infected_png(5000);
     let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
     let id = id_of(&created);
@@ -154,9 +161,10 @@ async fn deferred_scan_infected(pool: PgPool) {
 }
 
 /// Deleted before the job ran: the job finds nothing to do and succeeds.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn scan_job_skips_a_deleted_blob(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn scan_job_skips_a_deleted_blob() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let bytes = png_bytes(5000);
     let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
     let id = id_of(&created);
@@ -170,8 +178,9 @@ async fn scan_job_skips_a_deleted_blob(pool: PgPool) {
 
 /// Deleted while the job waits for clamd: the verdict lands on nothing, and
 /// the blob stays deleted, unscanned and unrendered.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn delete_during_scan(pool: PgPool) {
+#[tokio::test]
+async fn delete_during_scan() {
+    let db = TestDatabase::new().await;
     let received = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
     let clamd = fake_clamd_in(FakeClamd::Held {
@@ -179,7 +188,7 @@ async fn delete_during_scan(pool: PgPool) {
         release: release.clone(),
     })
     .await;
-    let app = setup_with(pool, clamd).await;
+    let app = setup_with(db, clamd).await;
 
     let bytes = infected_png(5000);
     let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
@@ -210,12 +219,13 @@ async fn delete_during_scan(pool: PgPool) {
     );
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn empty_file_deferred_scan(pool: PgPool) {
+#[tokio::test]
+async fn empty_file_deferred_scan() {
+    let db = TestDatabase::new().await;
     // clamd is down when an empty file arrives, so even that scan is
     // deferred; the job must cope with a file that has no segments.
     let addr = closed_port().await;
-    let app = setup_with(pool, addr).await;
+    let app = setup_with(db, addr).await;
     let bytes: Vec<u8> = Vec::new();
     let created = create(&app, blob_for(&bytes, "text/plain", "raw")).await;
     let id = id_of(&created);
@@ -233,9 +243,10 @@ async fn empty_file_deferred_scan(pool: PgPool) {
     assert!(jobs_for(&app, id).await.contains(&"render".to_string()));
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn inline_scans_are_bounded(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn inline_scans_are_bounded() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     // The one inline slot is taken by an upload still in flight.
     let held = app.state.clamd().begin_inline().await.unwrap();
 
@@ -257,10 +268,11 @@ async fn inline_scans_are_bounded(pool: PgPool) {
     assert_eq!(body["state"], "ready");
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn clamd_stream_limit(pool: PgPool) {
+#[tokio::test]
+async fn clamd_stream_limit() {
+    let db = TestDatabase::new().await;
     let addr = fake_clamd_in(FakeClamd::Limit(1000)).await;
-    let app = setup_with(pool, addr).await;
+    let app = setup_with(db, addr).await;
 
     // Inline: clamd hangs up midway. The upload still succeeds and the scan
     // is deferred, exactly as when clamd is unreachable.
@@ -294,10 +306,11 @@ async fn clamd_stream_limit(pool: PgPool) {
     assert!(error.contains("clamd"), "{error}");
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn clamd_dies_midway(pool: PgPool) {
+#[tokio::test]
+async fn clamd_dies_midway() {
+    let db = TestDatabase::new().await;
     let addr = fake_clamd_in(FakeClamd::Crash(1000)).await;
-    let app = setup_with(pool, addr).await;
+    let app = setup_with(db, addr).await;
 
     // Inline, the body arriving in pieces: clamd vanishes after the third
     // one without a word. The remaining pieces are dropped on the floor, the
@@ -326,13 +339,11 @@ async fn clamd_dies_midway(pool: PgPool) {
 
 /// clamd takes the stream and never answers: the timeout defers the inline
 /// scan instead of holding the upload, and fails the job's attempt.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn clamd_hangs(pool: PgPool) {
+#[tokio::test]
+async fn clamd_hangs() {
+    let db = TestDatabase::new().await;
     let clamd = fake_clamd_in(FakeClamd::Hang).await;
-    let app = setup_tuned(pool, clamd, |c| {
-        c.clamav.timeout = Duration::from_millis(200)
-    })
-    .await;
+    let app = setup_tuned(db, clamd, |c| c.clamav.timeout = Duration::from_millis(200)).await;
 
     let bytes = png_bytes(1500);
     let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
@@ -350,9 +361,10 @@ async fn clamd_hangs(pool: PgPool) {
     assert!(error.contains("no answer within"), "{error}");
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn clamd_down(pool: PgPool) {
-    let app = setup_with(pool, closed_port().await).await;
+#[tokio::test]
+async fn clamd_down() {
+    let db = TestDatabase::new().await;
+    let app = setup_with(db, closed_port().await).await;
     let pool = app.state.pool();
 
     // A small file would be scanned inline; with clamd unreachable the

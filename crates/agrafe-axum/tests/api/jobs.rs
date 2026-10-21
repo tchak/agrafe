@@ -11,10 +11,11 @@ use crate::support::*;
 
 /// The workers proper: an enqueue wakes them long before the poll interval,
 /// and shutdown stops them.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn workers_wake_on_notify_and_stop_on_shutdown(pool: PgPool) {
+#[tokio::test]
+async fn workers_wake_on_notify_and_stop_on_shutdown() {
+    let db = TestDatabase::new().await;
     let clamd = fake_clamd().await;
-    let app = setup_tuned(pool, clamd, |c| {
+    let app = setup_tuned(db, clamd, |c| {
         c.jobs.poll_interval = Duration::from_secs(3600);
         c.database.max_connections = 8;
         // This process scans; another one would render.
@@ -105,8 +106,9 @@ async fn workers_wake_on_notify_and_stop_on_shutdown(pool: PgPool) {
 
 /// A job running longer than its lease keeps it: the heartbeat renews it,
 /// so no other worker claims the job meanwhile.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn running_job_keeps_its_lease(pool: PgPool) {
+#[tokio::test]
+async fn running_job_keeps_its_lease() {
+    let db = TestDatabase::new().await;
     let received = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
     let clamd = fake_clamd_in(FakeClamd::Held {
@@ -116,7 +118,7 @@ async fn running_job_keeps_its_lease(pool: PgPool) {
     .await;
     // The heartbeat beats every second at the least.
     let lease = Duration::from_millis(1200);
-    let app = setup_tuned(pool, clamd, |c| c.jobs.lease_timeout = lease).await;
+    let app = setup_tuned(db, clamd, |c| c.jobs.lease_timeout = lease).await;
 
     let bytes = png_bytes(5000);
     let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
@@ -159,11 +161,12 @@ async fn running_job_keeps_its_lease(pool: PgPool) {
     assert_eq!(get_blob(&app, id).await["state"], "ready");
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn job_queue_mechanics(pool: PgPool) {
+#[tokio::test]
+async fn job_queue_mechanics() {
+    let db = TestDatabase::new().await;
     use agrafe::jobs::{self, Failure, JobKind, Priority};
 
-    let app = setup(pool).await;
+    let app = setup(db).await;
     let webhook = app.state.config().webhook.clone();
     let pool = app.state.pool();
     let now = jiff::Timestamp::now();
@@ -342,12 +345,13 @@ async fn job_queue_mechanics(pool: PgPool) {
 
 /// A dead job stays for an operator to look at, who can then give it its
 /// attempts back or throw it away; a live job is out of their reach.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn operators_see_retry_and_discard_dead_jobs(pool: PgPool) {
+#[tokio::test]
+async fn operators_see_retry_and_discard_dead_jobs() {
+    let db = TestDatabase::new().await;
     use agrafe::jobs::{self, JobKind, Priority};
     use axum::http::Method;
 
-    let app = setup(pool).await;
+    let app = setup(db).await;
     let pool = app.state.pool();
     let now = jiff::Timestamp::now();
     let created = create(&app, raw_blob()).await;
@@ -521,11 +525,12 @@ async fn operators_see_retry_and_discard_dead_jobs(pool: PgPool) {
 
 /// The queue gauges come from the table, the run counters from the process
 /// that ran the job; both show on the private port.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn metrics_report_queue_depth_and_runs(pool: PgPool) {
+#[tokio::test]
+async fn metrics_report_queue_depth_and_runs() {
+    let db = TestDatabase::new().await;
     use axum::http::Method;
 
-    let app = setup(pool).await;
+    let app = setup(db).await;
     let scrape = || async {
         let (status, body) = call(&app.private, req(Method::GET, "/metrics")).await;
         assert_eq!(status, StatusCode::OK, "{body}");
@@ -583,12 +588,13 @@ async fn metrics_report_queue_depth_and_runs(pool: PgPool) {
 
 /// Within a kind, the highest priority goes first and age breaks ties; a
 /// blob's priority travels onto its jobs.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn priority_orders_a_kind_and_comes_from_the_blob(pool: PgPool) {
+#[tokio::test]
+async fn priority_orders_a_kind_and_comes_from_the_blob() {
+    let db = TestDatabase::new().await;
     use agrafe::jobs::{self, JobKind, Priority};
     use axum::http::Method;
 
-    let app = setup(pool).await;
+    let app = setup(db).await;
     let pool = app.state.pool();
     let lease = Duration::from_secs(600);
     let now = jiff::Timestamp::now();
@@ -659,9 +665,10 @@ async fn priority_orders_a_kind_and_comes_from_the_blob(pool: PgPool) {
 /// A handler that panics fails the attempt, not the worker: the job is
 /// retried with the panic as its error, and the next attempt runs to the
 /// end.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_panicking_handler_fails_the_attempt(pool: PgPool) {
-    let app = setup_with(pool, closed_port().await).await;
+#[tokio::test]
+async fn a_panicking_handler_fails_the_attempt() {
+    let db = TestDatabase::new().await;
+    let app = setup_with(db, closed_port().await).await;
     let bytes = png_bytes(5000);
     let mut blob = blob_for(&bytes, "image/png", "raw");
     blob["skip_virus_scan"] = json!(true);
@@ -699,9 +706,10 @@ async fn a_panicking_handler_fails_the_attempt(pool: PgPool) {
 }
 
 /// Workers that render do not start on a renderer that fails its probe.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn workers_refuse_a_broken_renderer(pool: PgPool) {
-    let app = setup_tuned(pool, fake_clamd().await, |c| {
+#[tokio::test]
+async fn workers_refuse_a_broken_renderer() {
+    let db = TestDatabase::new().await;
+    let app = setup_tuned(db, fake_clamd().await, |c| {
         c.jobs.kinds = Some(vec![agrafe::jobs::JobKind::Render]);
         c.media.render.vips_command = "/nonexistent/vips".into();
     })
@@ -724,11 +732,12 @@ async fn workers_refuse_a_broken_renderer(pool: PgPool) {
 /// blob, not the one that died: a job dying with a live twin says nothing,
 /// a job succeeding takes a stale verdict with it, and a terminal
 /// transition takes it too, since nothing is going to finish the blob.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn the_blob_verdict_tracks_the_live_job(pool: PgPool) {
+#[tokio::test]
+async fn the_blob_verdict_tracks_the_live_job() {
+    let db = TestDatabase::new().await;
     use agrafe::jobs::{self, Failure, JobKind, Priority};
 
-    let app = setup(pool).await;
+    let app = setup(db).await;
     let webhook = app.state.config().webhook.clone();
     let pool = app.state.pool();
     let now = jiff::Timestamp::now();
@@ -817,12 +826,13 @@ async fn the_blob_verdict_tracks_the_live_job(pool: PgPool) {
 /// The body-less `POST`s of the private API are what a cross-site form
 /// can reach without a preflight; the router refuses those a browser
 /// marks as another site's, and only those.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_cross_site_form_post_is_refused(pool: PgPool) {
+#[tokio::test]
+async fn a_cross_site_form_post_is_refused() {
+    let db = TestDatabase::new().await;
     use axum::body::Body;
     use axum::http::{Method, Request, header};
 
-    let app = setup(pool).await;
+    let app = setup(db).await;
     let created = create(&app, raw_blob()).await;
     let id = id_of(&created);
     let form = |method: Method, uri: &str, headers: &[(&str, &str)]| {

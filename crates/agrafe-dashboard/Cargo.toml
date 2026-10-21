@@ -33,9 +33,12 @@ tracing = "0.1.44"
 uuid = { version = "1.28.0", features = ["v7", "serde"] }
 
 [dev-dependencies]
+# `TestDatabase`: a database of its own for each test, migrated afresh.
+agrafe = { version = "0.1.0", path = "../agrafe", features = ["test-support"] }
 base64 = "0.23.1"
 figment = { version = "0.10.19", features = ["toml"] }
 http-body-util = "0.1.5"
-# `#[sqlx::test]`: a database of its own for each test, migrated afresh.
-sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "postgres", "macros", "migrate"] }
+# The tests' own queries.
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "postgres"] }
+tokio = { version = "1.54.0", features = ["rt", "macros"] }
 tower = { version = "0.5.3", features = ["util"] }

@@ -49,9 +49,10 @@ async fn purge_due_in(app: &TestApp, id: &str) -> f64 {
     .unwrap()
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn purge_removes_every_object_of_a_deleted_blob(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn purge_removes_every_object_of_a_deleted_blob() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
     let id = id_of(&blob);
     while run_job(&app, JobKind::Render).await {}
@@ -98,9 +99,10 @@ async fn purge_removes_every_object_of_a_deleted_blob(pool: PgPool) {
     assert_eq!(jobs_for(&app, id).await, Vec::<String>::new());
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn purge_refuses_a_readable_blob(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn purge_refuses_a_readable_blob() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let blob = ready_blob(&app, &png_bytes(100)).await;
     let id = id_of(&blob);
     jobs::enqueue(
@@ -129,9 +131,10 @@ async fn purge_refuses_a_readable_blob(pool: PgPool) {
     assert_eq!((attempts, dead), (1, true), "dead at once, not retried");
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn reaper_records_expiry_and_schedules_the_purge(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn reaper_records_expiry_and_schedules_the_purge() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let stored = ready_blob(&app, &png_bytes(100)).await;
     let empty = create(&app, raw_blob()).await;
     let mut later = raw_blob();
@@ -168,9 +171,10 @@ async fn reaper_records_expiry_and_schedules_the_purge(pool: PgPool) {
     assert_eq!(reap_now(&app).await, Report::default());
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn infected_blobs_lose_their_bytes_at_expiry_but_keep_their_state(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn infected_blobs_lose_their_bytes_at_expiry_but_keep_their_state() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let bytes = infected_png(1500);
     let blob = create(&app, blob_for(&bytes, "image/png", "raw")).await;
     let id = id_of(&blob);
@@ -196,9 +200,10 @@ async fn infected_blobs_lose_their_bytes_at_expiry_but_keep_their_state(pool: Pg
     assert_eq!(reap_now(&app).await, Report::default());
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn stale_uploads_go_back_to_created(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn stale_uploads_go_back_to_created() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let stale = create(&app, raw_blob()).await;
     let fresh = create(&app, raw_blob()).await;
     for (blob, age_secs) in [(&stale, 7200.0), (&fresh, 60.0)] {
@@ -221,10 +226,11 @@ async fn stale_uploads_go_back_to_created(pool: PgPool) {
     assert_eq!(reap_now(&app).await, Report::default());
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn dead_jobs_are_pruned_and_a_lost_purge_is_scheduled_again(pool: PgPool) {
+#[tokio::test]
+async fn dead_jobs_are_pruned_and_a_lost_purge_is_scheduled_again() {
+    let db = TestDatabase::new().await;
     let clamd = fake_clamd().await;
-    let app = setup_tuned(pool, clamd, |c| {
+    let app = setup_tuned(db, clamd, |c| {
         c.jobs.keep_failed = Duration::from_secs(3600)
     })
     .await;
@@ -274,10 +280,11 @@ async fn dead_jobs_are_pruned_and_a_lost_purge_is_scheduled_again(pool: PgPool) 
     assert!(get_blob(&app, id).await["purged_at"].is_string());
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn the_reap_job_keeps_one_row_pending(pool: PgPool) {
+#[tokio::test]
+async fn the_reap_job_keeps_one_row_pending() {
+    let db = TestDatabase::new().await;
     let clamd = fake_clamd().await;
-    let app = setup_tuned(pool, clamd, |c| {
+    let app = setup_tuned(db, clamd, |c| {
         c.jobs.reap_interval = Duration::from_secs(300)
     })
     .await;
@@ -304,13 +311,11 @@ async fn the_reap_job_keeps_one_row_pending(pool: PgPool) {
 
 /// An upload slower than `stale_after` is not stale: the pipeline touches
 /// the row while it runs, and the reaper leaves it alone.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_slow_upload_is_not_a_stale_one(pool: PgPool) {
+#[tokio::test]
+async fn a_slow_upload_is_not_a_stale_one() {
+    let db = TestDatabase::new().await;
     let clamd = fake_clamd().await;
-    let app = setup_tuned(pool, clamd, |c| {
-        c.upload.stale_after = Duration::from_secs(2)
-    })
-    .await;
+    let app = setup_tuned(db, clamd, |c| c.upload.stale_after = Duration::from_secs(2)).await;
     let bytes = png_bytes(3000);
     let mut blob = blob_for(&bytes, "image/png", "raw");
     blob["skip_virus_scan"] = json!(true);
@@ -362,13 +367,11 @@ async fn a_slow_upload_is_not_a_stale_one(pool: PgPool) {
 /// An upload the reaper gave up on, whose blob a later `PUT` took, stops
 /// at its next heartbeat instead of finishing on top of the newcomer: it
 /// answers `409`, stores nothing and leaves the row to its new owner.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn an_upload_that_lost_its_blob_stops(pool: PgPool) {
+#[tokio::test]
+async fn an_upload_that_lost_its_blob_stops() {
+    let db = TestDatabase::new().await;
     let clamd = fake_clamd().await;
-    let app = setup_tuned(pool, clamd, |c| {
-        c.upload.stale_after = Duration::from_secs(3)
-    })
-    .await;
+    let app = setup_tuned(db, clamd, |c| c.upload.stale_after = Duration::from_secs(3)).await;
     let bytes = png_bytes(3000);
     let mut blob = blob_for(&bytes, "image/png", "raw");
     blob["skip_virus_scan"] = json!(true);
@@ -422,10 +425,11 @@ async fn an_upload_that_lost_its_blob_stops(pool: PgPool) {
 /// tell a blob it deleted from an id that never existed, and goes after
 /// `blobs.keep_purged`, with its attachments. A terminal row with nothing
 /// to purge, the direct upload a user walked away from, goes the same way.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn tombstones_are_pruned_after_keep_purged_with_their_attachments(pool: PgPool) {
+#[tokio::test]
+async fn tombstones_are_pruned_after_keep_purged_with_their_attachments() {
+    let db = TestDatabase::new().await;
     let clamd = fake_clamd().await;
-    let app = setup_tuned(pool, clamd, |c| {
+    let app = setup_tuned(db, clamd, |c| {
         c.blobs.keep_purged = Duration::ZERO;
     })
     .await;
@@ -504,9 +508,10 @@ async fn tombstones_are_pruned_after_keep_purged_with_their_attachments(pool: Pg
 /// being abandoned: a `created` blob nothing has touched for
 /// `upload.abandoned_after` is expired, attachments kept, like a source
 /// nobody finished. An unattached one keeps to its own `expires_at`.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn an_attached_blob_nothing_reached_is_expired_as_abandoned(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn an_attached_blob_nothing_reached_is_expired_as_abandoned() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let pool = app.state.pool();
     let attachment = json!({"record_type": "Dossier", "record_id": "1", "name": "piece"});
 

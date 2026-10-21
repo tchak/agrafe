@@ -94,9 +94,10 @@ async fn upload_changed_at_completion(
     put.await.unwrap()
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn upload_deleted_as_it_completes_leaves_nothing(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn upload_deleted_as_it_completes_leaves_nothing() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let (id, bytes) = raw(&app).await;
     let (status, body) = upload_changed_at_completion(&app, &id, bytes, async || {
         assert_eq!(delete(&app, &id).await, StatusCode::NO_CONTENT);
@@ -110,9 +111,10 @@ async fn upload_deleted_as_it_completes_leaves_nothing(pool: PgPool) {
     );
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn upload_taken_over_as_it_completes_leaves_the_object_to_its_successor(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn upload_taken_over_as_it_completes_leaves_the_object_to_its_successor() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let (id, bytes) = raw(&app).await;
     let (status, body) = upload_changed_at_completion(&app, &id, bytes, async || {
         sql(&app, TAKE_OVER, &id).await;
@@ -126,9 +128,10 @@ async fn upload_taken_over_as_it_completes_leaves_the_object_to_its_successor(po
     );
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn upload_whose_row_goes_as_it_completes_leaves_nothing(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn upload_whose_row_goes_as_it_completes_leaves_nothing() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let (id, bytes) = raw(&app).await;
     let (status, body) = upload_changed_at_completion(&app, &id, bytes, async || {
         sql(&app, REMOVE, &id).await;
@@ -140,8 +143,9 @@ async fn upload_whose_row_goes_as_it_completes_leaves_nothing(pool: PgPool) {
 
 /// The row changes while clamd holds the verdict: the check before the
 /// object is finished catches it, and the multipart upload is aborted.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn upload_that_loses_its_row_before_the_end_stores_nothing(pool: PgPool) {
+#[tokio::test]
+async fn upload_that_loses_its_row_before_the_end_stores_nothing() {
+    let db = TestDatabase::new().await;
     let received = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
     let clamd = fake_clamd_in(FakeClamd::Held {
@@ -149,7 +153,7 @@ async fn upload_that_loses_its_row_before_the_end_stores_nothing(pool: PgPool) {
         release: release.clone(),
     })
     .await;
-    let app = setup_with(pool, clamd).await;
+    let app = setup_with(db, clamd).await;
 
     for (change, want) in [
         ("deleted", StatusCode::CONFLICT),
@@ -174,15 +178,16 @@ async fn upload_that_loses_its_row_before_the_end_stores_nothing(pool: PgPool) {
 
 /// The heartbeat notices the row taken away while the upload is stuck,
 /// and stops it without waiting for the bytes.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn heartbeat_stops_an_upload_that_lost_its_row(pool: PgPool) {
+#[tokio::test]
+async fn heartbeat_stops_an_upload_that_lost_its_row() {
+    let db = TestDatabase::new().await;
     let received = Arc::new(Notify::new());
     let clamd = fake_clamd_in(FakeClamd::Held {
         received: received.clone(),
         release: Arc::new(Notify::new()),
     })
     .await;
-    let app = setup_tuned(pool, clamd, |config| {
+    let app = setup_tuned(db, clamd, |config| {
         config.upload.stale_after = Duration::from_secs(3);
     })
     .await;
@@ -219,9 +224,10 @@ async fn rows(app: &TestApp) -> String {
 
 const PART: &[u8] = b"[\"x\"]\n[\"y\"]\n";
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn part_whose_row_changes_as_it_completes_is_disowned(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn part_whose_row_changes_as_it_completes_is_disowned() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     for (change, want) in [
         ("deleted", StatusCode::CONFLICT),
         ("removed", StatusCode::NOT_FOUND),
@@ -262,9 +268,10 @@ async fn uploaded_rows(app: &TestApp) -> String {
 
 /// Deleted while the build reads the source: the build stops short of
 /// finishing the object.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn build_of_a_blob_deleted_mid_build_writes_nothing(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn build_of_a_blob_deleted_mid_build_writes_nothing() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let id = uploaded_rows(&app).await;
     let hold = app.gate.hold(At::Get, &format!("{id}/source/1"));
     let job = spawn_job(&app, JobKind::Rows);
@@ -280,9 +287,10 @@ async fn build_of_a_blob_deleted_mid_build_writes_nothing(pool: PgPool) {
 
 /// The row changes as the built object is about to become visible: an
 /// object nobody owns goes, one another build finished stays.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn build_whose_row_changes_as_it_completes(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn build_whose_row_changes_as_it_completes() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     for (change, kept) in [("deleted", false), ("removed", false), ("built", true)] {
         let id = uploaded_rows(&app).await;
         let original = format!("{id}/original");

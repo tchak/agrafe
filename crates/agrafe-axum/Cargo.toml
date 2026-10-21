@@ -34,6 +34,8 @@ tracing = "0.1.44"
 uuid = { version = "1.28.0", features = ["v7", "serde"] }
 
 [dev-dependencies]
+# `TestDatabase`: a database of its own for each test, migrated afresh.
+agrafe = { version = "0.1.0", path = "../agrafe", features = ["test-support"] }
 agrafe-crypto = { version = "0.1.0", path = "../agrafe-crypto" }
 agrafe-render = { version = "0.1.0", path = "../agrafe-render" }
 async-trait = "0.1.92"
@@ -44,8 +46,8 @@ jiff-sqlx = { version = "0.2.0", features = ["postgres"] }
 md-5 = "0.11.0"
 object_store = "0.14.2"
 sha2 = "0.11.1"
-# `#[sqlx::test]`: a database of its own for each test, migrated afresh.
-sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "postgres", "macros", "migrate"] }
+# The tests' own queries.
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "postgres"] }
 tempfile = "3.27.0"
 tokio = { version = "1.54.0", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "fs", "process"] }
 tokio-stream = "0.1.19"

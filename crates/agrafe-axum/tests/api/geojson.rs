@@ -152,9 +152,10 @@ async fn geojson_blob(app: &TestApp, fixture_name: &str, content_type: &str) -> 
     ready_file(app, fixture_name, content_type, &fixture(fixture_name)).await
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn geojson_files_get_a_map_preview_and_thumbnail(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn geojson_files_get_a_map_preview_and_thumbnail() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let parcel = geojson_blob(&app, "polygon-hole.geojson", "application/geo+json").await;
     let styled = geojson_blob(&app, "styled.geojson", "application/geo+json").await;
     let hostile = geojson_blob(&app, "hostile-style.geojson", "application/geo+json").await;
@@ -191,10 +192,11 @@ async fn geojson_files_get_a_map_preview_and_thumbnail(pool: PgPool) {
     assert_ne!(a, b);
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn the_map_is_capped_at_max_size(pool: PgPool) {
+#[tokio::test]
+async fn the_map_is_capped_at_max_size() {
+    let db = TestDatabase::new().await;
     let clamd = fake_clamd().await;
-    let app = setup_tuned(pool, clamd, |c| c.media.render.geojson.max_size = 300).await;
+    let app = setup_tuned(db, clamd, |c| c.media.render.geojson.max_size = 300).await;
     let point = geojson_blob(&app, "point.geojson", "application/geo+json").await;
     render_all(&app).await;
     let id = id_of(&point);
@@ -202,11 +204,12 @@ async fn the_map_is_capped_at_max_size(pool: PgPool) {
     assert_eq!(size, (300, 300));
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn the_background_comes_from_the_layers_that_apply(pool: PgPool) {
+#[tokio::test]
+async fn the_background_comes_from_the_layers_that_apply() {
+    let db = TestDatabase::new().await;
     let wms = Wms::start(Answer::Png).await;
     let clamd = fake_clamd().await;
-    let app = setup_tuned(pool, clamd, |c| {
+    let app = setup_tuned(db, clamd, |c| {
         let photo = wms.layer();
         let names = Layer {
             attribution: None,
@@ -252,11 +255,12 @@ async fn the_background_comes_from_the_layers_that_apply(pool: PgPool) {
 /// A layer that comes back at another size than asked still covers the
 /// bounding box: it is fitted to the map, which keeps the size the drawing
 /// was made for, instead of taking the layer's size.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_layer_of_another_size_is_fitted_to_the_map(pool: PgPool) {
+#[tokio::test]
+async fn a_layer_of_another_size_is_fitted_to_the_map() {
+    let db = TestDatabase::new().await;
     let wms = Wms::start(Answer::Half).await;
     let clamd = fake_clamd().await;
-    let app = setup_tuned(pool, clamd, |c| {
+    let app = setup_tuned(db, clamd, |c| {
         c.media.render.geojson.layers = vec![wms.layer()];
     })
     .await;
@@ -273,10 +277,10 @@ async fn a_layer_of_another_size_is_fitted_to_the_map(pool: PgPool) {
 
 /// A provider that fails is not the file's fault: the attempt fails, the
 /// representations stay pending and the job is retried.
-async fn provider_fault(pool: PgPool, answer: Answer, expected: &str) {
+async fn provider_fault(db: TestDatabase, answer: Answer, expected: &str) {
     let wms = Wms::start(answer).await;
     let clamd = fake_clamd().await;
-    let app = setup_tuned(pool, clamd, |c| {
+    let app = setup_tuned(db, clamd, |c| {
         c.media.render.geojson.layers = vec![wms.layer()];
         c.media.render.geojson.fetch_timeout = Duration::from_millis(500);
         c.media.render.geojson.max_layer_size = bytesize::ByteSize::kib(16);
@@ -299,8 +303,9 @@ async fn provider_fault(pool: PgPool, answer: Answer, expected: &str) {
 /// An extent that does not parse is the helper's output gone wrong, so
 /// the file's fault like one that fails the checks: the map is rejected,
 /// not retried.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn an_extent_that_does_not_parse_rejects_the_map(pool: PgPool) {
+#[tokio::test]
+async fn an_extent_that_does_not_parse_rejects_the_map() {
+    let db = TestDatabase::new().await;
     use std::os::unix::fs::PermissionsExt;
     let helper = std::env::temp_dir().join(format!("agrafe-bad-extent-{}", uuid::Uuid::now_v7()));
     // --input $2 --spec $4 --svg $6 --extent $8
@@ -311,7 +316,7 @@ async fn an_extent_that_does_not_parse_rejects_the_map(pool: PgPool) {
     .unwrap();
     std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
     let clamd = fake_clamd().await;
-    let app = setup_tuned(pool, clamd, |c| {
+    let app = setup_tuned(db, clamd, |c| {
         c.media.render.render_geo_command = helper.to_string_lossy().into_owned();
     })
     .await;
@@ -328,29 +333,34 @@ async fn an_extent_that_does_not_parse_rejects_the_map(pool: PgPool) {
     std::fs::remove_file(&helper).unwrap();
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_service_exception_fails_the_attempt(pool: PgPool) {
-    provider_fault(pool, Answer::Xml, "answered `text/xml`, not an image").await;
+#[tokio::test]
+async fn a_service_exception_fails_the_attempt() {
+    let db = TestDatabase::new().await;
+    provider_fault(db, Answer::Xml, "answered `text/xml`, not an image").await;
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_provider_timeout_fails_the_attempt(pool: PgPool) {
-    provider_fault(pool, Answer::Hang, "requesting layer 0 from 127.0.0.1").await;
+#[tokio::test]
+async fn a_provider_timeout_fails_the_attempt() {
+    let db = TestDatabase::new().await;
+    provider_fault(db, Answer::Hang, "requesting layer 0 from 127.0.0.1").await;
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn an_undecodable_layer_fails_the_attempt(pool: PgPool) {
-    provider_fault(pool, Answer::Garbage, "an image vips could not decode").await;
+#[tokio::test]
+async fn an_undecodable_layer_fails_the_attempt() {
+    let db = TestDatabase::new().await;
+    provider_fault(db, Answer::Garbage, "an image vips could not decode").await;
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn an_oversized_layer_fails_the_attempt(pool: PgPool) {
-    provider_fault(pool, Answer::Huge, "answered more than 16.0 KiB").await;
+#[tokio::test]
+async fn an_oversized_layer_fails_the_attempt() {
+    let db = TestDatabase::new().await;
+    provider_fault(db, Answer::Huge, "answered more than 16.0 KiB").await;
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_geojson_declared_as_json_or_text_is_refined(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn a_geojson_declared_as_json_or_text_is_refined() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let as_json = geojson_blob(&app, "polygon-hole.geojson", "application/json").await;
     let as_text = geojson_blob(&app, "point.geojson", "text/plain").await;
     let plain_json = ready_file(&app, "config.json", "application/json", b"{\"a\": 1}\n").await;
@@ -393,9 +403,10 @@ async fn a_geojson_declared_as_json_or_text_is_refined(pool: PgPool) {
     );
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn files_without_a_map_get_what_a_text_file_gets(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn files_without_a_map_get_what_a_text_file_gets() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     // No geometry at all: nothing to draw, the text sample as thumbnail.
     let empty = geojson_blob(&app, "empty.geojson", "application/geo+json").await;
     // A coordinate that is not degrees on Earth, as in a Lambert-93 file:

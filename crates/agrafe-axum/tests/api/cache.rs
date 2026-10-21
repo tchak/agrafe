@@ -23,10 +23,11 @@ async fn status_of(app: &TestApp, uri: &str) -> StatusCode {
     call(&app.public, req(Method::GET, uri)).await.0
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn settled_rows_are_kept_for_the_ttl(pool: PgPool) {
+#[tokio::test]
+async fn settled_rows_are_kept_for_the_ttl() {
+    let db = TestDatabase::new().await;
     let clamd = fake_clamd().await;
-    let app = setup_tuned(pool, clamd, |c| {
+    let app = setup_tuned(db, clamd, |c| {
         c.blobs.read_cache_ttl = Duration::from_secs(1)
     })
     .await;

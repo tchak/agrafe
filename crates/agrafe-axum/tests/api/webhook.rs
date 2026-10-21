@@ -123,10 +123,10 @@ impl Receiver {
     }
 }
 
-async fn setup_receiving(pool: PgPool, file: Vec<u8>) -> (TestApp, Receiver) {
+async fn setup_receiving(db: TestDatabase, file: Vec<u8>) -> (TestApp, Receiver) {
     let clamd = fake_clamd().await;
     let receiver = receiver(file).await;
-    let app = setup_tuned(pool, clamd, |c| receiver.configure(c)).await;
+    let app = setup_tuned(db, clamd, |c| receiver.configure(c)).await;
     (app, receiver)
 }
 
@@ -173,9 +173,10 @@ async fn set_expired(app: &TestApp, id: &str) {
         .unwrap();
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn ready_is_delivered_signed_with_the_metadata(pool: PgPool) {
-    let (app, mut receiver) = setup_receiving(pool, Vec::new()).await;
+#[tokio::test]
+async fn ready_is_delivered_signed_with_the_metadata() {
+    let db = TestDatabase::new().await;
+    let (app, mut receiver) = setup_receiving(db, Vec::new()).await;
 
     // The inline scan: `uploading` to `ready` in the PUT itself.
     let blob = ready_blob(&app, &png_bytes(1024)).await;
@@ -210,9 +211,10 @@ async fn ready_is_delivered_signed_with_the_metadata(pool: PgPool) {
     receiver.quiet();
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_deferred_scan_reports_ready_or_infected(pool: PgPool) {
-    let (app, mut receiver) = setup_receiving(pool, Vec::new()).await;
+#[tokio::test]
+async fn a_deferred_scan_reports_ready_or_infected() {
+    let db = TestDatabase::new().await;
+    let (app, mut receiver) = setup_receiving(db, Vec::new()).await;
 
     // Over inline_scan_max_size: stored first, scanned by the job.
     let clean = png_bytes(4096);
@@ -246,10 +248,11 @@ async fn a_deferred_scan_reports_ready_or_infected(pool: PgPool) {
     receiver.quiet();
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_dead_job_reports_failed_and_its_retry_reports_ready(pool: PgPool) {
+#[tokio::test]
+async fn a_dead_job_reports_failed_and_its_retry_reports_ready() {
+    let db = TestDatabase::new().await;
     let file = png_bytes(1024);
-    let (app, mut receiver) = setup_receiving(pool, file.clone()).await;
+    let (app, mut receiver) = setup_receiving(db, file.clone()).await;
     receiver.file_status.store(404, Ordering::SeqCst);
 
     // A 404 kills the fetch at once: the blob is stamped, and the backend
@@ -297,9 +300,10 @@ async fn a_dead_job_reports_failed_and_its_retry_reports_ready(pool: PgPool) {
     receiver.quiet();
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_failing_receiver_leaves_a_dead_job_the_retry_revives(pool: PgPool) {
-    let (app, mut receiver) = setup_receiving(pool, Vec::new()).await;
+#[tokio::test]
+async fn a_failing_receiver_leaves_a_dead_job_the_retry_revives() {
+    let db = TestDatabase::new().await;
+    let (app, mut receiver) = setup_receiving(db, Vec::new()).await;
     let pool = app.state.pool();
     receiver.status.store(500, Ordering::SeqCst);
 
@@ -368,11 +372,12 @@ async fn a_failing_receiver_leaves_a_dead_job_the_retry_revives(pool: PgPool) {
     receiver.quiet();
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn an_unreachable_receiver_fails_the_attempt(pool: PgPool) {
+#[tokio::test]
+async fn an_unreachable_receiver_fails_the_attempt() {
+    let db = TestDatabase::new().await;
     let clamd = fake_clamd().await;
     let closed = closed_port().await;
-    let app = setup_tuned(pool, clamd, |c| {
+    let app = setup_tuned(db, clamd, |c| {
         c.webhook.url = Some(format!("http://{closed}/events"));
         c.webhook.secret = Some(SECRET.to_string().into());
     })
@@ -392,9 +397,10 @@ async fn an_unreachable_receiver_fails_the_attempt(pool: PgPool) {
     assert!(error.starts_with("webhook: request failed: "), "{error}");
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn the_reaper_reports_expiry(pool: PgPool) {
-    let (app, mut receiver) = setup_receiving(pool, Vec::new()).await;
+#[tokio::test]
+async fn the_reaper_reports_expiry() {
+    let db = TestDatabase::new().await;
+    let (app, mut receiver) = setup_receiving(db, Vec::new()).await;
 
     // A ready blob nobody attached, and one whose upload never came.
     let ready = ready_blob(&app, &png_bytes(1024)).await;
@@ -428,9 +434,10 @@ async fn the_reaper_reports_expiry(pool: PgPool) {
     receiver.quiet();
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_newer_event_replaces_the_pending_one(pool: PgPool) {
-    let (app, mut receiver) = setup_receiving(pool, Vec::new()).await;
+#[tokio::test]
+async fn a_newer_event_replaces_the_pending_one() {
+    let db = TestDatabase::new().await;
+    let (app, mut receiver) = setup_receiving(db, Vec::new()).await;
 
     // `ready` undelivered when the blob expires: the backend hears of
     // the expiry, with the state behind it, once.
@@ -454,11 +461,12 @@ async fn a_newer_event_replaces_the_pending_one(pool: PgPool) {
     receiver.quiet();
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn events_can_be_filtered(pool: PgPool) {
+#[tokio::test]
+async fn events_can_be_filtered() {
+    let db = TestDatabase::new().await;
     let clamd = fake_clamd().await;
     let receiver = receiver(Vec::new()).await;
-    let app = setup_tuned(pool, clamd, |c| {
+    let app = setup_tuned(db, clamd, |c| {
         receiver.configure(c);
         c.webhook.events = Some(vec![Event::Infected, Event::Failed]);
     })
@@ -467,9 +475,10 @@ async fn events_can_be_filtered(pool: PgPool) {
     assert_eq!(jobs_for(&app, id_of(&blob)).await, ["render"]);
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn nothing_is_enqueued_without_a_webhook(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn nothing_is_enqueued_without_a_webhook() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     assert!(app.state.webhook().is_none());
     let blob = ready_blob(&app, &png_bytes(1024)).await;
     let id = id_of(&blob);

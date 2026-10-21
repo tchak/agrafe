@@ -9,9 +9,10 @@ use tower::ServiceExt;
 
 use crate::support::*;
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn get_original_full(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn get_original_full() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     // Several 1 KiB segments plus a partial one.
     let bytes = png_bytes(3500);
     let blob = ready_blob(&app, &bytes).await;
@@ -104,9 +105,10 @@ async fn get_original_full(pool: PgPool) {
     assert_eq!(status, StatusCode::RANGE_NOT_SATISFIABLE);
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn get_original_ranges(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn get_original_ranges() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let bytes = png_bytes(3500);
     let blob = ready_blob(&app, &bytes).await;
     let uri = public_url(&blob, "original");
@@ -170,12 +172,13 @@ async fn get_original_ranges(pool: PgPool) {
     assert_eq!(body.len(), 3500);
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn get_original_corrupt_object(pool: PgPool) {
+#[tokio::test]
+async fn get_original_corrupt_object() {
+    let db = TestDatabase::new().await;
     use object_store::ObjectStoreExt;
     use object_store::path::Path as ObjectPath;
 
-    let app = setup(pool).await;
+    let app = setup(db).await;
     let bytes = png_bytes(3500);
     let blob = ready_blob(&app, &bytes).await;
     let id = id_of(&blob);
@@ -255,9 +258,10 @@ async fn get_original_corrupt_object(pool: PgPool) {
 
 /// A stored blob whose row lost what reading needs is a 500, whichever
 /// part is missing or mangled.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn get_original_incomplete_row(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn get_original_incomplete_row() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let bytes = png_bytes(1500);
     let blob = ready_blob(&app, &bytes).await;
     let id = id_of(&blob);
@@ -312,9 +316,10 @@ async fn get_original_incomplete_row(pool: PgPool) {
 }
 
 /// The bytes exist but are not served before the scan clears them.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn original_waits_for_the_scan(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn original_waits_for_the_scan() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let bytes = png_bytes(3000);
     let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
     let (status, _) = put_private(&app, id_of(&created), bytes).await;
@@ -328,9 +333,10 @@ async fn original_waits_for_the_scan(pool: PgPool) {
 /// Deleted: gone from the public port, a conflict on the private one. A
 /// sealed URL minted before the delete answers until the purge takes the
 /// object, and no later.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn original_of_a_deleted_blob(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn original_of_a_deleted_blob() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let blob = ready_blob(&app, &png_bytes(3000)).await;
     let id = id_of(&blob);
     assert_eq!(delete(&app, id).await, StatusCode::NO_CONTENT);
@@ -358,9 +364,10 @@ async fn original_of_a_deleted_blob(pool: PgPool) {
 }
 
 /// Unsigned, on the private port, a bad query is the caller's mistake.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn original_rejects_a_bad_disposition(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn original_rejects_a_bad_disposition() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let blob = ready_blob(&app, &png_bytes(3000)).await;
     let id = id_of(&blob);
     let uri = format!("/blobs/{id}/original/photo.png?disposition=weird");

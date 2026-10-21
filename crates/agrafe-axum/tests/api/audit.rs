@@ -18,9 +18,9 @@ use crate::support::*;
 /// leaves a row alone for `upload.stale_after` after its last change,
 /// since the listing may predate it, and these tests write and audit at
 /// once.
-async fn settled_setup(pool: PgPool) -> TestApp {
+async fn settled_setup(db: TestDatabase) -> TestApp {
     let clamd = fake_clamd().await;
-    setup_tuned(pool, clamd, |c| c.upload.stale_after = Duration::ZERO).await
+    setup_tuned(db, clamd, |c| c.upload.stale_after = Duration::ZERO).await
 }
 
 async fn audit_with(app: &TestApp, options: Options) -> Report {
@@ -108,9 +108,10 @@ fn counts(report: &Report) -> Vec<(Finding, u64)> {
         .collect()
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_consistent_bucket_has_no_findings(pool: PgPool) {
-    let app = settled_setup(pool).await;
+#[tokio::test]
+async fn a_consistent_bucket_has_no_findings() {
+    let db = TestDatabase::new().await;
+    let app = settled_setup(db).await;
     let photo = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
     render_all(&app).await;
     // No bytes yet: nothing to expect, nothing to find.
@@ -154,9 +155,10 @@ async fn a_consistent_bucket_has_no_findings(pool: PgPool) {
     assert!(at >= Timestamp::now().as_second() - 60, "{at}");
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_missing_original_is_stamped_on_the_row(pool: PgPool) {
-    let app = settled_setup(pool).await;
+#[tokio::test]
+async fn a_missing_original_is_stamped_on_the_row() {
+    let db = TestDatabase::new().await;
+    let app = settled_setup(db).await;
     let blob = ready_blob(&app, &png_bytes(100)).await;
     let id = id_of(&blob);
     delete_object(&app, &storage_key(&app, id).await).await;
@@ -190,9 +192,10 @@ async fn a_missing_original_is_stamped_on_the_row(pool: PgPool) {
     assert_eq!(get_blob(&app, id).await["failed_at"], stamped);
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_truncated_original_is_damaged(pool: PgPool) {
-    let app = settled_setup(pool).await;
+#[tokio::test]
+async fn a_truncated_original_is_damaged() {
+    let db = TestDatabase::new().await;
+    let app = settled_setup(db).await;
     let blob = ready_blob(&app, &png_bytes(3000)).await;
     let id = id_of(&blob);
     let key = storage_key(&app, id).await;
@@ -219,9 +222,10 @@ async fn a_truncated_original_is_damaged(pool: PgPool) {
     assert!(got["failed_at"].is_string(), "{got}");
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn the_deep_check_reads_the_originals_back(pool: PgPool) {
-    let app = settled_setup(pool).await;
+#[tokio::test]
+async fn the_deep_check_reads_the_originals_back() {
+    let db = TestDatabase::new().await;
+    let app = settled_setup(db).await;
     let sound = ready_blob(&app, &png_bytes(3000)).await;
     let corrupt = ready_blob(&app, &png_bytes(3000)).await;
     let key = storage_key(&app, id_of(&corrupt)).await;
@@ -252,9 +256,10 @@ async fn the_deep_check_reads_the_originals_back(pool: PgPool) {
     );
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_missing_representation_is_rendered_again(pool: PgPool) {
-    let app = settled_setup(pool).await;
+#[tokio::test]
+async fn a_missing_representation_is_rendered_again() {
+    let db = TestDatabase::new().await;
+    let app = settled_setup(db).await;
     let photo = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
     let id = id_of(&photo);
     render_all(&app).await;
@@ -285,9 +290,10 @@ async fn a_missing_representation_is_rendered_again(pool: PgPool) {
 
 /// The merge: rows the listing has nothing for sit between listed
 /// prefixes, before the first and after the last, and each is found.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn rows_between_listed_prefixes_are_checked(pool: PgPool) {
-    let app = settled_setup(pool).await;
+#[tokio::test]
+async fn rows_between_listed_prefixes_are_checked() {
+    let db = TestDatabase::new().await;
+    let app = settled_setup(db).await;
     let mut ids = Vec::new();
     for _ in 0..5 {
         ids.push(id_of(&ready_blob(&app, &png_bytes(100)).await).to_string());
@@ -366,9 +372,10 @@ async fn plant_orphans(app: &TestApp) -> Planted {
     }
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn orphans_are_reported_and_left_alone(pool: PgPool) {
-    let app = settled_setup(pool).await;
+#[tokio::test]
+async fn orphans_are_reported_and_left_alone() {
+    let db = TestDatabase::new().await;
+    let app = settled_setup(db).await;
     let planted = plant_orphans(&app).await;
     let before = object_keys(&app).await;
     assert_eq!(before.len(), 7);
@@ -399,9 +406,10 @@ async fn orphans_are_reported_and_left_alone(pool: PgPool) {
 /// An object younger than `upload.stale_after` that no row accounts for
 /// is what an upload or a render in flight looks like, its row not yet
 /// updated: not a finding, not deleted, left for the next run.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn young_orphans_are_left_for_the_next_run(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn young_orphans_are_left_for_the_next_run() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let planted = plant_orphans(&app).await;
     let before = object_keys(&app).await;
 
@@ -420,9 +428,10 @@ async fn young_orphans_are_left_for_the_next_run(pool: PgPool) {
     assert_eq!(get_blob(&app, &planted.id).await["failed_at"], json!(null));
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn fix_deletes_the_orphans_older_than_stale_after(pool: PgPool) {
-    let app = settled_setup(pool).await;
+#[tokio::test]
+async fn fix_deletes_the_orphans_older_than_stale_after() {
+    let db = TestDatabase::new().await;
+    let app = settled_setup(db).await;
     let planted = plant_orphans(&app).await;
 
     let report = audit_with(&app, FIX).await;
@@ -469,9 +478,10 @@ async fn fix_deletes_the_orphans_older_than_stale_after(pool: PgPool) {
 
 /// The objects under a prefix no row has go only with `--delete-unknown`,
 /// which leaves the orphans under known prefixes to `--fix`.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn delete_unknown_deletes_the_prefixes_no_row_has(pool: PgPool) {
-    let app = settled_setup(pool).await;
+#[tokio::test]
+async fn delete_unknown_deletes_the_prefixes_no_row_has() {
+    let db = TestDatabase::new().await;
+    let app = settled_setup(db).await;
     let planted = plant_orphans(&app).await;
 
     let report = audit_with(&app, DELETE_UNKNOWN).await;
@@ -504,9 +514,10 @@ async fn delete_unknown_deletes_the_prefixes_no_row_has(pool: PgPool) {
     assert_eq!(report.unknown, None);
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_source_part_the_build_still_needs_is_checked(pool: PgPool) {
-    let app = settled_setup(pool).await;
+#[tokio::test]
+async fn a_source_part_the_build_still_needs_is_checked() {
+    let db = TestDatabase::new().await;
+    let app = settled_setup(db).await;
     let blob = create(
         &app,
         json!({
@@ -557,13 +568,11 @@ async fn a_source_part_the_build_still_needs_is_checked(pool: PgPool) {
 /// it may name an object the listing could not have shown, an upload
 /// finishing as the audit went by: nothing is required of it until the
 /// next run, and nothing is written on it.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_row_that_just_changed_is_left_for_the_next_run(pool: PgPool) {
+#[tokio::test]
+async fn a_row_that_just_changed_is_left_for_the_next_run() {
+    let db = TestDatabase::new().await;
     let clamd = fake_clamd().await;
-    let app = setup_tuned(pool, clamd, |c| {
-        c.upload.stale_after = Duration::from_secs(2)
-    })
-    .await;
+    let app = setup_tuned(db, clamd, |c| c.upload.stale_after = Duration::from_secs(2)).await;
     let blob = ready_blob(&app, &png_bytes(100)).await;
     let id = id_of(&blob);
     delete_object(&app, &storage_key(&app, id).await).await;
@@ -587,9 +596,10 @@ async fn a_row_that_just_changed_is_left_for_the_next_run(pool: PgPool) {
 /// A job whose payload holds a `Progress` carries on from it: the rows up
 /// to its cursor and the keys up to its last one are done, the tally so
 /// far is added to.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn the_job_resumes_from_its_progress(pool: PgPool) {
-    let app = settled_setup(pool).await;
+#[tokio::test]
+async fn the_job_resumes_from_its_progress() {
+    let db = TestDatabase::new().await;
+    let app = settled_setup(db).await;
     let mut ids = Vec::new();
     for _ in 0..3 {
         ids.push(id_of(&ready_blob(&app, &png_bytes(100)).await).to_string());
@@ -635,9 +645,10 @@ async fn the_job_resumes_from_its_progress(pool: PgPool) {
     );
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn the_job_schedules_the_next_run_and_yields_to_a_running_one(pool: PgPool) {
-    let app = settled_setup(pool).await;
+#[tokio::test]
+async fn the_job_schedules_the_next_run_and_yields_to_a_running_one() {
+    let db = TestDatabase::new().await;
+    let app = settled_setup(db).await;
     ready_blob(&app, &png_bytes(100)).await;
     assert!(
         audit::schedule(app.state.pool(), Timestamp::now())

@@ -9,6 +9,9 @@ use sqlx::{PgPool, Postgres, Type};
 
 use crate::config::DatabaseConfig;
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod test;
+
 /// The migrations under `crates/agrafe/migrations/`, embedded at build
 /// time.
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
@@ -96,14 +99,12 @@ mod tests {
     /// With `database.schema`, the tables, the migration history and the
     /// trigger function land in that schema and the queries find them
     /// there; `public` stays untouched for the host's own tables.
-    #[sqlx::test(migrations = false)]
-    async fn migrates_into_the_configured_schema(
-        _pool_options: PgPoolOptions,
-        connect_options: PgConnectOptions,
-    ) {
+    #[tokio::test]
+    async fn migrates_into_the_configured_schema() {
+        let db = test::TestDatabase::empty().await;
         let config = config("agrafe_files");
         let pool = PgPoolOptions::new()
-            .connect_with(with_schema(connect_options, &config))
+            .connect_with(with_schema(db.connect_options(), &config))
             .await
             .unwrap();
 

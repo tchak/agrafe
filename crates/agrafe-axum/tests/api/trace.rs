@@ -27,9 +27,10 @@ async fn context_of(app: &TestApp, id: &str, kind: JobKind) -> (i64, TraceContex
 /// A private request continues its caller's trace; the upload pipeline,
 /// in a task of its own, enqueues the scan under it; the scan's run
 /// enqueues the render under its own id, in the same trace.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_private_request_hands_its_callers_trace_to_its_jobs(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn a_private_request_hands_its_callers_trace_to_its_jobs() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     // Over the inline scan limit, so the scan is a job.
     let bytes = png_bytes(10 * 1024);
     let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
@@ -66,9 +67,10 @@ async fn a_private_request_hands_its_callers_trace_to_its_jobs(pool: PgPool) {
 
 /// Without a `traceparent`, or with one W3C says to ignore, the request
 /// starts a trace, and its jobs still share it.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_request_without_a_valid_traceparent_starts_a_trace(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn a_request_without_a_valid_traceparent_starts_a_trace() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let mut traces = Vec::new();
     for header in [
         None,
@@ -99,9 +101,10 @@ async fn a_request_without_a_valid_traceparent_starts_a_trace(pool: PgPool) {
 
 /// The public interface's clients are browsers and anyone: a trace id is
 /// not theirs to pick, so the request starts its own.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn the_public_interface_ignores_the_callers_trace(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn the_public_interface_ignores_the_callers_trace() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let bytes = png_bytes(10 * 1024);
     let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
     let id = id_of(&created);
@@ -119,9 +122,10 @@ async fn the_public_interface_ignores_the_callers_trace(pool: PgPool) {
 /// A periodic job schedules its successor from inside its own run. The
 /// successor records no context, whatever is current, so each run starts a
 /// trace instead of every run since the first chaining into one.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_periodic_job_schedules_its_successor_outside_its_trace(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn a_periodic_job_schedules_its_successor_outside_its_trace() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let pool = app.state.pool();
     async fn traceparents(pool: &PgPool) -> Vec<Option<String>> {
         sqlx::query_scalar("SELECT traceparent FROM jobs WHERE kind = 'reap'")

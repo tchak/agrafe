@@ -8,9 +8,10 @@ use serde_json::json;
 
 use crate::support::*;
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn sealed_urls_serve_without_the_row(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn sealed_urls_serve_without_the_row() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let created = create(&app, raw_blob()).await;
     assert!(
         created["envelope"].is_null(),
@@ -90,9 +91,10 @@ async fn sealed_urls_serve_without_the_row(pool: PgPool) {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_bad_envelope_is_the_minters_mistake(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn a_bad_envelope_is_the_minters_mistake() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
     let id = id_of(&blob);
     // Signed, so not a forgery; it just does not decode.

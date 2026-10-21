@@ -112,9 +112,9 @@ fn short(declared: usize, body: &[u8]) -> Vec<u8> {
 }
 
 /// An app whose fetches may reach localhost over plain HTTP.
-async fn setup_fetching(pool: PgPool) -> TestApp {
+async fn setup_fetching(db: TestDatabase) -> TestApp {
     let clamd = fake_clamd().await;
-    setup_tuned(pool, clamd, |c| c.fetch.allow_private_networks = true).await
+    setup_tuned(db, clamd, |c| c.fetch.allow_private_networks = true).await
 }
 
 /// A `url` blob declaration for `url`, scanning skipped.
@@ -168,9 +168,10 @@ async fn make_due(app: &TestApp, id: &str) {
         .unwrap();
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_url_blob_is_fetched_by_a_job(pool: PgPool) {
-    let app = setup_fetching(pool).await;
+#[tokio::test]
+async fn a_url_blob_is_fetched_by_a_job() {
+    let db = TestDatabase::new().await;
+    let app = setup_fetching(db).await;
     let bytes = png_bytes(1500);
     let body = bytes.clone();
     let base = remote(move |hit| {
@@ -225,9 +226,10 @@ async fn a_url_blob_is_fetched_by_a_job(pool: PgPool) {
     assert!(public.get("url").is_none(), "{public}");
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn declared_checksums_and_size_are_checked(pool: PgPool) {
-    let app = setup_fetching(pool).await;
+#[tokio::test]
+async fn declared_checksums_and_size_are_checked() {
+    let db = TestDatabase::new().await;
+    let app = setup_fetching(db).await;
     let bytes = png_bytes(3000);
     let body = bytes.clone();
     let base = remote(move |_| ok(&body)).await;
@@ -291,9 +293,10 @@ async fn declared_checksums_and_size_are_checked(pool: PgPool) {
     assert_eq!(stored_objects(&app).await.len(), objects_before);
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn the_bytes_are_sniffed_and_scanned_like_an_upload(pool: PgPool) {
-    let app = setup_fetching(pool).await;
+#[tokio::test]
+async fn the_bytes_are_sniffed_and_scanned_like_an_upload() {
+    let db = TestDatabase::new().await;
+    let app = setup_fetching(db).await;
     let pdf = fixture("image.pdf");
     let infected = infected_png(1500);
     let (pdf_body, infected_body) = (pdf.clone(), infected.clone());
@@ -325,9 +328,10 @@ async fn the_bytes_are_sniffed_and_scanned_like_an_upload(pool: PgPool) {
     assert_eq!(jobs_for(&app, id).await, Vec::<String>::new());
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_server_error_is_retried_and_a_client_error_is_not(pool: PgPool) {
-    let app = setup_fetching(pool).await;
+#[tokio::test]
+async fn a_server_error_is_retried_and_a_client_error_is_not() {
+    let db = TestDatabase::new().await;
+    let app = setup_fetching(db).await;
     let bytes = png_bytes(500);
     let body = bytes.clone();
     let base = remote(move |hit| match (hit.path.as_str(), hit.n) {
@@ -365,10 +369,11 @@ async fn a_server_error_is_retried_and_a_client_error_is_not(pool: PgPool) {
     }
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn retry_after_is_honoured_up_to_a_point(pool: PgPool) {
+#[tokio::test]
+async fn retry_after_is_honoured_up_to_a_point() {
+    let db = TestDatabase::new().await;
     let clamd = fake_clamd().await;
-    let app = setup_tuned(pool, clamd, |c| {
+    let app = setup_tuned(db, clamd, |c| {
         c.fetch.allow_private_networks = true;
         c.fetch.max_retry_after = Duration::from_secs(900);
     })
@@ -403,10 +408,11 @@ async fn retry_after_is_honoured_up_to_a_point(pool: PgPool) {
     assert!(error.contains("beyond fetch.max_retry_after"), "{error}");
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn redirects_are_followed_under_the_same_checks(pool: PgPool) {
+#[tokio::test]
+async fn redirects_are_followed_under_the_same_checks() {
+    let db = TestDatabase::new().await;
     let clamd = fake_clamd().await;
-    let app = setup_tuned(pool, clamd, |c| {
+    let app = setup_tuned(db, clamd, |c| {
         c.fetch.allow_private_networks = true;
         c.fetch.max_redirects = 2;
     })
@@ -451,9 +457,10 @@ async fn redirects_are_followed_under_the_same_checks(pool: PgPool) {
 /// at creation, and a name that resolves to one kills the fetch at once.
 /// A name that does not resolve is retried: the resolver may be the one
 /// having a bad minute.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn the_network_policy_refuses_private_addresses(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn the_network_policy_refuses_private_addresses() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     for (url, says) in [
         ("http://files.example/a", "must use https"),
         ("https://user:pw@files.example/a", "credentials"),
@@ -513,9 +520,10 @@ async fn the_network_policy_refuses_private_addresses(pool: PgPool) {
     }
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_body_cut_short_is_retried_and_one_over_the_cap_is_not(pool: PgPool) {
-    let app = setup_fetching(pool).await;
+#[tokio::test]
+async fn a_body_cut_short_is_retried_and_one_over_the_cap_is_not() {
+    let db = TestDatabase::new().await;
+    let app = setup_fetching(db).await;
     let base = remote(|hit| match hit.path.as_str() {
         "/short" => short(5000, &png_bytes(1000)),
         "/huge" => chunked(&png_bytes(20 * 1024)),
@@ -548,10 +556,11 @@ async fn a_body_cut_short_is_retried_and_one_over_the_cap_is_not(pool: PgPool) {
 /// A remote that answers and then goes quiet mid-body is cut off by the
 /// read timeout, well before the whole-response one, and retried: it must
 /// not hold a fetch worker for as long as it cares to stall.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_stalled_body_is_cut_off_and_retried(pool: PgPool) {
+#[tokio::test]
+async fn a_stalled_body_is_cut_off_and_retried() {
+    let db = TestDatabase::new().await;
     let clamd = fake_clamd().await;
-    let app = setup_tuned(pool, clamd, |c| {
+    let app = setup_tuned(db, clamd, |c| {
         c.fetch.allow_private_networks = true;
         c.fetch.read_timeout = Duration::from_secs(1);
     })
@@ -588,9 +597,10 @@ async fn a_stalled_body_is_cut_off_and_retried(pool: PgPool) {
     assert!(stored_objects(&app).await.is_empty(), "nothing stored");
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_url_blob_takes_no_put_parts_or_finish(pool: PgPool) {
-    let app = setup_fetching(pool).await;
+#[tokio::test]
+async fn a_url_blob_takes_no_put_parts_or_finish() {
+    let db = TestDatabase::new().await;
+    let app = setup_fetching(db).await;
     let created = create(&app, url_blob("http://127.0.0.1:1/a")).await;
     let id = id_of(&created);
 
@@ -625,10 +635,11 @@ async fn a_url_blob_takes_no_put_parts_or_finish(pool: PgPool) {
 /// dropped, so the blob is never left with no job at all, and the retry
 /// is due once the reaper has had the time to reset the row, so one
 /// attempt covers the wait.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn an_uploading_blob_is_a_transient_failure(pool: PgPool) {
+#[tokio::test]
+async fn an_uploading_blob_is_a_transient_failure() {
+    let db = TestDatabase::new().await;
     let clamd = fake_clamd().await;
-    let app = setup_tuned(pool, clamd, |c| {
+    let app = setup_tuned(db, clamd, |c| {
         c.fetch.allow_private_networks = true;
         c.upload.stale_after = Duration::from_secs(600);
         c.jobs.reap_interval = Duration::from_secs(60);
@@ -665,9 +676,10 @@ async fn an_uploading_blob_is_a_transient_failure(pool: PgPool) {
     assert_eq!(jobs_for(&app, id).await, Vec::<String>::new());
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_dead_fetch_is_retried_from_the_blob(pool: PgPool) {
-    let app = setup_fetching(pool).await;
+#[tokio::test]
+async fn a_dead_fetch_is_retried_from_the_blob() {
+    let db = TestDatabase::new().await;
+    let app = setup_fetching(db).await;
     let bytes = png_bytes(500);
     let body = bytes.clone();
     let base = remote(move |hit| match hit.n {
@@ -723,9 +735,10 @@ async fn a_dead_fetch_is_retried_from_the_blob(pool: PgPool) {
 
 /// A migration creates attached, so the blob has no expiry; one whose
 /// fetch gave up is caught by the abandoned rule a day after the failure.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn an_attached_blob_whose_fetch_died_is_expired_as_abandoned(pool: PgPool) {
-    let app = setup_fetching(pool).await;
+#[tokio::test]
+async fn an_attached_blob_whose_fetch_died_is_expired_as_abandoned() {
+    let db = TestDatabase::new().await;
+    let app = setup_fetching(db).await;
     let pool = app.state.pool();
     let base = remote(|_| status("404 Not Found", &[])).await;
     let mut blob = url_blob(&format!("{base}/gone"));
@@ -788,9 +801,10 @@ async fn an_attached_blob_whose_fetch_died_is_expired_as_abandoned(pool: PgPool)
 
 /// A blob past its expiry is not fetched, reaper or no reaper: the remote
 /// is never contacted and the job is done.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn an_expired_blob_is_not_fetched(pool: PgPool) {
-    let app = setup_fetching(pool).await;
+#[tokio::test]
+async fn an_expired_blob_is_not_fetched() {
+    let db = TestDatabase::new().await;
+    let app = setup_fetching(db).await;
     let base = remote(|hit| panic!("fetched {}", hit.path)).await;
     let created = create(&app, url_blob(&format!("{base}/expired"))).await;
     let id = id_of(&created);
@@ -815,9 +829,10 @@ async fn reap_now(app: &TestApp) -> Report {
 }
 
 /// A `raw` upload may declare its MD5 too, and it is checked.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_direct_upload_may_declare_its_md5(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn a_direct_upload_may_declare_its_md5() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let bytes = png_bytes(500);
     let mut blob = blob_for(&bytes, "image/png", "raw");
     blob["skip_virus_scan"] = json!(true);

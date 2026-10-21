@@ -30,9 +30,9 @@ use tokio::net::TcpListener;
 use tokio::sync::Notify;
 use tower::ServiceExt;
 
-/// What `#[sqlx::test(migrator = "MIGRATOR")]` migrates each test's own
-/// database with.
-pub use agrafe::db::MIGRATOR;
+/// Each test's own database, created and migrated at its start, dropped
+/// with the app.
+pub use agrafe::db::test::TestDatabase;
 pub use sqlx::PgPool;
 
 /// How long a test waits for something it set in motion: a notification,
@@ -88,6 +88,8 @@ pub struct TestApp {
     pub gate: Gate,
     storage: PathBuf,
     _watchdog: mpsc::Sender<()>,
+    /// Dropped last, after the pool in `state`.
+    _db: TestDatabase,
 }
 
 impl Drop for TestApp {
@@ -195,19 +197,19 @@ pub async fn closed_port() -> SocketAddr {
     listener.local_addr().unwrap()
 }
 
-/// The app on `pool`, the test's own database from `#[sqlx::test]`.
-pub async fn setup(pool: PgPool) -> TestApp {
+/// The app on `db`, the test's own database.
+pub async fn setup(db: TestDatabase) -> TestApp {
     let clamd = fake_clamd().await;
-    setup_with(pool, clamd).await
+    setup_with(db, clamd).await
 }
 
-pub async fn setup_with(pool: PgPool, clamd: SocketAddr) -> TestApp {
-    setup_tuned(pool, clamd, |_| {}).await
+pub async fn setup_with(db: TestDatabase, clamd: SocketAddr) -> TestApp {
+    setup_tuned(db, clamd, |_| {}).await
 }
 
 /// `setup_with`, with `tune` applied to the configuration first.
 pub async fn setup_tuned(
-    pool: PgPool,
+    db: TestDatabase,
     clamd: SocketAddr,
     tune: impl FnOnce(&mut Config),
 ) -> TestApp {
@@ -221,7 +223,7 @@ pub async fn setup_tuned(
         public_addr = "127.0.0.1:0"
         public_base_url = "https://agrafe.test"
         [database]
-        # Never dialled: the app runs on the pool `#[sqlx::test]` hands over.
+        # Never dialled: the app runs on the pool of the test's database.
         url = "postgres://unused"
         [storage]
         backend = "local"
@@ -272,7 +274,7 @@ pub async fn setup_tuned(
     let gate = Gate::default();
     let store = agrafe::storage::build(&config.storage).unwrap();
     let store = Arc::new(gate::GatedStore::new(store, gate.clone()));
-    let state = Agrafe::with_store(config, pool, store).unwrap();
+    let state = Agrafe::with_store(config, db.pool().clone(), store).unwrap();
     TestApp {
         private: api::private_router(state.clone()),
         public: api::public_router(state.clone()),
@@ -280,6 +282,7 @@ pub async fn setup_tuned(
         gate,
         storage,
         _watchdog: watchdog,
+        _db: db,
     }
 }
 

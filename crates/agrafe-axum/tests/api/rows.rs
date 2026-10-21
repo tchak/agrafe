@@ -144,9 +144,10 @@ async fn build(app: &TestApp, id: &str) -> Value {
     built
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn csv_is_built_from_rows_in_parts(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn csv_is_built_from_rows_in_parts() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let created = create(&app, rows_blob("export été.csv", "text/csv")).await;
     let id = id_of(&created);
     assert_eq!(created["state"], "created");
@@ -196,9 +197,10 @@ async fn csv_is_built_from_rows_in_parts(pool: PgPool) {
     assert_eq!(rendered["thumbnail_state"], "ready");
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn xlsx_package(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn xlsx_package() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let created = create(&app, rows_blob("Export: 2026.xlsx", XLSX)).await;
     let id = id_of(&created);
     let (status, body) = put_private(&app, id, lines(&SAMPLE)).await;
@@ -248,9 +250,10 @@ async fn xlsx_package(pool: PgPool) {
     assert!(styles.contains(r#"numFmtId="14""#) && styles.contains(r#"numFmtId="22""#));
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn ods_package(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn ods_package() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let created = create(&app, rows_blob("export.ods", ODS)).await;
     let id = id_of(&created);
     let (status, body) = put_private(&app, id, lines(&SAMPLE)).await;
@@ -290,9 +293,10 @@ async fn ods_package(pool: PgPool) {
 }
 
 /// A source with no lines produces a header alone, in every format.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn empty_source_is_a_header(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn empty_source_is_a_header() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     for (filename, content_type) in [("e.csv", "text/csv"), ("e.xlsx", XLSX), ("e.ods", ODS)] {
         let created = create(&app, rows_blob(filename, content_type)).await;
         let id = id_of(&created);
@@ -319,9 +323,10 @@ async fn empty_source_is_a_header(pool: PgPool) {
     }
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn creation_checks_the_columns(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn creation_checks_the_columns() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let post = |body: Value| call(&app.private, json_req(Method::POST, "/blobs", body));
     let cases: Vec<(&str, Value, &str)> = vec![
         (
@@ -420,9 +425,10 @@ async fn creation_checks_the_columns(pool: PgPool) {
 
 /// Every bad line answers 422 naming it and the cell; the part is
 /// discarded and the blob keeps the parts it had.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn row_rejections(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn row_rejections() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let created = create(&app, rows_blob("bad.xlsx", XLSX)).await;
     let id = id_of(&created);
     let (status, body) = put_part(&app, id, 1, lines(&SAMPLE[..1])).await;
@@ -514,9 +520,10 @@ async fn row_rejections(pool: PgPool) {
 
 /// A sheet cell holds 32 767 characters; a longer text is refused at
 /// accept for a sheet format and taken for CSV.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn sheet_cell_limit(pool: PgPool) {
-    let app = setup_tuned(pool, fake_clamd().await, |c| {
+#[tokio::test]
+async fn sheet_cell_limit() {
+    let db = TestDatabase::new().await;
+    let app = setup_tuned(db, fake_clamd().await, |c| {
         c.upload.max_size = bytesize::ByteSize::kib(256);
     })
     .await;
@@ -541,9 +548,10 @@ async fn sheet_cell_limit(pool: PgPool) {
 /// A sheet holds 1 048 576 rows, the header included; the source is
 /// refused at the line that would cross it, whichever part it is in. CSV
 /// has no such limit.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn sheet_row_limit(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn sheet_row_limit() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let one = json!(["x", 1, true, null, null]);
     for (filename, content_type, limited) in [("l.xlsx", XLSX, true), ("l.csv", "text/csv", false)]
     {
@@ -581,9 +589,10 @@ async fn sheet_row_limit(pool: PgPool) {
 /// naming the current sheet, the first included, changes nothing: a
 /// backend announcing every sheet in a loop needs no special case, and
 /// the build keeps reading the sheet instead of ending it.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn xlsx_workbook(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn xlsx_workbook() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let created = create(&app, workbook_blob("dossiers.xlsx", XLSX)).await;
     let id = id_of(&created);
     assert!(created.get("sheets").is_none(), "not reported back");
@@ -684,9 +693,10 @@ async fn xlsx_workbook(pool: PgPool) {
     assert!(third.contains("Rien"), "{third}");
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn ods_workbook(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn ods_workbook() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let created = create(&app, workbook_blob("dossiers.ods", ODS)).await;
     let id = id_of(&created);
     // Straight to the last sheet: the ones skipped get a header alone.
@@ -735,9 +745,10 @@ async fn ods_workbook(pool: PgPool) {
 
 /// A switch must name the current sheet or a declared one after it; a wrong one
 /// fails the part like any bad line, and the blob keeps what it had.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn sheet_switch_rejections(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn sheet_switch_rejections() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let created = create(&app, workbook_blob("switch.xlsx", XLSX)).await;
     let id = id_of(&created);
     let (status, body) = put_part(
@@ -820,9 +831,10 @@ async fn sheet_switch_rejections(pool: PgPool) {
 
 /// The row limit is per sheet: a switch starts the count over, while
 /// naming the current sheet again does not.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn sheet_row_limit_is_per_sheet(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn sheet_row_limit_is_per_sheet() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let created = create(&app, workbook_blob("per-sheet.xlsx", XLSX)).await;
     let id = id_of(&created);
     let one = json!(["x", 1, true, null, null]);
@@ -853,9 +865,10 @@ async fn sheet_row_limit_is_per_sheet(pool: PgPool) {
     assert_eq!(body["source_rows"], 1_048_579);
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn creation_checks_the_sheets(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn creation_checks_the_sheets() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let post = |body: Value| call(&app.private, json_req(Method::POST, "/blobs", body));
     let cols = json!([{"name": "a"}]);
     let cases: Vec<(&str, Value, &str)> = vec![
@@ -920,9 +933,10 @@ async fn creation_checks_the_sheets(pool: PgPool) {
 
 /// A build that cannot succeed, here a row stripped of its key material,
 /// is dead after its first attempt; the blob stays `uploaded`.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn permanent_rows_build_failures_die_at_once(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn permanent_rows_build_failures_die_at_once() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let created = create(&app, rows_blob("broken.csv", "text/csv")).await;
     let id = id_of(&created);
     let (status, _) = put_private(&app, id, lines(&SAMPLE)).await;
@@ -949,12 +963,13 @@ async fn permanent_rows_build_failures_die_at_once(pool: PgPool) {
 /// A source part damaged in the store, whether its length fits no stream
 /// or its header does not parse, fails the build for good at the first
 /// attempt: another would read the same bytes. Nothing is written.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn damaged_source_parts_fail_the_build(pool: PgPool) {
+#[tokio::test]
+async fn damaged_source_parts_fail_the_build() {
+    let db = TestDatabase::new().await;
     use object_store::ObjectStoreExt;
     use object_store::path::Path as ObjectPath;
 
-    let app = setup(pool).await;
+    let app = setup(db).await;
     type Damage = fn(&mut Vec<u8>);
     let damages: [(&str, Damage); 2] = [
         ("which no stream of this layout produces", |b| b.truncate(5)),
@@ -1004,9 +1019,10 @@ async fn damaged_source_parts_fail_the_build(pool: PgPool) {
 
 /// A source larger than one flush of the writer and one encryption
 /// segment streams through whole: every row comes out, in order.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn long_source_streams(pool: PgPool) {
-    let app = setup_tuned(pool, fake_clamd().await, |c| {
+#[tokio::test]
+async fn long_source_streams() {
+    let db = TestDatabase::new().await;
+    let app = setup_tuned(db, fake_clamd().await, |c| {
         c.upload.max_size = bytesize::ByteSize::mib(4);
     })
     .await;

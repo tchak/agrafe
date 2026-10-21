@@ -94,9 +94,10 @@ const TEMPLATE: &str = r#"#import "lib/header.typ": header
 
 const HEADER: &str = "#let header(t) = heading(level: 1, t)\n";
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn document_is_built_from_a_workspace_in_parts(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn document_is_built_from_a_workspace_in_parts() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let template = ready_file(&app, "facture.typ", "text/plain", TEMPLATE.as_bytes()).await;
     let logo = ready_file(&app, "logo.png", "image/png", &fixture("photo.png")).await;
 
@@ -190,9 +191,10 @@ async fn document_is_built_from_a_workspace_in_parts(pool: PgPool) {
 
 /// `PUT /blobs/:id` is part one and the finish in one call, and `main`
 /// names another entry file than `main.typ`.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn whole_workspace_in_one_put_with_a_chosen_main(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn whole_workspace_in_one_put_with_a_chosen_main() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let mut blob = document_blob("note.pdf");
     blob["main"] = json!("src/note.typ");
     let created = create(&app, blob).await;
@@ -217,9 +219,10 @@ async fn whole_workspace_in_one_put_with_a_chosen_main(pool: PgPool) {
     assert!(download(&app, &built).await.starts_with(b"%PDF-"));
 }
 
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn creation_rules(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn creation_rules() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let cases: Vec<(&str, Value, &str)> = vec![
         (
             "not a PDF",
@@ -270,9 +273,10 @@ async fn creation_rules(pool: PgPool) {
 
 /// Every bad line answers 422 naming it, the part is discarded, the blob
 /// is back in `created` with the parts it had.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn manifest_rejections(pool: PgPool) {
-    let app = setup_tuned(pool, fake_clamd().await, |c| {
+#[tokio::test]
+async fn manifest_rejections() {
+    let db = TestDatabase::new().await;
+    let app = setup_tuned(db, fake_clamd().await, |c| {
         c.document.max_workspace_size = bytesize::ByteSize::kib(2);
         c.document.max_files = 5;
     })
@@ -404,9 +408,10 @@ async fn manifest_rejections(pool: PgPool) {
 
 /// A template that does not compile kills the job at once, with the
 /// compiler's diagnostics, located in the workspace, as the error.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn compile_errors_die_at_once_with_diagnostics(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn compile_errors_die_at_once_with_diagnostics() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let created = create(&app, document_blob("broken.pdf")).await;
     let id = id_of(&created);
     let (status, _) = put_private(
@@ -436,9 +441,10 @@ async fn compile_errors_die_at_once_with_diagnostics(pool: PgPool) {
 /// A helper that fails on its own account, not with the compiler's exit
 /// code, is a failed attempt, not a dead document: the same template may
 /// well compile once the disk or the helper is back.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_helper_failing_for_its_own_reasons_is_retried(pool: PgPool) {
-    let app = setup_tuned(pool, fake_clamd().await, |c| {
+#[tokio::test]
+async fn a_helper_failing_for_its_own_reasons_is_retried() {
+    let db = TestDatabase::new().await;
+    let app = setup_tuned(db, fake_clamd().await, |c| {
         c.media.render.render_document_command = "/usr/bin/false".into();
     })
     .await;
@@ -455,9 +461,10 @@ async fn a_helper_failing_for_its_own_reasons_is_retried(pool: PgPool) {
 
 /// What a template may not do: fetch a package, read outside the
 /// workspace, or need a file the manifest does not hold.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn templates_are_confined_to_the_workspace(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn templates_are_confined_to_the_workspace() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let cases: Vec<(&str, &str, &str)> = vec![
         (
             "package",
@@ -504,9 +511,10 @@ async fn templates_are_confined_to_the_workspace(pool: PgPool) {
 
 /// A workspace file whose blob was ready at accept and is gone at build
 /// time kills the build: a document cannot be compiled without it.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_member_gone_before_the_build_kills_it(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn a_member_gone_before_the_build_kills_it() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let logo = ready_blob(&app, &fixture("photo.png")).await;
     let created = create(&app, document_blob("gone.pdf")).await;
     let id = id_of(&created);
@@ -531,9 +539,10 @@ async fn a_member_gone_before_the_build_kills_it(pool: PgPool) {
 
 /// A path that is a file on one line and a directory on another cannot
 /// be written out; the build refuses it at the line.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn a_file_and_a_directory_cannot_share_a_path(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn a_file_and_a_directory_cannot_share_a_path() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let created = create(&app, document_blob("clash.pdf")).await;
     let id = id_of(&created);
     let (status, _) = put_part(
@@ -557,9 +566,10 @@ async fn a_file_and_a_directory_cannot_share_a_path(pool: PgPool) {
 
 /// The blob is deleted while its document waits to be built: nothing is
 /// written and the job is done.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn delete_before_the_build_writes_nothing(pool: PgPool) {
-    let app = setup(pool).await;
+#[tokio::test]
+async fn delete_before_the_build_writes_nothing() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
     let created = create(&app, document_blob("deleted.pdf")).await;
     let id = id_of(&created);
     let (status, _) = put_private(&app, id, manifest(&[text("main.typ", "x")])).await;
@@ -580,9 +590,10 @@ async fn delete_before_the_build_writes_nothing(pool: PgPool) {
 /// Workers that build documents do not start on a helper that fails its
 /// probe: the real one compiles the probe workspace, a wrong binary or an
 /// idle one does not.
-#[sqlx::test(migrator = "MIGRATOR")]
-async fn the_startup_probe_compiles_a_workspace(pool: PgPool) {
-    let app = setup(pool.clone()).await;
+#[tokio::test]
+async fn the_startup_probe_compiles_a_workspace() {
+    let db = TestDatabase::new().await;
+    let app = setup(db.clone()).await;
     let media = &app.state.config().media;
     let probe = |render| agrafe_render::probe_document(render, media.tmp_dir.as_deref());
     probe(&media.render).await.unwrap();
@@ -602,7 +613,7 @@ async fn the_startup_probe_compiles_a_workspace(pool: PgPool) {
     let err = probe(&idle_binary).await.unwrap_err().to_string();
     assert!(err.contains("wrote nothing"), "{err}");
 
-    let app = setup_tuned(pool, fake_clamd().await, |c| {
+    let app = setup_tuned(db, fake_clamd().await, |c| {
         c.jobs.kinds = Some(vec![JobKind::Document]);
         c.media.render.render_document_command = "/nonexistent/agrafe-render-document".into();
     })
