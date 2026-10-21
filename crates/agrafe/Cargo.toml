@@ -1,6 +1,6 @@
 [package]
 name = "agrafe"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -20,9 +20,9 @@ workspace = true
 test-support = []
 
 [dependencies]
-agrafe-crypto = { version = "0.1.0", path = "../agrafe-crypto" }
-agrafe-render = { version = "0.1.0", path = "../agrafe-render" }
-agrafe-types = { version = "0.1.0", path = "../agrafe-types" }
+agrafe-crypto.workspace = true
+agrafe-render.workspace = true
+agrafe-types.workspace = true
 # The object store's trait, implemented by the wrapper that traces it.
 async-trait = "0.1.92"
 base64 = "0.23.1"

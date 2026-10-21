@@ -1,6 +1,6 @@
 [package]
 name = "agrafe-axum"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -15,7 +15,7 @@ categories = ["web-programming::http-server"]
 workspace = true
 
 [dependencies]
-agrafe = { version = "0.1.0", path = "../agrafe" }
+agrafe.workspace = true
 axum = { version = "0.8.9", features = ["macros", "multipart"] }
 base64 = "0.23.1"
 bytes = "1"
@@ -35,9 +35,9 @@ uuid = { version = "1.28.0", features = ["v7", "serde"] }
 
 [dev-dependencies]
 # `TestDatabase`: a database of its own for each test, migrated afresh.
-agrafe = { version = "0.1.0", path = "../agrafe", features = ["test-support"] }
-agrafe-crypto = { version = "0.1.0", path = "../agrafe-crypto" }
-agrafe-render = { version = "0.1.0", path = "../agrafe-render" }
+agrafe = { workspace = true, features = ["test-support"] }
+agrafe-crypto.workspace = true
+agrafe-render.workspace = true
 async-trait = "0.1.92"
 bytesize = "2.7.0"
 figment = { version = "0.10.19", features = ["toml", "test"] }

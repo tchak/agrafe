@@ -16,11 +16,25 @@ members = [
 ]
 
 [workspace.package]
+# Every crate is released together, at this version. scripts/release.sh
+# bumps it, with the internal dependencies below.
+version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.94"
 repository = "https://github.com/tchak/agrafe"
 homepage = "https://tchak.github.io/agrafe/"
+
+# The crates of the workspace, at the workspace's version: a crate depends on
+# one with `agrafe-types.workspace = true`.
+[workspace.dependencies]
+agrafe = { version = "0.1.0", path = "crates/agrafe" }
+agrafe-axum = { version = "0.1.0", path = "crates/agrafe-axum" }
+agrafe-crypto = { version = "0.1.0", path = "crates/agrafe-crypto" }
+agrafe-dashboard = { version = "0.1.0", path = "crates/agrafe-dashboard" }
+agrafe-render = { version = "0.1.0", path = "crates/agrafe-render" }
+agrafe-sandbox = { version = "0.1.0", path = "crates/agrafe-sandbox" }
+agrafe-types = { version = "0.1.0", path = "crates/agrafe-types" }
 
 [workspace.lints.rust]
 # Everything public is documented: the crates are published, and docs.rs

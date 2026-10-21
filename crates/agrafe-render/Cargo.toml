@@ -1,6 +1,6 @@
 [package]
 name = "agrafe-render"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -14,8 +14,8 @@ categories = ["multimedia::images", "rendering"]
 workspace = true
 
 [dependencies]
-agrafe-sandbox = { version = "0.1.0", path = "../agrafe-sandbox" }
-agrafe-types = { version = "0.1.0", path = "../agrafe-types" }
+agrafe-sandbox.workspace = true
+agrafe-types.workspace = true
 bytesize = { version = "2.7.0", features = ["serde"] }
 futures = "0.3.34"
 humantime-serde = "1.1.1"

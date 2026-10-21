@@ -1,6 +1,6 @@
 [package]
 name = "agrafe-server"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -21,9 +21,9 @@ path = "src/main.rs"
 doc = false
 
 [dependencies]
-agrafe = { version = "0.1.0", path = "../agrafe" }
-agrafe-axum = { version = "0.1.0", path = "../agrafe-axum" }
-agrafe-dashboard = { version = "0.1.0", path = "../agrafe-dashboard" }
+agrafe.workspace = true
+agrafe-axum.workspace = true
+agrafe-dashboard.workspace = true
 axum = "0.8.9"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 futures = "0.3.34"
@@ -35,5 +35,5 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 
 [dev-dependencies]
 # `TestDatabase`: a database of its own for each test.
-agrafe = { version = "0.1.0", path = "../agrafe", features = ["test-support"] }
+agrafe = { workspace = true, features = ["test-support"] }
 tempfile = "3.27.0"

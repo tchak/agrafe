@@ -1,6 +1,6 @@
 [package]
 name = "agrafe-dashboard"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -15,8 +15,8 @@ categories = ["web-programming::http-server"]
 workspace = true
 
 [dependencies]
-agrafe = { version = "0.1.0", path = "../agrafe" }
-agrafe-axum = { version = "0.1.0", path = "../agrafe-axum" }
+agrafe.workspace = true
+agrafe-axum.workspace = true
 askama = "0.16.1"
 askama_web = { version = "0.16.0", features = ["axum-0.8"] }
 axum = { version = "0.8.9", features = ["form", "query", "original-uri"] }
@@ -34,7 +34,7 @@ uuid = { version = "1.28.0", features = ["v7", "serde"] }
 
 [dev-dependencies]
 # `TestDatabase`: a database of its own for each test, migrated afresh.
-agrafe = { version = "0.1.0", path = "../agrafe", features = ["test-support"] }
+agrafe = { workspace = true, features = ["test-support"] }
 base64 = "0.23.1"
 figment = { version = "0.10.19", features = ["toml"] }
 http-body-util = "0.1.5"
