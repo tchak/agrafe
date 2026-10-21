@@ -16,14 +16,14 @@ pub enum Category {
     Spreadsheet,
     /// PowerPoint and ODP.
     Presentation,
-    /// ZIP, gzip, tar, 7z, RAR, bzip2 and zstd.
+    /// ZIP, gzip, tar, 7z, RAR, bzip2 and zstd, and KMZ, a ZIP.
     Archive,
     /// Any `audio/*` type.
     Audio,
     /// Any `video/*` type.
     Video,
-    /// Any `text/*` type except CSV and TSV, plus JSON, XML, GeoJSON and
-    /// GPX.
+    /// Any `text/*` type except CSV and TSV, plus JSON, XML, GeoJSON, GPX
+    /// and KML.
     Text,
     /// Everything else, `application/octet-stream` included.
     Other,
@@ -82,9 +82,12 @@ pub fn classify(content_type: &str) -> Category {
         | "application/x-7z-compressed"
         | "application/vnd.rar"
         | "application/x-bzip2"
-        | "application/zstd" => Some(Category::Archive),
+        | "application/zstd"
+        | crate::kml::KMZ => Some(Category::Archive),
 
-        "application/json" | crate::geojson::GEOJSON | crate::gpx::GPX => Some(Category::Text),
+        "application/json" | crate::geojson::GEOJSON | crate::gpx::GPX | crate::kml::KML => {
+            Some(Category::Text)
+        }
 
         _ => None,
     };
@@ -116,6 +119,8 @@ mod tests {
         assert_eq!(classify("application/json"), Category::Text);
         assert_eq!(classify(crate::geojson::GEOJSON), Category::Text);
         assert_eq!(classify(crate::gpx::GPX), Category::Text);
+        assert_eq!(classify(crate::kml::KML), Category::Text);
+        assert_eq!(classify(crate::kml::KMZ), Category::Archive);
         assert_eq!(classify("video/mp4"), Category::Video);
         assert_eq!(classify("application/octet-stream"), Category::Other);
     }

@@ -184,7 +184,7 @@ above `max_inline_scans` plus `jobs.concurrency.scan`.
 | `extract_command` | `"agrafe-extract"` | The embedded image helper |
 | `render_text_command` | `"agrafe-render-text"` | The text thumbnail helper |
 | `render_document_command` | `"agrafe-render-document"` | The typst helper |
-| `render_geo_command` | `"agrafe-render-geo"` | The map helper, for GeoJSON and GPX files |
+| `render_geo_command` | `"agrafe-render-geo"` | The map helper, for GeoJSON, GPX, KML and KMZ files |
 | `max_source_size` | `"64 MiB"` | Larger originals get the icon and no preview; text thumbnails still render |
 | `tmp_dir` | the system temporary directory | Where workers unpack originals and document workspaces |
 
@@ -241,7 +241,7 @@ The limits that differ from `[media.sandbox]`, whose other keys apply.
 
 ### `[media.map]`
 
-How the map of a GeoJSON or GPX file is drawn; see [Maps](../guide/representations.md#maps).
+How the map of a GeoJSON, GPX, KML or KMZ file is drawn; see [Maps](../guide/representations.md#maps).
 
 | Key | Default | Description |
 |---|---|---|
@@ -256,8 +256,8 @@ How the map of a GeoJSON or GPX file is drawn; see [Maps](../guide/representatio
 ### `[media.map.style]`
 
 The default style, in the simplestyle-spec vocabulary; a GeoJSON feature's
-own properties override it key by key, and a GPX file, which has no style,
-is drawn in it.
+own properties and a KML placemark's style override it key by key, and a
+GPX file, which has no style, is drawn in it.
 
 | Key | Default |
 |---|---|

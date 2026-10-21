@@ -1,5 +1,5 @@
 //! The `agrafe-render-geo` helper: the workers run it in a sandbox with
-//! the GeoJSON or GPX file and the spec the server wrote. It reads no
+//! the GeoJSON, GPX, KML or KMZ file and the spec the server wrote. It reads no
 //! configuration, writes no logs and never touches the network: the
 //! background is the server's business, from the extent written here.
 
@@ -9,7 +9,8 @@ use std::process::ExitCode;
 use agrafe_types::map::Spec;
 use clap::Parser;
 
-/// Draw a GeoJSON or GPX file as SVG paths over the extent it fits in.
+/// Draw a GeoJSON, GPX, KML or KMZ file as SVG paths over the extent it
+/// fits in.
 /// Writes `svg` and `extent` only when the file holds geometry on Earth;
 /// exits zero either way. Nothing about the file is a failure: a non-zero exit
 /// means the helper itself could not run.

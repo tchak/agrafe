@@ -1,7 +1,7 @@
-//! Maps for GeoJSON and GPX files: the geometry projected to Web
-//! Mercator, fitted into a pixel box with some margin, simplified to the
-//! pixel, and drawn as SVG paths in the simplestyle-spec colours of the
-//! file or the default. The file is untrusted, so this runs in the
+//! Maps for GeoJSON, GPX, KML and KMZ files: the geometry projected to
+//! Web Mercator, fitted into a pixel box with some margin, simplified to
+//! the pixel, and drawn as SVG paths in the simplestyle-spec colours of
+//! the file or the default. The file is untrusted, so this runs in the
 //! `agrafe-render-geo` helper, in the sandbox; the server never parses a
 //! map file. The helper writes the SVG and the extent it chose; the
 //! server fetches the background for that extent and `vips` composites
@@ -16,6 +16,7 @@
 //! `agrafe_types::map`, along with the style vocabulary.
 
 mod gpx;
+mod kml;
 
 use std::fmt::Write as _;
 
@@ -208,6 +209,8 @@ pub fn render(bytes: &[u8], spec: &Spec) -> Option<Rendered> {
     let shapes = match spec.format {
         Format::GeoJson => geojson_shapes(bytes, spec),
         Format::Gpx => gpx_shapes(bytes, spec),
+        Format::Kml => kml_shapes(bytes, spec),
+        Format::Kmz => kml_shapes(&kml::document_of_kmz(bytes)?, spec),
     }?;
     if shapes.is_empty() {
         return None;
@@ -270,6 +273,23 @@ fn gpx_shapes(bytes: &[u8], spec: &Spec) -> Option<Vec<(Shape, Style)>> {
             .map(|shape| (shape, spec.style.clone()))
             .collect(),
     )
+}
+
+/// The shapes of the KML document `bytes`, each in its placemark's style
+/// over the default, the way a GeoJSON feature's properties are, and in
+/// degrees, since the specification allows nothing else. `None` when the
+/// document is not KML, holds no placemark with a geometry, or has a
+/// coordinate off Earth.
+fn kml_shapes(bytes: &[u8], spec: &Spec) -> Option<Vec<(Shape, Style)>> {
+    let placemarks = kml::placemarks(bytes)?;
+    let mut shapes = Vec::new();
+    for (geometry, style) in &placemarks {
+        let style = style.over(&spec.style);
+        let mut out = Vec::new();
+        project_geometry(geometry, &Crs::Degrees, &mut out).ok()?;
+        shapes.extend(out.into_iter().map(|shape| (shape, style.clone())));
+    }
+    Some(shapes)
 }
 
 /// The style a feature's properties ask for. A value of the wrong type or
@@ -1134,6 +1154,103 @@ mod tests {
         );
         let one =
             render(br#"<gpx><wpt lat="48.8566" lon="2.3522"/></gpx>"#, &spec).expect("rendered");
+        let point = rendered("point.geojson", &self::spec());
+        assert_eq!(one.extent, point.extent);
+    }
+
+    #[test]
+    fn a_kml_file_is_drawn_in_its_own_styles() {
+        let spec = Spec {
+            format: Format::Kml,
+            ..spec()
+        };
+        let map = render(&fixture("places.kml"), &spec).expect("rendered");
+        // The marker: magenta and large, from the inline style; the
+        // label's green never reaches it.
+        assert_eq!(map.svg.matches("<circle").count(), 1, "{}", map.svg);
+        assert!(
+            map.svg
+                .contains(r##"r="12" fill="#ff00ff" stroke="#8c008c""##),
+            "{}",
+            map.svg
+        );
+        // The parcel, the track and the route: a casing and a stroke each.
+        let paths: Vec<&str> = map.svg.lines().filter(|l| l.starts_with("<path")).collect();
+        assert_eq!(paths.len(), 6, "{}", map.svg);
+        // The parcel from the shared style: a red outline of 2 px over a
+        // half-transparent green fill, with its hole.
+        assert!(
+            paths[0].contains(r##"fill="#00ff00" fill-opacity="0.50196"##),
+            "{}",
+            paths[0]
+        );
+        assert!(paths[0].contains(r##"fill-rule="evenodd" stroke="#8c0000" stroke-width="5""##));
+        assert_eq!(paths[0].matches('Z').count(), 2);
+        assert!(paths[1].contains(r##"fill="none" stroke="#ff0000" stroke-width="2""##));
+        // The track through the style map's `normal` pair: blue, 3 px,
+        // not the highlight's yellow.
+        assert!(paths[3].contains(r##"fill="none" stroke="#0000ff" stroke-width="3""##));
+        assert!(!map.svg.contains("#ffff00"));
+        // The route without a style: the default.
+        assert!(paths[5].contains(r##"fill="none" stroke="#ffd400" stroke-width="4""##));
+        // Nothing the file names reaches the SVG.
+        for word in ["Fourvière", "Basilique", "surface", "red-stars", "Parcelle"] {
+            assert!(!map.svg.contains(word), "{word}");
+        }
+        // Lyon, a few kilometres across.
+        let (cx, cy) = (
+            (map.extent.minx + map.extent.maxx) / 2.0,
+            (map.extent.miny + map.extent.maxy) / 2.0,
+        );
+        let lyon = project(&Position::from([4.8357, 45.764]), &Crs::Degrees).unwrap();
+        assert!(
+            (cx - lyon.x).abs() < 5000.0 && (cy - lyon.y).abs() < 5000.0,
+            "{cx} {cy}"
+        );
+        assert!(
+            (2000.0..20_000.0).contains(&map.extent.span()),
+            "{}",
+            map.extent.span()
+        );
+        // The same document zipped draws the same map.
+        let kmz = Spec {
+            format: Format::Kmz,
+            ..spec
+        };
+        assert_eq!(render(&fixture("places.kmz"), &kmz), Some(map));
+    }
+
+    #[test]
+    fn a_kml_file_declines_like_a_geojson_one() {
+        let kml = Spec {
+            format: Format::Kml,
+            ..spec()
+        };
+        let kmz = Spec {
+            format: Format::Kmz,
+            ..spec()
+        };
+        assert_eq!(render(&fixture("empty.kml"), &kml), None);
+        assert_eq!(render(&fixture("empty.kmz"), &kmz), None);
+        // A file handed over in another format is not a document of it.
+        assert_eq!(render(&fixture("places.kml"), &kmz), None);
+        assert_eq!(render(&fixture("places.kmz"), &kml), None);
+        assert_eq!(render(&fixture("places.kml"), &self::spec()), None);
+        assert_eq!(render(&fixture("track.gpx"), &kml), None);
+        assert_eq!(render(&fixture("image.docx"), &kmz), None);
+        // Off the globe declines; the KML schema has no `crs` to honour.
+        assert_eq!(
+            render(
+                b"<kml><Placemark><Point><coordinates>652469,6862035</coordinates></Point></Placemark></kml>",
+                &kml
+            ),
+            None
+        );
+        let one = render(
+            b"<kml><Placemark><Point><coordinates>2.3522,48.8566</coordinates></Point></Placemark></kml>",
+            &kml,
+        )
+        .expect("rendered");
         let point = rendered("point.geojson", &self::spec());
         assert_eq!(one.extent, point.extent);
     }

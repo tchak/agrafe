@@ -1,7 +1,8 @@
-//! Maps for GeoJSON and GPX files: the geometry over a flat background or
-//! over the layers of a WMS, here a local stub; a provider that fails; the
-//! JSON upload that turns out to be GeoJSON and the XML one that turns
-//! out to be GPX; the files that hold no map.
+//! Maps for GeoJSON, GPX, KML and KMZ files: the geometry over a flat
+//! background or over the layers of a WMS, here a local stub; a provider
+//! that fails; the JSON upload that turns out to be GeoJSON, the XML one
+//! that turns out to be GPX or KML and the ZIP one that turns out to be
+//! KMZ; the files that hold no map.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -491,6 +492,127 @@ async fn a_gpx_declared_as_xml_or_text_is_refined() {
 }
 
 #[tokio::test]
+async fn kml_and_kmz_files_get_a_map_preview_and_thumbnail() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let kml = map_blob(&app, "places.kml", "application/vnd.google-earth.kml+xml").await;
+    let kmz = map_blob(&app, "places.kmz", "application/vnd.google-earth.kmz").await;
+    render_all(&app).await;
+    for (blob, category) in [(&kml, "text"), (&kmz, "archive")] {
+        let id = id_of(blob);
+        let name = blob["filename"].as_str().unwrap();
+        let blob = get_blob(&app, id).await;
+        assert_eq!(blob["category"], category, "{name}");
+        assert_eq!(blob["preview_state"], "ready", "{name}");
+        assert_eq!(blob["preview_source"], "kml", "{name}");
+        assert_eq!(blob["thumbnail_state"], "ready", "{name}");
+        let size = rendered(&app, &format!("/blobs/{id}/preview/{name}")).await;
+        assert_eq!(size, (400, 400), "{name}");
+        let size = rendered(&app, &format!("/blobs/{id}/thumbnail/{name}")).await;
+        assert_eq!(size, (256, 256), "{name}");
+        assert_eq!(jobs_for(&app, id).await, Vec::<String>::new(), "{name}");
+    }
+    assert_eq!(kml["content_type"], "application/vnd.google-earth.kml+xml");
+    assert_eq!(kmz["content_type"], "application/vnd.google-earth.kmz");
+    // The document and its zipped self give the same map; a GeoJSON
+    // file another.
+    let preview_of = |blob: &Value| {
+        format!(
+            "/blobs/{}/preview/{}",
+            id_of(blob),
+            blob["filename"].as_str().unwrap()
+        )
+    };
+    let point = map_blob(&app, "point.geojson", "application/geo+json").await;
+    render_all(&app).await;
+    let (_, _, a) = fetch(&app.private, get_with(&preview_of(&kml), &[])).await;
+    let (_, _, b) = fetch(&app.private, get_with(&preview_of(&kmz), &[])).await;
+    let (_, _, c) = fetch(&app.private, get_with(&preview_of(&point), &[])).await;
+    assert_eq!(a, b);
+    assert_ne!(a, c);
+}
+
+#[tokio::test]
+async fn a_kml_declared_as_xml_or_text_and_a_kmz_declared_as_zip_are_refined() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let as_xml = map_blob(&app, "places.kml", "application/xml").await;
+    let as_text = map_blob(&app, "empty.kml", "text/plain").await;
+    let as_zip = map_blob(&app, "places.kmz", "application/zip").await;
+    let plain_zip = ready_file(&app, "icons.zip", "application/zip", &zip_of_icon()).await;
+    // The refinement is on the row as soon as the upload completes.
+    assert_eq!(
+        as_xml["content_type"],
+        "application/vnd.google-earth.kml+xml"
+    );
+    assert_eq!(
+        as_text["content_type"],
+        "application/vnd.google-earth.kml+xml"
+    );
+    assert_eq!(as_zip["content_type"], "application/vnd.google-earth.kmz");
+    assert_eq!(plain_zip["content_type"], "application/zip");
+    render_all(&app).await;
+    for (blob, category) in [(&as_xml, "text"), (&as_zip, "archive")] {
+        let id = id_of(blob);
+        let name = blob["filename"].as_str().unwrap();
+        let blob = get_blob(&app, id).await;
+        assert_eq!(blob["category"], category, "{name}");
+        assert_eq!(blob["preview_state"], "ready", "{name}");
+        assert_eq!(blob["preview_source"], "kml", "{name}");
+        // The original is served with the refined type.
+        let (status, headers, _) = fetch(
+            &app.private,
+            get_with(&format!("/blobs/{id}/original/{name}"), &[]),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{name}");
+        assert_eq!(
+            headers["content-type"],
+            blob["content_type"].as_str().unwrap(),
+            "{name}"
+        );
+    }
+    let plain = get_blob(&app, id_of(&plain_zip)).await;
+    assert_eq!(plain["preview_state"], "unavailable");
+    assert_eq!(plain["thumbnail_state"], "unavailable");
+
+    // Declared as something a KML or a KMZ is not.
+    for (fixture_name, declared, sniffed) in [
+        (
+            "places.kml",
+            "application/geo+json",
+            "application/vnd.google-earth.kml+xml",
+        ),
+        (
+            "places.kmz",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.google-earth.kmz",
+        ),
+    ] {
+        let bytes = fixture(fixture_name);
+        let mut blob = blob_for(&bytes, declared, "raw");
+        blob["skip_virus_scan"] = serde_json::json!(true);
+        let created = create(&app, blob).await;
+        let (status, body) = put_private(&app, id_of(&created), bytes).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(
+            body["error"]["message"],
+            format!("content looks like `{sniffed}`, not `{declared}`")
+        );
+    }
+}
+
+/// A ZIP whose first entry is an icon, not a KMZ to the sniffer.
+fn zip_of_icon() -> Vec<u8> {
+    use std::io::Write as _;
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    writer.start_file("files/icon.png", options).unwrap();
+    writer.write_all(&fixture("photo.png")).unwrap();
+    writer.finish().unwrap().into_inner()
+}
+
+#[tokio::test]
 async fn files_without_a_map_get_what_a_text_file_gets() {
     let db = TestDatabase::new().await;
     let app = setup(db).await;
@@ -499,13 +621,34 @@ async fn files_without_a_map_get_what_a_text_file_gets() {
     // A coordinate that is not degrees on Earth, as in a Lambert-93 file:
     // nothing this helper can place, so the same as no geometry.
     let off = map_blob(&app, "off-earth.geojson", "application/geo+json").await;
-    // A GPX file with a track of no points.
+    // A GPX file with a track of no points; a KML document with a
+    // placemark without geometry.
     let no_points = map_blob(&app, "empty.gpx", "application/gpx+xml").await;
+    let no_placemark = map_blob(&app, "empty.kml", "application/vnd.google-earth.kml+xml").await;
+    // The same document zipped: an archive, so the icon rather than the
+    // text thumbnail.
+    let zipped = map_blob(&app, "empty.kmz", "application/vnd.google-earth.kmz").await;
     render_all(&app).await;
+    let id = id_of(&zipped);
+    let blob = get_blob(&app, id).await;
+    assert_eq!(blob["preview_state"], "unavailable");
+    assert_eq!(blob["preview_source"], Value::Null);
+    assert_eq!(blob["thumbnail_state"], "unavailable");
+    let (status, headers, body) = fetch(
+        &app.private,
+        get_with(&format!("/blobs/{id}/thumbnail/empty.kmz"), &[]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["content-type"], "image/webp");
+    assert_eq!(headers["x-representation-state"], "unavailable");
+    assert_eq!(webp_size(&body), (256, 256));
+    assert_eq!(jobs_for(&app, id).await, Vec::<String>::new());
     for (blob, preview) in [
         (&empty, "unavailable"),
         (&off, "unavailable"),
         (&no_points, "unavailable"),
+        (&no_placemark, "unavailable"),
     ] {
         let id = id_of(blob);
         let name = blob["filename"].as_str().unwrap();

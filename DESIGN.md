@@ -69,7 +69,7 @@ into a server process. Dependencies point downwards only.
 | `agrafe-extract` | The `agrafe-extract` helper: pulls the one image out of a PDF, DOCX or ODT. Library plus binary | `agrafe-types`, `lopdf`, `zip`, `quick-xml` |
 | `agrafe-render-text` | The `agrafe-render-text` helper: rasterises a text sample. Library plus binary | `agrafe-types`, `ab_glyph` |
 | `agrafe-render-document` | The `agrafe-render-document` helper: compiles a typst workspace into a PDF. Library plus binary | `typst`, `typst-pdf`, `typst-assets` |
-| `agrafe-render-geo` | The `agrafe-render-geo` helper: reads a GeoJSON or GPX file, projects, fits, simplifies and draws it as SVG paths, with the extent it chose. Library plus binary | `agrafe-types`, `geojson`, `quick-xml`, `serde_json` |
+| `agrafe-render-geo` | The `agrafe-render-geo` helper: reads a GeoJSON, GPX, KML or KMZ file, projects, fits, simplifies and draws it as SVG paths, with the extent it chose. Library plus binary | `agrafe-types`, `geojson`, `quick-xml`, `zip`, `serde_json` |
 | `agrafe-render` | Which files render and from what, `vips thumbnail` and `vips composite`, the icons, the drivers that spawn the helpers, the fetcher of map backgrounds, the startup probe, the `[media]` tool config | `agrafe-types`, `agrafe-sandbox`, `reqwest` |
 | `agrafe` | The library: config, database, blobs, upload pipeline, the fetch client, the webhook, encryption, signing, storage, ClamAV, jobs, metrics, URL minting, and the `Agrafe` handle whose methods are the private API | `agrafe-crypto`, `agrafe-types`, `agrafe-render`, `sqlx`, `object_store`, `reqwest` |
 | `agrafe-axum` | The two HTTP interfaces as axum routers, the extractors, `ApiError` and the mapping of the library's errors onto status codes | `agrafe`, `axum` |
@@ -792,11 +792,20 @@ so. Declared as `application/json`, `text/json` or `text/plain`, which is
 how a `.geojson` tends to arrive, the blob's `content_type` becomes
 `application/geo+json` as the upload completes (`sniff::refine`). The XML
 analogue: an XML document whose root element, past the declaration,
-comments and a doctype, is `<gpx>` within the first KiB is a GPX one,
-`application/gpx+xml`, and a declaration of `application/xml`, `text/xml`
-or `text/plain` is refined to it. These are the only cases where the
-bytes change the declaration, in the direction of precision only, and
-the category, `text`, is the same either way. The row and the
+comments and a doctype, is `<gpx>` or `<kml>` within the first KiB is a
+GPX or a KML one, `application/gpx+xml` or
+`application/vnd.google-earth.kml+xml`, and a declaration of
+`application/xml`, `text/xml` or `text/plain` is refined to it. The ZIP
+analogue: a ZIP whose first local file header names a `.kml` entry,
+`doc.kml` as Google Earth writes it first, is a KMZ,
+`application/vnd.google-earth.kmz`, and a declaration of
+`application/zip` is refined to it; entry order is the writer's, so an
+archive that starts with an icon is not recognised, and a client that
+knows the field is a map declares the type itself. The helper is never
+run on every ZIP to see whether it declines. These are the only cases
+where the bytes change the declaration, in the direction of precision
+only, and the category, `text` for the XML ones and `archive` for the
+KMZ, is the same either way. The row and the
 `Content-Type` the original is served with carry the refined type. A
 refinement `upload.content_types` does not admit is not made: the blob
 keeps its declaration, which is in the list, so a list never ends up
@@ -1714,8 +1723,9 @@ Only files with a known source are attempted:
   XLSX or ODS when `media.office.command` names a LibreOffice to convert
   it (see "Thumbnail");
 - text files (the `text` category plus CSV and TSV), thumbnails only;
-- GeoJSON and GPX files, as a map (see "Preview"), with the text
-  thumbnail when they hold no geometry;
+- GeoJSON, GPX, KML and KMZ files, as a map (see "Preview"), with the
+  text thumbnail when the XML ones hold no geometry and the archive
+  icon when the KMZ does;
 - originals at most `media.max_source_size` (default 64 MiB), except for
   the text thumbnail, which reads the first 8 KiB whatever the size. The
   default is low on purpose: the pictures and scans people want to see
@@ -1958,16 +1968,19 @@ on "has preview", never on category. Sources, in order:
    containing a screenshot. The parsing runs in the `agrafe-extract`
    helper, its own binary executed in the sandbox, never in a server
    process.
-3. **Map** (`preview_source = geojson` or `gpx`, one value per format,
-   so the row says what was drawn): a GeoJSON or GPX file's geometry
-   drawn over a map background, the way a form's map field prints in a
-   PDF export. Three steps, two of them in the sandbox. The
+3. **Map** (`preview_source = geojson`, `gpx` or `kml`, one value per
+   format, so the row says what was drawn; a KMZ is a KML document in a
+   ZIP, and what was drawn is that document): a GeoJSON, GPX, KML or
+   KMZ file's geometry drawn over a map background, the way a form's
+   map field prints in a PDF export. Three steps, two of them in the
+   sandbox. The
    `agrafe-render-geo` helper reads the file, in the format the spec
    names, since the server knows the content type and the helper does
    not sniff, and writes `paths.svg`, the geometry as SVG paths in the
    pixel box, and `extent.json`, the bounding box it chose in EPSG:3857
    metres with the pixel size and the layers that apply to it; the
-   `geojson` and `quick-xml` parsers live only there. The worker checks
+   `geojson`, `quick-xml` and `zip` parsers live only there. The worker
+   checks
    the extent against the spec it wrote (the pixel box it
    asked for, layer indices that exist, in order, a box that is a box)
    before acting on it, since the helper is the untrusted side and a
@@ -2008,6 +2021,48 @@ on "has preview", never on category. Sources, in order:
    far as it goes. The georust `gpx` crate was weighed and passed over:
    the glue to it is about the size of the subset needed, and it brings
    `xml-rs` where the helper already has `quick-xml`.
+
+   The KML reader is the one with a style vocabulary, and it maps onto
+   simplestyle cleanly. Geometry: `Point`, `LineString`, `LinearRing`
+   (a closed line on its own, a boundary inside a `Polygon`), `Polygon`
+   with its `outerBoundaryIs` and `innerBoundaryIs`, `MultiGeometry`
+   (flattened, like a geometry collection) and `gx:Track` with its
+   `gx:coord` elements, which is how Google Earth writes a GPS track;
+   `<coordinates>` is whitespace-separated `lon,lat[,alt]` tuples,
+   always WGS 84 by the specification, and a tuple that is not two
+   numbers is skipped. `Document`, `Folder` and `Placemark` nest;
+   `NetworkLink`, `GroundOverlay`, `ExtendedData`, `Schema` and
+   everything else are skipped. Styles: a `<Style id>` holds
+   `LineStyle`, `PolyStyle` and `IconStyle`; a placemark names one with
+   `<styleUrl>#id</styleUrl>` or holds one inline, the inline one laid
+   over the named one key by key, as a feature's properties are laid
+   over the default; a `<StyleMap id>` holds `normal` and `highlight`
+   pairs, of which `normal` is taken, and may point at another map, so
+   resolution follows at most eight hops and a circle ends in the
+   default. Shared styles may be declared after their use, so the
+   reader keeps each placemark's reference and resolves it once the
+   document is read. The mapping: `LineStyle/color` is the stroke and,
+   by its alpha, the stroke opacity (`aabbggrr`: alpha first, bytes
+   reversed); `LineStyle/width` the stroke width in pixels, clamped
+   like simplestyle's; `PolyStyle/color` the fill and its opacity;
+   `PolyStyle/fill` at 0 zeroes the fill opacity and
+   `PolyStyle/outline` at 0 the stroke opacity, for polygons only,
+   since `outline` is a polygon's switch and a line in the same style
+   keeps its stroke; `IconStyle/color` tints the marker, white being
+   untinted and leaving the field unset; `IconStyle/scale` below 0.8 is
+   a small marker, above 1.3 a large one, medium between. The icon's
+   `href` is not honoured, for the reason `marker-symbol` is not, and
+   `LabelStyle`'s colour and scale are a label's, not a marker's. A
+   colour that is not eight hex digits, a width that is not a number:
+   ignored, never an error. A document that is not KML, or holds no
+   placemark with a geometry, declines; one cut short is drawn as far
+   as it goes. A KMZ is a ZIP whose first `.kml` entry, `doc.kml` by
+   convention, not counting the `__MACOSX/` sidecars a Mac zips in, is
+   the document, read through `zip` with a 64 MiB cap on the inflated
+   entry, the size a bare document may be, as the sandbox bounds the
+   rest; the icons and overlays beside it are ignored. The georust
+   `kml` crate was passed over for the reason `gpx` was: it brings
+   `geo-types` for a subset the reader covers in a few hundred lines.
 
    The helper projects every coordinate to Web Mercator, clamping the
    latitude to the projection's edge. RFC 7946 allows only longitude and

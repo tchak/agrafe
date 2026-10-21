@@ -10,6 +10,7 @@
 
 use crate::geojson::{self, GEOJSON};
 use crate::gpx::{self, GPX};
+use crate::kml::{self, KML, KMZ};
 
 /// Bytes needed before a verdict. PDF allows its magic anywhere in the first
 /// 1 KiB; ZIP-based office formats need a few local file headers.
@@ -24,7 +25,8 @@ const OLE: &str = "application/x-ole-storage";
 /// FeatureCollection is a GeoJSON one, and is sniffed as such so that a
 /// `.geojson` declared as JSON or text can be refined (see [`refine`]).
 /// XML has a text sniffer that fires on the declaration; an XML document
-/// whose root element is `<gpx>` is a GPX one, for the same reason.
+/// whose root element is `<gpx>` or `<kml>` is a GPX or a KML one, for
+/// the same reason. A ZIP whose first entry is a `.kml` is a KMZ.
 ///
 /// An OLE compound file sniffs as the generic storage: without its `std`
 /// feature, which would parse the file's directory in-process, `infer`
@@ -34,6 +36,7 @@ pub fn sniff(head: &[u8]) -> Option<&'static str> {
     let inferred = infer::get(head).map(|kind| kind.mime_type());
     match inferred {
         Some("application/msword") => return Some(OLE),
+        Some("application/zip") if kml::looks_like_kmz(head) => return Some(KMZ),
         Some("text/xml") | None => {}
         Some(other) => return Some(other),
     }
@@ -43,18 +46,24 @@ pub fn sniff(head: &[u8]) -> Option<&'static str> {
     if gpx::looks_like_gpx(head) {
         return Some(GPX);
     }
+    if kml::looks_like_kml(head) {
+        return Some(KML);
+    }
     inferred
 }
 
 /// The content type a blob declared as `declared` gets once its bytes
 /// sniffed as `sniffed`: the sniffed type when it is more precise than a
 /// declaration that covers it, as a GeoJSON file declared as JSON or plain
-/// text or a GPX file declared as XML or plain text; `None` to keep the
-/// declaration. The category is the same either way.
+/// text, a GPX or KML file declared as XML or plain text, or a KMZ file
+/// declared as a ZIP; `None` to keep the declaration. The category is the
+/// same either way.
 pub fn refine(declared: &str, sniffed: &str) -> Option<&'static str> {
     match (canonical(declared), sniffed) {
         ("application/json" | "text/json" | "text/plain", GEOJSON) => Some(GEOJSON),
         ("text/xml" | "text/plain", GPX) => Some(GPX),
+        ("text/xml" | "text/plain", KML) => Some(KML),
+        ("application/zip", KMZ) => Some(KMZ),
         _ => None,
     }
 }
@@ -77,8 +86,8 @@ pub fn compatible(declared: &str, sniffed: &str) -> bool {
     if s == GEOJSON {
         return matches!(d, "application/json" | "text/json") || d.starts_with("text/");
     }
-    // A GPX file is XML, which the container rule covers, and text.
-    if s == GPX {
+    // A GPX or KML file is XML, which the container rule covers, and text.
+    if s == GPX || s == KML {
         return d.starts_with("text/");
     }
     // Text sniffers (HTML, shell scripts, XML) are heuristics; any text
@@ -309,8 +318,23 @@ mod tests {
             Some(GPX)
         );
         assert_eq!(sniff(b"<gpx version=\"1.1\">"), Some(GPX));
-        assert_eq!(sniff(b"<?xml version=\"1.0\"?>\n<kml>"), Some("text/xml"));
-        assert_eq!(sniff(b"<kml>"), None);
+        assert_eq!(sniff(b"<?xml version=\"1.0\"?>\n<kml>"), Some(KML));
+        assert_eq!(sniff(b"<kml>"), Some(KML));
+        assert_eq!(sniff(b"<?xml version=\"1.0\"?>\n<svg>"), Some("text/xml"));
+        assert_eq!(sniff(b"<svg>"), None);
+        assert_eq!(sniff(&zip_head(b"doc.kml")), Some(KMZ));
+        assert_eq!(sniff(&zip_head(b"files/icon.png")), Some("application/zip"));
+    }
+
+    /// A ZIP head whose first local file header names `name`.
+    fn zip_head(name: &[u8]) -> Vec<u8> {
+        let mut head = b"PK\x03\x04\x14\x00\x00\x00\x08\x00".to_vec();
+        head.extend_from_slice(&[0; 16]);
+        head.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        head.extend_from_slice(&0u16.to_le_bytes());
+        head.extend_from_slice(name);
+        head.extend_from_slice(b"\x03\x00data");
+        head
     }
 
     #[test]
@@ -350,6 +374,50 @@ mod tests {
         assert!(!compatible(GEOJSON, GPX));
         assert!(!compatible(GPX, GEOJSON));
         assert_eq!(refine("application/xml", "text/xml"), None);
+    }
+
+    #[test]
+    fn refines_xml_declarations_to_kml() {
+        for declared in ["application/xml", "text/xml", "text/plain"] {
+            assert!(compatible(declared, KML), "{declared}");
+            assert_eq!(refine(declared, KML), Some(KML), "{declared}");
+        }
+        assert!(compatible(KML, KML));
+        assert_eq!(refine(KML, KML), None);
+        // A declared KML whose root element sits past the sniffed head.
+        assert!(compatible(KML, "text/xml"));
+        assert_eq!(refine(KML, "text/xml"), None);
+        assert!(compatible("text/csv", KML));
+        assert_eq!(refine("text/csv", KML), None);
+        assert!(compatible("application/octet-stream", KML));
+        assert!(!compatible("image/png", KML));
+        assert!(!compatible("application/json", KML));
+        assert!(!compatible(GPX, KML));
+        assert!(!compatible(KML, GPX));
+        assert!(!compatible(KMZ, KML));
+    }
+
+    #[test]
+    fn refines_zip_declarations_to_kmz() {
+        for declared in ["application/zip", "application/x-zip-compressed"] {
+            assert!(compatible(declared, KMZ), "{declared}");
+            assert_eq!(refine(declared, KMZ), Some(KMZ), "{declared}");
+        }
+        assert!(compatible(KMZ, KMZ));
+        assert_eq!(refine(KMZ, KMZ), None);
+        // A declared KMZ whose first entry is an icon sniffs as a ZIP.
+        assert!(compatible(KMZ, "application/zip"));
+        assert_eq!(refine(KMZ, "application/zip"), None);
+        assert!(compatible("application/octet-stream", KMZ));
+        assert_eq!(refine("application/octet-stream", KMZ), None);
+        // A ZIP-packaged sibling is not a KMZ.
+        let docx = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        assert!(!compatible(docx, KMZ));
+        assert!(!compatible(KMZ, docx));
+        assert!(!compatible("application/pdf", KMZ));
+        assert!(!compatible(KML, KMZ));
+        assert!(!compatible("text/plain", KMZ));
+        assert_eq!(refine(docx, KMZ), None);
     }
 
     #[test]

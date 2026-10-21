@@ -123,11 +123,12 @@ reasoning behind every decision.
   get one too when an optional LibreOffice is configured, see "Thumbnails
   for office files" below; without it they get the icon.
 - **Text thumbnails** showing the first lines of text, CSV and TSV files.
-- **Maps for GeoJSON and GPX files**: the geometry drawn over a WMS
-  background of your choosing, none by default, in a GeoJSON file's own
-  [simplestyle](https://github.com/mapbox/simplestyle-spec) colours or a
-  configured default. A `.geojson` uploaded as JSON or text, or a `.gpx`
-  uploaded as XML or text, is recognised as one.
+- **Maps for GeoJSON, GPX, KML and KMZ files**: the geometry drawn over
+  a WMS background of your choosing, none by default, in a GeoJSON
+  file's own [simplestyle](https://github.com/mapbox/simplestyle-spec)
+  colours, a KML file's own styles, or a configured default. A
+  `.geojson` uploaded as JSON or text, a `.gpx` or `.kml` uploaded as
+  XML or text, or a `.kmz` uploaded as a ZIP, is recognised as one.
 - **Category icons** for everything else. The thumbnail URL answers `200`
   for as long as the blob exists, so it can go straight into an `<img>`
   tag.
@@ -680,7 +681,7 @@ and every configuration key is documented in
 | `agrafe-extract` | Sandboxed helper that pulls the image out of a PDF, DOCX or ODT |
 | `agrafe-render-text` | Sandboxed helper that rasterises a text sample |
 | `agrafe-render-document` | Sandboxed helper that compiles a typst workspace into a PDF |
-| `agrafe-render-geo` | Sandboxed helper that draws a GeoJSON or GPX file as SVG over the map extent it chose |
+| `agrafe-render-geo` | Sandboxed helper that draws a GeoJSON, GPX, KML or KMZ file as SVG over the map extent it chose |
 
 A deployment ships five binaries together: `agrafe`, `agrafe-extract`,
 `agrafe-render-text`, `agrafe-render-document` and `agrafe-render-geo`.

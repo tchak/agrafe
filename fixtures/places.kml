@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:gx="http://www.google.com/kml/ext/2.2">
+  <Document>
+    <name>Une sortie à Lyon</name>
+    <description>Hand-written for agrafe: a shared style, a style map, an inline style, a polygon with a hole, a track.</description>
+    <Style id="parcelle">
+      <LineStyle>
+        <color>ff0000ff</color>
+        <width>2</width>
+      </LineStyle>
+      <PolyStyle>
+        <color>8000ff00</color>
+      </PolyStyle>
+    </Style>
+    <Style id="trace-normal">
+      <LineStyle>
+        <color>ffff0000</color>
+        <width>3</width>
+      </LineStyle>
+    </Style>
+    <Style id="trace-highlight">
+      <LineStyle>
+        <color>ff00ffff</color>
+        <width>6</width>
+      </LineStyle>
+    </Style>
+    <StyleMap id="trace">
+      <Pair>
+        <key>normal</key>
+        <styleUrl>#trace-normal</styleUrl>
+      </Pair>
+      <Pair>
+        <key>highlight</key>
+        <styleUrl>#trace-highlight</styleUrl>
+      </Pair>
+    </StyleMap>
+    <Folder>
+      <name>Lieux</name>
+      <Placemark>
+        <name>Fourvière</name>
+        <description><![CDATA[<b>Basilique</b> de Fourvière]]></description>
+        <Style>
+          <IconStyle>
+            <color>ffff00ff</color>
+            <scale>1.4</scale>
+            <Icon>
+              <href>http://maps.google.com/mapfiles/kml/paddle/red-stars.png</href>
+            </Icon>
+          </IconStyle>
+          <LabelStyle>
+            <color>ff00ff00</color>
+            <scale>2</scale>
+          </LabelStyle>
+        </Style>
+        <Point>
+          <coordinates>4.8225,45.7623,287</coordinates>
+        </Point>
+      </Placemark>
+      <Placemark>
+        <name>Parcelle</name>
+        <styleUrl>#parcelle</styleUrl>
+        <ExtendedData>
+          <Data name="surface">
+            <value>1 200 m²</value>
+          </Data>
+        </ExtendedData>
+        <Polygon>
+          <outerBoundaryIs>
+            <LinearRing>
+              <coordinates>
+                4.8300,45.7600,0 4.8360,45.7600,0 4.8360,45.7640,0 4.8300,45.7640,0 4.8300,45.7600,0
+              </coordinates>
+            </LinearRing>
+          </outerBoundaryIs>
+          <innerBoundaryIs>
+            <LinearRing>
+              <coordinates>
+                4.8320,45.7612,0 4.8340,45.7612,0 4.8340,45.7628,0 4.8320,45.7628,0 4.8320,45.7612,0
+              </coordinates>
+            </LinearRing>
+          </innerBoundaryIs>
+        </Polygon>
+      </Placemark>
+    </Folder>
+    <Placemark>
+      <name>Trace</name>
+      <styleUrl>#trace</styleUrl>
+      <gx:Track>
+        <when>2026-05-10T08:10:00Z</when>
+        <when>2026-05-10T08:12:00Z</when>
+        <when>2026-05-10T08:14:00Z</when>
+        <when>2026-05-10T08:16:00Z</when>
+        <gx:coord>4.8000 45.7500 170</gx:coord>
+        <gx:coord>4.8100 45.7550 172</gx:coord>
+        <gx:coord>4.8200 45.7520 175</gx:coord>
+        <gx:coord>4.8300 45.7600 180</gx:coord>
+      </gx:Track>
+    </Placemark>
+    <Placemark>
+      <name>Itinéraire</name>
+      <LineString>
+        <tessellate>1</tessellate>
+        <coordinates>4.8320,45.7578 4.8357,45.7640 4.8290,45.7700</coordinates>
+      </LineString>
+    </Placemark>
+  </Document>
+</kml>

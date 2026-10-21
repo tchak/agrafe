@@ -1,4 +1,4 @@
-//! Maps for GeoJSON and GPX files. Three steps, two of them in the
+//! Maps for GeoJSON, GPX, KML and KMZ files. Three steps, two of them in the
 //! sandbox: the `agrafe-render-geo` helper reads the file, in the format
 //! the spec names, and writes the geometry as SVG paths with the extent
 //! it chose; this module, trusted code in the
@@ -49,8 +49,8 @@ const BACKGROUND: Color = Color {
 /// burst against the provider.
 const CONCURRENT_FETCHES: usize = 4;
 
-/// `[media.map]`: how the map of a GeoJSON or GPX file is drawn and what
-/// it is drawn over.
+/// `[media.map]`: how the map of a GeoJSON, GPX, KML or KMZ file is
+/// drawn and what it is drawn over.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Map {

@@ -243,6 +243,7 @@ dependencies = [
  "quick-xml 0.42.0",
  "serde_json",
  "thiserror",
+ "zip",
 ]
 
 [[package]]

@@ -42,8 +42,8 @@ See "Crates" in `DESIGN.md` for the dependency graph.
   `crates/agrafe-render-document`, `crates/agrafe-render-geo` — the
   sandboxed helpers, each a library plus a binary of the same name. The
   server does not link them; it finds the binaries on `PATH`. The document
-  one embeds the typst compiler; the geo one parses GeoJSON and GPX and
-  writes SVG.
+  one embeds the typst compiler; the geo one parses GeoJSON, GPX, KML
+  and KMZ and writes SVG.
 - `crates/agrafe-render` — what renders and how: `vips`, the helper
   drivers, the icons, the probe, the `[media]` tool config, and the
   fetcher of map backgrounds (`geo`), the one network client in it.

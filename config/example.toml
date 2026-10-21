@@ -234,7 +234,7 @@ variant_version = 1
 vips_command = "vips"
 # The helper binaries run, sandboxed, to pull embedded images out of PDF and
 # office files, to rasterise text samples, to compile typst documents and to
-# draw GeoJSON and GPX files. Built by this workspace and found on the PATH
+# draw map files. Built by this workspace and found on the PATH
 # by default.
 # extract_command = "/usr/local/bin/agrafe-extract"
 # render_text_command = "/usr/local/bin/agrafe-render-text"
@@ -313,9 +313,9 @@ max_text_chars = 50
 # memory = "2 GiB"
 
 [media.map]
-# A GeoJSON or GPX file gets a map as its preview: its geometry, drawn by
-# the agrafe-render-geo helper, over a background fetched from the layers
-# below.
+# A GeoJSON, GPX, KML or KMZ file gets a map as its preview: its geometry,
+# drawn by the agrafe-render-geo helper, over a background fetched from the
+# layers below.
 # Added around the geometry, as a fraction of its larger side.
 padding = 0.1
 # The smallest extent drawn, so a single point or a tiny parcel still gets a
@@ -343,9 +343,10 @@ max_layer_size = "8 MiB"
 # own simplestyle properties (stroke, stroke-width, stroke-opacity, fill,
 # fill-opacity, marker-color, marker-size) override it key by key; a value
 # that is not a hex colour, a number or a known size is ignored, and
-# marker-symbol, title and description are not drawn. A GPX file has no
-# style and is drawn in this one. The casing under a stroke is the stroke
-# darkened.
+# marker-symbol, title and description are not drawn. A KML placemark's
+# style, shared or inline, overrides it the same way, its colours and
+# widths mapped onto these keys. A GPX file has no style and is drawn in
+# this one. The casing under a stroke is the stroke darkened.
 [media.map.style]
 stroke = "#FFD400"
 stroke-width = 4

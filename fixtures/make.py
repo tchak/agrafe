@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Builds the fixture files next to this script, and the renderer probe
 files under crates/agrafe-render/assets/probe. Needs Pillow. The outputs are
-committed; run this only to change them. The XML map fixtures (`.gpx`) are
-hand-written and edited directly."""
+committed; run this only to change them. The XML map fixtures (`.gpx`,
+`.kml`) are hand-written and edited directly; the `.kmz` ones are built
+here from them."""
 
 import io
 import json
@@ -115,6 +116,17 @@ def zip_entry(z, name, data, compress=zipfile.ZIP_DEFLATED):
 A4_TWIPS = (11906, 16838)
 A4_CM = ("21.0cm", "29.7cm")
 PAGE_BREAK = '<w:p><w:r><w:br w:type="page"/></w:r></w:p>'
+
+
+def kmz(document, icon=None):
+    """A KMZ: the document as `doc.kml` first, as Google Earth writes it,
+    then its icon."""
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        zip_entry(z, "doc.kml", document)
+        if icon is not None:
+            zip_entry(z, "files/icon.png", icon)
+    return out.getvalue()
 
 
 def docx(text, media_name=None, media=None, pages=1):
@@ -312,6 +324,8 @@ def main():
         "table.ods": ods(TABLE),
     }
     files.update({name: geojson(value) for name, value in GEOJSON.items()})
+    files["places.kmz"] = kmz((HERE / "places.kml").read_bytes(), small_png)
+    files["empty.kmz"] = kmz((HERE / "empty.kml").read_bytes())
     for name, data in files.items():
         (HERE / name).write_bytes(data)
         print(f"{name}: {len(data)} bytes")

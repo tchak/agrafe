@@ -19,6 +19,7 @@ use std::path::Path;
 use agrafe_types::classify::{self, Category};
 use agrafe_types::geojson::GEOJSON;
 use agrafe_types::gpx::GPX;
+use agrafe_types::kml::{KML, KMZ};
 use agrafe_types::map::Format;
 use agrafe_types::sniff;
 use serde::Deserialize;
@@ -48,8 +49,8 @@ pub struct Config {
     /// `PATH` by default.
     #[serde(default = "default_render_document_command")]
     pub render_document_command: String,
-    /// The helper that draws a GeoJSON or GPX file as SVG, found on
-    /// `PATH` by default.
+    /// The helper that draws a GeoJSON, GPX, KML or KMZ file as SVG,
+    /// found on `PATH` by default.
     #[serde(default = "default_render_geo_command")]
     pub render_geo_command: String,
     /// The thumbnail box and quality, the `[media.thumbnail]` table.
@@ -62,8 +63,8 @@ pub struct Config {
     /// `[media.embedded_image]` table.
     #[serde(default)]
     pub embedded_image: EmbeddedImage,
-    /// How the map of a GeoJSON or GPX file is drawn, and what it is
-    /// drawn over, the `[media.map]` table.
+    /// How the map of a GeoJSON, GPX, KML or KMZ file is drawn, and what
+    /// it is drawn over, the `[media.map]` table.
     #[serde(default)]
     pub map: Map,
     /// The optional LibreOffice that converts office files for their
@@ -327,10 +328,11 @@ impl Plan {
 /// which is more attack surface than it is worth. A PDF or an office file
 /// that wraps one picture is rendered from it; otherwise a PDF gets its
 /// first page as a thumbnail, and a DOCX, ODT, XLSX or ODS its first page
-/// through LibreOffice when one is configured, else the icon. A GeoJSON
-/// or GPX file gets a map, and the text sample of the text file it is
-/// when it holds no geometry. The `text` category, plus CSV and TSV,
-/// which classify as spreadsheets, get a text sample as a thumbnail.
+/// through LibreOffice when one is configured, else the icon. A GeoJSON,
+/// GPX or KML file gets a map, and the text sample of the text file it is
+/// when it holds no geometry; a KMZ gets a map too, and the archive icon
+/// otherwise. The `text` category, plus CSV and TSV, which classify as
+/// spreadsheets, get a text sample as a thumbnail.
 pub fn plan(content_type: &str) -> Plan {
     let canonical = sniff::canonical(content_type);
     match canonical {
@@ -341,6 +343,14 @@ pub fn plan(content_type: &str) -> Plan {
         GPX => Plan {
             picture: &[Source::Map(Format::Gpx)],
             fallback: Some(Fallback::TextSample),
+        },
+        KML => Plan {
+            picture: &[Source::Map(Format::Kml)],
+            fallback: Some(Fallback::TextSample),
+        },
+        KMZ => Plan {
+            picture: &[Source::Map(Format::Kmz)],
+            fallback: None,
         },
         "image/jpeg" | "image/png" | "image/gif" | "image/webp" | "image/tiff" | "image/heif"
         | "image/avif" | "image/svg+xml" | "image/bmp" | "image/jp2" => Plan {
@@ -416,6 +426,20 @@ mod tests {
             Plan {
                 picture: &[Source::Map(Format::Gpx)],
                 fallback: Some(Fallback::TextSample),
+            }
+        );
+        assert_eq!(
+            plan(KML),
+            Plan {
+                picture: &[Source::Map(Format::Kml)],
+                fallback: Some(Fallback::TextSample),
+            }
+        );
+        assert_eq!(
+            plan(KMZ),
+            Plan {
+                picture: &[Source::Map(Format::Kmz)],
+                fallback: None,
             }
         );
         for text in [

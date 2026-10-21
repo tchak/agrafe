@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>Hand-written for agrafe: nothing to draw</name>
+    <Style id="s">
+      <LineStyle>
+        <color>ff0000ff</color>
+      </LineStyle>
+    </Style>
+    <GroundOverlay>
+      <name>Plan</name>
+      <Icon>
+        <href>files/plan.png</href>
+      </Icon>
+      <LatLonBox>
+        <north>45.78</north>
+        <south>45.75</south>
+        <east>4.86</east>
+        <west>4.80</west>
+      </LatLonBox>
+    </GroundOverlay>
+    <Placemark>
+      <name>Sans géométrie</name>
+      <styleUrl>#s</styleUrl>
+    </Placemark>
+  </Document>
+</kml>

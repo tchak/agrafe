@@ -9,9 +9,11 @@ pub mod allowlist;
 pub mod classify;
 pub mod geojson;
 pub mod gpx;
+pub mod kml;
 pub mod map;
 pub mod sniff;
 pub mod text;
+mod xml;
 
 pub use classify::{Category, classify};
 

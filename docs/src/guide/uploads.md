@@ -132,10 +132,13 @@ The bytes flow once through a chain of checks, in this order:
    declarations are refined rather than checked: a JSON document that
    opens on a GeoJSON `Feature` or `FeatureCollection`, declared as
    `application/json`, `text/json` or `text/plain`, gets
-   `application/geo+json` as its `content_type`, and an XML document
-   whose root element is `<gpx>`, declared as `application/xml`,
-   `text/xml` or `text/plain`, gets `application/gpx+xml`, so both are
-   drawn as maps. When `upload.content_types` is set, the declaration
+   `application/geo+json` as its `content_type`; an XML document
+   whose root element is `<gpx>` or `<kml>`, declared as
+   `application/xml`, `text/xml` or `text/plain`, gets
+   `application/gpx+xml` or `application/vnd.google-earth.kml+xml`; and
+   a ZIP whose first entry is a `.kml`, declared as `application/zip`,
+   gets `application/vnd.google-earth.kmz`, so all are drawn as maps.
+   When `upload.content_types` is set, the declaration
    must still be in it, and the bytes of a blob declared as
    `application/octet-stream` must be of a listed type: that declaration
    does not widen the list. A file is refined only when the list admits

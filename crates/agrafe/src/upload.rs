@@ -609,8 +609,8 @@ struct Checks {
     head: Vec<u8>,
     sniffed: bool,
     /// A content type more precise than the declared one, read off the
-    /// bytes: a GeoJSON file declared as JSON, a GPX file declared as
-    /// XML.
+    /// bytes: a GeoJSON file declared as JSON, a GPX or KML file declared
+    /// as XML, a KMZ file declared as a ZIP.
     refined: Option<&'static str>,
     scanner: Scanner,
 }
@@ -804,5 +804,30 @@ mod tests {
             Some("application/gpx+xml")
         );
         assert!(check_type("image/png", gpx, &any).is_err());
+        // A ZIP whose first entry is `doc.kml`.
+        let mut kmz = b"PK\x03\x04\x14\x00\x00\x00\x08\x00".to_vec();
+        kmz.extend_from_slice(&[0; 16]);
+        kmz.extend_from_slice(&7u16.to_le_bytes());
+        kmz.extend_from_slice(&0u16.to_le_bytes());
+        kmz.extend_from_slice(b"doc.kml<kml/>");
+        assert_eq!(
+            check_type("application/zip", &kmz, &any).unwrap(),
+            Some("application/vnd.google-earth.kmz")
+        );
+        assert_eq!(
+            check_type("application/zip", &kmz, &list(&["application/zip"])).unwrap(),
+            None
+        );
+        // Undeclared bytes packaged in a listed type pass, unrefined.
+        assert_eq!(
+            check_type(
+                "application/octet-stream",
+                &kmz,
+                &list(&["application/octet-stream", "application/zip"])
+            )
+            .unwrap(),
+            None
+        );
+        assert!(check_type("application/pdf", &kmz, &any).is_err());
     }
 }

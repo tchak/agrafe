@@ -22,7 +22,7 @@ stripped.
 | Other PDF | none | the first page |
 | Other DOCX, ODT, XLSX and ODS | none | the first page, through [LibreOffice](deployment.md#libreoffice) when `media.office.command` is set; the icon otherwise |
 | Text, CSV and TSV | none | the first lines, in a monospace font |
-| GeoJSON, GPX | the geometry over a map, see [Maps](#maps) | the map |
+| GeoJSON, GPX, KML, KMZ | the geometry over a map, see [Maps](#maps) | the map |
 | Anything else | none | the icon |
 
 A document "wraps a single image" when it is what users produce when asked
@@ -51,19 +51,25 @@ A user interface should key on whether a blob has a preview
 
 ## Maps
 
-A GeoJSON file, `application/geo+json`, or a GPX file,
-`application/gpx+xml`, gets its geometry drawn over a map as its preview,
-and that map fitted into the thumbnail box. A `.geojson` uploaded as
+A GeoJSON file, `application/geo+json`, a GPX file,
+`application/gpx+xml`, a KML file, `application/vnd.google-earth.kml+xml`,
+or a KMZ file, `application/vnd.google-earth.kmz`, gets its geometry
+drawn over a map as its preview, and that map fitted into the thumbnail
+box. A `.geojson` uploaded as
 `application/json` or `text/plain`, which is how they tend to arrive, is
 recognised by its first KiB and its `content_type` becomes
 `application/geo+json` as the upload completes. The recognition is a look
 at that first KiB for a `"type"` of `Feature` or `FeatureCollection` at
 any depth, so a JSON document that merely embeds a feature there is
 refined too; it holds no GeoJSON at the top level and gets the text
-thumbnail. Likewise a `.gpx` uploaded as `application/xml`, `text/xml` or
-`text/plain` whose root element, within the first KiB, is `<gpx>` becomes
-`application/gpx+xml`. A file with no geometry has no map and gets the
-text thumbnail instead.
+thumbnail. Likewise a `.gpx` or a `.kml` uploaded as `application/xml`,
+`text/xml` or `text/plain` whose root element, within the first KiB, is
+`<gpx>` or `<kml>` becomes `application/gpx+xml` or
+`application/vnd.google-earth.kml+xml`, and a `.kmz` uploaded as
+`application/zip` whose first entry is a `.kml`, as Google Earth writes
+it, becomes `application/vnd.google-earth.kmz`. A file with no geometry
+has no map and gets the text thumbnail instead, or the archive icon for
+a KMZ.
 
 GeoJSON coordinates are longitude and latitude in degrees, as RFC 7946
 requires. A file that declares another system with the legacy `crs`
@@ -79,6 +85,28 @@ points is dropped. Coordinates are always WGS 84 by the specification.
 GPX has no style vocabulary: names, symbols, elevations, times and the
 colour extensions of Garmin or OsmAnd are ignored, and the file is drawn
 in the default style.
+
+A KML file is drawn from its placemarks: points, lines, rings, polygons
+with their holes, multi-geometries and the `gx:Track` of a Google Earth
+GPS track. Network links, ground overlays, extended data and anything
+else are ignored. A KMZ is read from its first `.kml` entry, `doc.kml` as
+Google Earth writes it; the icons and overlays beside it are ignored. KML
+styles, shared through `styleUrl` and style maps (of which the `normal`
+pair is taken) or written inline, are honoured over the default of
+`[media.map.style]`:
+
+| KML | Honoured as |
+|---|---|
+| `LineStyle/color` | `stroke` and `stroke-opacity` (the alpha of `aabbggrr`) |
+| `LineStyle/width` | `stroke-width`, pixels, clamped to 0..20 |
+| `PolyStyle/color` | `fill` and `fill-opacity` |
+| `PolyStyle/fill` of 0 | `fill-opacity` of 0 |
+| `PolyStyle/outline` of 0 | `stroke-opacity` of 0, for polygons |
+| `IconStyle/color` | `marker-color`; white is untinted and leaves the default |
+| `IconStyle/scale` | `marker-size`: small below 0.8, large above 1.3, medium between |
+
+The icon's `href` is not drawn, like `marker-symbol`, and a value that
+does not parse is ignored.
 
 The map shows the geometry's bounding box, padded by `media.map.padding`
 (a tenth of its larger side) and at least `min_span` (200 m) wide, so a
@@ -175,7 +203,7 @@ that repair. Use `POST /blobs/:id/retry` (see [Jobs and retries](jobs.md)).
 No user file is decoded in the server process. `vips` renders images and
 PDF pages and composites maps, `agrafe-extract` pulls embedded images out
 of PDF and office files, `agrafe-render-text` rasterises text samples,
-`agrafe-render-geo` draws GeoJSON and GPX files, and LibreOffice, when
+`agrafe-render-geo` draws GeoJSON, GPX, KML and KMZ files, and LibreOffice, when
 configured, converts office files to PDF, each as a subprocess with:
 
 - a clean environment, with no secrets;

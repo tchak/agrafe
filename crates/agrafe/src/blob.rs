@@ -430,6 +430,9 @@ pub enum PreviewSource {
     /// The waypoints, routes and tracks of a GPX file drawn over a map
     /// background.
     Gpx,
+    /// The placemarks of a KML document, bare or zipped in a KMZ, drawn
+    /// over a map background in their KML styles.
+    Kml,
 }
 
 agrafe_types::str_enum!(PreviewSource {
@@ -437,16 +440,19 @@ agrafe_types::str_enum!(PreviewSource {
     EmbeddedImage => "embedded_image",
     GeoJson => "geojson",
     Gpx => "gpx",
+    Kml => "kml",
 });
 
 impl From<agrafe_types::map::Format> for PreviewSource {
     /// The source a map drawn from a file in `format` is recorded as:
-    /// one value per format, so the row says what was drawn.
+    /// one value per format, so the row says what was drawn. A KMZ is
+    /// a KML document in a ZIP, and what was drawn is that document.
     fn from(format: agrafe_types::map::Format) -> Self {
         use agrafe_types::map::Format;
         match format {
             Format::GeoJson => PreviewSource::GeoJson,
             Format::Gpx => PreviewSource::Gpx,
+            Format::Kml | Format::Kmz => PreviewSource::Kml,
         }
     }
 }
