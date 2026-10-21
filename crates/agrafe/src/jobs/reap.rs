@@ -42,10 +42,11 @@ pub(crate) async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
     Ok(())
 }
 
-/// Advisory lock held for the length of one reap. A run longer than
+/// Advisory lock held for the length of one reap, keyed on the
+/// installation (see `jobs::try_xact_lock`). A run longer than
 /// `jobs.reap_interval` would otherwise overlap the one it scheduled, on
 /// another process, and the two would update the same rows at once.
-const REAP_LOCK: i64 = 0x6167_7261_6665; // "agrafe"
+const LOCK: i32 = 0x7265_6170; // "reap"
 
 /// Enqueue a reap at `run_at`, unless one is already pending. Outside any
 /// trace context: a run schedules its successor from inside its own, and
@@ -94,11 +95,7 @@ pub async fn reap(state: &Agrafe, now: Timestamp) -> Result<Report, JobError> {
     let config = state.config();
     let mut tx = state.pool().begin().await?;
 
-    let held: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
-        .bind(REAP_LOCK)
-        .fetch_one(&mut *tx)
-        .await?;
-    if !held {
+    if !super::try_xact_lock(&mut tx, LOCK).await? {
         return Ok(Report {
             skipped: true,
             ..Report::default()

@@ -656,13 +656,7 @@ async fn the_job_schedules_the_next_run_and_yields_to_a_running_one(pool: PgPool
 
     // Another session holds the lock: the API says so, the job steps aside.
     let mut holder = app.state.pool().acquire().await.unwrap();
-    let held: bool =
-        sqlx::query_scalar("SELECT pg_try_advisory_lock(hashtext(current_database()), $1)")
-            .bind(audit::LOCK)
-            .fetch_one(&mut *holder)
-            .await
-            .unwrap();
-    assert!(held);
+    assert!(jobs::try_lock(&mut holder, audit::LOCK).await.unwrap());
     let err = app.state.audit(Options::default()).await.unwrap_err();
     assert!(matches!(err, audit::AuditError::Running), "{err}");
     sqlx::query("UPDATE jobs SET run_at = now() WHERE kind = 'audit'")
@@ -680,11 +674,7 @@ async fn the_job_schedules_the_next_run_and_yields_to_a_running_one(pool: PgPool
     .unwrap();
     assert_eq!(dead, 0, "skipping is not failing");
     assert_eq!(pending, 1, "stepping aside still schedules the next run");
-    sqlx::query("SELECT pg_advisory_unlock(hashtext(current_database()), $1)")
-        .bind(audit::LOCK)
-        .execute(&mut *holder)
-        .await
-        .unwrap();
+    jobs::unlock(&mut holder, audit::LOCK).await.unwrap();
     drop(holder);
 
     // The runner enqueues the first one an interval out, once.

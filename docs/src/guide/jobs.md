@@ -125,7 +125,9 @@ run, in one transaction:
 
 Expiry itself never waits for the reaper: reads compare `expires_at` with
 the clock. One reap is pending at a time across the deployment, and an
-advisory lock keeps two runs from overlapping.
+advisory lock keeps two runs from overlapping. The lock is keyed on the
+database and schema, so several deployments sharing one Postgres server
+do not get in each other's way.
 
 ## The audit
 

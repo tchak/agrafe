@@ -2342,7 +2342,8 @@ so blob-less kinds dedupe like the rest and however many processes start, or
 restart while a reap is pending, one row is pending at a time. A reap holds
 an advisory lock for its transaction, so a run longer than the interval and
 the one it scheduled, on another process, never update the same rows at
-once: the second finds the lock taken and does nothing.
+once: the second finds the lock taken and does nothing. The lock is keyed
+on the installation, see "Advisory locks" below.
 
 A purge refuses a blob that is not in a terminal state: the job is dead at
 once, without the backoff, and stays in the table as evidence of the bug
@@ -2444,6 +2445,20 @@ the renderers more of them. A kind no process handles only piles up, which
 the oldest-due metric shows; a process not handling `render` skips the
 renderer probe, one not handling `reap` does not schedule the first reap,
 and one not handling `audit` does not schedule the first audit.
+
+### Advisory locks
+
+The reap and the audit each run one at a time across a deployment, under
+a Postgres advisory lock: the reap's for its transaction, the audit's for
+its session. Advisory locks belong to the server, not to the database, so
+a key naming the job alone is one lock for every agrafe on the server,
+and a staging and a production instance sharing a host would take turns
+at each other's reaps, a long one on either stalling the other's. The
+key's first half is therefore a hash of the database and the schema, the
+second the job: two installations on one server, or in two schemas of
+one database, never contend, while the processes of one installation see
+the same names and do. The helpers in `jobs.rs` are the one place the
+key is built.
 
 ### Audit
 
@@ -2594,9 +2609,8 @@ or GCS is parts, not an object, and the bucket's
 Results go to the log and to gauges, see "Observability": counts per
 finding kind from the last run, what it listed and checked, and when it
 finished. No new table. One audit runs at a time: the session holds an
-advisory lock, keyed with the database's name since advisory locks are
-the server's, and a job finding it held logs and steps aside, the command
-line reports it.
+advisory lock (see "Advisory locks"), and a job finding it held logs and
+steps aside, the command line reports it.
 
 Later, once the sweep exists, a `?verify=true` on the private
 `GET /blobs/:id` that `HEAD`s the blob's objects is a few lines over the
@@ -2822,8 +2836,8 @@ the schema when it is missing, before the migrator runs, so that
 its own history in `public`. The name is validated at load to a plain
 lowercase identifier, which is what makes interpolating it into `CREATE
 SCHEMA` safe and keeps the unquoted `search_path` and the quoted form
-the same name. The audit's advisory lock is keyed by database, so two
-agrafe installations in two schemas of one database take turns at it.
+the same name. The advisory locks are keyed by database and schema, so
+two agrafe installations in two schemas of one database never contend.
 
 ## Stack
 

@@ -407,9 +407,8 @@ pub async fn schedule(exec: impl PgExecutor<'_>, run_at: Timestamp) -> sqlx::Res
 }
 
 /// Advisory lock held for the length of one audit, by the session that
-/// runs it: the job and the command line never sweep at once. Taken with
-/// the database's name as the other half of the key, since advisory locks
-/// are the server's and not the database's, and two deployments on one
+/// runs it: the job and the command line never sweep at once. Keyed on
+/// the installation (see `jobs::try_lock`), so two deployments on one
 /// server audit their own buckets.
 // Public for the integration tests, not part of the API.
 #[doc(hidden)]
@@ -432,12 +431,7 @@ async fn audit(
     // One session for the run: it holds the lock and reads the rows, and
     // closing it, however the run ends, releases the lock.
     let mut conn = state.pool().acquire().await?.detach();
-    let held: bool =
-        sqlx::query_scalar("SELECT pg_try_advisory_lock(hashtext(current_database()), $1)")
-            .bind(LOCK)
-            .fetch_one(&mut conn)
-            .await?;
-    if !held {
+    if !super::try_lock(&mut conn, LOCK).await? {
         return Err(AuditError::Running);
     }
     let result = sweep(state, &mut conn, options, now, progress, checkpoint).await;
@@ -446,10 +440,7 @@ async fn audit(
     // audit started right after this one would find the lock still held.
     // The sweep's outcome is the news; a session that will not unlock or
     // close cleanly is closed by the server when the socket goes.
-    let _ = sqlx::query("SELECT pg_advisory_unlock(hashtext(current_database()), $1)")
-        .bind(LOCK)
-        .execute(&mut conn)
-        .await;
+    let _ = super::unlock(&mut conn, LOCK).await;
     let _ = conn.close().await;
     if let Ok(report) = &result {
         state.metrics().audit(report, Timestamp::now());

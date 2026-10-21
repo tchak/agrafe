@@ -671,6 +671,64 @@ pub(crate) async fn prune_failed(
     Ok(result.rows_affected())
 }
 
+/// The installation's half of an advisory lock key, as SQL. Advisory
+/// locks are the Postgres server's, not the database's, so a key made of
+/// the job alone is shared by every agrafe on the server: a staging and a
+/// production instance on one host would take turns at each other's
+/// reaps. Hashing the database and the schema in keeps two installations
+/// apart, on one server or in two schemas of one database, while two
+/// processes of one installation, which see the same names, contend as
+/// they should. `current_schema()` is null when nothing on the search
+/// path exists, which would null the key and fail the query decoding a
+/// bool; coalesced so that it is a lock like any other instead. A macro,
+/// so that the queries below stay literals.
+macro_rules! lock_scope {
+    () => {
+        "hashtext(current_database() || '.' || coalesce(current_schema(), ''))"
+    };
+}
+
+/// Try an advisory lock on `key`, held by the session until `unlock`.
+// Public for the integration tests, not part of the API.
+#[doc(hidden)]
+pub async fn try_lock(conn: &mut PgConnection, key: i32) -> sqlx::Result<bool> {
+    sqlx::query_scalar(concat!(
+        "SELECT pg_try_advisory_lock(",
+        lock_scope!(),
+        ", $1)"
+    ))
+    .bind(key)
+    .fetch_one(conn)
+    .await
+}
+
+/// Release the session's advisory lock on `key`.
+// Public for the integration tests, not part of the API.
+#[doc(hidden)]
+pub async fn unlock(conn: &mut PgConnection, key: i32) -> sqlx::Result<()> {
+    sqlx::query(concat!(
+        "SELECT pg_advisory_unlock(",
+        lock_scope!(),
+        ", $1)"
+    ))
+    .bind(key)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+/// Try an advisory lock on `key`, held until the transaction ends.
+pub(crate) async fn try_xact_lock(conn: &mut PgConnection, key: i32) -> sqlx::Result<bool> {
+    sqlx::query_scalar(concat!(
+        "SELECT pg_try_advisory_xact_lock(",
+        lock_scope!(),
+        ", $1)"
+    ))
+    .bind(key)
+    .fetch_one(conn)
+    .await
+}
+
 /// A finished job leaves the table. One that finishes its blob clears the
 /// verdict a dead twin may have left on the row meanwhile: the twin was
 /// enqueued while this one ran, and the blob is not stuck after all.
