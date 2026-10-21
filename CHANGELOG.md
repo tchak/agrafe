@@ -22,6 +22,9 @@ The first release.
   (blobs, uploads, attachments, signed URL minting, jobs, metrics) and a
   public port for browsers on which every URL carries an HMAC signature,
   with key rotation, rounded expiries and a ceiling on their lifetime.
+- **CORS** on the public port, `[server.cors]`: the origins allowed to
+  upload and read from a page, or any, never with credentials. Off by
+  default.
 - **Uploads** streamed in one pass through size and checksum checks,
   SHA-256, content sniffing, ClamAV and encryption into a multipart
   upload; raw or multipart bodies, write-once blobs, accepted types,

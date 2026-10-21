@@ -29,7 +29,7 @@ decision.
 
 - **Two interfaces**: a private port for your backend, on a trusted
   network, and a public port for browsers where every URL is signed and
-  expires.
+  expires, with CORS for the origins you allow.
 - **Streaming uploads**, from a backend or straight from a browser, with
   checksum, size and content type checked on the way in, or
   [fetched from a URL](https://tchak.github.io/agrafe/guide/fetch.html).

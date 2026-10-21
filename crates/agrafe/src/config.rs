@@ -135,6 +135,7 @@ impl Config {
                 "media.variant_version must be at least 1".into(),
             ));
         }
+        self.server.cors.validate()?;
         self.database.validate()?;
         self.webhook.validate()?;
         self.media
@@ -186,10 +187,89 @@ pub struct ServerConfig {
     /// [DESIGN.md, "Dashboard"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#dashboard
     #[serde(default)]
     pub private_hosts: Vec<String>,
+    /// `[server.cors]`: the pages allowed to call the public interface from
+    /// a browser. None by default.
+    #[serde(default)]
+    pub cors: CorsConfig,
 }
 
 fn default_interfaces() -> Vec<Interface> {
     Interface::ALL.to_vec()
+}
+
+/// CORS on the public interface, `[server.cors]`. Credentials are never
+/// allowed: a public URL is its own authorisation, so no cookie is involved,
+/// and `"*"` exposes nothing a holder of the URL could not fetch anyway.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CorsConfig {
+    /// The origins allowed to read public responses from a page, each as a
+    /// browser sends it (`https://app.example`, no path or trailing slash),
+    /// or `["*"]` for any. Empty, the default: no CORS headers, and
+    /// `OPTIONS` answers `405`.
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
+    /// How long a browser may cache a preflight answer; an hour by default.
+    /// Browsers cache per URL, and every public URL differs, so it only
+    /// spares the preflight of a retried request.
+    #[serde(with = "humantime_serde", default = "default_cors_max_age")]
+    pub max_age: Duration,
+}
+
+impl Default for CorsConfig {
+    fn default() -> Self {
+        Self {
+            allowed_origins: Vec::new(),
+            max_age: default_cors_max_age(),
+        }
+    }
+}
+
+fn default_cors_max_age() -> Duration {
+    Duration::from_secs(3600)
+}
+
+impl CorsConfig {
+    /// Whether any origin is allowed, `["*"]`.
+    pub fn allows_any_origin(&self) -> bool {
+        self.allowed_origins.iter().any(|o| o == "*")
+    }
+
+    /// An origin must equal its own serialization, which is what a browser
+    /// puts in `Origin` and what the layer compares byte for byte: lowercase,
+    /// no default port, no path, no trailing slash.
+    fn validate(&self) -> Result<(), ConfigError> {
+        if self.allows_any_origin() {
+            if self.allowed_origins.len() > 1 {
+                return Err(ConfigError::Invalid(
+                    "server.cors.allowed_origins: \"*\" allows every origin and must stand alone"
+                        .into(),
+                ));
+            }
+            return Ok(());
+        }
+        for origin in &self.allowed_origins {
+            let serialized = url::Url::parse(origin)
+                .ok()
+                .filter(|url| matches!(url.scheme(), "http" | "https"))
+                .map(|url| url.origin().ascii_serialization());
+            match serialized {
+                Some(s) if s == *origin => {}
+                Some(s) => {
+                    return Err(ConfigError::Invalid(format!(
+                        "server.cors.allowed_origins: {origin:?} is not an origin as a browser \
+                         sends it; did you mean {s:?}?"
+                    )));
+                }
+                None => {
+                    return Err(ConfigError::Invalid(format!(
+                        "server.cors.allowed_origins: {origin:?} is not an http or https origin, \
+                         like https://app.example"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl ServerConfig {
@@ -1192,6 +1272,63 @@ mod tests {
             assert!(err.contains("must be https"), "{err}");
             jail.set_env("AGRAFE_WEBHOOK__ALLOW_INSECURE", "true");
             assert!(load(&example())?.webhook.wants(Event::Infected));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn cors_origins_are_spelled_as_a_browser_sends_them() {
+        Jail::expect_with(|jail| {
+            let config = load(&example())?;
+            assert!(
+                config.server.cors.allowed_origins.is_empty(),
+                "off by default"
+            );
+            assert_eq!(config.server.cors.max_age.as_secs(), 3600);
+
+            jail.set_env(
+                "AGRAFE_SERVER__CORS__ALLOWED_ORIGINS",
+                r#"["https://app.example", "http://localhost:3000"]"#,
+            );
+            jail.set_env("AGRAFE_SERVER__CORS__MAX_AGE", "10m");
+            let config = load(&example())?;
+            assert_eq!(config.server.cors.allowed_origins.len(), 2);
+            assert!(!config.server.cors.allows_any_origin());
+            assert_eq!(config.server.cors.max_age.as_secs(), 600);
+
+            jail.set_env("AGRAFE_SERVER__CORS__ALLOWED_ORIGINS", r#"["*"]"#);
+            assert!(load(&example())?.server.cors.allows_any_origin());
+
+            for (origin, hint) in [
+                (
+                    "https://app.example/",
+                    "did you mean \"https://app.example\"",
+                ),
+                (
+                    "https://App.Example",
+                    "did you mean \"https://app.example\"",
+                ),
+                (
+                    "https://app.example:443",
+                    "did you mean \"https://app.example\"",
+                ),
+                (
+                    "https://app.example/files",
+                    "did you mean \"https://app.example\"",
+                ),
+                ("app.example", "not an http or https origin"),
+                ("ftp://app.example", "not an http or https origin"),
+                ("*", "must stand alone"),
+            ] {
+                let list = if origin == "*" {
+                    r#"["*", "https://app.example"]"#.to_string()
+                } else {
+                    format!("[{origin:?}]")
+                };
+                jail.set_env("AGRAFE_SERVER__CORS__ALLOWED_ORIGINS", list);
+                let err = load(&example()).unwrap_err().to_string();
+                assert!(err.contains(hint), "{origin}: {err}");
+            }
             Ok(())
         });
     }

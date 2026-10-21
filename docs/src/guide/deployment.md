@@ -432,9 +432,11 @@ needed: the read cache is per process and short-lived.
   trailing slash.
 - If the proxy serves agrafe under a path prefix, it must strip the prefix,
   and `public_base_url` must include it.
-- agrafe sends no CORS headers. For uploads from a page on another origin,
-  serve the public port under the application's origin or add CORS headers
-  at the proxy.
+- For uploads from a page on another origin, list it in
+  `server.cors.allowed_origins`, or serve the public port under the
+  application's origin. Leave CORS to agrafe rather than the proxy: it
+  answers preflights without a signature and puts the headers on errors
+  too.
 - Allow long requests and large bodies on the upload routes, up to
   `upload.max_size`.
 - Keep the private port on the internal network. If an operator reaches it

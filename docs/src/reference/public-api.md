@@ -24,8 +24,15 @@ project](../guide/signed-urls.md) for the token format.
 - **`HEAD`** is accepted wherever `GET` is, and verified as `GET`.
 - **Errors** are JSON, `{"error": {"code": "...", "message": "..."}}`. See
   [Errors](errors.md).
-- **No CORS headers** are sent. Serve the port under your application's
-  origin, or add CORS at a proxy, for cross-origin `fetch` calls.
+- **CORS** headers are sent to the origins `server.cors.allowed_origins`
+  lists, or to any with `["*"]`, on every response, errors included; none
+  by default. Allowed: `GET`, `HEAD`, `PUT`, and the request headers
+  `content-type`, `range`, `if-range`, `if-none-match`,
+  `if-modified-since`. Exposed: `content-disposition`, `content-range`,
+  `accept-ranges`, `etag`, `last-modified`. Never credentials.
+- **Preflights** (`OPTIONS` with `access-control-request-method`) are
+  answered without a signature when CORS is on, and touch nothing. With
+  CORS off, `OPTIONS` is a `405`.
 
 ## `GET /healthz`
 

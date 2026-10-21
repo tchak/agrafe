@@ -13,6 +13,7 @@
 
 mod attachments;
 mod body;
+mod cors;
 mod error;
 mod extract;
 pub mod host;
@@ -65,7 +66,9 @@ pub fn private_router(state: Agrafe) -> Router {
 
 /// The public interface: the upload, metadata, original, preview and
 /// thumbnail of one blob under `/blobs/{token}/{id}`, each verifying its
-/// signature before touching the database, and `/healthz`. Request spans
+/// signature before touching the database, and `/healthz`. With
+/// `server.cors.allowed_origins` set, every response carries the CORS
+/// headers and a preflight is answered without a signature. Request spans
 /// record the path with the token redacted, and every request starts a
 /// trace of its own; see [`trace`]. The state is applied, so it
 /// can be nested under a prefix as is; minted URLs are
@@ -74,11 +77,14 @@ pub fn private_router(state: Agrafe) -> Router {
 pub fn public_router(state: Agrafe) -> Router {
     // Public URLs carry bearer tokens; the span records a redacted path
     // instead of the full URI so tokens never reach log storage.
-    let router = Router::new()
+    let mut router = Router::new()
         .route("/healthz", get(healthz))
         .merge(public::routes(upload::body_limit(&state.config().upload)))
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed);
+    if let Some(cors) = cors::layer(&state.config().server.cors) {
+        router = router.layer(cors);
+    }
     trace::public(router).with_state(state)
 }
 

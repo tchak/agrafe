@@ -29,6 +29,18 @@ role = "all"
 # it whenever a browser uses the port, which the dashboard implies.
 # private_hosts = ["agrafe.internal:8080", "127.0.0.1:8080"]
 
+# CORS on the public interface, for pages on another origin that upload with
+# fetch or read the responses. Off by default: no CORS headers, and OPTIONS
+# answers 405. Never with credentials: a public URL is its own authorisation.
+[server.cors]
+# Each origin as a browser sends it: scheme, host, and a port other than the
+# default, with no path or trailing slash. ["*"] allows any origin, which is
+# safe here since no cookie is involved; the list is policy, not security.
+# allowed_origins = ["https://app.example", "http://localhost:3000"]
+# How long a browser may cache a preflight. Every public URL differs and the
+# cache is per URL, so this only spares the preflight of a retried request.
+max_age = "1h"
+
 [database]
 url = "postgres://localhost/agrafe_dev"
 # The schema the tables live in; the connection's default (public) when

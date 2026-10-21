@@ -222,6 +222,49 @@ and wrong methods (`405`). Handlers use wrapper extractors in `extract.rs`
 that convert those rejections. Internal errors are logged in full and reported
 as `internal` with no detail.
 
+### CORS
+
+A page on another origin than the public port's needs CORS headers to
+`PUT` an upload, which the browser preflights, or to read a response it
+fetched. `server.cors.allowed_origins` lists those origins, or is `["*"]`
+for any; empty, the default, the public port sends no CORS headers and an
+`OPTIONS` is a `405`, as before the key existed. The private port never
+sends any: its client is the backend, and a page reaching it is what
+`private_hosts` and the cross-site check refuse.
+
+The layer is tower-http's `CorsLayer`, inside `public_router`, so an
+embedder gets it from the same configuration. It answers a preflight
+before routing, so `OPTIONS` never meets the `Signed` extractor: a URL is
+signed for the method it was minted for, and a preflight touches nothing
+and returns static headers, which keeps "verify before touching the
+database" true. Every other response carries the headers, errors
+included, so a page reads the `code` of a `403` or a `410` instead of an
+opaque network failure.
+
+- **Methods** `GET`, `HEAD`, `PUT`; **request headers** `content-type`,
+  `range`, `if-range`, `if-none-match`, `if-modified-since`; **exposed
+  headers** `content-disposition`, `content-range`, `accept-ranges`,
+  `etag`, `last-modified`.
+- **No credentials, ever.** CORS guards responses a browser authenticates
+  with ambient credentials, cookies or HTTP auth, and the public port has
+  none: the URL is the whole authorisation. So `"*"` gives a page nothing
+  that the holder of a URL could not get with `curl`, and it is offered
+  plainly rather than discouraged. The allowlist is policy (which sites
+  may use the upload URLs), not a security boundary.
+- **Origins are checked at load** against their own serialization, what a
+  browser sends in `Origin` and what the layer compares byte for byte:
+  `https://app.example/` or `https://App.Example` would never match, and
+  the error says what to write instead. `"*"` stands alone. Wildcard
+  subdomains are left out: an exact list is easy to reason about, and
+  they can be added without breaking one.
+- **Preflights per upload.** A browser caches a preflight per URL, and
+  every public URL carries its own token, so each cross-origin upload is
+  an `OPTIONS` and a `PUT`, whatever `max_age` says (an hour by default);
+  it spares the preflight of a retry only. Neither touches the database
+  or the bucket, so the cost does not grow with the blob count. A `GET`
+  with no other header than those a browser adds itself is not
+  preflighted.
+
 ### Dashboard
 
 Everything an operator wants to see is in the private API as JSON, and

@@ -14,6 +14,7 @@ mod attachments;
 mod audit;
 mod blobs;
 mod cache;
+mod cors;
 mod document;
 mod fetch;
 mod hosts;

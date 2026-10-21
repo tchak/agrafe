@@ -103,11 +103,22 @@ until the blob is `ready`.
 The upload URL lives for `signing.ttl.upload`, one hour by default, and works
 once: blobs are write-once.
 
-> **Cross-origin uploads.** agrafe sends no CORS headers. A `fetch` with
-> `PUT` from a page on another origin is preflighted by the browser and
-> fails. Serve the public port under your application's origin through a
-> reverse proxy, for example at `https://app.example/files/`, or add the
-> CORS headers at the proxy. `<img>` tags and plain links need neither.
+> **Cross-origin uploads.** A `fetch` with `PUT` from a page on another
+> origin than the public port is preflighted by the browser, and fails
+> unless the port answers with CORS headers. List the page's origin in
+> `server.cors.allowed_origins`:
+>
+> ```toml
+> [server.cors]
+> allowed_origins = ["https://app.example"]
+> ```
+>
+> `["*"]` allows any origin, and is safe: a public URL is its own
+> authorisation, so no cookie is ever involved. Each upload costs the
+> browser a preflight, since every upload URL differs. The alternative is
+> to serve the public port under your application's origin through a
+> reverse proxy, for example at `https://app.example/files/`, which needs
+> no CORS at all. `<img>` tags and plain links need neither.
 > When the proxy serves agrafe under a path prefix, it must strip the
 > prefix before forwarding, and `server.public_base_url` must include it so
 > minted URLs carry it. The signature covers only what follows the token, so
