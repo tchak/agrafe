@@ -96,6 +96,43 @@ mod tests {
         }
     }
 
+    /// `connect` opens a pool on the URL, and the schema reaches every
+    /// connection as its search path; without one the server's default
+    /// stands.
+    #[tokio::test]
+    async fn connects_with_the_configured_search_path() {
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
+        let search_path = |schema: Option<&str>| {
+            let config = DatabaseConfig {
+                url: url.clone().into(),
+                schema: schema.map(String::from),
+                max_connections: 2,
+            };
+            async move {
+                let pool = connect(&config).await.unwrap();
+                let path: String = sqlx::query_scalar("SHOW search_path")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+                path
+            }
+        };
+        assert_eq!(search_path(Some("agrafe_files")).await, "agrafe_files");
+        assert_ne!(search_path(None).await, "agrafe_files");
+    }
+
+    /// A URL that does not parse fails before any connection.
+    #[tokio::test]
+    async fn refuses_a_url_that_does_not_parse() {
+        let config = DatabaseConfig {
+            url: String::from("not a url").into(),
+            schema: None,
+            max_connections: 1,
+        };
+        assert!(connect(&config).await.is_err());
+    }
+
     /// With `database.schema`, the tables, the migration history and the
     /// trigger function land in that schema and the queries find them
     /// there; `public` stays untouched for the host's own tables.
