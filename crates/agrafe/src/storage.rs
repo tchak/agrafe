@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use futures::StreamExt as _;
 use futures::stream::BoxStream;
 use object_store::aws::AmazonS3Builder;
 use object_store::azure::MicrosoftAzureBuilder;
@@ -99,8 +100,9 @@ pub fn build(config: &StorageConfig) -> Result<Store, Error> {
 /// A store whose operations each run in a `storage` span, `op` and `path`
 /// as fields: what the request or the job waited on, and for how long.
 /// `Agrafe::with_store` wraps every store in it. A read's span ends with
-/// the response head, before the body streams; a listing, a stream that
-/// outlives any call, and the deletes of `delete_stream` have none.
+/// the response head, before the body streams; a delete stream, which is
+/// what every delete is, has one span for its whole run, without a path;
+/// a listing, a stream that outlives any call, has none.
 #[derive(Debug)]
 pub struct Traced(Store);
 
@@ -169,11 +171,19 @@ impl ObjectStore for Traced {
             .await
     }
 
+    // One span for the stream's life, entered at each poll; the paths are
+    // not known ahead. The trait's `delete` is this stream with one path,
+    // so a single delete gets its span this way.
     fn delete_stream(
         &self,
         locations: BoxStream<'static, Result<Path>>,
     ) -> BoxStream<'static, Result<Path>> {
-        self.0.delete_stream(locations)
+        let span = tracing::info_span!("storage", op = "delete", path = tracing::field::Empty);
+        let mut deleted = self.0.delete_stream(locations);
+        Box::pin(futures::stream::poll_fn(move |cx| {
+            let _entered = span.enter();
+            deleted.poll_next_unpin(cx)
+        }))
     }
 
     fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, Result<ObjectMeta>> {

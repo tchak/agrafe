@@ -2681,7 +2681,9 @@ the trace id. The public span records the path with the token redacted, the
 private one the path without its query string. Inside them, `storage`
 (`op`, `path`) wraps every object store call, through `storage::Traced`,
 which `Agrafe::with_store` puts around any store; a read's span ends at the
-response head, and listings have none, being streams. `sandbox`
+response head, a delete, which `object_store` runs as a stream of paths,
+has one span for the stream and no path, and listings have none, being
+streams. `sandbox`
 (`program`, `outcome`) wraps every subprocess, never naming its arguments,
 which are paths of user files. `clamav` covers the connection and the wait
 for the verdict. The fetch and webhook calls are not spanned apart: each is
