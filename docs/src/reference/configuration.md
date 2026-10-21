@@ -222,13 +222,15 @@ above `max_inline_scans` plus `jobs.concurrency.scan`.
 
 ### `[media.office]`
 
-The optional LibreOffice that gives DOCX, ODT, XLSX and ODS files a
-first-page thumbnail; see [LibreOffice](../guide/deployment.md#libreoffice).
+The optional LibreOffice that gives office files (Word, Excel,
+PowerPoint and OpenDocument files, their legacy, macro-enabled and
+template variants, RTF, drawings) a first-page thumbnail; see
+[LibreOffice](../guide/deployment.md#libreoffice).
 
 | Key | Default | Description |
 |---|---|---|
 | `command` | unset | The LibreOffice binary, a name on the `PATH` or a path. Unset, office files get the icon. Set, the worker needs Landlock (unless `media.sandbox.isolation` is `"off"`) and a `media.tmp_dir` outside `/tmp` |
-| `profile_template` | unset | A warmed user profile copied into the work directory for every run; unset, LibreOffice creates one per run |
+| `profile_template` | unset | A warmed user profile copied into the work directory for every run; unset, LibreOffice creates one per run. Either way the profile's macro security is pinned to "very high" before the run |
 
 ### `[media.office.sandbox]`
 

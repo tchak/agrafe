@@ -11,6 +11,7 @@ pub mod geojson;
 pub mod gpx;
 pub mod kml;
 pub mod map;
+pub mod office;
 pub mod sniff;
 pub mod text;
 mod xml;

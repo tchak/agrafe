@@ -8,15 +8,15 @@
 //! One process per document, through `agrafe_sandbox` like every other
 //! tool, with a private user profile under the work directory: nothing a
 //! document does persists past the job, and concurrent workers never
-//! share a profile. Off by default: a deployment without `command` gets
-//! the icon for office files, as before.
+//! share a profile. The profile pins macro security to "very high"
+//! whether it is the template's or a fresh one. Off by default: a
+//! deployment without `command` gets the icon for office files, as before.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use agrafe_sandbox as sandbox;
-use agrafe_types::classify::{DOCX, ODS, ODT, XLSX};
-use agrafe_types::sniff;
+use agrafe_types::office::Application;
 use bytesize::ByteSize;
 use serde::Deserialize;
 
@@ -87,24 +87,84 @@ impl Office {
 pub struct Document {
     /// The extension the input is given in the work directory.
     pub extension: &'static str,
-    /// `writer_pdf_Export` or `calc_pdf_Export`.
+    /// `writer_pdf_Export`, `calc_pdf_Export`, `impress_pdf_Export` or
+    /// `draw_pdf_Export`.
     pub filter: &'static str,
 }
 
 const WRITER: &str = "writer_pdf_Export";
 const CALC: &str = "calc_pdf_Export";
+const IMPRESS: &str = "impress_pdf_Export";
+const DRAW: &str = "draw_pdf_Export";
 
-/// What LibreOffice converts, by content type: DOCX and ODT through
-/// Writer, XLSX and ODS through Calc. `None` for anything else.
+/// What LibreOffice converts, by content type: every format of
+/// `agrafe_types::office`, through the PDF export filter of the
+/// application that owns it, under the extension the format's own filter
+/// is picked from. `None` for anything else.
 pub fn document(content_type: &str) -> Option<Document> {
-    let (extension, filter) = match sniff::canonical(content_type) {
-        DOCX => ("docx", WRITER),
-        ODT => ("odt", WRITER),
-        XLSX => ("xlsx", CALC),
-        ODS => ("ods", CALC),
-        _ => return None,
+    let format = agrafe_types::office::format(content_type)?;
+    let filter = match format.application {
+        Application::Writer => WRITER,
+        Application::Calc => CALC,
+        Application::Impress => IMPRESS,
+        Application::Draw => DRAW,
     };
-    Some(Document { extension, filter })
+    Some(Document {
+        extension: format.extension,
+        filter,
+    })
+}
+
+/// The registry of a user profile: the settings that differ from the
+/// defaults, which LibreOffice reads on every start, a first one included.
+const REGISTRY: &str = "user/registrymodifications.xcu";
+
+/// `MacroSecurityLevel` 3, "very high": only macros from the profile's
+/// trusted locations run, and the profile names none. A conversion loads
+/// its document with no `MacroExecutionMode`, which LibreOffice takes as
+/// never-execute whatever the level, so this is the second line: it holds
+/// if that default changes, and over a template whose level was set low.
+const MACRO_SECURITY: &str = "<item oor:path=\"/org.openoffice.Office.Common/Security/Scripting\">\
+    <prop oor:name=\"MacroSecurityLevel\" oor:op=\"fuse\"><value>3</value></prop></item>";
+const REGISTRY_HEAD: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+    <oor:items xmlns:oor=\"http://openoffice.org/2001/registry\" \
+    xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" \
+    xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n";
+const REGISTRY_TAIL: &str = "</oor:items>\n";
+
+/// Pin macro security to "very high" in the profile at `profile`, created
+/// when there is none. A template's registry gets the item appended before
+/// its closing tag: LibreOffice applies the items in order, so a later one
+/// overrides an earlier one for the same property. A fresh profile gets a
+/// registry of the one item.
+pub(crate) async fn pin_macro_security(profile: &Path) -> std::io::Result<()> {
+    let path = profile.join(REGISTRY);
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let registry = match tokio::fs::read_to_string(&path).await {
+        Ok(existing) => pinned(&existing)?,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            format!("{REGISTRY_HEAD}{MACRO_SECURITY}\n{REGISTRY_TAIL}")
+        }
+        Err(err) => return Err(err),
+    };
+    tokio::fs::write(&path, registry).await
+}
+
+/// `registry` with the pin appended before its closing tag; an error for
+/// a file with none, which is not a registry LibreOffice wrote.
+fn pinned(registry: &str) -> std::io::Result<String> {
+    let end = registry.rfind("</oor:items>").ok_or_else(|| {
+        std::io::Error::other(
+            "the profile template's registrymodifications.xcu has no closing oor:items",
+        )
+    })?;
+    Ok(format!(
+        "{}{MACRO_SECURITY}\n{}",
+        &registry[..end],
+        &registry[end..]
+    ))
 }
 
 /// The directories LibreOffice's launcher binds the single-instance pipe
@@ -193,6 +253,7 @@ pub async fn convert(
             .await
             .map_err(Error::Input)?;
     }
+    pin_macro_security(&profile).await.map_err(Error::Input)?;
     let output = dir.join(format!("{INPUT}.pdf"));
     // A URL, percent-encoded: a work directory with a space or a `%` in its
     // name would otherwise send the profile elsewhere.
@@ -326,14 +387,105 @@ mod tests {
 
     #[test]
     fn documents_by_type() {
+        use agrafe_types::office::*;
+
         assert_eq!(document(DOCX).unwrap().extension, "docx");
         assert_eq!(document(DOCX).unwrap().filter, WRITER);
         assert_eq!(document(ODT).unwrap().filter, WRITER);
         assert_eq!(document(XLSX).unwrap().extension, "xlsx");
         assert_eq!(document(XLSX).unwrap().filter, CALC);
         assert_eq!(document(ODS).unwrap().filter, CALC);
+        // The legacy formats, RTF and the variants, each under its own
+        // extension, through their application's filter.
+        assert_eq!(document(DOC).unwrap().extension, "doc");
+        assert_eq!(document(DOC).unwrap().filter, WRITER);
+        assert_eq!(document("text/rtf").unwrap().extension, "rtf");
+        assert_eq!(document(DOCM).unwrap().extension, "docm");
+        assert_eq!(document(XLS).unwrap().filter, CALC);
+        assert_eq!(document(XLSM).unwrap().extension, "xlsm");
+        assert_eq!(document(XLSB).unwrap().extension, "xlsb");
+        assert_eq!(document(PPTX).unwrap().extension, "pptx");
+        assert_eq!(document(PPTX).unwrap().filter, IMPRESS);
+        assert_eq!(document(PPT).unwrap().filter, IMPRESS);
+        assert_eq!(document(ODP).unwrap().filter, IMPRESS);
+        assert_eq!(document(PPSX).unwrap().extension, "ppsx");
+        assert_eq!(document(ODG).unwrap().extension, "odg");
+        assert_eq!(document(ODG).unwrap().filter, DRAW);
+        assert_eq!(document(OTG).unwrap().filter, DRAW);
         assert_eq!(document("application/pdf"), None);
         assert_eq!(document("text/csv"), None);
+        assert_eq!(document("application/x-ole-storage"), None);
+    }
+
+    #[tokio::test]
+    async fn pins_macro_security_in_a_fresh_profile() {
+        let root = tempfile::tempdir().unwrap();
+        let profile = root.path().join("profile");
+        pin_macro_security(&profile).await.unwrap();
+        let registry = std::fs::read_to_string(profile.join(REGISTRY)).unwrap();
+        assert!(registry.starts_with("<?xml"), "{registry}");
+        assert_eq!(registry.matches("MacroSecurityLevel").count(), 1);
+        assert!(registry.contains("<value>3</value>"), "{registry}");
+        assert!(registry.trim_end().ends_with("</oor:items>"), "{registry}");
+    }
+
+    /// A template's registry keeps its items and gets the pin last, which
+    /// is the one LibreOffice keeps for the property.
+    #[tokio::test]
+    async fn pins_macro_security_after_a_template_registry() {
+        let root = tempfile::tempdir().unwrap();
+        let profile = root.path().join("profile");
+        std::fs::create_dir_all(profile.join("user")).unwrap();
+        let low = "<item oor:path=\"/org.openoffice.Office.Common/Security/Scripting\">\
+            <prop oor:name=\"MacroSecurityLevel\" oor:op=\"fuse\"><value>0</value></prop></item>";
+        std::fs::write(
+            profile.join(REGISTRY),
+            format!("{REGISTRY_HEAD}{low}\n<item oor:path=\"/org.openoffice.Setup/L10N\"/>\n{REGISTRY_TAIL}"),
+        )
+        .unwrap();
+        pin_macro_security(&profile).await.unwrap();
+        let registry = std::fs::read_to_string(profile.join(REGISTRY)).unwrap();
+        assert!(registry.contains("<value>0</value>"), "{registry}");
+        assert!(registry.contains("org.openoffice.Setup/L10N"), "{registry}");
+        let low = registry.find("<value>0</value>").unwrap();
+        let pin = registry.find("<value>3</value>").unwrap();
+        assert!(low < pin, "{registry}");
+        assert!(registry.trim_end().ends_with("</oor:items>"), "{registry}");
+
+        std::fs::write(profile.join(REGISTRY), "<oor:items>").unwrap();
+        let err = pin_macro_security(&profile).await.unwrap_err();
+        assert!(err.to_string().contains("no closing oor:items"), "{err}");
+    }
+
+    /// The conversion pins the profile it runs with, template or not: here
+    /// with a command that cannot start, after the profile is prepared.
+    #[tokio::test]
+    async fn the_conversion_runs_with_a_pinned_profile() {
+        let root = tempfile::tempdir().unwrap();
+        let template = root.path().join("template");
+        std::fs::create_dir_all(template.join("user")).unwrap();
+        std::fs::write(
+            template.join(REGISTRY),
+            format!("{REGISTRY_HEAD}{REGISTRY_TAIL}"),
+        )
+        .unwrap();
+        let original = root.path().join("original");
+        std::fs::write(&original, b"PK").unwrap();
+        let config = Config {
+            office: Office {
+                command: Some("/nonexistent/soffice".into()),
+                profile_template: Some(template),
+                ..Office::default()
+            },
+            ..Config::default()
+        };
+        let workdir = root.path().join("work");
+        std::fs::create_dir(&workdir).unwrap();
+        let _ = convert(&config, agrafe_types::office::DOCX, &original, &workdir).await;
+        let registry =
+            std::fs::read_to_string(workdir.join("office/profile").join(REGISTRY)).unwrap();
+        assert!(registry.contains("MacroSecurityLevel"), "{registry}");
+        assert!(workdir.join("office/document.docx").is_file());
     }
 
     #[test]
@@ -387,9 +539,14 @@ mod tests {
         let original = workdir.path().join("original");
         std::fs::write(&original, b"PK").unwrap();
         let config = Config::default();
-        let verdict = convert(&config, DOCX, &original, workdir.path())
-            .await
-            .unwrap();
+        let verdict = convert(
+            &config,
+            agrafe_types::office::DOCX,
+            &original,
+            workdir.path(),
+        )
+        .await
+        .unwrap();
         assert_eq!(verdict, Verdict::Declined);
         let config = Config {
             office: Office {

@@ -288,13 +288,17 @@ min_coverage = 0.7
 max_text_chars = 50
 
 [media.office]
-# A first-page thumbnail for DOCX, ODT, XLSX and ODS files through
-# LibreOffice, which converts the file to a PDF in the job's work directory,
-# one short-lived sandboxed process per document. Off by default: unset,
+# A first-page thumbnail for office files through LibreOffice, which
+# converts the file to a PDF in the job's work directory, one short-lived
+# sandboxed process per document: Word, Excel and PowerPoint files, their
+# Office 97-2003, macro-enabled and template variants, RTF, and OpenDocument
+# texts, spreadsheets, presentations and drawings. Off by default: unset,
 # office files get the category icon, as they do when LibreOffice is not
 # installed. Turning it on later regenerates existing blobs through a
 # `variant_version` bump. Debian: libreoffice-writer-nogui,
-# libreoffice-calc-nogui, fonts-dejavu-core and fonts-liberation; LibreOffice
+# libreoffice-calc-nogui, libreoffice-impress-nogui, libreoffice-draw-nogui,
+# fonts-dejavu-core and fonts-liberation; the startup probe converts a file
+# of each application and fails the worker when one is missing. LibreOffice
 # follows links in documents, which the sandbox refuses it the sockets for,
 # so run it on a render-only worker with no outbound network as defence in
 # depth. It needs Landlock: with `command` set, the worker
@@ -304,7 +308,8 @@ max_text_chars = 50
 # command = "soffice"
 # A user profile warmed at image build time, copied into the work directory
 # for every run instead of being created there: a copy is milliseconds, a
-# fresh profile longer, and every run still gets a private one.
+# fresh profile longer, and every run still gets a private one. Template or
+# not, the profile's macro security is pinned to "very high" before each run.
 # profile_template = "/var/lib/agrafe/soffice-profile"
 # LibreOffice needs more address space and more time than vips; its output
 # size, isolation and extra readable paths are those of [media.sandbox].

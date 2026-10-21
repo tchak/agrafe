@@ -239,9 +239,11 @@ async fn office_documents_wrapping_a_picture() {
     let picture = ready_file(&app, "picture.docx", docx, &fixture("image.docx")).await;
     let letter = ready_file(&app, "letter.docx", docx, &fixture("text.docx")).await;
     let odt_picture = ready_file(&app, "picture.odt", odt, &fixture("image.odt")).await;
+    // A macro-enabled variant is the same package, opened the same way.
+    let docm_picture = ready_file(&app, "picture.docm", DOCM, &fixture("image.docx")).await;
     render_all(&app).await;
 
-    for blob in [&picture, &odt_picture] {
+    for blob in [&picture, &odt_picture, &docm_picture] {
         let id = id_of(blob);
         let name = blob["filename"].as_str().unwrap();
         let blob = get_blob(&app, id).await;
@@ -286,9 +288,46 @@ async fn office_documents_wrapping_a_picture() {
 }
 
 const DOCX: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const DOCM: &str = "application/vnd.ms-word.document.macroenabled.12";
 const ODT: &str = "application/vnd.oasis.opendocument.text";
 const XLSX: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const XLSM: &str = "application/vnd.ms-excel.sheet.macroenabled.12";
 const ODS: &str = "application/vnd.oasis.opendocument.spreadsheet";
+const PPTX: &str = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+const ODP: &str = "application/vnd.oasis.opendocument.presentation";
+const ODG: &str = "application/vnd.oasis.opendocument.graphics";
+
+/// A fixture LibreOffice writes at test time, since its Office 97-2003
+/// export of two empty slides is close to half a megabyte: the fixture
+/// `source` converted with the `export` filter (`"ppt:MS PowerPoint 97"`),
+/// in a throwaway profile.
+fn legacy(soffice: &str, source: &str, export: &str) -> Vec<u8> {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join(source);
+    std::fs::write(&input, fixture(source)).unwrap();
+    let status = std::process::Command::new(soffice)
+        .arg(format!(
+            "-env:UserInstallation=file://{}",
+            dir.path().join("profile").display()
+        ))
+        .args([
+            "--headless",
+            "--norestore",
+            "--nologo",
+            "--convert-to",
+            export,
+        ])
+        .arg("--outdir")
+        .arg(dir.path())
+        .arg(&input)
+        .stdout(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "{soffice} --convert-to {export} {source}");
+    let (extension, _) = export.split_once(':').unwrap();
+    let (stem, _) = source.rsplit_once('.').unwrap();
+    std::fs::read(dir.path().join(format!("{stem}.{extension}"))).unwrap()
+}
 
 /// LibreOffice on the `PATH`, or `None` with a message: the converter
 /// tests run where it is installed, which CI is.
@@ -407,6 +446,141 @@ async fn the_startup_probe_checks_libreoffice() {
         let real = with(soffice);
         probe(&real).await.unwrap();
     }
+}
+
+/// The legacy binary formats and the variants go through the same
+/// converter under their own extension: a Word 97 letter and an RTF one
+/// through Writer, an Excel 97 table and a macro-enabled workbook through
+/// Calc, each a portrait page, and each classified with its family.
+#[tokio::test]
+async fn legacy_and_variant_office_files_get_their_first_page_too() {
+    let db = TestDatabase::new().await;
+    let Some(soffice) = soffice() else {
+        return;
+    };
+    let clamd = fake_clamd().await;
+    let app = setup_tuned(db, clamd, |c| {
+        c.media.render.office.command = Some(soffice.to_string())
+    })
+    .await;
+    let documents = [
+        (
+            ready_file(
+                &app,
+                "letter.doc",
+                "application/msword",
+                &fixture("letter.doc"),
+            )
+            .await,
+            "document",
+        ),
+        (
+            ready_file(&app, "letter.rtf", "text/rtf", &fixture("letter.rtf")).await,
+            "document",
+        ),
+        (
+            ready_file(
+                &app,
+                "table.xls",
+                "application/vnd.ms-excel",
+                &fixture("table.xls"),
+            )
+            .await,
+            "spreadsheet",
+        ),
+        (
+            ready_file(&app, "table.xlsm", XLSM, &fixture("table.xlsm")).await,
+            "spreadsheet",
+        ),
+    ];
+    render_all(&app).await;
+
+    for (blob, category) in &documents {
+        let id = id_of(blob);
+        let name = blob["filename"].as_str().unwrap();
+        let blob = get_blob(&app, id).await;
+        assert_eq!(blob["category"], *category, "{name}");
+        assert_eq!(blob["preview_state"], "unavailable", "{name}");
+        assert_eq!(blob["thumbnail_state"], "ready", "{name}");
+        no_preview(
+            &app,
+            &format!("/blobs/{id}/preview/{name}"),
+            "unavailable",
+            "no preview for this file",
+        )
+        .await;
+        let (_, (width, height)) = rendered(&app, &format!("/blobs/{id}/thumbnail/{name}")).await;
+        assert_eq!(height, 256, "{name}");
+        assert!((150..=200).contains(&width), "{name}: {width}");
+    }
+}
+
+/// Presentations through Impress and a drawing through Draw: a PPTX, an
+/// ODP and a PowerPoint 97 file each get their first slide, an ODG its
+/// first page, all 4:3 landscape, with no preview; a broken PPTX fails
+/// like a broken DOCX.
+#[tokio::test]
+async fn presentations_and_drawings_get_their_first_slide_through_libreoffice() {
+    let db = TestDatabase::new().await;
+    let Some(soffice) = soffice() else {
+        return;
+    };
+    let clamd = fake_clamd().await;
+    // The PowerPoint 97 file LibreOffice writes is about half a megabyte.
+    let app = setup_tuned(db, clamd, |c| {
+        c.media.render.office.command = Some(soffice.to_string());
+        c.upload.max_size = bytesize::ByteSize::mib(1);
+    })
+    .await;
+    let ppt = legacy(soffice, "slides.pptx", "ppt:MS PowerPoint 97");
+    let slides = [
+        (
+            ready_file(&app, "slides.pptx", PPTX, &fixture("slides.pptx")).await,
+            "presentation",
+        ),
+        (
+            ready_file(&app, "slides.odp", ODP, &fixture("slides.odp")).await,
+            "presentation",
+        ),
+        (
+            ready_file(&app, "slides.ppt", "application/vnd.ms-powerpoint", &ppt).await,
+            "presentation",
+        ),
+        (
+            ready_file(&app, "drawing.odg", ODG, &fixture("drawing.odg")).await,
+            "document",
+        ),
+    ];
+    let broken = ready_file(&app, "broken.pptx", PPTX, &fixture("broken.pptx")).await;
+    render_all(&app).await;
+
+    for (blob, category) in &slides {
+        let id = id_of(blob);
+        let name = blob["filename"].as_str().unwrap();
+        let blob = get_blob(&app, id).await;
+        assert_eq!(blob["category"], *category, "{name}");
+        assert_eq!(blob["preview_state"], "unavailable", "{name}");
+        assert_eq!(blob["thumbnail_state"], "ready", "{name}");
+        no_preview(
+            &app,
+            &format!("/blobs/{id}/preview/{name}"),
+            "unavailable",
+            "no preview for this file",
+        )
+        .await;
+        let (_, (width, height)) = rendered(&app, &format!("/blobs/{id}/thumbnail/{name}")).await;
+        assert_eq!(width, 256, "{name}");
+        assert!((190..=194).contains(&height), "{name}: {height}");
+    }
+    let id = id_of(&broken);
+    let blob = get_blob(&app, id).await;
+    assert_eq!(blob["thumbnail_state"], "failed");
+    icon(
+        &app,
+        &format!("/blobs/{id}/thumbnail/broken.pptx"),
+        "failed",
+    )
+    .await;
 }
 
 #[tokio::test]

@@ -64,9 +64,9 @@ into a server process. Dependencies point downwards only.
 | Crate | Contents | Depends on |
 |---|---|---|
 | `agrafe-crypto` | Streaming AEAD and key wrapping, reviewed in isolation | |
-| `agrafe-types` | Content type constants, `classify`, `sniff`, the vips loader allowlist, the text-sample contract, the map contract (the input formats, the style vocabulary, the spec and the extent the server and the helper exchange), `str_enum!` | `infer`, `serde` |
+| `agrafe-types` | Content type constants, `classify`, `sniff`, the office format table (`office`: application, package and extension per type), the vips loader allowlist, the text-sample contract, the map contract (the input formats, the style vocabulary, the spec and the extent the server and the helper exchange), `str_enum!` | `infer`, `serde` |
 | `agrafe-sandbox` | Running a subprocess with `setrlimit` bounds and a timeout, confined by Landlock and seccomp on Linux; the `Command` builder that declares what it reads and writes; the `[media.sandbox]` config and the startup probe | `tokio`, `libc`, `landlock`, `seccompiler` |
-| `agrafe-extract` | The `agrafe-extract` helper: pulls the one image out of a PDF, DOCX or ODT. Library plus binary | `agrafe-types`, `lopdf`, `zip`, `quick-xml` |
+| `agrafe-extract` | The `agrafe-extract` helper: pulls the one image out of a PDF or a Writer package (DOCX, ODT and their variants). Library plus binary | `agrafe-types`, `lopdf`, `zip`, `quick-xml` |
 | `agrafe-render-text` | The `agrafe-render-text` helper: rasterises a text sample. Library plus binary | `agrafe-types`, `ab_glyph` |
 | `agrafe-render-document` | The `agrafe-render-document` helper: compiles a typst workspace into a PDF. Library plus binary | `typst`, `typst-pdf`, `typst-assets` |
 | `agrafe-render-geo` | The `agrafe-render-geo` helper: reads a GeoJSON, GPX, KML or KMZ file, projects, fits, simplifies and draws it as SVG paths, with the extent it chose. Library plus binary | `agrafe-types`, `geojson`, `quick-xml`, `zip`, `serde_json` |
@@ -816,7 +816,16 @@ with a type outside it on a row. Categories:
 
 The mapping table lives in code (`classify.rs`), on the canonical type,
 so an alias (`text/rtf`, `application/x-gzip`) lands where its type does.
-PDF is a `document`.
+PDF is a `document`. An office format classifies by the LibreOffice
+application that reads it, from the one table of office formats
+(`agrafe-types/src/office.rs`, also what the renderer converts and the
+extractor opens): every Writer format is a `document`, every Calc one a
+`spreadsheet`, every Impress one a `presentation`, the legacy binary
+formats (DOC, XLS, PPT), RTF and the macro-enabled, template, slideshow
+and master variants (DOCM, DOTX, XLSM, XLSB, PPSX, POTX, OTT, ODM, …)
+with their base, so an `.xlsm` is not `other` and gets the spreadsheet
+icon and filter. Draw's ODG and OTG are `document`s: pages, with nothing
+closer.
 
 ## Upload pipeline
 
@@ -1718,10 +1727,13 @@ Only files with a known source are attempted:
 - image types libvips loads natively: JPEG, PNG, GIF, WebP, TIFF, HEIF/AVIF,
   SVG, BMP, JPEG 2000. Everything else under `image/*` would go through
   ImageMagick, more attack surface than it is worth, and gets the icon;
-- PDF, DOCX and ODT, through the sources below; a PDF that is not one gets
-  a thumbnail of its first page, and no preview, and so does a DOCX, ODT,
-  XLSX or ODS when `media.office.command` names a LibreOffice to convert
-  it (see "Thumbnail");
+- PDF and the Writer packages (DOCX, ODT and their variants), through the
+  sources below; a PDF that is not one gets a thumbnail of its first
+  page, and no preview, and so does every office format in
+  `agrafe-types/src/office.rs` (Word, Excel, PowerPoint and OpenDocument
+  files, their legacy, macro-enabled and template variants, RTF, Draw
+  drawings) when `media.office.command` names a LibreOffice to convert it
+  (see "Thumbnail");
 - text files (the `text` category plus CSV and TSV), thumbnails only;
 - GeoJSON, GPX, KML and KMZ files, as a map (see "Preview"), with the
   text thumbnail when the XML ones hold no geometry and the archive
@@ -1788,15 +1800,24 @@ one-point GeoJSON with no background layer, through the helper and `vips
 composite`, which catches a libvips without SVG support. The probe also
 catches a `media.render_text_command` or `media.render_geo_command` that is
 not the helper, and it never touches the network. With
-`media.office.command` set, it converts a two-page DOCX and a one-sheet
-XLSX (`probe/pages.docx`, `probe/sheet.xlsx`) through the exact command
-lines and renders the result: a LibreOffice without the Calc filter,
-without fonts, or too old for the JSON filter options fails the deployment
-rather than every office file. The DOCX has two pages so that `PageRange`
-is known to be honoured, since there is at least one report of it being
-ignored: vips must render page one of the export and refuse page two,
-which tells a one-page PDF from a longer one without a PDF parser in the
-server.
+`media.office.command` set, it converts one file per LibreOffice
+application through the exact command lines and renders the results: a
+two-page DOCX, a one-sheet XLSX, a two-slide PPTX, a two-page ODG and an
+ODT carrying a macro (`probe/pages.docx`, `sheet.xlsx`, `slides.pptx`,
+`drawing.odg`, `macro.odt`). A LibreOffice without one of Writer, Calc,
+Impress or Draw (Debian packages them apart, and a deployment for
+spreadsheets and letters may well lack Impress), without fonts, or too
+old for the JSON filter options fails the deployment rather than every
+office file of that kind. The DOCX, the PPTX and the ODG have two pages
+so that `PageRange` is known to be honoured by each export filter, since
+there is at least one report of it being ignored, and a slide export has
+notes and handout settings of its own: vips must render page one of the
+export and refuse page two, which tells a one-page PDF from a longer one
+without a PDF parser in the server. The ODT binds a Basic macro to its
+load event that creates a folder next to the document; the folder must
+not be there afterwards (see "Thumbnail" on macros). Five conversions
+instead of two at worker start, about a second on Linux with a fresh
+profile.
 
 Representations live at `<blob id>/thumbnail` and `<blob id>/preview`,
 encrypted with the blob's own data key: the streaming AEAD derives a fresh
@@ -1904,9 +1925,17 @@ pdfium, the most hardened renderer available, rather than linking
 The thumbnail is subject to `media.max_source_size` like a preview, since
 the loader reads the whole file.
 
-A DOCX, ODT, XLSX or ODS that is not an embedded image gets its first
-page the same way, once LibreOffice has converted it to a PDF, and no
-preview for the same reason. A faithful page needs a layout engine, and
+An office file that is not an embedded image gets its first page the
+same way, once LibreOffice has converted it to a PDF, and no preview for
+the same reason: the Word, Excel and PowerPoint formats, their Office
+97-2003 binary ancestors (DOC, XLS, PPT), their macro-enabled, template
+and slideshow variants (DOCM, DOTX, DOTM, XLSM, XLTX, XLTM, XLSB, PPTM,
+PPSX, PPSM, POTX, POTM), RTF, and the OpenDocument text, spreadsheet,
+presentation and drawing formats with their templates and masters (ODT,
+OTT, ODM, OTM, OTH, ODS, OTS, ODP, OTP, ODG, OTG), the table in
+`agrafe-types/src/office.rs`. Démarche numérique alone receives tens of
+thousands of `.doc` files, thousands of `.pptx` and `.rtf`, hundreds of
+the rest. A faithful page needs a layout engine, and
 the only one that reads these formats is LibreOffice. It is optional
 (`media.office.command`, unset by default): a deployment without it
 behaves as before, the category icon or the embedded-image preview when
@@ -1921,27 +1950,59 @@ tie the resolution to its export options and add a second raster path for
 nothing. The export asks for the first page only (`PageRange`, the JSON
 filter options of LibreOffice 7.4 and later), so a 300-page document is
 not laid out and written in full; the probe checks the option is honoured
-(see "Rendering"). The export filter follows the type, `writer_pdf_Export`
-for DOCX and ODT and `calc_pdf_Export` for XLSX and ODS, and the input is
-linked into the work directory under the extension its content type
-implies, since LibreOffice picks its import filter from the name. PPTX
-and ODP are the same mechanism with `impress_pdf_Export`, once someone
-needs them. The plan (`agrafe_render::plan`) carries it as the
-`ConvertedFirstPage` fallback: the preview sources do not change, DOCX
-and ODT keep the embedded-image preview and spreadsheets have none, and
-the fallback runs once the preview has declined, like the PDF first page.
-Over `media.max_source_size`, or without a converter, it declines and the
-representation is `unavailable`, which is what office files got before. A
-LibreOffice that exits non-zero or runs out of time is a rejection, as
-for the other tools, and a file it cannot load is one ("source file could
-not be loaded", exit 1, on 26.2 and 26.8): a broken DOCX is `failed`
-like a broken PDF, which the integration tests pin with a well-formed
-ZIP whose document part is cut mid-element (`fixtures/broken.docx`). An
-exit of zero with no PDF, which no version has been seen to produce,
-declines rather than failing the blob for a fault nothing names. Note
-that LibreOffice converts a file that is not a ZIP at all as plain text,
-so garbage named `.docx` gets a page of its bytes, not a failure. How it
-runs, and what it costs, is under "Sandboxing".
+by each export filter (see "Rendering"). The export filter follows the
+application that owns the type, `writer_pdf_Export`, `calc_pdf_Export`,
+`impress_pdf_Export` or `draw_pdf_Export`, and the input is linked into
+the work directory under the extension of its own content type, not its
+base format's, since LibreOffice picks its import filter from the name
+and `.xlsb` is a different filter from `.xlsx`. The plan
+(`agrafe_render::plan`) carries it as the `ConvertedFirstPage` fallback:
+the preview sources do not change, the Writer packages (DOCX, ODT and
+their ZIP-based variants, which the extractor opens as the package they
+derive from) keep the embedded-image preview and everything else has
+none, the binary formats and RTF because the extractor reads ZIP
+packages, presentations because a slide's first picture is as likely a
+logo as the slide, and the fallback runs once the preview has declined,
+like the PDF first page. Over `media.max_source_size`, or without a
+converter, it declines and the representation is `unavailable`, which is
+what office files got before. A LibreOffice that exits non-zero or runs
+out of time is a rejection, as for the other tools, and a file it cannot
+load is one ("source file could not be loaded", exit 1, on 26.2 and
+26.8): a broken DOCX or PPTX is `failed` like a broken PDF, which the
+integration tests pin with a well-formed ZIP whose document part is cut
+mid-element (`fixtures/broken.docx`, `broken.pptx`). An exit of zero with
+no PDF, which no version has been seen to produce, declines rather than
+failing the blob for a fault nothing names. Note that LibreOffice
+converts a file that is not a ZIP at all as plain text, so garbage named
+`.docx` gets a page of its bytes, not a failure.
+
+The legacy binary formats go through LibreOffice's OLE import filters, a
+larger and older parser surface than the ZIP formats', and the one
+Office exploits have historically targeted. The sandbox is the same one,
+Landlock, seccomp and the limits, and the bytes were scanned on upload;
+that is the accepted cost of rendering user files at all, and `.doc` is
+the office format citizens send most.
+
+*Macros.* The macro-enabled variants (DOCM, XLSM, PPTM, …) and the
+legacy formats may carry macros, and a document can bind one to its own
+load event. Two things keep them from running. LibreOffice loads a file
+it converts with no `MacroExecutionMode` in its descriptor
+(`desktop/source/app/dispatchwatcher.cxx` sets one for documents it
+opens, not for conversions), which `SfxObjectShell` reads as
+never-execute, whatever the profile says: measured on 26.8, a document
+macro bound to the load event runs when invoked and does not run through
+`--convert-to` at any security level, "low" included. That is a default
+in LibreOffice's code, not a setting of ours, so the user profile every
+conversion runs with also pins `MacroSecurityLevel` to 3, "very high":
+only macros from the profile's trusted locations run, and the profile
+names none. The driver writes the item into the profile's
+`registrymodifications.xcu` before every run, appended last to a
+template's, where a later item overrides an earlier one for the same
+property, so a template whose level was set low is still pinned, and as
+the whole registry of a fresh profile, which LibreOffice reads on first
+start. The probe's `macro.odt` checks the behaviour itself, whichever of
+the two provides it (see "Rendering"). How it runs, and what it costs, is
+under "Sandboxing".
 
 ### Preview
 
@@ -2390,7 +2451,9 @@ directory with a space in its name is a possibility and LibreOffice would
 read the profile elsewhere), so concurrent workers never fight over a
 profile lock and nothing a document does persists past the job;
 `media.office.profile_template` names a profile warmed at image build
-time that is copied in instead, a copy being milliseconds. `HOME`,
+time that is copied in instead, a copy being milliseconds. Either way
+the profile's registry gets the macro security pin before the run (see
+"Thumbnail"). `HOME`,
 `XDG_CACHE_HOME` and `TMPDIR` are the work directory too: LibreOffice
 stages its PDF in `TMPDIR` before moving it to `--outdir`, and a
 `TMPDIR` outside the writable directory fails the write. Its thread pool

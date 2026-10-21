@@ -119,9 +119,12 @@ reasoning behind every decision.
 - **Embedded image extraction**: a scan wrapped in a PDF, a Word or an ODT
   file gets the picture as its preview, not a page with a picture on it.
 - **First-page thumbnails** for other PDFs, which have no preview: a
-  document needs a viewer, not a picture. DOCX, ODT, XLSX and ODS files
-  get one too when an optional LibreOffice is configured, see "Thumbnails
-  for office files" below; without it they get the icon.
+  document needs a viewer, not a picture. Office files get one too when
+  an optional LibreOffice is configured, see "Thumbnails for office
+  files" below: Word, Excel and PowerPoint files, their Office 97-2003,
+  macro-enabled and template variants, RTF, and OpenDocument texts,
+  spreadsheets, presentations and drawings; without it they get the
+  icon.
 - **Text thumbnails** showing the first lines of text, CSV and TSV files.
 - **Maps for GeoJSON, GPX, KML and KMZ files**: the geometry drawn over
   a WMS background of your choosing, none by default, in a GeoJSON
@@ -594,10 +597,15 @@ the request.
 
 ### Thumbnails for office files
 
-A DOCX, ODT, XLSX or ODS that is not a wrapped picture gets the category
-icon, unless a LibreOffice is configured to convert it: then its first
-page is the thumbnail, rendered like a PDF page, and there is still no
-preview.
+An office file that is not a wrapped picture gets the category icon,
+unless a LibreOffice is configured to convert it: then its first page or
+slide is the thumbnail, rendered like a PDF page, and there is still no
+preview. That covers Word, Excel and PowerPoint files (DOCX, XLSX, PPTX),
+their Office 97-2003 ancestors (DOC, XLS, PPT), their macro-enabled,
+template and slideshow variants (DOCM, DOTX, XLSM, XLSB, PPSX, POTX, …),
+RTF, and the OpenDocument text, spreadsheet, presentation and drawing
+formats with their templates (ODT, ODS, ODP, ODG, OTT, OTS, OTP, OTG,
+ODM).
 
 ```toml
 [media.office]
@@ -607,14 +615,21 @@ command = "soffice"
 LibreOffice runs as one short-lived process per document, in the sandbox
 like `vips`, with a private user profile under the job's work directory.
 On Debian and Ubuntu, install `libreoffice-writer-nogui`,
-`libreoffice-calc-nogui`, `fonts-dejavu-core` and `fonts-liberation`
+`libreoffice-calc-nogui`, `libreoffice-impress-nogui`,
+`libreoffice-draw-nogui`, `fonts-dejavu-core` and `fonts-liberation`
 (about 400 MB). The fonts are not optional: without them a page renders
 as boxes and LibreOffice exits 0, which nothing reports. Turning the
 converter on later gives existing blobs their thumbnail through a
 `media.variant_version` bump, no backfill. The startup probe converts a
-two-page DOCX and an XLSX, so a LibreOffice without Writer or Calc, or
-too old for the first-page export (7.4), fails the deployment rather than
-every office file.
+two-page DOCX, an XLSX, a two-slide PPTX, a two-page ODG and an ODT
+carrying a macro, so a LibreOffice without one of Writer, Calc, Impress
+or Draw, or too old for the first-page export (7.4), fails the deployment
+rather than every office file of that kind, and a conversion that ran
+the macro would too.
+
+Macros never run during a conversion: LibreOffice loads the file it
+converts in never-execute mode, and besides, the user profile of every
+run, template or not, pins macro security to "very high".
 
 LibreOffice is a far larger attack surface than anything else in the
 sandbox, which is why it is off by default. Where it is on:

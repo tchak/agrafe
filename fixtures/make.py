@@ -3,11 +3,22 @@
 files under crates/agrafe-render/assets/probe. Needs Pillow. The outputs are
 committed; run this only to change them. The XML map fixtures (`.gpx`,
 `.kml`) are hand-written and edited directly; the `.kmz` ones are built
-here from them."""
+here from them.
+
+The Office 97-2003 fixtures (`letter.doc`, `table.xls`) cannot be written
+by hand: they are converted from the ZIP ones by LibreOffice, when one is
+found, and only when missing or with `--legacy`, since each conversion
+stamps the time into the file. A `.ppt` is not among them: LibreOffice
+writes close to half a megabyte for two empty slides, so the legacy
+Impress test converts one at test time instead."""
 
 import io
 import json
+import shutil
 import struct
+import subprocess
+import sys
+import tempfile
 import zipfile
 import zlib
 from pathlib import Path
@@ -176,18 +187,20 @@ def odt(text, media=None):
     return out.getvalue()
 
 
-def xlsx(rows):
+def xlsx(rows, macro_enabled=False):
     """A workbook of one sheet holding `rows`, lists of strings, as inline
-    strings."""
+    strings. Macro-enabled, the workbook part declares the XLSM content
+    type; the package is otherwise the same, there being no macro."""
     def cell(col, row, value):
         return f'<c r="{chr(65 + col)}{row}" t="inlineStr"><is><t>{value}</t></is></c>'
     data = "".join(
         f'<row r="{r + 1}">' + "".join(cell(c, r + 1, v) for c, v in enumerate(row)) + "</row>"
         for r, row in enumerate(rows)
     )
+    main = "application/vnd.ms-excel.sheet.macroEnabled.main+xml" if macro_enabled else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w") as z:
-        zip_entry(z, "[Content_Types].xml", '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>')
+        zip_entry(z, "[Content_Types].xml", f'<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="{main}"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>')
         zip_entry(z, "_rels/.rels", '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>')
         zip_entry(z, "xl/workbook.xml", '<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Feuille1" sheetId="1" r:id="rId1"/></sheets></workbook>')
         zip_entry(z, "xl/_rels/workbook.xml.rels", '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>')
@@ -207,6 +220,149 @@ def ods(rows):
         zip_entry(z, "META-INF/manifest.xml", '<?xml version="1.0" encoding="UTF-8"?><manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.2"><manifest:file-entry manifest:full-path="/" manifest:media-type="application/vnd.oasis.opendocument.spreadsheet"/><manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/></manifest:manifest>')
         zip_entry(z, "content.xml", f'<?xml version="1.0" encoding="UTF-8"?><office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"><office:body><office:spreadsheet><table:table table:name="Feuille1">{data}</table:table></office:spreadsheet></office:body></office:document-content>')
     return out.getvalue()
+
+
+PPTX_NS = 'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"'
+# 10 by 7.5 inches, in EMU, PowerPoint's 4:3 default.
+SLIDE_EMU = (9144000, 6858000)
+
+
+def pptx_package(z, slides):
+    """The parts of a presentation of `slides`, one title each, into the
+    archive `z`: a minimal package, with no layout, master or theme, which
+    LibreOffice fills in from its defaults."""
+    overrides = "".join(
+        f'<Override PartName="/ppt/slides/slide{n + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>'
+        for n in range(len(slides))
+    )
+    zip_entry(z, "[Content_Types].xml", f'<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>{overrides}</Types>')
+    zip_entry(z, "_rels/.rels", '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/></Relationships>')
+    ids = "".join(f'<p:sldId id="{256 + n}" r:id="rId{n + 1}"/>' for n in range(len(slides)))
+    zip_entry(z, "ppt/presentation.xml", f'<?xml version="1.0" encoding="UTF-8"?><p:presentation {PPTX_NS}><p:sldIdLst>{ids}</p:sldIdLst><p:sldSz cx="{SLIDE_EMU[0]}" cy="{SLIDE_EMU[1]}"/><p:notesSz cx="{SLIDE_EMU[1]}" cy="{SLIDE_EMU[0]}"/></p:presentation>')
+    rels = "".join(
+        f'<Relationship Id="rId{n + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide{n + 1}.xml"/>'
+        for n in range(len(slides))
+    )
+    zip_entry(z, "ppt/_rels/presentation.xml.rels", f'<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{rels}</Relationships>')
+    for n, text in enumerate(slides):
+        zip_entry(z, f"ppt/slides/slide{n + 1}.xml", f'<?xml version="1.0" encoding="UTF-8"?><p:sld {PPTX_NS}><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/><p:sp><p:nvSpPr><p:cNvPr id="2" name="Title"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="457200" y="457200"/><a:ext cx="8229600" cy="1143000"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr><p:txBody><a:bodyPr/><a:p><a:r><a:rPr lang="fr-FR" sz="4400"/><a:t>{text}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>')
+
+
+def pptx(slides):
+    """A PowerPoint presentation: one 4:3 slide per entry of `slides`, each
+    with that text as its title."""
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        pptx_package(z, slides)
+    return out.getvalue()
+
+
+def broken_pptx():
+    """A PowerPoint presentation that is a well-formed ZIP whose
+    presentation part is cut mid-element: LibreOffice cannot load it."""
+    out = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(pptx(["cut"]))) as src, zipfile.ZipFile(out, "w") as z:
+        for info in src.infolist():
+            content = src.read(info.filename)
+            if info.filename == "ppt/presentation.xml":
+                content = content[: content.index(b"<p:sldIdLst>") + 20]
+            zip_entry(z, info.filename, content)
+    return out.getvalue()
+
+
+ODF_NS = 'xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:presentation="urn:oasis:names:tc:opendocument:xmlns:presentation:1.0" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:script="urn:oasis:names:tc:opendocument:xmlns:script:1.0"'
+# A 4:3 slide or drawing page, in centimetres.
+SLIDE_CM = ("28cm", "21cm")
+
+
+def odf(mimetype, body, page, scripts="", manifest="", entries=()):
+    """An OpenDocument package of `mimetype` whose body is `body` on pages
+    of `page` (width, height), plus `scripts` before the body, `manifest`
+    entries and extra `entries` (name, bytes)."""
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        zip_entry(z, "mimetype", mimetype, zipfile.ZIP_STORED)
+        zip_entry(z, "META-INF/manifest.xml", f'<?xml version="1.0" encoding="UTF-8"?><manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.2"><manifest:file-entry manifest:full-path="/" manifest:media-type="{mimetype}"/><manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/><manifest:file-entry manifest:full-path="styles.xml" manifest:media-type="text/xml"/>{manifest}</manifest:manifest>')
+        zip_entry(z, "content.xml", f'<?xml version="1.0" encoding="UTF-8"?><office:document-content {ODF_NS}>{scripts}<office:body>{body}</office:body></office:document-content>')
+        orientation = "landscape" if page[0] > page[1] else "portrait"
+        # Impress and Draw take the page size from the master page's layout
+        # only when an `office:styles` element precedes it, empty or not.
+        zip_entry(z, "styles.xml", f'<?xml version="1.0" encoding="UTF-8"?><office:document-styles {ODF_NS}><office:styles/><office:automatic-styles><style:page-layout style:name="pm1"><style:page-layout-properties fo:page-width="{page[0]}" fo:page-height="{page[1]}" fo:margin="1cm" style:print-orientation="{orientation}"/></style:page-layout></office:automatic-styles><office:master-styles><style:master-page style:name="Standard" style:page-layout-name="pm1"/></office:master-styles></office:document-styles>')
+        for name, data in entries:
+            zip_entry(z, name, data)
+    return out.getvalue()
+
+
+def odp(slides):
+    """An OpenDocument presentation: one 4:3 slide per entry of `slides`,
+    each with that text in a box."""
+    pages = "".join(
+        f'<draw:page draw:name="page{n + 1}" draw:master-page-name="Standard"><draw:frame svg:width="24cm" svg:height="4cm" svg:x="2cm" svg:y="2cm"><draw:text-box><text:p>{text}</text:p></draw:text-box></draw:frame></draw:page>'
+        for n, text in enumerate(slides)
+    )
+    return odf("application/vnd.oasis.opendocument.presentation", f"<office:presentation>{pages}</office:presentation>", SLIDE_CM)
+
+
+def odg(pages):
+    """An OpenDocument drawing of `pages` pages, a rectangle on each at a
+    different place."""
+    body = "".join(
+        f'<draw:page draw:name="page{n + 1}" draw:master-page-name="Standard"><draw:rect svg:width="10cm" svg:height="6cm" svg:x="{2 + 12 * (n % 2)}cm" svg:y="4cm"><text:p>{n + 1}</text:p></draw:rect></draw:page>'
+        for n in range(pages)
+    )
+    return odf("application/vnd.oasis.opendocument.graphics", f"<office:drawing>{body}</office:drawing>", SLIDE_CM)
+
+
+# A Basic macro that creates a folder next to the document it is in. Bound
+# to the document's load event, it would run when LibreOffice opens the
+# document, if LibreOffice ran macros from documents it converts.
+MACRO = '''<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE script:module PUBLIC "-//OpenOffice.org//DTD OfficeDocument 1.0//EN" "module.dtd">
+<script:module xmlns:script="http://openoffice.org/2000/script" script:name="Module1" script:language="StarBasic">Sub Main
+  Dim fa As Object
+  fa = CreateUnoService(&quot;com.sun.star.ucb.SimpleFileAccess&quot;)
+  fa.createFolder(ThisComponent.getURL() &amp; &quot;.macro-ran&quot;)
+End Sub
+</script:module>'''
+
+
+def macro_odt():
+    """An OpenDocument text of one page carrying `MACRO` in its Standard
+    Basic library, bound to the document's load event, as LibreOffice
+    itself stores one."""
+    scripts = '<office:scripts><office:event-listeners><script:event-listener script:language="ooo:script" script:event-name="dom:load" xlink:href="vnd.sun.star.script:Standard.Module1.Main?language=Basic&amp;location=document"/></office:event-listeners></office:scripts>'
+    manifest = '<manifest:file-entry manifest:full-path="Basic/" manifest:media-type="application/binary"/><manifest:file-entry manifest:full-path="Basic/script-lc.xml" manifest:media-type="text/xml"/><manifest:file-entry manifest:full-path="Basic/Standard/" manifest:media-type="application/binary"/><manifest:file-entry manifest:full-path="Basic/Standard/script-lb.xml" manifest:media-type="text/xml"/><manifest:file-entry manifest:full-path="Basic/Standard/Module1.xml" manifest:media-type="text/xml"/>'
+    entries = [
+        ("Basic/script-lc.xml", '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE library:libraries PUBLIC "-//OpenOffice.org//DTD OfficeDocument 1.0//EN" "libraries.dtd"><library:libraries xmlns:library="http://openoffice.org/2000/library" xmlns:xlink="http://www.w3.org/1999/xlink"><library:library library:name="Standard" library:link="false"/></library:libraries>'),
+        ("Basic/Standard/script-lb.xml", '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE library:library PUBLIC "-//OpenOffice.org//DTD OfficeDocument 1.0//EN" "library.dtd"><library:library xmlns:library="http://openoffice.org/2000/library" library:name="Standard" library:readonly="false" library:passwordprotected="false"><library:element library:name="Module1"/></library:library>'),
+        ("Basic/Standard/Module1.xml", MACRO),
+    ]
+    return odf("application/vnd.oasis.opendocument.text", "<office:text><text:p>A document with a macro.</text:p></office:text>", A4_CM, scripts, manifest, entries)
+
+
+def rtf(text):
+    """A Rich Text Format letter: `text`, ASCII, on an A4 page."""
+    return ("{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Helvetica;}}\\paperw%d\\paperh%d\\f0\\fs48 %s\\par}" % (A4_TWIPS[0], A4_TWIPS[1], text)).encode("ascii")
+
+
+def soffice():
+    """The LibreOffice binary, on the PATH or in the macOS bundle, or None."""
+    for candidate in [shutil.which("soffice"), "/Applications/LibreOffice.app/Contents/MacOS/soffice"]:
+        if candidate and Path(candidate).is_file():
+            return candidate
+    return None
+
+
+def legacy(command, source, export):
+    """`source` converted by LibreOffice with the `export` filter
+    (`"doc:MS Word 97"`), in a throwaway profile."""
+    with tempfile.TemporaryDirectory() as tmp:
+        subprocess.run(
+            [command, f"-env:UserInstallation=file://{tmp}/profile", "--headless", "--norestore", "--nologo",
+             "--convert-to", export, "--outdir", tmp, str(source)],
+            check=True, capture_output=True, timeout=300,
+        )
+        return (Path(tmp) / f"{source.stem}.{export.split(':')[0]}").read_bytes()
 
 
 def feature(geometry, properties=None):
@@ -322,6 +478,14 @@ def main():
         "text.odt": odt("Bonjour, ceci est une lettre."),
         "table.xlsx": xlsx(TABLE),
         "table.ods": ods(TABLE),
+        # The variants, RTF, presentations and a drawing, for the converter:
+        # two slides so that the one-page export is checked there too.
+        "table.xlsm": xlsx(TABLE, macro_enabled=True),
+        "letter.rtf": rtf("Bonjour, ceci est une lettre."),
+        "slides.pptx": pptx(["Diapositive 1", "Diapositive 2"]),
+        "broken.pptx": broken_pptx(),
+        "slides.odp": odp(["Diapositive 1", "Diapositive 2"]),
+        "drawing.odg": odg(2),
     }
     files.update({name: geojson(value) for name, value in GEOJSON.items()})
     files["places.kmz"] = kmz((HERE / "places.kml").read_bytes(), small_png)
@@ -329,16 +493,32 @@ def main():
     for name, data in files.items():
         (HERE / name).write_bytes(data)
         print(f"{name}: {len(data)} bytes")
+    # The Office 97-2003 files, from the ZIP ones through LibreOffice.
+    command = soffice()
+    for name, source, export in [("letter.doc", "text.odt", "doc:MS Word 97"), ("table.xls", "table.xlsx", "xls:MS Excel 97")]:
+        if (HERE / name).exists() and "--legacy" not in sys.argv:
+            continue
+        if command is None:
+            print(f"{name}: not written, no LibreOffice found")
+            continue
+        data = legacy(command, HERE / source, export)
+        (HERE / name).write_bytes(data)
+        print(f"{name}: {len(data)} bytes, from {source}")
     # What a worker renders at startup to check its vips and helper binary.
     PROBE.mkdir(exist_ok=True)
     probe_files = {
         "pixel.png": png(1, 1),
         "page.pdf": empty_pdf(20, 10),
         "point.geojson": geojson(feature({"type": "Point", "coordinates": PARIS})),
-        # Through LibreOffice when one is configured: the DOCX has two pages
-        # so that the one-page export is checked.
+        # Through LibreOffice when one is configured, one file per
+        # application: the DOCX, the PPTX and the ODG have two pages so
+        # that the one-page export is checked on each filter, and the ODT
+        # carries a macro that must not run.
         "pages.docx": docx("Page {page}", pages=2),
         "sheet.xlsx": xlsx([["a", "b"], ["1", "2"]]),
+        "slides.pptx": pptx(["Slide 1", "Slide 2"]),
+        "drawing.odg": odg(2),
+        "macro.odt": macro_odt(),
     }
     for name, data in probe_files.items():
         (PROBE / name).write_bytes(data)

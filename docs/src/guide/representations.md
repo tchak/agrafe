@@ -18,9 +18,9 @@ stripped.
 | File | Preview | Thumbnail |
 |---|---|---|
 | JPEG, PNG, GIF, WebP, TIFF, HEIF/AVIF, SVG, BMP, JPEG 2000 | the image | the image |
-| PDF, DOCX or ODT that wraps a single image | the embedded image | the embedded image |
+| PDF, DOCX or ODT (or a DOCM, DOTX, OTT, ODM, … variant) that wraps a single image | the embedded image | the embedded image |
 | Other PDF | none | the first page |
-| Other DOCX, ODT, XLSX and ODS | none | the first page, through [LibreOffice](deployment.md#libreoffice) when `media.office.command` is set; the icon otherwise |
+| Other office files: Word, Excel and PowerPoint, their Office 97-2003, macro-enabled and template variants, RTF, OpenDocument texts, spreadsheets, presentations and drawings | none | the first page or slide, through [LibreOffice](deployment.md#libreoffice) when `media.office.command` is set; the icon otherwise |
 | Text, CSV and TSV | none | the first lines, in a monospace font |
 | GeoJSON, GPX, KML, KMZ | the geometry over a map, see [Maps](#maps) | the map |
 | Anything else | none | the icon |
@@ -38,13 +38,19 @@ except text files, whose thumbnail reads only the first 8 KiB.
 
 Office documents need a layout engine for a faithful page, and the only
 one that reads them is LibreOffice. It is optional: with
-`media.office.command` set, LibreOffice converts the first page of a
-DOCX, ODT, XLSX or ODS to a PDF in the job's work directory, one
-short-lived sandboxed process per document, and that page is rendered
-like a PDF's. Without it, office files get the icon, as they do when the
-file is over `media.max_source_size`. Turning it on later regenerates
-existing thumbnails through a `media.variant_version` bump. Spreadsheets
-exported by agrafe are ordinary blobs and get a thumbnail too.
+`media.office.command` set, LibreOffice converts the first page of an
+office file to a PDF in the job's work directory, one short-lived
+sandboxed process per document, and that page is rendered like a PDF's.
+The formats are those of Writer (DOCX, DOC, RTF, ODT and the DOCM, DOTX,
+DOTM, OTT, ODM, OTM, OTH variants), Calc (XLSX, XLS, ODS and XLSM, XLTX,
+XLTM, XLSB, OTS), Impress (PPTX, PPT, ODP and PPTM, PPSX, PPSM, POTX,
+POTM, OTP) and Draw (ODG, OTG). Macros in a document never run: the
+conversion loads it in never-execute mode, and the profile it runs with
+pins macro security to "very high" besides. Without a converter, office
+files get the icon, as they do when the file is over
+`media.max_source_size`. Turning it on later regenerates existing
+thumbnails through a `media.variant_version` bump. Spreadsheets exported
+by agrafe are ordinary blobs and get a thumbnail too.
 
 A user interface should key on whether a blob has a preview
 (`preview_state` is `ready`), never on its category.

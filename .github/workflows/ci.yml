@@ -65,7 +65,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libvips-tools \
-            libreoffice-writer-nogui libreoffice-calc-nogui fonts-dejavu-core fonts-liberation
+            libreoffice-writer-nogui libreoffice-calc-nogui libreoffice-impress-nogui \
+            libreoffice-draw-nogui fonts-dejavu-core fonts-liberation
           vips --version
           soffice --version
       - uses: actions/checkout@v5

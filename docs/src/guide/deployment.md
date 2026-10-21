@@ -74,9 +74,12 @@ features.
 
 ## LibreOffice
 
-Optional, for the first-page thumbnails of DOCX, ODT, XLSX and ODS files
-(see [Previews and thumbnails](representations.md#what-gets-rendered)).
-Without it, office files get the icon.
+Optional, for the first-page thumbnails of office files: Word, Excel and
+PowerPoint files, their Office 97-2003, macro-enabled and template
+variants, RTF, and OpenDocument texts, spreadsheets, presentations and
+drawings (see [Previews and
+thumbnails](representations.md#what-gets-rendered)). Without it, office
+files get the icon.
 
 ```toml
 [media.office]
@@ -86,14 +89,21 @@ command = "soffice"
 On Debian and Ubuntu:
 
 ```sh
-apt install libreoffice-writer-nogui libreoffice-calc-nogui fonts-dejavu-core fonts-liberation
+apt install libreoffice-writer-nogui libreoffice-calc-nogui \
+  libreoffice-impress-nogui libreoffice-draw-nogui fonts-dejavu-core fonts-liberation
 ```
 
 About 400 MB. The fonts are not optional: without them a page renders as
 boxes and LibreOffice exits 0, which nothing reports. The startup probe
-converts a two-page DOCX and an XLSX and checks that the DOCX came out as
-one page, so a LibreOffice without Writer or Calc, or older than 7.4,
-fails the deployment rather than every office file.
+converts a two-page DOCX, an XLSX, a two-slide PPTX, a two-page ODG and
+an ODT carrying a macro, and checks that each two-page file came out as
+one page and that the macro did not run, so a LibreOffice without one of
+Writer, Calc, Impress or Draw, or older than 7.4, fails the deployment
+rather than every office file of that kind.
+
+Macros in a document never run during a conversion: LibreOffice loads
+the file in never-execute mode, and besides, the user profile of every
+run, `profile_template` or not, pins macro security to "very high".
 
 LibreOffice runs as one short-lived process per document, sandboxed like
 `vips`, with a private user profile under the job's work directory, and

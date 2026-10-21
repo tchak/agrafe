@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use agrafe_types::classify::{DOCX, XLSX};
+use agrafe_types::office::{DOCX, ODG, ODT, PPTX, XLSX};
 
 use crate::vips::{self, Fit, Input};
 use agrafe_types::map::Format;
@@ -48,11 +48,12 @@ pub enum ProbeError {
         what: String,
     },
     /// The configured LibreOffice declined or rejected a probe document,
-    /// or wrote more than the first page: it is not LibreOffice, lacks
-    /// Writer or Calc, or is too old for the JSON filter options.
+    /// wrote more than the first page, or ran a document's macro: it is
+    /// not LibreOffice, lacks Writer, Calc, Impress or Draw, or is too
+    /// old for the JSON filter options.
     #[error(
         "`{command}` {what}; is media.office.command a LibreOffice 7.4 or later \
-         with Writer and Calc?"
+         with Writer, Calc, Impress and Draw?"
     )]
     Office {
         /// The configured `office.command`.
@@ -104,6 +105,14 @@ const PROBE_GEOJSON: &[u8] = include_bytes!("../assets/probe/point.geojson");
 const PROBE_DOCX: &[u8] = include_bytes!("../assets/probe/pages.docx");
 /// One sheet of a few cells.
 const PROBE_XLSX: &[u8] = include_bytes!("../assets/probe/sheet.xlsx");
+/// Two slides: the exported PDF must have one.
+const PROBE_PPTX: &[u8] = include_bytes!("../assets/probe/slides.pptx");
+/// Two drawing pages: the exported PDF must have one.
+const PROBE_ODG: &[u8] = include_bytes!("../assets/probe/drawing.odg");
+/// One page, and a Basic macro bound to the document's load event that
+/// creates a folder next to the document: the folder must not exist once
+/// the conversion is done.
+const PROBE_MACRO: &[u8] = include_bytes!("../assets/probe/macro.odt");
 
 /// The probe's typst workspace: a template importing a file, reading
 /// data and placing an image, as templates do.
@@ -182,8 +191,9 @@ fn canonical(path: &Path) -> std::path::PathBuf {
 /// instead of failing the deployment. The text sample and the map also
 /// catch a `render_text_command` or a `render_geo_command` that is not
 /// the helper. The map is drawn with no background layer: the probe never
-/// touches the network. With `media.office.command` set, a two-page DOCX
-/// and an XLSX go through LibreOffice as well, see [`probe_office`].
+/// touches the network. With `media.office.command` set, a document for
+/// each LibreOffice application goes through it as well, see
+/// [`probe_office`].
 pub async fn probe(config: &Config, tmp_dir: Option<&Path>) -> Result<(), ProbeError> {
     probe_tools(config, tmp_dir).await?;
     if config.office.command.is_some() {
@@ -302,21 +312,29 @@ async fn probe_tools(config: &Config, tmp_dir: Option<&Path>) -> Result<(), Prob
     Ok(())
 }
 
-/// Convert a two-page DOCX and a one-sheet XLSX through the exact command
-/// lines the render job uses, and render the result through vips: a
-/// LibreOffice without the Calc filter, without fonts, or too old for the
-/// JSON filter options would mark every office file `failed` instead of
-/// failing the deployment. The DOCX has two pages so that `PageRange` is
-/// known to be honoured: its PDF must have one, which vips tells by
-/// refusing the second.
+/// Convert a two-page DOCX, a one-sheet XLSX, a two-slide PPTX, a
+/// two-page ODG and an ODT carrying a macro through the exact command
+/// lines the render job uses, and render the results through vips: a
+/// LibreOffice without one of its four applications (Debian packages them
+/// apart), without fonts, or too old for the JSON filter options would
+/// mark every office file of that kind `failed` instead of failing the
+/// deployment. The DOCX, the PPTX and the ODG have two pages so that
+/// `PageRange` is known to be honoured by each export filter: the PDF
+/// must have one, which vips tells by refusing the second. The ODT binds
+/// a Basic macro to its load event that creates a folder next to the
+/// document; the folder must not be there afterwards, which is the
+/// conversion running no macro (see `office::pin_macro_security`).
 pub async fn probe_office(config: &Config, tmp_dir: Option<&Path>) -> Result<(), ProbeError> {
     let command = config.office.command.clone().unwrap_or_default();
     let workdir = crate::workdir(tmp_dir)?;
     let fit = Fit::thumbnail(config);
     let output = workdir.path().join("probe.webp");
-    for (what, name, content_type, bytes) in [
-        ("a two-page DOCX", "writer", DOCX, PROBE_DOCX),
-        ("an XLSX", "calc", XLSX, PROBE_XLSX),
+    for (what, name, content_type, bytes, two_pages) in [
+        ("a two-page DOCX", "writer", DOCX, PROBE_DOCX, true),
+        ("an XLSX", "calc", XLSX, PROBE_XLSX, false),
+        ("a two-slide PPTX", "impress", PPTX, PROBE_PPTX, true),
+        ("a two-page ODG", "draw", ODG, PROBE_ODG, true),
+        ("an ODT with a macro", "macro", ODT, PROBE_MACRO, false),
     ] {
         let dir = workdir.path().join(name);
         tokio::fs::create_dir(&dir).await?;
@@ -352,7 +370,7 @@ pub async fn probe_office(config: &Config, tmp_dir: Option<&Path>) -> Result<(),
                 rejection,
             });
         }
-        if content_type == DOCX
+        if two_pages
             && let Verdict::Rendered(_) = render(1).await.map_err(|source| ProbeError::Render {
                 what,
                 vips: vips.clone(),
@@ -361,8 +379,19 @@ pub async fn probe_office(config: &Config, tmp_dir: Option<&Path>) -> Result<(),
         {
             return Err(ProbeError::Office {
                 command,
-                what: "wrote more than the first page of a two-page DOCX, so it ignores \
-                       the PageRange option"
+                what: format!(
+                    "wrote more than the first page of {what}, so its export filter ignores \
+                     the PageRange option"
+                ),
+            });
+        }
+        // The macro creates `<document URL>.macro-ran` next to the input,
+        // which `convert` linked in as `document.odt` beside the PDF.
+        if name == "macro" && tokio::fs::try_exists(pdf.with_extension("odt.macro-ran")).await? {
+            return Err(ProbeError::Office {
+                command,
+                what: "ran the macro bound to the load event of an ODT, which neither the \
+                       conversion nor the pinned macro security level stopped"
                     .to_string(),
             });
         }

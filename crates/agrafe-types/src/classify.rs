@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::office::{self, Application};
+
 /// The coarse kind of a file, derived from its content type by
 /// [`classify`] and stored on the blob; it picks the thumbnail icon when
 /// nothing better can be rendered.
@@ -10,7 +12,8 @@ use serde::{Deserialize, Serialize};
 pub enum Category {
     /// Any `image/*` type.
     Image,
-    /// Word processing and page formats: PDF, Word, ODT, RTF, EPUB.
+    /// Word processing and page formats: PDF, Word, ODT, RTF, EPUB, and
+    /// the drawings of Draw (ODG), pages too.
     Document,
     /// Excel, ODS, CSV and TSV.
     Spreadsheet,
@@ -46,35 +49,38 @@ pub const PDF: &str = "application/pdf";
 /// The content type of a CSV file, a [`Category::Spreadsheet`].
 pub const CSV: &str = "text/csv";
 /// The content type of an Excel workbook (Office Open XML).
-pub const XLSX: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+pub const XLSX: &str = office::XLSX;
 /// The content type of an OpenDocument spreadsheet.
-pub const ODS: &str = "application/vnd.oasis.opendocument.spreadsheet";
+pub const ODS: &str = office::ODS;
 /// The content type of a ZIP archive, also the container of XLSX, DOCX,
 /// ODS and ODT.
 pub const ZIP: &str = "application/zip";
 /// The content type of a Word document (Office Open XML).
-pub const DOCX: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+pub const DOCX: &str = office::DOCX;
 /// The content type of an OpenDocument text.
-pub const ODT: &str = "application/vnd.oasis.opendocument.text";
+pub const ODT: &str = office::ODT;
 
 /// Classify a normalised `type/subtype` content type. An alias is
 /// classified as its canonical type (`sniff::canonical`), so `text/rtf`
 /// is a document like `application/rtf` and `application/x-gzip` an
-/// archive like `application/gzip`.
+/// archive like `application/gzip`. An office format classifies by the
+/// application that reads it (`office::format`): every Writer and Draw
+/// format is a document, every Calc one a spreadsheet, every Impress one
+/// a presentation, the macro-enabled, template and legacy variants
+/// included.
 pub fn classify(content_type: &str) -> Category {
     let content_type = crate::sniff::canonical(content_type);
+    if let Some(format) = office::format(content_type) {
+        return match format.application {
+            Application::Writer | Application::Draw => Category::Document,
+            Application::Calc => Category::Spreadsheet,
+            Application::Impress => Category::Presentation,
+        };
+    }
     let exact = match content_type {
-        PDF | "application/msword" | DOCX | ODT | "application/rtf" | "application/epub+zip" => {
-            Some(Category::Document)
-        }
+        PDF | "application/epub+zip" => Some(Category::Document),
 
-        "application/vnd.ms-excel" | XLSX | ODS | CSV | "text/tab-separated-values" => {
-            Some(Category::Spreadsheet)
-        }
-
-        "application/vnd.ms-powerpoint"
-        | "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-        | "application/vnd.oasis.opendocument.presentation" => Some(Category::Presentation),
+        CSV | "text/tab-separated-values" => Some(Category::Spreadsheet),
 
         ZIP
         | "application/gzip"
@@ -123,6 +129,59 @@ mod tests {
         assert_eq!(classify(crate::kml::KMZ), Category::Archive);
         assert_eq!(classify("video/mp4"), Category::Video);
         assert_eq!(classify("application/octet-stream"), Category::Other);
+    }
+
+    #[test]
+    fn office_formats_classify_by_application() {
+        for document in [
+            DOCX,
+            office::DOCM,
+            office::DOTX,
+            office::DOTM,
+            office::DOC,
+            office::RTF,
+            ODT,
+            office::OTT,
+            office::ODM,
+            office::OTM,
+            office::OTH,
+            office::ODG,
+            office::OTG,
+            "application/epub+zip",
+        ] {
+            assert_eq!(classify(document), Category::Document, "{document}");
+        }
+        for sheet in [
+            XLSX,
+            office::XLSM,
+            office::XLTX,
+            office::XLTM,
+            office::XLSB,
+            office::XLS,
+            ODS,
+            office::OTS,
+            "text/tab-separated-values",
+        ] {
+            assert_eq!(classify(sheet), Category::Spreadsheet, "{sheet}");
+        }
+        for slides in [
+            office::PPTX,
+            office::PPTM,
+            office::PPSX,
+            office::PPSM,
+            office::POTX,
+            office::POTM,
+            office::PPT,
+            office::ODP,
+            office::OTP,
+        ] {
+            assert_eq!(classify(slides), Category::Presentation, "{slides}");
+        }
+        // Not in the table: an add-in is not a workbook anyone opens.
+        assert_eq!(
+            classify("application/vnd.ms-excel.addin.macroenabled.12"),
+            Category::Other
+        );
     }
 
     #[test]

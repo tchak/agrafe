@@ -422,8 +422,9 @@ impl Rendered {
 pub enum PreviewSource {
     /// The file is an image, decoded and transcoded.
     Image,
-    /// The single image embedded in a one-page PDF or a DOCX or ODT,
-    /// pulled out at full resolution.
+    /// The single image embedded in a one-page PDF or a Writer document
+    /// (a DOCX or ODT, or one of their variants), pulled out at full
+    /// resolution.
     EmbeddedImage,
     /// The geometry of a GeoJSON file drawn over a map background.
     GeoJson,

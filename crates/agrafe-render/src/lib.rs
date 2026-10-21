@@ -21,10 +21,10 @@ use agrafe_types::geojson::GEOJSON;
 use agrafe_types::gpx::GPX;
 use agrafe_types::kml::{KML, KMZ};
 use agrafe_types::map::Format;
+use agrafe_types::office::{self as formats, Application, Package};
 use agrafe_types::sniff;
 use serde::Deserialize;
 
-use agrafe_types::classify::{DOCX, ODS, ODT, XLSX};
 use geo::Map;
 pub use office::Office;
 pub use probe::{
@@ -299,9 +299,9 @@ pub enum Fallback {
     TextSample,
     /// The first page rendered.
     FirstPage,
-    /// The first page rendered after LibreOffice converted the file to a
-    /// PDF, when a converter is configured (`media.office.command`); the
-    /// icon otherwise.
+    /// The first page, slide or drawing page rendered after LibreOffice
+    /// converted the file to a PDF, when a converter is configured
+    /// (`media.office.command`); the icon otherwise.
     ConvertedFirstPage,
 }
 
@@ -325,16 +325,34 @@ impl Plan {
 
 /// The plan for a content type. Image types are an allowlist of what
 /// libvips loads natively: everything else would go through ImageMagick,
-/// which is more attack surface than it is worth. A PDF or an office file
-/// that wraps one picture is rendered from it; otherwise a PDF gets its
-/// first page as a thumbnail, and a DOCX, ODT, XLSX or ODS its first page
-/// through LibreOffice when one is configured, else the icon. A GeoJSON,
-/// GPX or KML file gets a map, and the text sample of the text file it is
-/// when it holds no geometry; a KMZ gets a map too, and the archive icon
+/// which is more attack surface than it is worth. A PDF or a Writer
+/// package (DOCX, ODT and their variants) that wraps one picture is
+/// rendered from it; otherwise a PDF gets its first page as a thumbnail,
+/// and every office format (`agrafe_types::office`: Word, Excel,
+/// PowerPoint and OpenDocument files, their legacy, macro-enabled and
+/// template variants, RTF and drawings) its first page through
+/// LibreOffice when one is configured, else the icon. A GeoJSON, GPX or
+/// KML file gets a map, and the text sample of the text file it is when
+/// it holds no geometry; a KMZ gets a map too, and the archive icon
 /// otherwise. The `text` category, plus CSV and TSV, which classify as
 /// spreadsheets, get a text sample as a thumbnail.
 pub fn plan(content_type: &str) -> Plan {
     let canonical = sniff::canonical(content_type);
+    if let Some(format) = formats::format(canonical) {
+        // The extractor opens the ZIP of a Writer package for the one
+        // picture it may wrap. The legacy formats and RTF have no
+        // extractor, spreadsheets are never a wrapped picture, and the
+        // first picture of a presentation is as likely its logo as its
+        // slide: those get the page only.
+        let picture: &'static [Source] = match (format.application, format.package) {
+            (Application::Writer, Package::Ooxml | Package::Odf) => &[Source::EmbeddedImage],
+            _ => &[],
+        };
+        return Plan {
+            picture,
+            fallback: Some(Fallback::ConvertedFirstPage),
+        };
+    }
     match canonical {
         GEOJSON => Plan {
             picture: &[Source::Map(Format::GeoJson)],
@@ -361,14 +379,6 @@ pub fn plan(content_type: &str) -> Plan {
             picture: &[Source::EmbeddedImage],
             fallback: Some(Fallback::FirstPage),
         },
-        DOCX | ODT => Plan {
-            picture: &[Source::EmbeddedImage],
-            fallback: Some(Fallback::ConvertedFirstPage),
-        },
-        XLSX | ODS => Plan {
-            picture: &[],
-            fallback: Some(Fallback::ConvertedFirstPage),
-        },
         classify::CSV | "text/tab-separated-values" => Plan {
             picture: &[],
             fallback: Some(Fallback::TextSample),
@@ -384,6 +394,10 @@ pub fn plan(content_type: &str) -> Plan {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agrafe_types::office::{
+        DOC, DOCM, DOCX, DOTM, DOTX, ODG, ODM, ODP, ODS, ODT, OTG, OTH, OTM, OTP, OTS, OTT, POTM,
+        POTX, PPSM, PPSX, PPT, PPTM, PPTX, RTF, XLS, XLSB, XLSM, XLSX, XLTM, XLTX,
+    };
 
     #[test]
     fn plans_by_type() {
@@ -398,7 +412,9 @@ mod tests {
                 fallback: Some(Fallback::FirstPage),
             }
         );
-        for office in [DOCX, ODT] {
+        // A Writer package may wrap a picture; the binary formats, RTF,
+        // spreadsheets, presentations and drawings get the page only.
+        for office in [DOCX, DOCM, DOTX, DOTM, ODT, OTT, ODM, OTM, OTH] {
             assert_eq!(plan(office).picture, &[Source::EmbeddedImage], "{office}");
             assert_eq!(
                 plan(office).fallback,
@@ -406,12 +422,15 @@ mod tests {
                 "{office}"
             );
         }
-        for sheet in [XLSX, ODS] {
-            assert!(plan(sheet).picture.is_empty(), "{sheet}");
+        for page_only in [
+            DOC, RTF, "text/rtf", XLSX, XLSM, XLTX, XLTM, XLSB, XLS, ODS, OTS, PPTX, PPTM, PPSX,
+            PPSM, POTX, POTM, PPT, ODP, OTP, ODG, OTG,
+        ] {
+            assert!(plan(page_only).picture.is_empty(), "{page_only}");
             assert_eq!(
-                plan(sheet).fallback,
+                plan(page_only).fallback,
                 Some(Fallback::ConvertedFirstPage),
-                "{sheet}"
+                "{page_only}"
             );
         }
         assert_eq!(
@@ -455,6 +474,8 @@ mod tests {
             classify::ZIP,
             "image/vnd.adobe.photoshop",
             "application/octet-stream",
+            "application/x-ole-storage",
+            "application/vnd.ms-excel.addin.macroenabled.12",
         ] {
             assert_eq!(plan(other), Plan::NONE, "{other}");
         }
