@@ -1049,6 +1049,57 @@ async fn representations_regenerate_when_missing_or_stale() {
 }
 
 #[tokio::test]
+async fn a_ready_row_without_a_digest_is_rendered_again() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
+    let id = id_of(&blob);
+    render_all(&app).await;
+    let thumbnail = format!("/blobs/{id}/thumbnail/photo.jpg");
+
+    // `ready` promises a digest to answer conditional requests with; a
+    // row without one is not trusted, and the render queued again.
+    sqlx::query("UPDATE blobs SET thumbnail_sha256 = NULL WHERE id = $1")
+        .bind(parse_id(id))
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+    icon(&app, &thumbnail, "pending").await;
+    assert_eq!(get_blob(&app, id).await["thumbnail_state"], "pending");
+    assert_eq!(jobs_for(&app, id).await, ["render"]);
+    assert!(run_job(&app, JobKind::Render).await);
+    rendered(&app, &thumbnail).await;
+}
+
+#[tokio::test]
+async fn a_corrupt_representation_is_an_internal_error() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
+    let id = id_of(&blob);
+    render_all(&app).await;
+    let thumbnail = format!("/blobs/{id}/thumbnail/photo.jpg");
+    rendered(&app, &thumbnail).await;
+
+    // An object that does not decrypt is not served, and not mistaken
+    // for a missing one: nothing is queued over it.
+    app.state
+        .store()
+        .put(
+            &object_store::path::Path::from(format!("{id}/thumbnail")),
+            vec![0u8; 512].into(),
+        )
+        .await
+        .unwrap();
+    let (status, _, body) = fetch(&app.private, get_with(&thumbnail, &[])).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["error"]["code"], "internal");
+    assert_eq!(get_blob(&app, id).await["thumbnail_state"], "ready");
+    assert!(jobs_for(&app, id).await.is_empty());
+}
+
+#[tokio::test]
 async fn representations_disabled_at_creation_are_never_rendered() {
     let db = TestDatabase::new().await;
     let app = setup(db).await;
