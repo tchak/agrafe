@@ -133,12 +133,12 @@ curl -s "$(curl -s localhost:8080/blobs/$ID | jq -r .urls.thumbnail)" -o thumb.w
 ## Keep it
 
 A blob nobody uses expires a day after its creation. To keep it, attach it
-to a record of yours:
+to its owner in your backend:
 
 ```sh
 curl -s "localhost:8080/blobs/$ID/attachments" \
   -H 'content-type: application/json' \
-  -d '{"record_type": "Dossier", "record_id": "42", "name": "piece_justificative"}'
+  -d '{"owner_kind": "expense", "owner_id": "42", "role": "receipt"}'
 ```
 
 ## Watch it

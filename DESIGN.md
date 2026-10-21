@@ -131,8 +131,8 @@ No signature. Reachable only from trusted networks.
 | `POST` | `/blobs/:id/finish` | Seal a source sent in parts and enqueue its build |
 | `DELETE` | `/blobs/:id` | Soft delete of an unattached blob, bucket objects purged asynchronously |
 | `POST` | `/blobs/:id/retry` | Enqueue whatever the blob is waiting on, superseding a dead job (see "Jobs") |
-| `POST` | `/blobs/:id/attachments` | Attach the blob to a record, idempotent (see "Attachments") |
-| `GET` | `/attachments` | List attachments, cursor paginated, filterable by record and blob |
+| `POST` | `/blobs/:id/attachments` | Attach the blob to an owner, idempotent (see "Attachments") |
+| `GET` | `/attachments` | List attachments, cursor paginated, filterable by owner and blob |
 | `GET` | `/attachments/:id` | One attachment |
 | `DELETE` | `/attachments/:id` | Detach; the last detach gives the blob back its default expiry |
 | `POST` | `/blobs/:id/urls` | Mint signed public URLs with a chosen TTL and query parameters |
@@ -260,13 +260,13 @@ utilities the pages need written in the base template; no Tailwind, no
 JavaScript, no build step. Filters are `GET` forms whose fields
 mirror the list query structs, so the URL is the state and a filtered view
 is a link an operator can paste. An enum filter is a select; so are the
-`record_type` and `name` of attachments, fed by `Agrafe::attachment_facets`,
+`owner_kind` and `role` of attachments, fed by `Agrafe::attachment_facets`,
 the distinct values of each, with the value a pasted link names still
 offered when it is gone. A backend has a handful of each, but the table can
 hold a billion rows and Postgres has no loose index scan, so `SELECT
 DISTINCT` would read them all on every page view; the facets come instead
-from a recursive CTE that walks the distinct `(record_type, name)` pairs
-along `attachments_type_name_idx`, one index probe per pair, capped at
+from a recursive CTE that walks the distinct `(owner_kind, role)` pairs
+along `attachments_kind_role_idx`, one index probe per pair, capped at
 `MAX_FACETS` pairs. No cache: the walk costs less than rendering the page,
 and a cache would only add a staleness window. Pagination is the existing cursor, a
 "next" link. Actions are `POST` forms that redirect (`303`) to the page
@@ -459,7 +459,7 @@ the row up as before.
 | `priority` | no, default `normal` | `high`, `normal` or `low`: where the blob's fetch, scan, render and build jobs go in their kind's queue, see "Jobs" |
 | `representations` | no, default both | The representations to render, among `thumbnail` and `preview`. `[]` renders nothing, for files nobody will look at through the service. The others are `disabled` for good, see "Derived representations" |
 | `expires_at` or `expires_in` | no, default `blobs.default_expires_in` | Absolute timestamp or duration such as `7d`, in the future. Refused together with `attachment`, and cleared by the first attachment, see "Attachments" |
-| `attachment` | no | `record_type`, `record_id` and `name`: attach in the same transaction as the creation, see "Attachments" |
+| `attachment` | no | `owner_kind`, `owner_id` and `role`: attach in the same transaction as the creation, see "Attachments" |
 
 Checksum is SHA-256 because browsers compute it cheaply with
 `crypto.subtle.digest`, and S3 understands it natively.
@@ -616,14 +616,23 @@ that was to move it along died (see "Jobs").
 
 ### Attachments
 
-An attachment records that a record of the backend uses a blob: three
-strings, `record_type`, `record_id` and `name`, the triple Active Storage
-uses. `record_type` is the kind of record, `record_id` its identifier as the
-backend writes it, `name` the role the blob plays for it
-(`piece_justificative`, `avatar`). A blob can be attached any number of
-times, from records that need not know about each other, and a record can
-attach several blobs under one name: agrafe does not know whether a name is
-one-to-one or one-to-many, that is the backend's rule.
+An attachment records that something in the backend, its owner, uses a
+blob: three strings, `owner_kind`, `owner_id` and `role`. `owner_kind` is
+the kind of owner (`expense`, `user`), `owner_id` its identifier as the
+backend writes it, `role` the role the blob plays for it (`receipt`,
+`avatar`). A blob can be attached any number of times, from owners that
+need not know about each other, and an owner can attach several blobs in
+one role: agrafe does not know whether a role is one-to-one or
+one-to-many, that is the backend's rule.
+
+Why "owner": the attachments are what keeps a blob alive, the way owners
+keep a reference-counted value alive, and a blob may have several. The
+strings are opaque to agrafe, compared and never parsed, so the names say
+what they are for rather than borrow an ORM's (Active Storage's
+`record_type`, `record_id` and `name` map onto them one for one). Two
+columns rather than one opaque `owner`: listing by kind alone is a query
+the dashboard and the backend both need, and a separator inside one string
+would be a format agrafe would have to parse.
 
 Why in agrafe rather than in the backend: a blob's lifetime should follow
 its use, and a blob row alone cannot say whether anything uses it. With the
@@ -648,7 +657,7 @@ a triple already attached returns the existing attachment. Refused for a
 blob in a terminal state, or past its `expires_at` whether or not the reaper
 has recorded it (`410` for an expired or deleted blob, `409` for an infected
 one). A blob may be attached in `created`, before its bytes: a backend
-creating a `rows`, `archive` or `document` blob knows its record at creation, and
+creating a `rows`, `archive` or `document` blob knows its owner at creation, and
 `POST /blobs` takes an optional `attachment` to do both in one transaction.
 
 **Detach.** `DELETE /attachments/:id`. Works on a blob in any state; the last
@@ -657,8 +666,8 @@ infected blob its purge clock once the backend lets go of it.
 
 **Delete.** `DELETE /blobs/:id` refuses an attached blob with `409`. Why:
 blobs are shared across attachments that do not know of each other, so a
-backend acting for one record cannot know that the blob is free. Detach is
-the only safe operation on behalf of one record; a blob nobody uses expires
+backend acting for one owner cannot know that the blob is free. Detach is
+the only safe operation on behalf of one owner; a blob nobody uses expires
 on its own, and a backend in a hurry detaches, then deletes. This is the
 Active Storage footgun not reproduced: `purge` there destroys a blob other
 records may still reference.
@@ -669,7 +678,7 @@ carry attachments are the ones the backend did not cause: an abandoned
 blob, `created` and past `upload.abandoned_after` with no part arriving
 or, attached, with nothing arriving at all, which the reaper expires
 whatever its attachments (see "Abandoned blobs"), and `infected`. Both
-keep their attachments so the backend can find out from the record's side,
+keep their attachments so the backend can find out from the owner's side,
 and the listing carries the blob's state, `blob_state`, so that the answer
 does not cost a second request. The tombstone prune takes the attachments
 with the row.
@@ -682,7 +691,7 @@ and nothing of its own would ever move it. The
 reaper therefore treats a `created` blob that has been attached and
 untouched for `upload.abandoned_after` (default one day, by its
 `updated_at`) the way it treats a source nobody finished: it is expired,
-attachments and all, and the record's side sees `expired` in
+attachments and all, and the owner's side sees `expired` in
 `blob_state`. An unattached `created` blob is left to its own
 `expires_at`, which may be longer than a day on purpose. The rule is a
 backstop: a backend that knows an upload is dead detaches and deletes.
@@ -699,30 +708,30 @@ side or the other, never both.
 attachments (
   id          uuid        PRIMARY KEY  -- v7, the listing cursor
   blob_id     uuid        NOT NULL REFERENCES blobs ON DELETE CASCADE
-  record_type text        NOT NULL
-  record_id   text        NOT NULL
-  name        text        NOT NULL
+  owner_kind  text        NOT NULL
+  owner_id    text        NOT NULL
+  role        text        NOT NULL
   created_at  timestamptz NOT NULL
 )
-UNIQUE (record_type, record_id, name, blob_id)
+UNIQUE (owner_kind, owner_id, role, blob_id)
 INDEX  (blob_id)
-INDEX  (record_type, name, id)
-INDEX  (record_type, id)
+INDEX  (owner_kind, role, id)
+INDEX  (owner_kind, id)
 ```
 
-`record_type` and `name` have a handful of values each; `record_id` has as
-many as the backend has records. The unique index makes attach idempotent
-and serves every lookup by record, which is why `record_id` is only accepted
-together with `record_type`: an id means nothing without its type, and there
-is no index on it alone. `(record_type, name, id)` and `(record_type, id)`
+`owner_kind` and `role` have a handful of values each; `owner_id` has as
+many as the backend has owners. The unique index makes attach idempotent
+and serves every lookup by owner, which is why `owner_id` is only accepted
+together with `owner_kind`: an id means nothing without its kind, and there
+is no index on it alone. `(owner_kind, role, id)` and `(owner_kind, id)`
 serve the low-cardinality scans with the cursor; the first's prefix does not
 serve the second, since the id order the cursor pages on is lost after
-`name`. `name` alone has no index: nothing lists every avatar regardless of
+`role`. `role` alone has no index: nothing lists every avatar regardless of
 what it belongs to. `(blob_id)` serves a blob's own attachments and the
 last-detach check.
 
 `GET /attachments` is cursor paginated on the attachment id like `/blobs`,
-with filters `record_type`, `record_id` (with `record_type`), `name` and
+with filters `owner_kind`, `owner_id` (with `owner_kind`), `role` and
 `blob_id`; each row carries the blob's state as `blob_state`. `GET
 /blobs/:id` inlines the blob's attachments, and `GET /blobs` takes
 `attached`. The three strings are validated like `filename`: not blank, at
@@ -731,7 +740,7 @@ most 255 bytes, no control or bidirectional formatting characters; unlike
 write.
 
 The public port never sees attachments. They are the backend's statements
-about its own records, and nothing a browser is told.
+about its own data, and nothing a browser is told.
 
 ### Listing
 
@@ -744,7 +753,7 @@ finish the blob died, see "Jobs"). Response carries `next_cursor` or null.
 
 The three listings, `/blobs`, `/attachments` and `/jobs`, take a `limit`,
 default 50, at most 200. A limit out of that range, an unknown filter value
-or a `record_id` without `record_type` answers `400`.
+or an `owner_id` without `owner_kind` answers `400`.
 
 ### Classification
 
@@ -1181,7 +1190,7 @@ memory for the one pass; a hundred thousand paths is a few megabytes, and
 nothing about it needs to survive between parts.
 
 Why dedupe: paths come from user filenames, which collide all the time, and
-a refused manifest for two `facture.pdf` would push every backend to write
+a refused manifest for two `invoice.pdf` would push every backend to write
 the same renaming loop. Why in manifest order: the first occurrence keeps its
 name, which is what a user expects.
 
@@ -1253,10 +1262,10 @@ keeps it as `source_main` for the build.
 
 **Templates are blobs, registration is attachment.** No template registry,
 no configuration entry, no `template` flag on blobs. A backend uploads
-`facture.typ` as an ordinary `raw` blob, attaches it to its own `Template`
-record and remembers the id. A new version of the template is a new blob,
+`invoice.typ` as an ordinary `raw` blob, attaches it to a `template` owner of
+its own and remembers the id. A new version of the template is a new blob,
 attached in place of the old one, which expires on its own: the write-once
-rule and the Active Storage swap, nothing new. Why not configuration:
+rule and the swap that replaces any file, nothing new. Why not configuration:
 templates change with the product, not the deployment. Why not a registry
 API: it would duplicate the storage, encryption, listing and lifetime that
 blobs already provide.
@@ -1269,8 +1278,8 @@ form for inline files.
 {"path": "main.typ",       "blob_id": "…"}
 {"path": "lib/header.typ", "blob_id": "…"}
 {"path": "logo.png",       "blob_id": "…"}
-{"path": "Marianne.ttf",   "blob_id": "…"}
-{"path": "data.json",      "json": {"nom": "…", "lignes": []}}
+{"path": "Inter.ttf",      "blob_id": "…"}
+{"path": "data.json",      "json": {"client": "…", "items": []}}
 ```
 
 Per line, at accept:
@@ -1506,12 +1515,12 @@ Lifetime: an unattached `url` blob expires on its own. An attached one (a
 migration creates with `attachment`, which clears the expiry) whose fetch
 gave up is caught by the abandoned rule: a `created`, attached blob with
 no parts untouched for `upload.abandoned_after` (default one day, by
-`updated_at`) is expired by the reaper, attachments kept, so the record's
+`updated_at`) is expired by the reaper, attachments kept, so the owner's
 side sees `blob_state: expired` (see "Attachments"). The dead fetch's
 write of `failed_at` touches the row, so the day counts from the failure,
 which gives the backend a day to see the failure before the blob goes. A
 migration therefore has two queries for its failures: `GET
-/blobs?failed=true` within the day, `GET /attachments?record_type=…` with
+/blobs?failed=true` within the day, `GET /attachments?owner_kind=…` with
 `blob_state` after it.
 
 ### Network policy
@@ -1560,7 +1569,7 @@ record's `checksum`, `size` from `byte_size`, `skip_virus_scan` if the
 backend vouches for the source, `priority: "low"` and the `attachment`.
 Then take the `ready`, `failed` and `expired` events from the webhook (see
 "Webhooks"), or poll `GET /blobs/:id`, or sweep `GET /blobs?failed=true`
-and `GET /attachments?record_type=…&name=…` for `blob_state` of `expired`.
+and `GET /attachments?owner_kind=…&role=…` for `blob_state` of `expired`.
 
 Out of scope for now: `url` on the public port; authenticated fetches
 (headers, tokens), since the backend presigns instead; resuming a partial
@@ -1933,9 +1942,9 @@ and slideshow variants (DOCM, DOTX, DOTM, XLSM, XLTX, XLTM, XLSB, PPTM,
 PPSX, PPSM, POTX, POTM), RTF, and the OpenDocument text, spreadsheet,
 presentation and drawing formats with their templates and masters (ODT,
 OTT, ODM, OTM, OTH, ODS, OTS, ODP, OTP, ODG, OTG), the table in
-`agrafe-types/src/office.rs`. Démarche numérique alone receives tens of
-thousands of `.doc` files, thousands of `.pptx` and `.rtf`, hundreds of
-the rest. A faithful page needs a layout engine, and
+`agrafe-types/src/office.rs`. A single forms platform in production
+receives tens of thousands of `.doc` files, thousands of `.pptx` and
+`.rtf`, hundreds of the rest. A faithful page needs a layout engine, and
 the only one that reads these formats is LibreOffice. It is optional
 (`media.office.command`, unset by default): a deployment without it
 behaves as before, the category icon or the embedded-image preview when
@@ -2290,7 +2299,7 @@ worker's uid, so without the signal scope `kill` would reach the worker,
 and a poisoned file would take it down on every retry. Fonts and
 poppler's data are in the set on
 purpose: without them a PDF with non-embedded fonts renders as a blank
-page and exits 0, which nothing reports (demarche-numerique learned this
+page and exits 0, which nothing reports (a production service learned this
 the hard way); `media.sandbox.readable` adds paths for a host that keeps
 fonts elsewhere. The crate's best-effort compatibility degrades on an
 older kernel instead of failing: ABI 1 (5.13) gives the filesystem rules,
@@ -2472,8 +2481,8 @@ started with a custom seccomp profile and AppArmor unconfined, and the
 host still needs the userns grant: runtime flags on the orchestrator
 that loosen confinement of the whole server process to tighten it
 around the decoder. On a container platform that trade is usually wrong
-and Landlock with seccomp is the answer; on a VM, as demarche deploys,
-it is right. The deployment guide says this in so many words.
+and Landlock with seccomp is the answer; on a VM it is right. The
+deployment guide says this in so many words.
 
 *The builder is the contract.* Callers put paths in the argv, and the
 sandbox could not tell an input from an output. `agrafe_sandbox::Command`

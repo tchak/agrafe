@@ -26,8 +26,8 @@ The first release.
   SHA-256, content sniffing, ClamAV and encryption into a multipart
   upload; raw or multipart bodies, write-once blobs, accepted types,
   expiry, and `url` blobs that a job fetches from a presigned URL.
-- **Attachments**: a blob lives as long as a record uses it, with
-  tombstones and no purge of a blob still in use.
+- **Attachments**: a blob lives as long as an owner in the backend uses
+  it, with tombstones and no purge of a blob still in use.
 - **Encryption at rest**: envelope encryption with streaming AEAD (Tink's
   AES-GCM-HKDF-STREAMING) and wrapped data keys, KEK rotation, and
   `Range` reads of the plaintext.

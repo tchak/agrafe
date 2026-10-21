@@ -435,7 +435,7 @@ async fn unlisted_content_types_are_refused_at_creation() {
                 "filename": "export.csv",
                 "content_type": "text/csv",
                 "input_type": "rows",
-                "columns": [{"name": "Dossier"}],
+                "columns": [{"name": "Expense"}],
             }),
         ),
     )

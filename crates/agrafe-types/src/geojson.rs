@@ -54,7 +54,7 @@ mod tests {
         ));
         // The marker may come after other keys.
         assert!(looks_like_geojson(
-            br#"{"name": "parcelles", "crs": {"type": "name"}, "type": "FeatureCollection"}"#
+            br#"{"name": "plots", "crs": {"type": "name"}, "type": "FeatureCollection"}"#
         ));
         assert!(!looks_like_geojson(
             br#"{"type": "Point", "coordinates": [1, 2]}"#

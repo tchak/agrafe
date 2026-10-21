@@ -742,7 +742,7 @@ async fn an_attached_blob_whose_fetch_died_is_expired_as_abandoned() {
     let pool = app.state.pool();
     let base = remote(|_| status("404 Not Found", &[])).await;
     let mut blob = url_blob(&format!("{base}/gone"));
-    blob["attachment"] = json!({"record_type": "Dossier", "record_id": "1", "name": "piece"});
+    blob["attachment"] = json!({"owner_kind": "expense", "owner_id": "1", "role": "receipt"});
     let created = create(&app, blob).await;
     let id = id_of(&created);
     assert_eq!(created["expires_at"], json!(null));
@@ -753,7 +753,7 @@ async fn an_attached_blob_whose_fetch_died_is_expired_as_abandoned() {
     // Seen within the day from the failure.
     let (_, listing) = call(
         &app.private,
-        req(Method::GET, "/attachments?record_type=Dossier"),
+        req(Method::GET, "/attachments?owner_kind=expense"),
     )
     .await;
     assert_eq!(listing["items"][0]["blob_state"], "created", "{listing}");
@@ -785,7 +785,7 @@ async fn an_attached_blob_whose_fetch_died_is_expired_as_abandoned() {
     assert_eq!(got["failed_at"], json!(null), "terminal: nothing to finish");
     let (_, listing) = call(
         &app.private,
-        req(Method::GET, "/attachments?record_type=Dossier"),
+        req(Method::GET, "/attachments?owner_kind=expense"),
     )
     .await;
     assert_eq!(listing["items"][0]["blob_state"], "expired", "{listing}");

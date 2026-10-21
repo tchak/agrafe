@@ -681,7 +681,7 @@ mod tests {
     #[test]
     fn sheet_names() {
         assert_eq!(sheet_name("export.xlsx"), "export");
-        assert_eq!(sheet_name("dossiers 2026.ods"), "dossiers 2026");
+        assert_eq!(sheet_name("expenses 2026.ods"), "expenses 2026");
         assert_eq!(sheet_name("export"), "export");
         assert_eq!(sheet_name("export.csv.gz"), "export");
         assert_eq!(sheet_name(".xlsx"), ".xlsx");
@@ -702,7 +702,7 @@ mod tests {
 
     #[test]
     fn declared_sheet_names() {
-        assert_eq!(check_sheet_name("Dossiers 2026"), Ok(()));
+        assert_eq!(check_sheet_name("Expenses 2026"), Ok(()));
         assert_eq!(check_sheet_name("été"), Ok(()));
         assert_eq!(check_sheet_name("Historique"), Ok(()));
         assert_eq!(check_sheet_name(&"x".repeat(MAX_SHEET_NAME_LEN)), Ok(()));

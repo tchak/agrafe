@@ -445,7 +445,7 @@ async fn tombstones_are_pruned_after_keep_purged_with_their_attachments() {
     // Expired while attached: an abandoned source. Its attachment stays
     // until the row goes.
     let mut blob = raw_blob();
-    blob["attachment"] = json!({"record_type": "Dossier", "record_id": "1", "name": "export"});
+    blob["attachment"] = json!({"owner_kind": "expense", "owner_id": "1", "role": "export"});
     let abandoned = create(&app, blob).await;
     for id in [id_of(&empty), id_of(&abandoned)] {
         sqlx::query("UPDATE blobs SET state = 'expired' WHERE id = $1")
@@ -461,7 +461,7 @@ async fn tombstones_are_pruned_after_keep_purged_with_their_attachments() {
         json_req(
             Method::POST,
             &format!("/blobs/{}/attachments", id_of(&live)),
-            json!({"record_type": "Dossier", "record_id": "1", "name": "piece"}),
+            json!({"owner_kind": "expense", "owner_id": "1", "role": "receipt"}),
         ),
     )
     .await;
@@ -513,7 +513,7 @@ async fn an_attached_blob_nothing_reached_is_expired_as_abandoned() {
     let db = TestDatabase::new().await;
     let app = setup(db).await;
     let pool = app.state.pool();
-    let attachment = json!({"record_type": "Dossier", "record_id": "1", "name": "piece"});
+    let attachment = json!({"owner_kind": "expense", "owner_id": "1", "role": "receipt"});
 
     let mut blob = raw_blob();
     blob["attachment"] = attachment.clone();
@@ -561,7 +561,7 @@ async fn an_attached_blob_nothing_reached_is_expired_as_abandoned() {
     assert_eq!(get_blob(&app, id_of(&unattached)).await["state"], "created");
     assert_eq!(get_blob(&app, id_of(&uploaded)).await["state"], "ready");
 
-    // The record's side learns of it from the listing.
+    // The owner's side learns of it from the listing.
     let (status, body) = call(
         &app.private,
         req(

@@ -12,14 +12,14 @@ the two stores without passing through the backend.
 curl -s localhost:8080/blobs \
   -H 'content-type: application/json' \
   -d '{
-    "filename": "avis.pdf",
+    "filename": "receipt.pdf",
     "content_type": "application/pdf",
     "input_type": "url",
     "url": "https://bucket.s3.example/abc?X-Amz-Signature=…",
     "checksum_md5": "kDU2JDbbJuRTYpXJ7p6T/Q==",
     "size": 183204,
     "priority": "low",
-    "attachment": {"record_type": "Dossier", "record_id": "42", "name": "avis"}
+    "attachment": {"owner_kind": "expense", "owner_id": "42", "role": "receipt"}
   }'
 ```
 
@@ -124,8 +124,8 @@ For each record of the old store:
 curl -s 'localhost:8080/blobs?failed=true' | jq '.items[] | {id, last_error}'
 
 # After a day: an attached blob still waiting for its bytes is expired by
-# the reaper, attachments kept, so the record's side sees it
-curl -s 'localhost:8080/attachments?record_type=Dossier&name=avis' \
+# the reaper, attachments kept, so the owner's side sees it
+curl -s 'localhost:8080/attachments?owner_kind=expense&role=receipt' \
   | jq '.items[] | select(.blob_state == "expired")'
 ```
 

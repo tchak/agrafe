@@ -163,11 +163,11 @@ async fn create_blob(app: &App, filename: &str) -> Uuid {
     app.state.create_blob(req).await.unwrap().id
 }
 
-async fn attach(app: &App, blob: Uuid, record_id: &str) -> Uuid {
+async fn attach(app: &App, blob: Uuid, owner_id: &str) -> Uuid {
     let req = AttachmentRequest {
-        record_type: "Document".to_string(),
-        record_id: record_id.to_string(),
-        name: "file".to_string(),
+        owner_kind: "document".to_string(),
+        owner_id: owner_id.to_string(),
+        role: "file".to_string(),
     };
     app.state
         .attach_blob(blob, req)
@@ -334,31 +334,29 @@ async fn every_page_renders_with_and_without_filters() {
     assert!(body.contains(">created</span>"), "{body}");
     let body = page(
         &app,
-        &format!(
-            "/dashboard/attachments?record_type=Document&record_id=42&name=file&blob_id={blob}"
-        ),
+        &format!("/dashboard/attachments?owner_kind=document&owner_id=42&role=file&blob_id={blob}"),
         "Attachments",
     )
     .await;
     assert!(body.contains(&format!(r#"href="/dashboard/attachments/{attachment}""#)));
-    assert!(body.contains(r#"name="record_id" value="42""#), "{body}");
+    assert!(body.contains(r#"name="owner_id" value="42""#), "{body}");
     assert!(
-        body.contains(r#"<option value="Document" selected>"#),
+        body.contains(r#"<option value="document" selected>"#),
         "{body}"
     );
     assert!(body.contains(r#"<option value="file" selected>"#), "{body}");
     // A value the table no longer has is still offered, so the link holds.
     let body = page(
         &app,
-        "/dashboard/attachments?record_type=Gone",
+        "/dashboard/attachments?owner_kind=gone",
         "Attachments",
     )
     .await;
-    assert!(body.contains(r#"<option value="Gone" selected>"#), "{body}");
-    assert!(body.contains(r#"<option value="Document">"#), "{body}");
+    assert!(body.contains(r#"<option value="gone" selected>"#), "{body}");
+    assert!(body.contains(r#"<option value="document">"#), "{body}");
     let body = page(
         &app,
-        "/dashboard/attachments?record_type=Other",
+        "/dashboard/attachments?owner_kind=other",
         "Attachments",
     )
     .await;
@@ -385,10 +383,7 @@ async fn every_page_renders_with_and_without_filters() {
             "/dashboard/blobs?content_type=nonsense",
             StatusCode::BAD_REQUEST,
         ),
-        (
-            "/dashboard/attachments?record_id=1",
-            StatusCode::BAD_REQUEST,
-        ),
+        ("/dashboard/attachments?owner_id=1", StatusCode::BAD_REQUEST),
     ] {
         let (got, body) = get(&app, uri).await;
         assert_eq!(got, status, "{uri}:\n{body}");

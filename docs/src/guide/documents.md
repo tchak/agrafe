@@ -7,19 +7,19 @@ the data of one document. The compiler runs in a sandboxed helper,
 
 ## Templates are blobs
 
-There is no template registry. A template is an ordinary blob, attached to a
-record of yours so it does not expire:
+There is no template registry. A template is an ordinary blob, attached to an
+owner of yours so it does not expire:
 
 ```sh
 TEMPLATE=$(curl -s localhost:8080/blobs \
   -H 'content-type: application/json' \
-  -d "{\"filename\": \"facture.typ\", \"content_type\": \"text/plain\",
+  -d "{\"filename\": \"invoice.typ\", \"content_type\": \"text/plain\",
        \"input_type\": \"raw\",
-       \"checksum\": \"$(openssl dgst -sha256 -binary facture.typ | base64)\",
-       \"size\": $(wc -c < facture.typ | tr -d ' '), \"skip_virus_scan\": true,
-       \"attachment\": {\"record_type\": \"Template\", \"record_id\": \"facture\", \"name\": \"source\"}}" \
+       \"checksum\": \"$(openssl dgst -sha256 -binary invoice.typ | base64)\",
+       \"size\": $(wc -c < invoice.typ | tr -d ' '), \"skip_virus_scan\": true,
+       \"attachment\": {\"owner_kind\": \"template\", \"owner_id\": \"invoice\", \"role\": \"source\"}}" \
   | jq -r .id)
-curl -s -X PUT "localhost:8080/blobs/$TEMPLATE" --data-binary @facture.typ > /dev/null
+curl -s -X PUT "localhost:8080/blobs/$TEMPLATE" --data-binary @invoice.typ > /dev/null
 ```
 
 Keep its id. A new version of the template is a new blob, attached in place
@@ -31,13 +31,13 @@ blobs the same way.
 ```sh
 DOC=$(curl -s localhost:8080/blobs \
   -H 'content-type: application/json' \
-  -d '{"filename": "facture-12.pdf", "content_type": "application/pdf",
+  -d '{"filename": "invoice-12.pdf", "content_type": "application/pdf",
        "input_type": "document"}' | jq -r .id)
 
 printf '%s\n' \
   "{\"path\": \"main.typ\", \"blob_id\": \"$TEMPLATE\"}" \
   "{\"path\": \"logo.png\", \"blob_id\": \"$LOGO\"}" \
-  '{"path": "data.json", "json": {"client": "Ada", "lignes": [{"libelle": "Conseil", "montant": "1 200,00"}]}}' \
+  '{"path": "data.json", "json": {"client": "Ada", "items": [{"label": "Consulting", "amount": "1,200.00"}]}}' \
   | curl -s -X PUT "localhost:8080/blobs/$DOC" --data-binary @- | jq .state
 # "uploaded"
 ```
@@ -58,8 +58,8 @@ The manifest can be sent in [parts](spreadsheets.md#large-exports-parts).
 The entry file is `main.typ`, or the path given as `main` at creation:
 
 ```json
-{"filename": "facture-12.pdf", "content_type": "application/pdf",
- "input_type": "document", "main": "templates/facture.typ"}
+{"filename": "invoice-12.pdf", "content_type": "application/pdf",
+ "input_type": "document", "main": "templates/invoice.typ"}
 ```
 
 ## Writing templates
@@ -71,11 +71,11 @@ A template is plain typst, with every path relative to the workspace root:
 #include "lib/header.typ"
 #image("logo.png", width: 4cm)
 
-= Facture pour #d.client
+= Invoice for #d.client
 
 #table(
   columns: 2,
-  ..d.lignes.map(l => (l.libelle, l.montant)).flatten()
+  ..d.items.map(i => (i.label, i.amount)).flatten()
 )
 ```
 

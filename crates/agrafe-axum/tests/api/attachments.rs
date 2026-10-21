@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use crate::support::*;
 
-fn attachment(record_type: &str, record_id: &str, name: &str) -> Value {
-    json!({"record_type": record_type, "record_id": record_id, "name": name})
+fn attachment(owner_kind: &str, owner_id: &str, role: &str) -> Value {
+    json!({"owner_kind": owner_kind, "owner_id": owner_id, "role": role})
 }
 
 async fn attach(app: &TestApp, id: &str, body: Value) -> (StatusCode, Value) {
@@ -58,12 +58,12 @@ async fn the_first_attach_clears_the_expiry_and_the_last_detach_restores_it() {
     );
     assert_eq!(created["attachments"], json!([]));
 
-    let (status, first) = attach(&app, id, attachment("Dossier", "42", "piece")).await;
+    let (status, first) = attach(&app, id, attachment("expense", "42", "receipt")).await;
     assert_eq!(status, StatusCode::CREATED, "{first}");
     assert_eq!(first["blob_id"], id);
-    assert_eq!(first["record_type"], "Dossier");
-    assert_eq!(first["record_id"], "42");
-    assert_eq!(first["name"], "piece");
+    assert_eq!(first["owner_kind"], "expense");
+    assert_eq!(first["owner_id"], "42");
+    assert_eq!(first["role"], "receipt");
     assert!(first["created_at"].is_string());
     let blob = get_blob(&app, id).await;
     assert!(blob["expires_at"].is_null(), "{blob}");
@@ -71,7 +71,7 @@ async fn the_first_attach_clears_the_expiry_and_the_last_detach_restores_it() {
     assert_eq!(blob["attachments"][0]["id"], first["id"]);
 
     // Idempotent: the same triple hands back the same attachment.
-    let (status, again) = attach(&app, id, attachment("Dossier", "42", "piece")).await;
+    let (status, again) = attach(&app, id, attachment("expense", "42", "receipt")).await;
     assert_eq!(status, StatusCode::OK, "{again}");
     assert_eq!(again["id"], first["id"]);
     assert_eq!(
@@ -82,8 +82,8 @@ async fn the_first_attach_clears_the_expiry_and_the_last_detach_restores_it() {
         1
     );
 
-    // Another record, another attachment.
-    let (status, second) = attach(&app, id, attachment("User", "7", "avatar")).await;
+    // Another owner, another attachment.
+    let (status, second) = attach(&app, id, attachment("user", "7", "avatar")).await;
     assert_eq!(status, StatusCode::CREATED, "{second}");
     assert_ne!(second["id"], first["id"]);
     let blob = get_blob(&app, id).await;
@@ -99,7 +99,7 @@ async fn the_first_attach_clears_the_expiry_and_the_last_detach_restores_it() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{got}");
-    assert_eq!(got["record_id"], "42");
+    assert_eq!(got["owner_id"], "42");
 
     // Detaching one of two leaves the blob attached.
     assert_eq!(
@@ -173,16 +173,16 @@ async fn a_blob_created_attached_has_no_expiry() {
     let db = TestDatabase::new().await;
     let app = setup(db).await;
     let mut blob = raw_blob();
-    blob["attachment"] = attachment("Dossier", "42", "piece");
+    blob["attachment"] = attachment("expense", "42", "receipt");
     let created = create(&app, blob).await;
     assert!(created["expires_at"].is_null(), "{created}");
     assert_eq!(created["attachments"].as_array().unwrap().len(), 1);
-    assert_eq!(created["attachments"][0]["record_id"], "42");
+    assert_eq!(created["attachments"][0]["owner_id"], "42");
     assert_eq!(created["attachments"][0]["blob_id"], created["id"]);
 
     // An expiry makes no sense on a blob created attached.
     let mut blob = raw_blob();
-    blob["attachment"] = attachment("Dossier", "42", "piece");
+    blob["attachment"] = attachment("expense", "42", "receipt");
     blob["expires_in"] = json!("1h");
     let (status, body) = call(&app.private, json_req(Method::POST, "/blobs", blob)).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
@@ -196,16 +196,15 @@ async fn a_blob_created_attached_has_no_expiry() {
 
     // The attachment is validated with the rest, and nothing is created.
     let mut blob = raw_blob();
-    blob["attachment"] = attachment("Dossier", "", "piece");
+    blob["attachment"] = attachment("expense", "", "receipt");
     let (status, body) = call(&app.private, json_req(Method::POST, "/blobs", blob)).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert_eq!(
         body["error"]["message"],
-        "attachment: record_id must not be empty"
+        "attachment: owner_id must not be empty"
     );
     let mut blob = raw_blob();
-    blob["attachment"] =
-        json!({"record_type": "Dossier", "record_id": "1", "name": "x", "extra": 1});
+    blob["attachment"] = json!({"owner_kind": "expense", "owner_id": "1", "role": "x", "extra": 1});
     let (status, _) = call(&app.private, json_req(Method::POST, "/blobs", blob)).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     let (_, all) = call(&app.private, req(Method::GET, "/blobs")).await;
@@ -219,14 +218,14 @@ async fn attachment_fields_are_validated() {
     let created = create(&app, raw_blob()).await;
     let id = id_of(&created);
     for (body, message) in [
-        (attachment("", "1", "x"), "record_type must not be empty"),
+        (attachment("", "1", "x"), "owner_kind must not be empty"),
         (
             attachment("T", "1\n", "x"),
-            "record_id must not contain control characters",
+            "owner_id must not contain control characters",
         ),
         (
             attachment("T", "1", &"n".repeat(256)),
-            "name is too long (255 bytes at most)",
+            "role is too long (255 bytes at most)",
         ),
     ] {
         let (status, got) = attach(&app, id, body).await;
@@ -234,12 +233,12 @@ async fn attachment_fields_are_validated() {
         assert_eq!(got["error"]["code"], "unprocessable");
         assert_eq!(got["error"]["message"], message);
     }
-    let (status, _) = attach(&app, id, json!({"record_type": "T", "record_id": "1"})).await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "name is required");
+    let (status, _) = attach(&app, id, json!({"owner_kind": "T", "owner_id": "1"})).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "role is required");
     let (status, _) = attach(
         &app,
         id,
-        json!({"record_type": "T", "record_id": "1", "name": "x", "blob_id": id}),
+        json!({"owner_kind": "T", "owner_id": "1", "role": "x", "blob_id": id}),
     )
     .await;
     assert_eq!(
@@ -256,7 +255,7 @@ async fn delete_refuses_an_attached_blob() {
     let app = setup(db).await;
     let blob = ready_blob(&app, &png_bytes(100)).await;
     let id = id_of(&blob);
-    let (status, attached) = attach(&app, id, attachment("Dossier", "1", "piece")).await;
+    let (status, attached) = attach(&app, id, attachment("expense", "1", "receipt")).await;
     assert_eq!(status, StatusCode::CREATED, "{attached}");
 
     let (status, body) = call(&app.private, req(Method::DELETE, &format!("/blobs/{id}"))).await;
@@ -331,10 +330,10 @@ async fn detaching_an_infected_blob_starts_its_purge_clock() {
     let app = setup(db).await;
     let created = create(&app, raw_blob()).await;
     let id = id_of(&created);
-    let (status, attached) = attach(&app, id, attachment("Dossier", "1", "piece")).await;
+    let (status, attached) = attach(&app, id, attachment("expense", "1", "receipt")).await;
     assert_eq!(status, StatusCode::CREATED, "{attached}");
     // Infected after the fact, as a deferred scan would leave it; the
-    // attachment stays so the record's side can find out.
+    // attachment stays so the owner's side can find out.
     sqlx::query("UPDATE blobs SET state = 'infected', storage_key = 'k/1' WHERE id = $1")
         .bind(parse_id(id))
         .execute(app.state.pool())
@@ -365,14 +364,13 @@ async fn listing_filters_and_pages() {
     let c = create(&app, raw_blob()).await;
     let d = create(&app, raw_blob()).await;
     let mut ids = Vec::new();
-    for (blob, record_type, record_id, name) in [
-        (&a, "Dossier", "1", "piece"),
-        (&a, "Dossier", "2", "piece"),
-        (&b, "Dossier", "1", "piece"),
-        (&c, "User", "1", "avatar"),
+    for (blob, owner_kind, owner_id, role) in [
+        (&a, "expense", "1", "receipt"),
+        (&a, "expense", "2", "receipt"),
+        (&b, "expense", "1", "receipt"),
+        (&c, "user", "1", "avatar"),
     ] {
-        let (status, got) =
-            attach(&app, id_of(blob), attachment(record_type, record_id, name)).await;
+        let (status, got) = attach(&app, id_of(blob), attachment(owner_kind, owner_id, role)).await;
         assert_eq!(status, StatusCode::CREATED, "{got}");
         ids.push(got["id"].as_str().unwrap().to_string());
     }
@@ -405,30 +403,30 @@ async fn listing_filters_and_pages() {
     );
     assert_eq!(all["items"][0]["blob_state"], "expired", "{all}");
     assert_eq!(all["items"][1]["blob_state"], "created");
-    assert_eq!(all["items"][0]["record_type"], "User");
+    assert_eq!(all["items"][0]["owner_kind"], "user");
     assert!(all["next_cursor"].is_null());
 
     assert_eq!(
-        items(&list(&app, "?record_type=Dossier").await),
+        items(&list(&app, "?owner_kind=expense").await),
         vec![ids[2].clone(), ids[1].clone(), ids[0].clone()]
     );
     assert_eq!(
-        items(&list(&app, "?record_type=Dossier&record_id=1").await),
+        items(&list(&app, "?owner_kind=expense&owner_id=1").await),
         vec![ids[2].clone(), ids[0].clone()]
     );
     assert_eq!(
-        items(&list(&app, "?record_type=Dossier&record_id=1&name=piece").await).len(),
+        items(&list(&app, "?owner_kind=expense&owner_id=1&role=receipt").await).len(),
         2
     );
     assert_eq!(
-        items(&list(&app, "?name=avatar").await),
+        items(&list(&app, "?role=avatar").await),
         vec![ids[3].clone()]
     );
     assert_eq!(
         items(&list(&app, &format!("?blob_id={}", id_of(&a))).await),
         vec![ids[1].clone(), ids[0].clone()]
     );
-    assert!(items(&list(&app, "?record_type=Nothing").await).is_empty());
+    assert!(items(&list(&app, "?owner_kind=Nothing").await).is_empty());
 
     let page1 = list(&app, "?limit=3").await;
     assert_eq!(items(&page1).len(), 3);
@@ -437,7 +435,7 @@ async fn listing_filters_and_pages() {
     assert_eq!(items(&page2), vec![ids[0].clone()]);
     assert!(page2["next_cursor"].is_null());
 
-    for query in ["record_id=1", "limit=0", "limit=201", "blob_id=nope"] {
+    for query in ["owner_id=1", "limit=0", "limit=201", "blob_id=nope"] {
         let (status, body) = call(
             &app.private,
             req(Method::GET, &format!("/attachments?{query}")),
@@ -477,7 +475,7 @@ async fn the_public_port_never_sees_attachments() {
     let db = TestDatabase::new().await;
     let app = setup(db).await;
     let mut blob = raw_blob();
-    blob["attachment"] = attachment("Dossier", "42", "piece");
+    blob["attachment"] = attachment("expense", "42", "receipt");
     let created = create(&app, blob).await;
     let (status, body) = call(
         &app.public,
@@ -517,9 +515,9 @@ async fn attach_waits_for_the_expiry_lock_and_sees_its_outcome() {
             .attach_blob(
                 id,
                 agrafe::attachment::AttachmentRequest {
-                    record_type: "Dossier".into(),
-                    record_id: "1".into(),
-                    name: "piece".into(),
+                    owner_kind: "expense".into(),
+                    owner_id: "1".into(),
+                    role: "receipt".into(),
                 },
             )
             .await
@@ -557,7 +555,7 @@ async fn a_detach_that_lost_the_race_finds_nothing() {
     let created = create(&app, raw_blob()).await;
     let id = parse_id(id_of(&created));
     let (status, attached) =
-        attach(&app, id_of(&created), attachment("Dossier", "1", "piece")).await;
+        attach(&app, id_of(&created), attachment("expense", "1", "receipt")).await;
     assert_eq!(status, StatusCode::CREATED, "{attached}");
     let attachment_id = parse_id(attached["id"].as_str().unwrap());
 
@@ -591,8 +589,8 @@ async fn a_detach_that_lost_the_race_finds_nothing() {
     );
 }
 
-/// The facets are the distinct record types and names, sorted, each name
-/// once however many types use it, from a walk capped at `MAX_FACETS`
+/// The facets are the distinct owner kinds and roles, sorted, each role
+/// once however many kinds use it, from a walk capped at `MAX_FACETS`
 /// pairs.
 #[tokio::test]
 async fn facets_walk_the_distinct_pairs() {
@@ -601,30 +599,29 @@ async fn facets_walk_the_distinct_pairs() {
 
     let app = setup(db).await;
     let facets = app.state.attachment_facets().await.unwrap();
-    assert!(facets.record_types.is_empty() && facets.names.is_empty());
+    assert!(facets.owner_kinds.is_empty() && facets.roles.is_empty());
 
     let a = create(&app, raw_blob()).await;
     let b = create(&app, raw_blob()).await;
-    for (blob, record_type, record_id, name) in [
-        (&a, "User", "1", "avatar"),
-        (&a, "Dossier", "1", "piece"),
-        (&b, "Dossier", "2", "piece"),
-        (&b, "Dossier", "2", "avatar"),
-        (&b, "Message", "9", "attachment"),
+    for (blob, owner_kind, owner_id, role) in [
+        (&a, "user", "1", "avatar"),
+        (&a, "expense", "1", "receipt"),
+        (&b, "expense", "2", "receipt"),
+        (&b, "expense", "2", "avatar"),
+        (&b, "message", "9", "attachment"),
     ] {
-        let (status, got) =
-            attach(&app, id_of(blob), attachment(record_type, record_id, name)).await;
+        let (status, got) = attach(&app, id_of(blob), attachment(owner_kind, owner_id, role)).await;
         assert_eq!(status, StatusCode::CREATED, "{got}");
     }
     let facets = app.state.attachment_facets().await.unwrap();
-    assert_eq!(facets.record_types, ["Dossier", "Message", "User"]);
-    assert_eq!(facets.names, ["attachment", "avatar", "piece"]);
+    assert_eq!(facets.owner_kinds, ["expense", "message", "user"]);
+    assert_eq!(facets.roles, ["attachment", "avatar", "receipt"]);
 
-    // One type with more names than the cap: the walk stops at the cap,
-    // in order, and the types after it are not seen.
+    // One kind with more roles than the cap: the walk stops at the cap,
+    // in order, and the kinds after it are not seen.
     sqlx::query(
-        "INSERT INTO attachments (id, blob_id, record_type, record_id, name) \
-         SELECT gen_random_uuid(), $1, 'Bulk', '1', 'n' || lpad(i::text, 4, '0') \
+        "INSERT INTO attachments (id, blob_id, owner_kind, owner_id, role) \
+         SELECT gen_random_uuid(), $1, 'bulk', '1', 'n' || lpad(i::text, 4, '0') \
          FROM generate_series(1, $2) AS i",
     )
     .bind(parse_id(id_of(&a)))
@@ -633,7 +630,7 @@ async fn facets_walk_the_distinct_pairs() {
     .await
     .unwrap();
     let facets = app.state.attachment_facets().await.unwrap();
-    assert_eq!(facets.record_types, ["Bulk"]);
-    assert_eq!(facets.names.len(), MAX_FACETS);
-    assert_eq!(facets.names[0], "n0001");
+    assert_eq!(facets.owner_kinds, ["bulk"]);
+    assert_eq!(facets.roles.len(), MAX_FACETS);
+    assert_eq!(facets.roles[0], "n0001");
 }

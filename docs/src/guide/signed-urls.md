@@ -195,7 +195,7 @@ signer = AgrafeSigner.new(
 
 signer.read_url(blob.agrafe_id, blob.filename, kind: "thumbnail")
 signer.read_url(blob.agrafe_id, blob.filename,
-                query: { disposition: "attachment", filename: "facture-12.pdf" })
+                query: { disposition: "attachment", filename: "invoice-12.pdf" })
 ```
 
 `ERB::Util.url_encode` leaves exactly the unreserved characters, and

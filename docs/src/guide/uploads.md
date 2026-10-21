@@ -33,7 +33,7 @@ The answer is `201 Created` with the blob's full metadata, including its
 | `priority` | no | `high`, `normal` (default) or `low` |
 | `representations` | no | Which of `thumbnail` and `preview` to render; both by default, `[]` for none |
 | `expires_at` or `expires_in` | no | A timestamp or a duration such as `"7d"`; `blobs.default_expires_in`, one day, by default |
-| `attachment` | no | `{"record_type", "record_id", "name"}`: create the blob attached, with no expiry |
+| `attachment` | no | `{"owner_kind", "owner_id", "role"}`: create the blob attached, with no expiry |
 
 Unknown fields are refused. The full list, including the fields of other
 input types, is in the [private API reference](../reference/private-api.md#post-blobs).

@@ -10,12 +10,12 @@ local disk.
 ```sh
 ZIP=$(curl -s localhost:8080/blobs \
   -H 'content-type: application/json' \
-  -d '{"filename": "dossier-42.zip", "content_type": "application/zip",
+  -d '{"filename": "expense-42.zip", "content_type": "application/zip",
        "input_type": "archive", "priority": "high"}' | jq -r .id)
 
 printf '%s\n' \
-  "{\"path\": \"pieces/avis.pdf\", \"blob_id\": \"$AVIS\"}" \
-  "{\"path\": \"pieces/photo.jpg\", \"blob_id\": \"$PHOTO\"}" \
+  "{\"path\": \"receipts/receipt.pdf\", \"blob_id\": \"$RECEIPT\"}" \
+  "{\"path\": \"receipts/photo.jpg\", \"blob_id\": \"$PHOTO\"}" \
   | curl -s -X PUT "localhost:8080/blobs/$ZIP" --data-binary @- | jq .state
 # "uploaded"
 ```

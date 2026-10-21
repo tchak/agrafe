@@ -78,15 +78,15 @@ reasoning behind every decision.
 
 ### Attachments
 
-- **Records, not reference counts**: attach a blob to a record with the
-  Active Storage triple (`record_type`, `record_id`, `name`), as many times
-  as there are records using it, and list by record or by blob.
+- **Owners, not reference counts**: attach a blob to an owner in your
+  backend (`owner_kind`, `owner_id`, `role`), as many times as there are
+  owners using it, and list by owner or by blob.
 - **Lifetime follows use**: the first attachment clears the blob's expiry,
   the last detach sets it again. A blob nobody uses expires on its own, and
   "permanent" is spelled "attached".
 - **No purge footgun**: deleting an attached blob is refused, since a
-  backend acting for one record cannot know the others are done with it.
-  Detach is the only operation on behalf of one record.
+  backend acting for one owner cannot know the others are done with it.
+  Detach is the only operation on behalf of one owner.
 - **Tombstones**: a deleted or expired blob keeps answering with its state
   for ninety days (by default) after its objects are purged, so the backend
   can tell a blob it deleted from an id that never existed.
@@ -305,8 +305,8 @@ ID=$(curl -s localhost:8080/blobs \
   -d "{\"filename\": \"$FILE\", \"content_type\": \"application/pdf\",
        \"input_type\": \"url\", \"url\": \"$PRESIGNED_URL\",
        \"checksum_md5\": \"$MD5\", \"size\": $SIZE, \"priority\": \"low\",
-       \"attachment\": {\"record_type\": \"Dossier\", \"record_id\": \"42\",
-                      \"name\": \"piece_justificative\"}}" | jq -r .id)
+       \"attachment\": {\"owner_kind\": \"expense\", \"owner_id\": \"42\",
+                      \"role\": \"receipt\"}}" | jq -r .id)
 
 curl -s "localhost:8080/blobs/$ID" | jq .state
 ```
@@ -349,7 +349,7 @@ await fetch(urls.upload, { method: "PUT", body: file });
 The browser can poll `urls.metadata` for `state`, `scan_state` and the
 representation states.
 
-### Attach it to a record
+### Attach it to its owner
 
 A blob expires a day after its creation unless something uses it. Attach it
 when the form is submitted, and it stays as long as the attachment does.
@@ -357,20 +357,20 @@ when the form is submitted, and it stays as long as the attachment does.
 ```sh
 curl -s "localhost:8080/blobs/$ID/attachments" \
   -H 'content-type: application/json' \
-  -d '{"record_type": "Dossier", "record_id": "42", "name": "piece_justificative"}'
+  -d '{"owner_kind": "expense", "owner_id": "42", "role": "receipt"}'
 ```
 
 Attaching the same triple twice returns the existing attachment. A blob can
-be attached to several records, and a record can attach several blobs under
-one name. To release it, detach; the last detach gives the blob back its
+be attached to several owners, and an owner can attach several blobs in
+one role. To release it, detach; the last detach gives the blob back its
 default expiry, and deleting an attached blob is refused.
 
 ```sh
-curl -s 'localhost:8080/attachments?record_type=Dossier&record_id=42' | jq '.items[]'
+curl -s 'localhost:8080/attachments?owner_kind=expense&owner_id=42' | jq '.items[]'
 curl -s -X DELETE "localhost:8080/attachments/$ATTACHMENT_ID"
 ```
 
-A blob the backend knows the record of at creation can be created attached,
+A blob the backend knows the owner of at creation can be created attached,
 with no expiry at all:
 
 ```sh
@@ -378,7 +378,7 @@ curl -s localhost:8080/blobs \
   -H 'content-type: application/json' \
   -d '{"filename": "export.zip", "content_type": "application/zip",
        "input_type": "archive",
-       "attachment": {"record_type": "Procedure", "record_id": "7", "name": "export"}}'
+       "attachment": {"owner_kind": "report", "owner_id": "7", "role": "export"}}'
 ```
 
 ### Mint download URLs
@@ -447,7 +447,7 @@ Reference existing `ready` blobs by id and path.
 ```sh
 ZIP=$(curl -s localhost:8080/blobs \
   -H 'content-type: application/json' \
-  -d '{"filename": "dossier.zip", "content_type": "application/zip",
+  -d '{"filename": "expense-42.zip", "content_type": "application/zip",
        "input_type": "archive", "priority": "high"}' | jq -r .id)
 
 printf '{"path": "pieces/%s", "blob_id": "%s"}\n' report.pdf "$ID" \
@@ -456,7 +456,7 @@ printf '{"path": "pieces/%s", "blob_id": "%s"}\n' report.pdf "$ID" \
 
 ### Compose a PDF document
 
-Upload the template once as an ordinary blob, attached to a record of
+Upload the template once as an ordinary blob, attached to an owner of
 yours so it stays, and keep its id. Each document is then a workspace:
 the template and its assets by blob id, the document's own data inline.
 The PDF is compiled by [typst](https://typst.app) in a sandboxed helper.
@@ -464,22 +464,22 @@ The PDF is compiled by [typst](https://typst.app) in a sandboxed helper.
 ```sh
 TEMPLATE=$(curl -s localhost:8080/blobs \
   -H 'content-type: application/json' \
-  -d "{\"filename\": \"facture.typ\", \"content_type\": \"text/plain\",
-       \"input_type\": \"raw\", \"checksum\": \"$(openssl dgst -sha256 -binary facture.typ | base64)\",
-       \"size\": $(wc -c < facture.typ | tr -d ' '), \"skip_virus_scan\": true,
-       \"attachment\": {\"record_type\": \"Template\", \"record_id\": \"facture\", \"name\": \"source\"}}" \
+  -d "{\"filename\": \"invoice.typ\", \"content_type\": \"text/plain\",
+       \"input_type\": \"raw\", \"checksum\": \"$(openssl dgst -sha256 -binary invoice.typ | base64)\",
+       \"size\": $(wc -c < invoice.typ | tr -d ' '), \"skip_virus_scan\": true,
+       \"attachment\": {\"owner_kind\": \"template\", \"owner_id\": \"invoice\", \"role\": \"source\"}}" \
   | jq -r .id)
-curl -s -X PUT "localhost:8080/blobs/$TEMPLATE" --data-binary @facture.typ > /dev/null
+curl -s -X PUT "localhost:8080/blobs/$TEMPLATE" --data-binary @invoice.typ > /dev/null
 
 DOC=$(curl -s localhost:8080/blobs \
   -H 'content-type: application/json' \
-  -d '{"filename": "facture-12.pdf", "content_type": "application/pdf",
+  -d '{"filename": "invoice-12.pdf", "content_type": "application/pdf",
        "input_type": "document"}' | jq -r .id)
 
 printf '%s\n' \
   "{\"path\": \"main.typ\", \"blob_id\": \"$TEMPLATE\"}" \
   "{\"path\": \"logo.png\", \"blob_id\": \"$LOGO\"}" \
-  '{"path": "data.json", "json": {"client": "Ada", "lignes": [{"libelle": "Conseil", "montant": "1 200,00"}]}}' \
+  '{"path": "data.json", "json": {"client": "Ada", "items": [{"label": "Consulting", "amount": "1,200.00"}]}}' \
   | curl -s -X PUT "localhost:8080/blobs/$DOC" --data-binary @- | jq .state
 ```
 
@@ -517,7 +517,7 @@ cross, so apply `blob.state`, not the event name:
   "event": "ready",
   "occurred_at": "2026-10-19T09:12:03.418Z",
   "attempt": 1,
-  "blob": {"id": "019a…", "state": "ready", "attachments": [{"record_type": "Dossier", "record_id": "42", "name": "piece_justificative", …}], …}
+  "blob": {"id": "019a…", "state": "ready", "attachments": [{"owner_kind": "expense", "owner_id": "42", "role": "receipt", …}], …}
 }
 ```
 
@@ -570,7 +570,7 @@ curl -s -X POST "localhost:8080/blobs/$ID/retry" | jq .state
 ```
 
 A blob created attached and never uploaded is expired by the reaper after
-`upload.abandoned_after` (a day), attachments kept, so the record's side
+`upload.abandoned_after` (a day), attachments kept, so the owner's side
 sees `expired` as its `blob_state`; an unattached one keeps to its own
 `expires_at`.
 
@@ -716,7 +716,7 @@ a mount, pid and network namespace of its own, where the configuration
 file does not exist rather than is denied. It needs unprivileged user
 namespaces, which Ubuntu 26.04 grants to the packaged `bwrap` through an
 AppArmor profile and a default Docker container refuses; see the
-[deployment guide](https://betagouv.github.io/files/guide/deployment.html#bubblewrap).
+[deployment guide](https://tchak.github.io/agrafe/guide/deployment.html#bubblewrap).
 The render workers are the one place that talks to the network besides the
 fetch and webhook jobs: with `media.map.layers` configured they fetch
 map backgrounds from those hosts over HTTPS, and with the default empty

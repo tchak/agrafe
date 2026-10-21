@@ -5,7 +5,7 @@
      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
      xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd">
   <metadata>
-    <name>Une sortie à Lyon</name>
+    <name>A walk in Lyon</name>
     <time>2026-05-10T08:00:00Z</time>
     <bounds minlat="45.75" minlon="4.80" maxlat="45.78" maxlon="4.86"/>
   </metadata>
@@ -16,13 +16,13 @@
     <sym>Flag, Blue</sym>
   </wpt>
   <rte>
-    <name>Itinéraire</name>
+    <name>Route</name>
     <rtept lat="45.7578" lon="4.8320"><name>Bellecour</name></rtept>
     <rtept lat="45.7640" lon="4.8357"><name>Terreaux</name></rtept>
     <rtept lat="45.7700" lon="4.8290"><name>Croix-Rousse</name></rtept>
   </rte>
   <trk>
-    <name>Trace</name>
+    <name>Track</name>
     <extensions>
       <gpxx:TrackExtension>
         <gpxx:DisplayColor>Red</gpxx:DisplayColor>

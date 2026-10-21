@@ -1,7 +1,7 @@
-//! Attachments: a record of the backend uses a blob. See [DESIGN.md,
+//! Attachments: an owner in the backend uses a blob. See [DESIGN.md,
 //! "Attachments"].
 //!
-//! An attachment is three strings, `record_type`, `record_id` and `name`,
+//! An attachment is three strings, `owner_kind`, `owner_id` and `role`,
 //! against a blob. A blob with at least one attachment carries no expiry:
 //! the first attach clears `expires_at`, the last detach sets it to the
 //! default again. Attach and detach lock the blob row for their
@@ -46,17 +46,17 @@ pub enum ListError {
     /// `limit` lies outside `1..=MAX_LIMIT`; carries `MAX_LIMIT`.
     #[error("limit must be between 1 and {0}")]
     Limit(usize),
-    /// `record_id` was given without `record_type`, which it means nothing
+    /// `owner_id` was given without `owner_kind`, which it means nothing
     /// without.
-    #[error("record_id is only accepted together with record_type")]
-    RecordIdAlone,
+    #[error("owner_id is only accepted together with owner_kind")]
+    OwnerIdAlone,
     /// The query failed.
     #[error("database: {0}")]
     Db(#[from] sqlx::Error),
 }
 
 impl Agrafe {
-    /// Attach `blob_id` to a record. Idempotent: the triple already
+    /// Attach `blob_id` to an owner. Idempotent: the triple already
     /// attached hands back the existing attachment. Refused for a blob in a
     /// terminal state or past its expiry.
     pub async fn attach_blob(
@@ -116,54 +116,54 @@ impl Agrafe {
         for_blobs(self.pool(), ids).await
     }
 
-    /// The distinct `record_type` and `name` values in the table, sorted,
+    /// The distinct `owner_kind` and `role` values in the table, sorted,
     /// so a filter can offer them as a list. A backend has a handful of
-    /// record types and a handful of names per type, but the table can
+    /// owner kinds and a handful of roles per kind, but the table can
     /// hold a billion rows, and `SELECT DISTINCT` reads all of them: there
-    /// is no loose index scan in Postgres. So the distinct `(record_type,
-    /// name)` pairs are walked by hand along `attachments_type_name_idx`,
+    /// is no loose index scan in Postgres. So the distinct `(owner_kind,
+    /// role)` pairs are walked by hand along `attachments_kind_role_idx`,
     /// one index probe per pair, in a recursive CTE, and both facets come
     /// from the pairs; at most `MAX_FACETS` pairs are walked.
     pub async fn attachment_facets(&self) -> sqlx::Result<Facets> {
         let pairs: Vec<(String, String)> = sqlx::query_as(
             "WITH RECURSIVE pairs AS ( \
-                 (SELECT record_type, name FROM attachments \
-                  ORDER BY record_type, name LIMIT 1) \
+                 (SELECT owner_kind, role FROM attachments \
+                  ORDER BY owner_kind, role LIMIT 1) \
                  UNION ALL \
-                 SELECT next.record_type, next.name \
+                 SELECT next.owner_kind, next.role \
                  FROM pairs, LATERAL ( \
-                     SELECT record_type, name FROM attachments \
-                     WHERE (record_type, name) > (pairs.record_type, pairs.name) \
-                     ORDER BY record_type, name LIMIT 1 \
+                     SELECT owner_kind, role FROM attachments \
+                     WHERE (owner_kind, role) > (pairs.owner_kind, pairs.role) \
+                     ORDER BY owner_kind, role LIMIT 1 \
                  ) next \
              ) \
-             SELECT record_type, name FROM pairs LIMIT $1",
+             SELECT owner_kind, role FROM pairs LIMIT $1",
         )
         .bind(MAX_FACETS as i64)
         .fetch_all(self.pool())
         .await?;
-        let mut record_types = Vec::new();
-        let mut names = BTreeSet::new();
-        for (record_type, name) in pairs {
-            if record_types.last() != Some(&record_type) {
-                record_types.push(record_type);
+        let mut owner_kinds = Vec::new();
+        let mut roles = BTreeSet::new();
+        for (owner_kind, role) in pairs {
+            if owner_kinds.last() != Some(&owner_kind) {
+                owner_kinds.push(owner_kind);
             }
-            names.insert(name);
+            roles.insert(role);
         }
         Ok(Facets {
-            record_types,
-            names: names.into_iter().collect(),
+            owner_kinds,
+            roles: roles.into_iter().collect(),
         })
     }
 
     /// List attachments, newest first. `limit` must lie in
-    /// `1..=MAX_LIMIT`, and `record_id` needs `record_type`.
+    /// `1..=MAX_LIMIT`, and `owner_id` needs `owner_kind`.
     pub async fn list_attachments(&self, params: &ListParams) -> Result<Page, ListError> {
         if !(1..=MAX_LIMIT).contains(&params.limit) {
             return Err(ListError::Limit(MAX_LIMIT));
         }
-        if params.record_id.is_some() && params.record_type.is_none() {
-            return Err(ListError::RecordIdAlone);
+        if params.owner_id.is_some() && params.owner_kind.is_none() {
+            return Err(ListError::OwnerIdAlone);
         }
         Ok(list(self.pool(), params).await?)
     }
@@ -174,35 +174,35 @@ impl Agrafe {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AttachmentRequest {
-    /// The kind of record, as the backend names it.
-    pub record_type: String,
-    /// The record's identifier, as the backend writes it.
-    pub record_id: String,
-    /// The role the blob plays for the record (`avatar`).
-    pub name: String,
+    /// The kind of owner, as the backend names it.
+    pub owner_kind: String,
+    /// The owner's identifier, as the backend writes it.
+    pub owner_id: String,
+    /// The role the blob plays for the owner (`avatar`).
+    pub role: String,
 }
 
 /// A validated request, ready to insert.
 #[derive(Debug, Clone)]
 pub(crate) struct NewAttachment {
-    pub record_type: String,
-    pub record_id: String,
-    pub name: String,
+    pub owner_kind: String,
+    pub owner_id: String,
+    pub role: String,
 }
 
-/// A row of `attachments`: a record of the backend uses a blob.
+/// A row of `attachments`: an owner in the backend uses a blob.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Attachment {
     /// A UUIDv7, so the listing's order and cursor.
     pub id: Uuid,
     /// The blob in use.
     pub blob_id: Uuid,
-    /// The kind of record.
-    pub record_type: String,
-    /// The record's identifier, as the backend writes it.
-    pub record_id: String,
-    /// The role the blob plays for the record.
-    pub name: String,
+    /// The kind of owner.
+    pub owner_kind: String,
+    /// The owner's identifier, as the backend writes it.
+    pub owner_id: String,
+    /// The role the blob plays for the owner.
+    pub role: String,
     /// When the attachment was made.
     #[sqlx(try_from = "jiff_sqlx::Timestamp")]
     pub created_at: Timestamp,
@@ -228,7 +228,7 @@ impl Attached {
 }
 
 /// An attachment as the listing shows it: with the state of its blob, and
-/// whether the job that was to finish the blob died, so that a record's
+/// whether the job that was to finish the blob died, so that an owner's
 /// side can tell a live file from an expired, infected or stuck one
 /// without a second request.
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -249,12 +249,12 @@ pub struct Listed {
 /// match.
 #[derive(Debug, Default, Clone)]
 pub struct ListParams {
-    /// Only attachments of this kind of record.
-    pub record_type: Option<String>,
-    /// Only together with `record_type`.
-    pub record_id: Option<String>,
-    /// Only attachments under this name.
-    pub name: Option<String>,
+    /// Only attachments of this kind of owner.
+    pub owner_kind: Option<String>,
+    /// Only together with `owner_kind`.
+    pub owner_id: Option<String>,
+    /// Only attachments in this role.
+    pub role: Option<String>,
     /// Only the attachments of this blob.
     pub blob_id: Option<Uuid>,
     /// The `next_cursor` of the previous page: only attachments older than
@@ -269,17 +269,17 @@ pub const DEFAULT_LIMIT: usize = 50;
 /// The largest page a listing hands back.
 pub const MAX_LIMIT: usize = 200;
 
-/// The values `record_type` and `name` take across the table; see
+/// The values `owner_kind` and `role` take across the table; see
 /// `Agrafe::attachment_facets`.
 #[derive(Debug, Clone, Default)]
 pub struct Facets {
-    /// The distinct `record_type` values, sorted.
-    pub record_types: Vec<String>,
-    /// The distinct `name` values across every record type, sorted.
-    pub names: Vec<String>,
+    /// The distinct `owner_kind` values, sorted.
+    pub owner_kinds: Vec<String>,
+    /// The distinct `role` values across every owner kind, sorted.
+    pub roles: Vec<String>,
 }
 
-/// Distinct `(record_type, name)` pairs walked at most for the facets.
+/// Distinct `(owner_kind, role)` pairs walked at most for the facets.
 pub const MAX_FACETS: usize = 500;
 
 /// A page of an attachment listing.
@@ -297,13 +297,13 @@ pub const MAX_FIELD_LEN: usize = 255;
 
 /// The error is the message; the callers wrap it in their own error.
 pub(crate) fn validate(req: AttachmentRequest) -> Result<NewAttachment, String> {
-    validate_field("record_type", &req.record_type)?;
-    validate_field("record_id", &req.record_id)?;
-    validate_field("name", &req.name)?;
+    validate_field("owner_kind", &req.owner_kind)?;
+    validate_field("owner_id", &req.owner_id)?;
+    validate_field("role", &req.role)?;
     Ok(NewAttachment {
-        record_type: req.record_type,
-        record_id: req.record_id,
-        name: req.name,
+        owner_kind: req.owner_kind,
+        owner_id: req.owner_id,
+        role: req.role,
     })
 }
 
@@ -339,16 +339,16 @@ async fn insert(
     new: &NewAttachment,
 ) -> sqlx::Result<Attached> {
     let inserted = sqlx::query_as::<_, Attachment>(
-        "INSERT INTO attachments (id, blob_id, record_type, record_id, name) \
+        "INSERT INTO attachments (id, blob_id, owner_kind, owner_id, role) \
          VALUES ($1, $2, $3, $4, $5) \
-         ON CONFLICT (record_type, record_id, name, blob_id) DO NOTHING \
+         ON CONFLICT (owner_kind, owner_id, role, blob_id) DO NOTHING \
          RETURNING *",
     )
     .bind(Uuid::now_v7())
     .bind(blob_id)
-    .bind(&new.record_type)
-    .bind(&new.record_id)
-    .bind(&new.name)
+    .bind(&new.owner_kind)
+    .bind(&new.owner_id)
+    .bind(&new.role)
     .fetch_optional(&mut *conn)
     .await?;
     if let Some(attachment) = inserted {
@@ -356,11 +356,11 @@ async fn insert(
     }
     let existing = sqlx::query_as::<_, Attachment>(
         "SELECT * FROM attachments \
-         WHERE record_type = $1 AND record_id = $2 AND name = $3 AND blob_id = $4",
+         WHERE owner_kind = $1 AND owner_id = $2 AND role = $3 AND blob_id = $4",
     )
-    .bind(&new.record_type)
-    .bind(&new.record_id)
-    .bind(&new.name)
+    .bind(&new.owner_kind)
+    .bind(&new.owner_id)
+    .bind(&new.role)
     .bind(blob_id)
     .fetch_one(conn)
     .await?;
@@ -437,14 +437,14 @@ pub(crate) async fn list(exec: impl PgExecutor<'_>, params: &ListParams) -> sqlx
         "SELECT a.*, b.state AS blob_state, b.failed_at AS blob_failed_at FROM attachments a \
          JOIN blobs b ON b.id = a.blob_id WHERE true",
     );
-    if let Some(record_type) = &params.record_type {
-        qb.push(" AND a.record_type = ").push_bind(record_type);
+    if let Some(owner_kind) = &params.owner_kind {
+        qb.push(" AND a.owner_kind = ").push_bind(owner_kind);
     }
-    if let Some(record_id) = &params.record_id {
-        qb.push(" AND a.record_id = ").push_bind(record_id);
+    if let Some(owner_id) = &params.owner_id {
+        qb.push(" AND a.owner_id = ").push_bind(owner_id);
     }
-    if let Some(name) = &params.name {
-        qb.push(" AND a.name = ").push_bind(name);
+    if let Some(role) = &params.role {
+        qb.push(" AND a.role = ").push_bind(role);
     }
     if let Some(blob_id) = params.blob_id {
         qb.push(" AND a.blob_id = ").push_bind(blob_id);
@@ -482,19 +482,19 @@ pub(crate) async fn exists_for_blob(
 mod tests {
     use super::*;
 
-    fn req(record_type: &str, record_id: &str, name: &str) -> AttachmentRequest {
+    fn req(owner_kind: &str, owner_id: &str, role: &str) -> AttachmentRequest {
         AttachmentRequest {
-            record_type: record_type.into(),
-            record_id: record_id.into(),
-            name: name.into(),
+            owner_kind: owner_kind.into(),
+            owner_id: owner_id.into(),
+            role: role.into(),
         }
     }
 
     #[test]
     fn fields_are_validated() {
-        assert!(validate(req("Dossier", "42", "piece_justificative")).is_ok());
+        assert!(validate(req("expense", "42", "receipt")).is_ok());
         assert!(
-            validate(req("User", "a b/c:d", "avatar")).is_ok(),
+            validate(req("user", "a b/c:d", "avatar")).is_ok(),
             "ids are the backend's"
         );
         assert!(validate(req("صورة", "١", "x")).is_ok());

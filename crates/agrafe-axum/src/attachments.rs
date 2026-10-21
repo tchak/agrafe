@@ -1,5 +1,5 @@
 //! Private interface: attachments, the backend's statements about which of
-//! its records use a blob. See [DESIGN.md, "Attachments"]. The public port
+//! its owners use a blob. See [DESIGN.md, "Attachments"]. The public port
 //! never sees them.
 //!
 //! [DESIGN.md, "Attachments"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#attachments
@@ -59,9 +59,9 @@ pub struct AttachmentListResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct AttachmentListQuery {
-    pub record_type: Option<String>,
-    pub record_id: Option<String>,
-    pub name: Option<String>,
+    pub owner_kind: Option<String>,
+    pub owner_id: Option<String>,
+    pub role: Option<String>,
     pub blob_id: Option<Uuid>,
     pub cursor: Option<Uuid>,
     pub limit: Option<usize>,
@@ -72,9 +72,9 @@ async fn list_attachments(
     Query(q): Query<AttachmentListQuery>,
 ) -> ApiResult<Json<AttachmentListResponse>> {
     let params = ListParams {
-        record_type: q.record_type,
-        record_id: q.record_id,
-        name: q.name,
+        owner_kind: q.owner_kind,
+        owner_id: q.owner_id,
+        role: q.role,
         blob_id: q.blob_id,
         cursor: q.cursor,
         limit: q.limit.unwrap_or(attachment::DEFAULT_LIMIT),

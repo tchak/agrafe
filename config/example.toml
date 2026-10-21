@@ -108,7 +108,7 @@ purge_delay = "1h"
 # A rows or archive source left unfinished for this long after its last part
 # is an abandoned export, and an attached blob still waiting for its bytes
 # after this long untouched is a file that never came: the reaper expires
-# both, purging any parts and keeping the attachments for the record's side
+# both, purging any parts and keeping the attachments for the owner's side
 # to see. Unattached blobs have their own expires_at instead.
 abandoned_after = "1d"
 # The content types a raw, multipart or url blob may be created with, exact

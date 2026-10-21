@@ -96,7 +96,7 @@ All `422 unprocessable`, from `POST /blobs`:
 | `main: …`, `main applies to document input only` | |
 | `expires_at and expires_in are mutually exclusive`, `expires_in is out of range`, `expiration must be in the future` | |
 | `expires_at and expires_in do not apply to a blob created attached` | |
-| `attachment: …` | An invalid `record_type`, `record_id` or `name` |
+| `attachment: …` | An invalid `owner_kind`, `owner_id` or `role` |
 
 A body over 16 MiB answers `413 payload_too_large`.
 
@@ -158,7 +158,7 @@ part. Common reasons:
 | `409` | `conflict` | `blob is infected and cannot be attached` | |
 | `410` | `gone` | `blob is expired and cannot be attached` | Also for `deleted`, and for a blob past its `expires_at` |
 | `422` | `unprocessable` | the field and the rule it broke | Blank, over 255 bytes, control or bidirectional formatting characters |
-| `400` | `bad_request` | `record_id is only accepted together with record_type` | `GET /attachments` |
+| `400` | `bad_request` | `owner_id is only accepted together with owner_kind` | `GET /attachments` |
 
 ## Deleting and retrying
 

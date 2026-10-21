@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2" xmlns:gx="http://www.google.com/kml/ext/2.2">
   <Document>
-    <name>Une sortie à Lyon</name>
+    <name>A walk in Lyon</name>
     <description>Hand-written for agrafe: a shared style, a style map, an inline style, a polygon with a hole, a track.</description>
-    <Style id="parcelle">
+    <Style id="plot">
       <LineStyle>
         <color>ff0000ff</color>
         <width>2</width>
@@ -12,33 +12,33 @@
         <color>8000ff00</color>
       </PolyStyle>
     </Style>
-    <Style id="trace-normal">
+    <Style id="track-normal">
       <LineStyle>
         <color>ffff0000</color>
         <width>3</width>
       </LineStyle>
     </Style>
-    <Style id="trace-highlight">
+    <Style id="track-highlight">
       <LineStyle>
         <color>ff00ffff</color>
         <width>6</width>
       </LineStyle>
     </Style>
-    <StyleMap id="trace">
+    <StyleMap id="track">
       <Pair>
         <key>normal</key>
-        <styleUrl>#trace-normal</styleUrl>
+        <styleUrl>#track-normal</styleUrl>
       </Pair>
       <Pair>
         <key>highlight</key>
-        <styleUrl>#trace-highlight</styleUrl>
+        <styleUrl>#track-highlight</styleUrl>
       </Pair>
     </StyleMap>
     <Folder>
-      <name>Lieux</name>
+      <name>Places</name>
       <Placemark>
         <name>Fourvière</name>
-        <description><![CDATA[<b>Basilique</b> de Fourvière]]></description>
+        <description><![CDATA[<b>Basilica</b> of Fourvière]]></description>
         <Style>
           <IconStyle>
             <color>ffff00ff</color>
@@ -57,11 +57,11 @@
         </Point>
       </Placemark>
       <Placemark>
-        <name>Parcelle</name>
-        <styleUrl>#parcelle</styleUrl>
+        <name>Plot</name>
+        <styleUrl>#plot</styleUrl>
         <ExtendedData>
           <Data name="surface">
-            <value>1 200 m²</value>
+            <value>1,200 m²</value>
           </Data>
         </ExtendedData>
         <Polygon>
@@ -83,8 +83,8 @@
       </Placemark>
     </Folder>
     <Placemark>
-      <name>Trace</name>
-      <styleUrl>#trace</styleUrl>
+      <name>Track</name>
+      <styleUrl>#track</styleUrl>
       <gx:Track>
         <when>2026-05-10T08:10:00Z</when>
         <when>2026-05-10T08:12:00Z</when>
@@ -97,7 +97,7 @@
       </gx:Track>
     </Placemark>
     <Placemark>
-      <name>Itinéraire</name>
+      <name>Route</name>
       <LineString>
         <tessellate>1</tessellate>
         <coordinates>4.8320,45.7578 4.8357,45.7640 4.8290,45.7700</coordinates>

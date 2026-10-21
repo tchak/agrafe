@@ -40,7 +40,7 @@ reachable only from a trusted network. Every operation of agrafe is here.
 | `GET` | [`/blobs/:id/original/:filename`](#get-blobsidoriginalfilename) | Original bytes |
 | `GET` | [`/blobs/:id/preview/:filename`](#get-blobsidpreviewfilename) | Preview |
 | `GET` | [`/blobs/:id/thumbnail/:filename`](#get-blobsidthumbnailfilename) | Thumbnail |
-| `POST` | [`/blobs/:id/attachments`](#post-blobsidattachments) | Attach to a record |
+| `POST` | [`/blobs/:id/attachments`](#post-blobsidattachments) | Attach to an owner |
 | `GET` | [`/attachments`](#get-attachments) | List attachments |
 | `GET` | [`/attachments/:id`](#get-attachmentsid) | One attachment |
 | `DELETE` | [`/attachments/:id`](#delete-attachmentsid) | Detach |
@@ -97,9 +97,9 @@ Every blob route answers with the full metadata, the same object the
     {
       "id": "0199f6a1-0a2b-7c3d-8e4f-1a2b3c4d5e6f",
       "blob_id": "0199f6a0-5b2c-7c3d-8e4f-0a1b2c3d4e5f",
-      "record_type": "Dossier",
-      "record_id": "42",
-      "name": "piece_justificative",
+      "owner_kind": "expense",
+      "owner_id": "42",
+      "role": "receipt",
       "created_at": "2026-10-19T09:14:20.004417Z"
     }
   ],
@@ -141,7 +141,7 @@ Every blob route answers with the full metadata, the same object the
 | `created_at`, `updated_at` | timestamp | |
 | `uploaded_at`, `deleted_at`, `purged_at` | timestamp or null | `purged_at` is set once the objects are gone |
 | `failed_at`, `last_error` | timestamp, string or null | Set while the job that was to finish the blob is dead |
-| `attachments` | array | The records using the blob, oldest first |
+| `attachments` | array | The owners using the blob, oldest first |
 | `urls` | object | Signed public URLs, see [Serving files](../guide/serving.md#urls-in-the-metadata) |
 | `envelope` | string or null | For a `ready`, unexpired blob: the opaque envelope for [sealed URLs](../guide/signed-urls.md#sealed-urls) |
 
@@ -167,7 +167,7 @@ The body is limited to 16 MiB.
 | `representations` | array | no | Among `thumbnail` and `preview`; both by default |
 | `expires_at` | timestamp | no | In the future. Not with `expires_in` or `attachment` |
 | `expires_in` | duration | no | Not with `expires_at` or `attachment`. Default `blobs.default_expires_in` |
-| `attachment` | object | no | `{"record_type", "record_id", "name"}`: attach in the same transaction; the blob then has no expiry |
+| `attachment` | object | no | `{"owner_kind", "owner_id", "role"}`: attach in the same transaction; the blob then has no expiry |
 
 The content types a generated blob may declare:
 
@@ -280,7 +280,7 @@ replaces and clears `failed_at`. Answers `202` with the blob metadata.
 Mints signed public URLs. The body is optional.
 
 ```json
-{"ttl": "15m", "query": {"disposition": "attachment", "filename": "facture.pdf", "wait": "5000"}}
+{"ttl": "15m", "query": {"disposition": "attachment", "filename": "invoice.pdf", "wait": "5000"}}
 ```
 
 | Field | Description |
@@ -338,19 +338,19 @@ icon with `X-Representation-State: unavailable`.
 {
   "id": "0199f6a1-0a2b-7c3d-8e4f-1a2b3c4d5e6f",
   "blob_id": "0199f6a0-5b2c-7c3d-8e4f-0a1b2c3d4e5f",
-  "record_type": "Dossier",
-  "record_id": "42",
-  "name": "piece_justificative",
+  "owner_kind": "expense",
+  "owner_id": "42",
+  "role": "receipt",
   "created_at": "2026-10-19T09:14:20.004417Z"
 }
 ```
 
 ### `POST /blobs/:id/attachments`
 
-Attaches the blob to a record, and clears its expiry.
+Attaches the blob to an owner, and clears its expiry.
 
 ```json
-{"record_type": "Dossier", "record_id": "42", "name": "piece_justificative"}
+{"owner_kind": "expense", "owner_id": "42", "role": "receipt"}
 ```
 
 Each string is not blank, at most 255 bytes, without control or
@@ -375,9 +375,9 @@ Lists attachments, newest first. Each item is an attachment plus its blob's stat
     {
       "id": "0199f6a1-…",
       "blob_id": "0199f6a0-…",
-      "record_type": "Dossier",
-      "record_id": "42",
-      "name": "piece_justificative",
+      "owner_kind": "expense",
+      "owner_id": "42",
+      "role": "receipt",
       "created_at": "2026-10-19T09:14:20.004417Z",
       "blob_state": "ready",
       "blob_failed_at": null
@@ -389,9 +389,9 @@ Lists attachments, newest first. Each item is an attachment plus its blob's stat
 
 | Parameter | Values |
 |---|---|
-| `record_type` | |
-| `record_id` | Only with `record_type`; alone it is a `400` |
-| `name` | |
+| `owner_kind` | |
+| `owner_id` | Only with `owner_kind`; alone it is a `400` |
+| `role` | |
 | `blob_id` | A blob id |
 | `cursor` | An attachment id |
 | `limit` | 1 to 200, default 50 |

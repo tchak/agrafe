@@ -15,11 +15,11 @@ const ODS: &str = "application/vnd.oasis.opendocument.spreadsheet";
 
 fn columns() -> Value {
     json!([
-        {"name": "Nom"},
-        {"name": "Montant"},
-        {"name": "Validé"},
+        {"name": "Name"},
+        {"name": "Amount (€)"},
+        {"name": "Approved"},
         {"name": "Date", "type": "date"},
-        {"name": "Créé le", "type": "datetime"},
+        {"name": "Created at", "type": "datetime"},
     ])
 }
 
@@ -40,9 +40,9 @@ fn workbook_blob(filename: &str, content_type: &str) -> Value {
         "content_type": content_type,
         "input_type": "rows",
         "sheets": [
-            {"name": "Dossiers", "columns": columns()},
-            {"name": "Avis & notes", "columns": [{"name": "Dossier"}, {"name": "Avis"}]},
-            {"name": "Vide", "columns": [{"name": "Rien"}]},
+            {"name": "Expenses", "columns": columns()},
+            {"name": "Reviews & notes", "columns": [{"name": "Expense"}, {"name": "Reviews"}]},
+            {"name": "Empty", "columns": [{"name": "Nothing"}]},
         ],
     })
 }
@@ -60,7 +60,7 @@ fn source(lines: &[Value]) -> Vec<u8> {
 /// Three rows as the backend would send them, verbatim: the `1.10` lexeme
 /// is the point, and `json!` would normalise it.
 const SAMPLE: [&str; 3] = [
-    r#"["Dupont", 1.10, true, "2026-10-17", "2026-10-17T08:44:26+02:00"]"#,
+    r#"["Lovelace", 1.10, true, "2026-10-17", "2026-10-17T08:44:26+02:00"]"#,
     r#"["=HYPERLINK(\"x\")", -5, false, null, null]"#,
     r#"["a,b \"c\"\nd", 12345678901234567890, null, "1850-01-01", "2026-10-17T12:00:00.5Z"]"#,
 ];
@@ -182,8 +182,8 @@ async fn csv_is_built_from_rows_in_parts() {
     assert_eq!(
         text,
         concat!(
-            "Nom,Montant,Validé,Date,Créé le\r\n",
-            "Dupont,1.10,true,2026-10-17,2026-10-17T08:44:26\r\n",
+            "Name,Amount (€),Approved,Date,Created at\r\n",
+            "Lovelace,1.10,true,2026-10-17,2026-10-17T08:44:26\r\n",
             "\"'=HYPERLINK(\"\"x\"\")\",-5,false,,\r\n",
             "\"a,b \"\"c\"\"\nd\",12345678901234567890,,1850-01-01,2026-10-17T12:00:00.5\r\n",
         )
@@ -235,10 +235,10 @@ async fn xlsx_package() {
     assert!(sheet.ends_with("</sheetData></worksheet>"), "{sheet}");
     for want in [
         // The header, inline strings.
-        r#"<row r="1"><c r="A1" t="inlineStr"><is><t xml:space="preserve">Nom</t></is></c>"#,
-        r#"<c r="E1" t="inlineStr"><is><t xml:space="preserve">Créé le</t></is></c></row>"#,
+        r#"<row r="1"><c r="A1" t="inlineStr"><is><t xml:space="preserve">Name</t></is></c>"#,
+        r#"<c r="E1" t="inlineStr"><is><t xml:space="preserve">Created at</t></is></c></row>"#,
         // Typed cells; the datetime's offset dropped.
-        r#"<row r="2"><c r="A2" t="inlineStr"><is><t xml:space="preserve">Dupont</t></is></c><c r="B2"><v>1.10</v></c><c r="C2" t="b"><v>1</v></c><c r="D2" s="1"><v>46312</v></c><c r="E2" s="2"><v>46312.3641898"#,
+        r#"<row r="2"><c r="A2" t="inlineStr"><is><t xml:space="preserve">Lovelace</t></is></c><c r="B2"><v>1.10</v></c><c r="C2" t="b"><v>1</v></c><c r="D2" s="1"><v>46312</v></c><c r="E2" s="2"><v>46312.3641898"#,
         // A formula is text, which Excel never evaluates; empty cells are left out.
         r#"<row r="3"><c r="A3" t="inlineStr"><is><t xml:space="preserve">=HYPERLINK("x")</t></is></c><c r="B3"><v>-5</v></c><c r="C3" t="b"><v>0</v></c></row>"#,
         // Line breaks kept; a date Excel cannot show as a serial is text.
@@ -272,7 +272,7 @@ async fn ods_package() {
     let content = String::from_utf8(entry(&entries, "content.xml").to_vec()).unwrap();
     for want in [
         r#"<table:table table:name="export"><table:table-column table:number-columns-repeated="5"/>"#,
-        r#"<table:table-row><table:table-cell office:value-type="string"><text:p>Nom</text:p></table:table-cell>"#,
+        r#"<table:table-row><table:table-cell office:value-type="string"><text:p>Name</text:p></table:table-cell>"#,
         r#"<table:table-cell office:value-type="float" office:value="1.10"><text:p>1.10</text:p></table:table-cell>"#,
         r#"<table:table-cell office:value-type="boolean" office:boolean-value="true"><text:p>true</text:p></table:table-cell>"#,
         r#"<table:table-cell office:value-type="date" office:date-value="2026-10-17"><text:p>2026-10-17</text:p></table:table-cell>"#,
@@ -308,13 +308,13 @@ async fn empty_source_is_a_header() {
         if content_type == "text/csv" {
             assert_eq!(
                 bytes,
-                b"\xEF\xBB\xBFNom,Montant,Valid\xC3\xA9,Date,Cr\xC3\xA9\xC3\xA9 le\r\n"
+                b"\xEF\xBB\xBFName,Amount (\xE2\x82\xAC),Approved,Date,Created at\r\n"
             );
         } else {
             let entries = unzip(&bytes);
             let sheet = entries.last().unwrap();
             let xml = String::from_utf8(sheet.2.clone()).unwrap();
-            assert!(xml.contains("Nom"), "{xml}");
+            assert!(xml.contains("Name"), "{xml}");
             assert!(
                 !xml.contains("r=\"2\"") && !xml.contains("<table:table-row><table:table-cell/>"),
                 "{xml}"
@@ -441,7 +441,7 @@ async fn row_rejections() {
         ),
         (
             "an object that is not a switch",
-            b"{\"Nom\": \"x\"}\n".to_vec(),
+            b"{\"Name\": \"x\"}\n".to_vec(),
             "line 1: expected {\"sheet\": \"...\"} to switch sheets",
         ),
         (
@@ -457,17 +457,17 @@ async fn row_rejections() {
         (
             "nested",
             b"[[\"x\"], 1, true, null, null]\n".to_vec(),
-            "cell 1 (Nom): must be a scalar",
+            "cell 1 (Name): must be a scalar",
         ),
         (
             "object cell",
             b"[{}, 1, true, null, null]\n".to_vec(),
-            "cell 1 (Nom)",
+            "cell 1 (Name)",
         ),
         (
             "huge number",
             b"[\"x\", 1e999, true, null, null]\n".to_vec(),
-            "cell 2 (Montant): is a number too large",
+            "cell 2 (Amount (€)): is a number too large",
         ),
         (
             "bad date",
@@ -482,7 +482,7 @@ async fn row_rejections() {
         (
             "bad datetime",
             b"[\"x\", 1, true, null, \"2026-10-17\"]\n".to_vec(),
-            "cell 5 (Créé le): must be a datetime",
+            "cell 5 (Created at): must be a datetime",
         ),
         (
             "second line",
@@ -536,7 +536,7 @@ async fn sheet_cell_limit() {
             assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
             let message = body["error"]["message"].as_str().unwrap();
             assert!(
-                message.contains("cell 1 (Nom): text is longer than the 32767 characters"),
+                message.contains("cell 1 (Name): text is longer than the 32767 characters"),
                 "{body}"
             );
         } else {
@@ -593,7 +593,7 @@ async fn sheet_row_limit() {
 async fn xlsx_workbook() {
     let db = TestDatabase::new().await;
     let app = setup(db).await;
-    let created = create(&app, workbook_blob("dossiers.xlsx", XLSX)).await;
+    let created = create(&app, workbook_blob("expenses.xlsx", XLSX)).await;
     let id = id_of(&created);
     assert!(created.get("sheets").is_none(), "not reported back");
     // Rows before any switch belong to the first sheet, announced or not;
@@ -602,7 +602,7 @@ async fn xlsx_workbook() {
         &app,
         id,
         1,
-        lines(&[r#"{"sheet": "Dossiers"}"#, SAMPLE[0], SAMPLE[1]]),
+        lines(&[r#"{"sheet": "Expenses"}"#, SAMPLE[0], SAMPLE[1]]),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -612,8 +612,8 @@ async fn xlsx_workbook() {
         2,
         lines(&[
             SAMPLE[2],
-            r#"{"sheet": "Avis & notes"}"#,
-            r#"["Dupont", "Favorable"]"#,
+            r#"{"sheet": "Reviews & notes"}"#,
+            r#"["Lovelace", "Approved"]"#,
         ]),
     )
     .await;
@@ -624,8 +624,8 @@ async fn xlsx_workbook() {
         id,
         3,
         lines(&[
-            r#"{"sheet": "Avis & notes"}"#,
-            r#"["Martin", "Défavorable"]"#,
+            r#"{"sheet": "Reviews & notes"}"#,
+            r#"["Hopper", "Rejected — late"]"#,
         ]),
     )
     .await;
@@ -654,9 +654,9 @@ async fn xlsx_workbook() {
     let workbook = text("xl/workbook.xml");
     assert!(
         workbook.contains(concat!(
-            r#"<sheets><sheet name="Dossiers" sheetId="1" r:id="rId1"/>"#,
-            r#"<sheet name="Avis &amp; notes" sheetId="2" r:id="rId2"/>"#,
-            r#"<sheet name="Vide" sheetId="3" r:id="rId3"/></sheets>"#
+            r#"<sheets><sheet name="Expenses" sheetId="1" r:id="rId1"/>"#,
+            r#"<sheet name="Reviews &amp; notes" sheetId="2" r:id="rId2"/>"#,
+            r#"<sheet name="Empty" sheetId="3" r:id="rId3"/></sheets>"#
         )),
         "{workbook}"
     );
@@ -675,35 +675,35 @@ async fn xlsx_workbook() {
     let first = text("xl/worksheets/sheet1.xml");
     assert_eq!(first.matches("<row ").count(), 4, "header and three rows");
     assert!(
-        first.contains("Dupont") && first.contains(r#"<row r="4">"#),
+        first.contains("Lovelace") && first.contains(r#"<row r="4">"#),
         "{first}"
     );
     let second = text("xl/worksheets/sheet2.xml");
     assert_eq!(second.matches("<row ").count(), 3, "header and two rows");
     assert!(
-        second.contains(r#"<row r="1"><c r="A1" t="inlineStr"><is><t xml:space="preserve">Dossier</t></is></c><c r="B1" t="inlineStr"><is><t xml:space="preserve">Avis</t></is></c></row>"#),
+        second.contains(r#"<row r="1"><c r="A1" t="inlineStr"><is><t xml:space="preserve">Expense</t></is></c><c r="B1" t="inlineStr"><is><t xml:space="preserve">Reviews</t></is></c></row>"#),
         "{second}"
     );
     assert!(
-        second.contains("Favorable") && second.contains("Défavorable"),
+        second.contains("Approved") && second.contains("Rejected — late"),
         "{second}"
     );
     let third = text("xl/worksheets/sheet3.xml");
     assert_eq!(third.matches("<row ").count(), 1, "a header alone");
-    assert!(third.contains("Rien"), "{third}");
+    assert!(third.contains("Nothing"), "{third}");
 }
 
 #[tokio::test]
 async fn ods_workbook() {
     let db = TestDatabase::new().await;
     let app = setup(db).await;
-    let created = create(&app, workbook_blob("dossiers.ods", ODS)).await;
+    let created = create(&app, workbook_blob("expenses.ods", ODS)).await;
     let id = id_of(&created);
     // Straight to the last sheet: the ones skipped get a header alone.
     let (status, body) = put_private(
         &app,
         id,
-        lines(&[SAMPLE[0], r#"{"sheet": "Vide"}"#, r#"["pas si vide"]"#]),
+        lines(&[SAMPLE[0], r#"{"sheet": "Empty"}"#, r#"["not so empty"]"#]),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -719,22 +719,22 @@ async fn ods_workbook() {
     let (first, rest) = content.split_at(tables[1]);
     let (second, third) = rest.split_at(tables[2] - tables[1]);
     assert!(
-        first.contains(r#"<table:table table:name="Dossiers"><table:table-column table:number-columns-repeated="5"/>"#),
+        first.contains(r#"<table:table table:name="Expenses"><table:table-column table:number-columns-repeated="5"/>"#),
         "{first}"
     );
     assert_eq!(first.matches("<table:table-row>").count(), 2);
-    assert!(first.contains("Dupont"), "{first}");
+    assert!(first.contains("Lovelace"), "{first}");
     assert!(
-        second.contains(r#"<table:table table:name="Avis &amp; notes"><table:table-column table:number-columns-repeated="2"/>"#),
+        second.contains(r#"<table:table table:name="Reviews &amp; notes"><table:table-column table:number-columns-repeated="2"/>"#),
         "{second}"
     );
     assert_eq!(second.matches("<table:table-row>").count(), 1, "{second}");
     assert!(
-        third.starts_with(r#"<table:table table:name="Vide"><table:table-column table:number-columns-repeated="1"/>"#),
+        third.starts_with(r#"<table:table table:name="Empty"><table:table-column table:number-columns-repeated="1"/>"#),
         "{third}"
     );
     assert_eq!(third.matches("<table:table-row>").count(), 2, "{third}");
-    assert!(third.contains("pas si vide"), "{third}");
+    assert!(third.contains("not so empty"), "{third}");
     assert!(
         third.ends_with(
             "</table:table></office:spreadsheet></office:body></office:document-content>"
@@ -755,29 +755,33 @@ async fn sheet_switch_rejections() {
         &app,
         id,
         1,
-        lines(&[SAMPLE[0], r#"{"sheet": "Avis & notes"}"#, r#"["a", "b"]"#]),
+        lines(&[
+            SAMPLE[0],
+            r#"{"sheet": "Reviews & notes"}"#,
+            r#"["a", "b"]"#,
+        ]),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let cases: Vec<(&str, &str, &str)> = vec![
         (
             "undeclared",
-            r#"{"sheet": "Pièces"}"#,
-            "line 1: no sheet named \"Pièces\" is declared",
+            r#"{"sheet": "Résumés"}"#,
+            "line 1: no sheet named \"Résumés\" is declared",
         ),
         (
             "case matters",
-            r#"{"sheet": "vide"}"#,
-            "no sheet named \"vide\"",
+            r#"{"sheet": "empty"}"#,
+            "no sheet named \"empty\"",
         ),
         (
             "backwards",
-            r#"{"sheet": "Dossiers"}"#,
-            "line 1: sheet \"Dossiers\" comes before the current sheet \"Avis & notes\"",
+            r#"{"sheet": "Expenses"}"#,
+            "line 1: sheet \"Expenses\" comes before the current sheet \"Reviews & notes\"",
         ),
         (
             "not a switch",
-            r#"{"sheet": "Vide", "rows": 2}"#,
+            r#"{"sheet": "Empty", "rows": 2}"#,
             "line 1: expected {\"sheet\": \"...\"} to switch sheets",
         ),
         ("not a name", r#"{"sheet": 3}"#, "to switch sheets"),
@@ -788,7 +792,7 @@ async fn sheet_switch_rejections() {
         ),
         (
             "rows against the new sheet",
-            "{\"sheet\": \"Vide\"}\n[\"a\", \"b\"]",
+            "{\"sheet\": \"Empty\"}\n[\"a\", \"b\"]",
             "line 2: expected 1 cells",
         ),
     ];
@@ -807,7 +811,7 @@ async fn sheet_switch_rejections() {
         &app,
         id,
         2,
-        lines(&[r#"{"sheet": "Avis & notes"}"#, r#"["c", "d"]"#]),
+        lines(&[r#"{"sheet": "Reviews & notes"}"#, r#"["c", "d"]"#]),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -817,11 +821,16 @@ async fn sheet_switch_rejections() {
     // later one, whatever the format; naming the one sheet is allowed.
     for (filename, content_type) in [("one.xlsx", XLSX), ("one.csv", "text/csv")] {
         let created = create(&app, rows_blob(filename, content_type)).await;
-        let (status, body) =
-            put_part(&app, id_of(&created), 1, lines(&[r#"{"sheet": "Avis"}"#])).await;
+        let (status, body) = put_part(
+            &app,
+            id_of(&created),
+            1,
+            lines(&[r#"{"sheet": "Reviews"}"#]),
+        )
+        .await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
         let message = body["error"]["message"].as_str().unwrap();
-        assert!(message.contains("no sheet named \"Avis\""), "{body}");
+        assert!(message.contains("no sheet named \"Reviews\""), "{body}");
         let (status, body) =
             put_part(&app, id_of(&created), 1, lines(&[r#"{"sheet": "one"}"#])).await;
         assert_eq!(status, StatusCode::OK, "{body}");
@@ -847,7 +856,7 @@ async fn sheet_row_limit_is_per_sheet() {
     .execute(app.state.pool())
     .await
     .unwrap();
-    let mut same = lines(&[r#"{"sheet": "Dossiers"}"#]);
+    let mut same = lines(&[r#"{"sheet": "Expenses"}"#]);
     same.extend(source(std::slice::from_ref(&one)));
     let (status, body) = put_part(&app, id, 2, same).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
@@ -855,10 +864,10 @@ async fn sheet_row_limit_is_per_sheet() {
         body["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("sheet \"Dossiers\" would exceed 1048576 rows"),
+            .contains("sheet \"Expenses\" would exceed 1048576 rows"),
         "{body}"
     );
-    let mut next = lines(&[r#"{"sheet": "Avis & notes"}"#]);
+    let mut next = lines(&[r#"{"sheet": "Reviews & notes"}"#]);
     next.extend(source(&vec![json!(["a", "b"]); 4]));
     let (status, body) = put_part(&app, id, 2, next).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -909,7 +918,7 @@ async fn creation_checks_the_sheets() {
         ),
         (
             "duplicate ignoring case",
-            json!({"filename": "e.ods", "content_type": ODS, "input_type": "rows", "sheets": [{"name": "Avis", "columns": cols}, {"name": "AVIS", "columns": cols}]}),
+            json!({"filename": "e.ods", "content_type": ODS, "input_type": "rows", "sheets": [{"name": "Reviews", "columns": cols}, {"name": "REVIEWS", "columns": cols}]}),
             "sheet 2 has the same name as sheet 1",
         ),
         (

@@ -115,7 +115,7 @@ pub struct BlobMetadata {
     pub failed_at: Option<Timestamp>,
     /// What the dead job last said, set and cleared with `failed_at`.
     pub last_error: Option<String>,
-    /// The records using the blob, oldest first. A blob with any has no
+    /// The owners using the blob, oldest first. A blob with any has no
     /// `expires_at`.
     pub attachments: Vec<AttachmentMetadata>,
     /// The signed public URLs of the blob, with the default options.
@@ -180,12 +180,12 @@ pub struct AttachmentMetadata {
     pub id: Uuid,
     /// The blob in use.
     pub blob_id: Uuid,
-    /// The kind of record.
-    pub record_type: String,
-    /// The record's identifier, as the backend writes it.
-    pub record_id: String,
-    /// The role the blob plays for the record.
-    pub name: String,
+    /// The kind of owner.
+    pub owner_kind: String,
+    /// The owner's identifier, as the backend writes it.
+    pub owner_id: String,
+    /// The role the blob plays for the owner.
+    pub role: String,
     /// When the attachment was made.
     pub created_at: Timestamp,
 }
@@ -196,9 +196,9 @@ impl AttachmentMetadata {
         Self {
             id: attachment.id,
             blob_id: attachment.blob_id,
-            record_type: attachment.record_type.clone(),
-            record_id: attachment.record_id.clone(),
-            name: attachment.name.clone(),
+            owner_kind: attachment.owner_kind.clone(),
+            owner_id: attachment.owner_id.clone(),
+            role: attachment.role.clone(),
             created_at: attachment.created_at,
         }
     }

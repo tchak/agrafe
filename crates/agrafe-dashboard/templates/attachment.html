@@ -1,15 +1,15 @@
 {% extends "base.html" %}
 {% block title %}Attachment {{ attachment.id }}{% endblock %}
 {% block content %}
-<h1 class="text-2xl font-bold">{{ attachment.record_type }} {{ attachment.record_id }} <span class="opacity-60">{{ attachment.name }}</span></h1>
+<h1 class="text-2xl font-bold">{{ attachment.owner_kind }} {{ attachment.owner_id }} <span class="opacity-60">{{ attachment.role }}</span></h1>
 <div class="font-mono text-sm opacity-60 mb-4">{{ attachment.id }}</div>
 
 <div class="rounded-box border border-base-300 bg-base-100">
 <table class="table table-sm kv">
   <tbody>
-    <tr><th>record type</th><td>{{ attachment.record_type }}</td></tr>
-    <tr><th>record id</th><td>{{ attachment.record_id }}</td></tr>
-    <tr><th>name</th><td>{{ attachment.name }}</td></tr>
+    <tr><th>owner kind</th><td>{{ attachment.owner_kind }}</td></tr>
+    <tr><th>owner id</th><td>{{ attachment.owner_id }}</td></tr>
+    <tr><th>role</th><td>{{ attachment.role }}</td></tr>
     <tr><th>blob</th><td><a class="link link-primary font-mono" href="{{ layout.base }}/blobs/{{ attachment.blob_id }}">{{ attachment.blob_id }}</a></td></tr>
     <tr><th>created at</th><td>{{ attachment.created_at|ts }}</td></tr>
   </tbody>

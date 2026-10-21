@@ -123,7 +123,7 @@ pub struct CreateBlobRequest {
     /// list renders nothing, for files nobody will look at through the
     /// service.
     pub representations: Option<Vec<Representation>>,
-    /// Attach the blob to a record as it is created. The blob then has no
+    /// Attach the blob to an owner as it is created. The blob then has no
     /// expiry, so `expires_at` and `expires_in` must be omitted.
     pub attachment: Option<AttachmentRequest>,
 }
@@ -777,7 +777,7 @@ mod tests {
         }
         let mut r = req(InputType::Rows, classify::CSV);
         r.columns = Some(vec![Column {
-            name: "Nom / Prénom: été".into(),
+            name: "Name / Alias: café".into(),
             kind: None,
         }]);
         assert!(
@@ -828,7 +828,7 @@ mod tests {
         let b = validate(
             workbook(
                 classify::XLSX,
-                vec![sheet("Dossiers", &["a", "b"]), sheet("Avis", &["c"])],
+                vec![sheet("Expenses", &["a", "b"]), sheet("Reviews", &["c"])],
             ),
             &cfg(),
             &blobs(),
@@ -838,9 +838,9 @@ mod tests {
         .unwrap();
         let sheets = b.source_columns.unwrap();
         assert_eq!(sheets.len(), 2);
-        assert_eq!(sheets[0].name, "Dossiers");
+        assert_eq!(sheets[0].name, "Expenses");
         assert_eq!(sheets[0].columns.len(), 2);
-        assert_eq!(sheets[1].name, "Avis");
+        assert_eq!(sheets[1].name, "Reviews");
         assert!(
             validate(
                 workbook(classify::ODS, vec![sheet("Une", &["a"])]),
@@ -993,18 +993,18 @@ mod tests {
         );
         let mut r = req(InputType::Raw, "image/jpeg");
         r.attachment = Some(AttachmentRequest {
-            record_type: "Dossier".into(),
-            record_id: "1".into(),
-            name: "piece".into(),
+            owner_kind: "expense".into(),
+            owner_id: "1".into(),
+            role: "receipt".into(),
         });
         let b = validate(r, &cfg(), &blobs(), &fetch(), now).unwrap();
         assert_eq!(b.expires_at, None);
-        assert_eq!(b.attachment.as_ref().unwrap().record_id, "1");
+        assert_eq!(b.attachment.as_ref().unwrap().owner_id, "1");
         let mut r = req(InputType::Raw, "image/jpeg");
         r.attachment = Some(AttachmentRequest {
-            record_type: "Dossier".into(),
-            record_id: "1".into(),
-            name: "piece".into(),
+            owner_kind: "expense".into(),
+            owner_id: "1".into(),
+            role: "receipt".into(),
         });
         r.expires_in = Some(Duration::from_secs(3600));
         assert!(
@@ -1013,9 +1013,9 @@ mod tests {
         );
         let mut r = req(InputType::Raw, "image/jpeg");
         r.attachment = Some(AttachmentRequest {
-            record_type: "".into(),
-            record_id: "1".into(),
-            name: "piece".into(),
+            owner_kind: "".into(),
+            owner_id: "1".into(),
+            role: "receipt".into(),
         });
         assert!(
             validate(r, &cfg(), &blobs(), &fetch(), now).is_err(),

@@ -37,7 +37,7 @@ query parameters:
 ```sh
 curl -s "localhost:8080/blobs/$ID/urls" \
   -H 'content-type: application/json' \
-  -d '{"ttl": "15m", "query": {"disposition": "attachment", "filename": "facture-12.pdf"}}'
+  -d '{"ttl": "15m", "query": {"disposition": "attachment", "filename": "invoice-12.pdf"}}'
 ```
 
 | Field | Notes |

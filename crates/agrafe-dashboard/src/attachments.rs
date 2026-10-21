@@ -30,19 +30,19 @@ pub struct AttachmentsQuery {
         deserialize_with = "empty_to_none",
         skip_serializing_if = "Option::is_none"
     )]
-    pub record_type: Option<String>,
+    pub owner_kind: Option<String>,
     #[serde(
         default,
         deserialize_with = "empty_to_none",
         skip_serializing_if = "Option::is_none"
     )]
-    pub record_id: Option<String>,
+    pub owner_id: Option<String>,
     #[serde(
         default,
         deserialize_with = "empty_to_none",
         skip_serializing_if = "Option::is_none"
     )]
-    pub name: Option<String>,
+    pub role: Option<String>,
     #[serde(
         default,
         deserialize_with = "empty_to_none",
@@ -60,9 +60,9 @@ pub struct AttachmentsQuery {
 impl AttachmentsQuery {
     fn params(&self) -> ListParams {
         ListParams {
-            record_type: self.record_type.clone(),
-            record_id: self.record_id.clone(),
-            name: self.name.clone(),
+            owner_kind: self.owner_kind.clone(),
+            owner_id: self.owner_id.clone(),
+            role: self.role.clone(),
             blob_id: self.blob_id,
             cursor: self.cursor,
             limit: attachment::DEFAULT_LIMIT,
@@ -83,11 +83,11 @@ impl AttachmentsQuery {
 pub struct AttachmentsPage {
     pub layout: Layout,
     pub query: AttachmentsQuery,
-    /// The values `record_type` and `name` take, as selects: a backend has
+    /// The values `owner_kind` and `role` take, as selects: a backend has
     /// a handful of each, and `Agrafe::attachment_facets` finds them
     /// without reading the table.
-    pub record_types: Vec<Opt>,
-    pub names: Vec<Opt>,
+    pub owner_kinds: Vec<Opt>,
+    pub roles: Vec<Opt>,
     pub attachments: Vec<Listed>,
     pub next: Option<String>,
 }
@@ -102,8 +102,8 @@ async fn list(
     let next = page.next_cursor.map(|c| query.next(&base.0, c));
     Ok(AttachmentsPage {
         layout: Layout::new(&base, "attachments"),
-        record_types: options_of(&facets.record_types, query.record_type.as_deref()),
-        names: options_of(&facets.names, query.name.as_deref()),
+        owner_kinds: options_of(&facets.owner_kinds, query.owner_kind.as_deref()),
+        roles: options_of(&facets.roles, query.role.as_deref()),
         query,
         attachments: page.items,
         next,

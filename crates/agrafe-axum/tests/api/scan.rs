@@ -413,7 +413,7 @@ async fn clamd_down() {
     assert!(!run_scan_job(&app).await, "never claimed again");
 
     // The blob records the death too, where it outlives the pruned job:
-    // in its metadata, in the failed listing, and on the record's side.
+    // in its metadata, in the failed listing, and on the owner's side.
     let blob = get_blob(&app, id).await;
     assert_eq!(blob["state"], "uploaded");
     assert!(blob["failed_at"].is_string(), "{blob}");
@@ -433,7 +433,7 @@ async fn clamd_down() {
         json_req(
             Method::POST,
             &format!("/blobs/{id}/attachments"),
-            json!({"record_type": "Dossier", "record_id": "1", "name": "piece"}),
+            json!({"owner_kind": "expense", "owner_id": "1", "role": "receipt"}),
         ),
     )
     .await;

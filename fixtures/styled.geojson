@@ -9,8 +9,8 @@
     "stroke-opacity": 1,
     "fill": "#00ff00",
     "fill-opacity": 0.5,
-    "title": "Parcelle",
-    "description": "Une parcelle"
+    "title": "Plot",
+    "description": "A plot of land"
    },
    "geometry": {
     "type": "Polygon",

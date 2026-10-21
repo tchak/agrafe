@@ -400,7 +400,7 @@ GEOJSON = {
             [[4.80, 45.75], [4.81, 45.755], [4.82, 45.752], [4.83, 45.76]],
             [[4.80, 45.77], [4.83, 45.77]],
         ]},
-        {"name": "chemins", "length": 4200},
+        {"name": "paths", "length": 4200},
     ),
     # A point, a line and a polygon in one geometry.
     "collection.geojson": feature({"type": "GeometryCollection", "geometries": [
@@ -434,7 +434,7 @@ GEOJSON = {
     "styled.geojson": collection(
         feature({"type": "Polygon", "coordinates": [square(*PARIS, 300)]}, {
             "stroke": "#ff0000", "stroke-width": 2, "stroke-opacity": 1,
-            "fill": "#00ff00", "fill-opacity": 0.5, "title": "Parcelle", "description": "Une parcelle",
+            "fill": "#00ff00", "fill-opacity": 0.5, "title": "Plot", "description": "A plot of land",
         }),
         feature({"type": "Point", "coordinates": PARIS}, {
             "marker-color": "#0000ff", "marker-size": "large", "marker-symbol": "star",

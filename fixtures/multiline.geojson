@@ -1,7 +1,7 @@
 {
  "type": "Feature",
  "properties": {
-  "name": "chemins",
+  "name": "paths",
   "length": 4200
  },
  "geometry": {

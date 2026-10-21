@@ -524,14 +524,17 @@ async fn a_source_part_the_build_still_needs_is_checked() {
             "filename": "export.csv",
             "content_type": "text/csv",
             "input_type": "rows",
-            "columns": [{"name": "Nom"}],
+            "columns": [{"name": "Name"}],
         }),
     )
     .await;
     let id = id_of(&blob);
     let (status, body) = call(
         &app.private,
-        put_raw(&format!("/blobs/{id}/parts/1"), b"[\"Dupont\"]\n".to_vec()),
+        put_raw(
+            &format!("/blobs/{id}/parts/1"),
+            b"[\"Lovelace\"]\n".to_vec(),
+        ),
     )
     .await;
     assert!(status.is_success(), "{status} {body}");

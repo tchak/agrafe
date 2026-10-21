@@ -1016,7 +1016,7 @@ mod tests {
         );
         // The title and the symbol never reach the SVG.
         assert!(!map.svg.contains("star"));
-        assert!(!map.svg.contains("Parcelle"));
+        assert!(!map.svg.contains("Plot"));
     }
 
     #[test]
@@ -1194,7 +1194,7 @@ mod tests {
         // The route without a style: the default.
         assert!(paths[5].contains(r##"fill="none" stroke="#ffd400" stroke-width="4""##));
         // Nothing the file names reaches the SVG.
-        for word in ["Fourvière", "Basilique", "surface", "red-stars", "Parcelle"] {
+        for word in ["Fourvière", "Basilica", "surface", "red-stars", "Plot"] {
             assert!(!map.svg.contains(word), "{word}");
         }
         // Lyon, a few kilometres across.

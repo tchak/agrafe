@@ -20,7 +20,7 @@
       </LatLonBox>
     </GroundOverlay>
     <Placemark>
-      <name>Sans géométrie</name>
+      <name>No geometry</name>
       <styleUrl>#s</styleUrl>
     </Placemark>
   </Document>

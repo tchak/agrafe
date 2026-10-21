@@ -54,14 +54,14 @@
 <h2 class="text-xl font-semibold mb-2">Attachments</h2>
 <div class="overflow-x-auto rounded-box border border-base-300 bg-base-100 mb-6">
 <table class="table table-zebra table-sm">
-  <thead><tr><th>id</th><th>record type</th><th>record id</th><th>name</th><th>created at</th></tr></thead>
+  <thead><tr><th>id</th><th>owner kind</th><th>owner id</th><th>role</th><th>created at</th></tr></thead>
   <tbody>
     {% for a in attachments %}
     <tr>
       <td><a class="link link-primary font-mono text-xs" href="{{ layout.base }}/attachments/{{ a.id }}">{{ a.id }}</a></td>
-      <td>{{ a.record_type }}</td>
-      <td>{{ a.record_id }}</td>
-      <td>{{ a.name }}</td>
+      <td>{{ a.owner_kind }}</td>
+      <td>{{ a.owner_id }}</td>
+      <td>{{ a.role }}</td>
       <td>{{ a.created_at|ts }}</td>
     </tr>
     {% endfor %}

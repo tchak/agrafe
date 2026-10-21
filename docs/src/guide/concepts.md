@@ -90,8 +90,8 @@ from an id that never existed. The public port answers `404` either way.
 
 ## Attachments
 
-An **attachment** records that a record of the backend uses a blob. It is
-the triple Active Storage uses: `record_type`, `record_id` and `name`. A
+An **attachment** records that an owner in the backend uses a blob. It
+is three strings: `owner_kind`, `owner_id` and `role`. A
 blob can be attached any number of times. Attachments drive the blob's
 lifetime: an attached blob never expires, and the last detach gives it back
 its default expiry. See [Attachments and lifetime](attachments.md).
