@@ -10,6 +10,14 @@ This repository is managed with **jj** (Jujutsu), colocated with git. Always use
 squash, bookmarks and pushing. `jj st`, `jj diff`, `jj log`, `jj describe -m`,
 `jj new`, `jj bookmark`.
 
+## Scale: billions of blobs
+
+agrafe is designed for billions of blobs (see "Scale" in `DESIGN.md`).
+Design every feature, query, job and review for that size: no
+unbounded scans, every query on an index, whole-table work as a
+resumable batched job, and per-blob costs weighed at a billion times.
+A test passing on a small database proves nothing about this.
+
 ## Layout
 
 See "Crates" in `DESIGN.md` for the dependency graph.

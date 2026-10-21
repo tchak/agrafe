@@ -29,6 +29,32 @@ reference when code and intuition disagree.
   wants new bytes creates a new blob and swaps its own reference.
 - Range requests on previews and thumbnails. They are small and served whole.
 
+## Scale
+
+agrafe is built for billions of blobs: billions of rows in `blobs` and
+`attachments`, billions of objects in the bucket. Every design, feature
+and performance review starts from that number, not from what a test
+database or a first deployment holds.
+
+- No query reads a table whole. Every query a request, a page or a job
+  runs is bounded by an index: a lookup by key, a cursor page, a capped
+  walk. `COUNT(*)`, `SELECT DISTINCT`, `OFFSET` pagination and an
+  unindexed filter are scans at this size; a new filter or sort comes
+  with its index, and the plan is checked against it.
+- Anything that visits every blob or object (a sweep, an audit, a
+  migration of data) is a job that takes days: it works in batches,
+  saves its place, resumes after a deploy or an error, and yields to
+  the request path. Nothing runs it inside one transaction or one
+  request.
+- Per-blob cost is multiplied by billions: a column, an index, a row
+  per event, an extra object per blob or a request to the store per
+  read is weighed at that multiple, in storage and in money.
+- Hot rows and global counters do not exist. Nothing updates one row
+  per upload or per read; aggregates come from metrics, estimates
+  (`pg_class.reltuples`) or bounded samples.
+- The queue holds only the backlog, never the history, so it stays
+  small however many blobs there are (see "Jobs").
+
 ## Crates
 
 One workspace, split so that the service can be embedded in another axum
