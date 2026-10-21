@@ -771,7 +771,7 @@ hand under `Unreleased` as changes land. From an empty change on top of
 `main` (`jj new main`):
 
 ```sh
-scripts/release.sh 0.2.0
+cargo xtask release 0.2.0
 ```
 
 It bumps the version, dates the changelog's section, commits `Release
@@ -782,7 +782,7 @@ arm64), the crates on crates.io, and the GitHub release with the
 changelog section as its notes. A run that fails partway is re-run as it
 is; it skips the crates already published.
 
-A pre-release, `scripts/release.sh 0.2.0-rc.1`, is released the same way,
+A pre-release, `cargo xtask release 0.2.0-rc.1`, is released the same way,
 crates included, but leaves the changelog alone: its notes are what
 `Unreleased` says, and the section goes to the release that follows it.
 Its images get their own tags alone, never `0.2` or `latest`.

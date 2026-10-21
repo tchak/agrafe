@@ -9,7 +9,7 @@ the Rust API, and says how in its entry.
 A change that a user, an operator or an embedding application would notice
 gets a line under `Unreleased` in the same commit, in one of `Added`,
 `Changed`, `Deprecated`, `Removed`, `Fixed` or `Security`.
-`scripts/release.sh` turns that section into the release's, and its text
+`cargo xtask release` turns that section into the release's, and its text
 becomes the GitHub release's notes.
 
 ## [Unreleased]

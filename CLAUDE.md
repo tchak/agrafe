@@ -58,8 +58,10 @@ See "Crates" in `DESIGN.md` for the dependency graph.
 - `Dockerfile`, `docker/` — the release images: a trixie build stage, a
   trixie runtime with or without LibreOffice (`VARIANT=office`), and the
   configuration file each variant gets.
-- `scripts/release.sh` — cuts a release (see "Releases" in `DESIGN.md`);
-  the tag it pushes runs `.github/workflows/release.yml`.
+- `xtask/` — the workspace's own tasks, `cargo xtask <task>`, never
+  published: `release <version>` cuts a release (see "Releases" in
+  `DESIGN.md`), and the tag it pushes runs `.github/workflows/release.yml`,
+  which takes the GitHub release's text from `notes <version>`.
 - `docs/` — the user documentation, an mdBook (`mdbook build docs`,
   `mdbook serve docs`), deployed to GitHub Pages by
   `.github/workflows/docs.yml` on push to `main`. Update it with the

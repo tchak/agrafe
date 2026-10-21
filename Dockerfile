@@ -22,7 +22,7 @@ COPY . .
 # The caches make a local rebuild incremental; in CI they start empty.
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/src/target,sharing=locked \
-    cargo build --release --locked --bins \
+    cargo build --release --locked --workspace --exclude xtask --bins \
  && mkdir /out \
  && cd target/release \
  && cp agrafe agrafe-extract agrafe-render-text agrafe-render-document \

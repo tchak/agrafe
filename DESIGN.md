@@ -3218,11 +3218,16 @@ the code; the changelog says it for an operator or an embedder, and
 generating one from the other (release-plz, git-cliff) would need
 conventional commits and still list every test and refactor.
 
-A release is a tag. `scripts/release.sh <version>` bumps the version,
+A release is a tag. `cargo xtask release <version>` bumps the version,
 dates the section, commits `Release <version>` on `main`, tags it
 `v<version>` and pushes both with jj; nothing else writes to `main` or
-creates tags. Versions are ordered as semver orders them, a pre-release
-before its release, which `sort -V` does not do. A pre-release takes no
+creates tags. The task is Rust, an `xtask` crate that is never
+published, rather than a shell script: versions are ordered by the
+`semver` crate, Cargo's, which puts a pre-release before its release as
+`sort -V` does not; `Cargo.toml` is edited with `toml_edit`, keeping its
+comments and layout, rather than with `sed`; and the ordering, the bump
+and the changelog edits are unit tests run with the rest. The workflow
+reads the release notes through the same code (`cargo xtask notes`). A pre-release takes no
 changelog section: its notes are `Unreleased`, which the release after it
 takes whole, so the release's entry says everything since the last one. The tag runs `.github/workflows/release.yml`, in the order
 that keeps an irreversible step last but one:

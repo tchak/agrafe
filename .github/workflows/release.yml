@@ -1,6 +1,6 @@
 name: Release
 
-# A v<version> tag, pushed by scripts/release.sh, releases that commit: the
+# A v<version> tag, pushed by `cargo xtask release`, releases that commit: the
 # CI suite, then the Docker images, then the crates, then the GitHub
 # release. Publishing to crates.io cannot be undone, so it waits for the
 # rest that can fail; a run that stops partway is re-run as it is, and
@@ -28,28 +28,16 @@ jobs:
       prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
       - name: Compare the tag with the workspace version and the changelog
         id: version
         run: |
           version=${GITHUB_REF_NAME#v}
-          manifest=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml)
-          if [[ $version != "$manifest" ]]; then
-            echo "::error::the tag is $GITHUB_REF_NAME, the workspace's version $manifest"
-            exit 1
-          fi
-          # The version's section, up to the next heading or the links; a
-          # pre-release has none, and its notes are what Unreleased says.
-          section=$version
-          [[ $version == *-* ]] && section=Unreleased
-          awk -v heading="## [$section]" '
-            index($0, heading) == 1 { on = 1; next }
-            /^## \[/ || /^\[[^]]*\]: / { on = 0 }
-            on
-          ' CHANGELOG.md > notes.md
-          if ! grep -q '[^[:space:]]' notes.md; then
-            echo "::error::CHANGELOG.md has nothing under $section"
-            exit 1
-          fi
+          # Refuses a workspace at another version, and a version with no
+          # notes: its changelog section, or Unreleased for a pre-release.
+          cargo xtask notes "$version" > notes.md
           cat >> notes.md <<EOF
 
           ### Docker images
@@ -230,7 +218,9 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token || secrets.CARGO_REGISTRY_TOKEN }}
         run: |
-          names=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[].name')
+          # The crates published, not xtask (`publish = false`).
+          names=$(cargo metadata --no-deps --format-version 1 |
+            jq -r '.packages[] | select(.publish != []) | .name')
           total=$(wc -w <<<"$names")
           exclude=()
           for name in $names; do

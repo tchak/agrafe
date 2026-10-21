@@ -1,0 +1,20 @@
+[package]
+name = "xtask"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "The workspace's own tasks, run as `cargo xtask`: cutting a release"
+# A tool of this repository, never a crate of its own.
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
+# Today's date in the changelog. Already in the tree.
+jiff = "0.2.38"
+semver = "1.0.28"
+thiserror = "2.0.21"
+# Edits Cargo.toml as a document, keeping its comments and layout.
+toml_edit = "0.25.17"
