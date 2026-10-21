@@ -156,13 +156,9 @@ impl fmt::Debug for TraceContext {
 /// `N` bytes of randomness, never all zero, which W3C reserves for "none".
 fn random<const N: usize>() -> [u8; N] {
     let mut bytes = [0; N];
-    if getrandom::fill(&mut bytes).is_err() {
-        // No entropy source: the ids only have to be unique enough to
-        // tell traces apart in a log, which the clock and a v7 UUID's
-        // random bits are.
-        let uuid = uuid::Uuid::now_v7().into_bytes();
-        bytes.copy_from_slice(&uuid[16 - N..]);
-    }
+    // Blob ids (`Uuid::now_v7`) draw on the same source, through the same
+    // crate, and panic without it too: a host with no entropy runs nothing.
+    getrandom::fill(&mut bytes).expect("the OS entropy source, which blob ids draw on too");
     if bytes == [0; N] {
         bytes[N - 1] = 1;
     }
