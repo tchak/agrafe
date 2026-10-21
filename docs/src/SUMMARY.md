@@ -29,3 +29,7 @@
 - [Public HTTP API](reference/public-api.md)
 - [Private HTTP API](reference/private-api.md)
 - [Errors](reference/errors.md)
+
+---
+
+[Changelog](changelog.md)

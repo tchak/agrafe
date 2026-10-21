@@ -60,6 +60,9 @@ See "Crates" in `DESIGN.md` for the dependency graph.
   `.github/workflows/docs.yml` on push to `main`. Update it with the
   README when a feature lands or a route, key or error changes; the
   configuration reference includes `config/example.toml` verbatim.
+- `CHANGELOG.md` — Keep a Changelog, one version for every crate. A
+  change a user, operator or embedder would notice adds its line under
+  `Unreleased` in the same commit; the book includes the file verbatim.
 
 ## Local development
 
