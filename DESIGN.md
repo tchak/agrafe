@@ -2223,7 +2223,7 @@ on "has preview", never on category. Sources, in order:
    of gigabytes and vector tiles need a style-aware renderer that does not
    exist in Rust and would have to be written inside a sandboxed helper.
    Out of scope for now: XYZ and WMTS layers, caching backgrounds between
-   renders, KML and Shapefile, which are readers to come in this helper.
+   renders, and Shapefile, which would be another reader in this helper.
 A document that is not one of these has no preview, whether PDF or office:
 the first page of a PDF is its thumbnail (see "Thumbnail"), not a preview.
 

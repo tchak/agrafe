@@ -128,7 +128,7 @@ The bytes flow once through a chain of checks, in this order:
    declaration, and `application/octet-stream`, which declares nothing.
    Siblings, such as a DOCX declared as an XLSX, are refused. A variant
    the bytes cannot tell from its base format, such as a macro-enabled
-   workbook or an OpenDocument template, is checked as that format. Two
+   workbook or an OpenDocument template, is checked as that format. Three
    declarations are refined rather than checked: a JSON document that
    opens on a GeoJSON `Feature` or `FeatureCollection`, declared as
    `application/json`, `text/json` or `text/plain`, gets
