@@ -770,7 +770,9 @@ how a `.geojson` tends to arrive, the blob's `content_type` becomes
 only case where the bytes change the declaration, in the direction of
 precision only, and the category, `text`, is the same either way. The
 row and the `Content-Type` the original is served with carry the refined
-type. Categories:
+type. A refinement `upload.content_types` does not admit is not made:
+the blob keeps its declaration, which is in the list, so a list never
+ends up with a type outside it on a row. Categories:
 
 `image`, `document`, `spreadsheet`, `presentation`, `archive`, `audio`,
 `video`, `text`, `other`.

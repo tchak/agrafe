@@ -725,7 +725,9 @@ impl Tap for Checks {
 /// another kind of file or one `upload.content_types` does not accept, the
 /// more precise type when they refine the declaration, see `sniff::refine`.
 /// The declaration is checked against the list again, which may have
-/// changed since the blob was created.
+/// changed since the blob was created. A refinement the list does not
+/// admit is not made: the blob keeps the declaration, which is in the
+/// list, rather than taking a type outside it.
 fn check_type(
     declared: &str,
     head: &[u8],
@@ -742,7 +744,43 @@ fn check_type(
         Some(sniffed) if !accepted.allows_sniffed(declared, sniffed) => {
             Err(UploadError::TypeNotAccepted(sniffed.to_string()))
         }
-        Some(sniffed) => Ok(sniff::refine(declared, sniffed)),
+        Some(sniffed) => {
+            Ok(sniff::refine(declared, sniffed).filter(|refined| accepted.allows(refined)))
+        }
         None => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn list(entries: &[&str]) -> Allowlist {
+        Allowlist::try_from(entries.iter().map(|s| s.to_string()).collect::<Vec<_>>()).unwrap()
+    }
+
+    #[test]
+    fn a_refinement_outside_the_list_is_not_made() {
+        let geojson = br#"{"type": "FeatureCollection", "features": []}"#;
+        let any = Allowlist::default();
+        assert_eq!(
+            check_type("application/json", geojson, &any).unwrap(),
+            Some("application/geo+json")
+        );
+        let json_only = list(&["application/json"]);
+        assert_eq!(
+            check_type("application/json", geojson, &json_only).unwrap(),
+            None
+        );
+        let with_geojson = list(&["application/json", "application/geo+json"]);
+        assert_eq!(
+            check_type("application/json", geojson, &with_geojson).unwrap(),
+            Some("application/geo+json")
+        );
+        let application = list(&["application/*"]);
+        assert_eq!(
+            check_type("application/json", geojson, &application).unwrap(),
+            Some("application/geo+json")
+        );
     }
 }

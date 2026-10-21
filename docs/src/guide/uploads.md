@@ -136,6 +136,8 @@ The bytes flow once through a chain of checks, in this order:
    When `upload.content_types` is set, the declaration must still be in
    it, and the bytes of a blob declared as `application/octet-stream`
    must be of a listed type: that declaration does not widen the list.
+   A GeoJSON file is refined to `application/geo+json` only when the list
+   admits that type; otherwise it keeps its declaration.
 4. **Virus scan**, inline when the file is small enough and `clamd` is
    reachable.
 5. **Encryption** and the multipart upload to the object store.
