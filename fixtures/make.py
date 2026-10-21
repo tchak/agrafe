@@ -5,12 +5,12 @@ committed; run this only to change them. The XML map fixtures (`.gpx`,
 `.kml`) are hand-written and edited directly; the `.kmz` ones are built
 here from them.
 
-The Office 97-2003 fixtures (`letter.doc`, `table.xls`) cannot be written
-by hand: they are converted from the ZIP ones by LibreOffice, when one is
-found, and only when missing or with `--legacy`, since each conversion
-stamps the time into the file. A `.ppt` is not among them: LibreOffice
-writes close to half a megabyte for two empty slides, so the legacy
-Impress test converts one at test time instead."""
+The Office 97-2003 fixtures (`letter.doc`, `table.xls`, `slides.ppt`)
+cannot be written by hand: they are converted from the ZIP ones by
+LibreOffice, when one is found, and only when missing or with `--legacy`,
+since each conversion stamps the time into the file. `slides.ppt` is about
+600 KB, nearly all of it an uncompressed white thumbnail its PowerPoint 97
+filter always writes, which git stores in about 11 KB."""
 
 import io
 import json
@@ -495,7 +495,11 @@ def main():
         print(f"{name}: {len(data)} bytes")
     # The Office 97-2003 files, from the ZIP ones through LibreOffice.
     command = soffice()
-    for name, source, export in [("letter.doc", "text.odt", "doc:MS Word 97"), ("table.xls", "table.xlsx", "xls:MS Excel 97")]:
+    for name, source, export in [
+        ("letter.doc", "text.odt", "doc:MS Word 97"),
+        ("table.xls", "table.xlsx", "xls:MS Excel 97"),
+        ("slides.ppt", "slides.pptx", "ppt:MS PowerPoint 97"),
+    ]:
         if (HERE / name).exists() and "--legacy" not in sys.argv:
             continue
         if command is None:

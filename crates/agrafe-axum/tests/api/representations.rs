@@ -297,38 +297,6 @@ const PPTX: &str = "application/vnd.openxmlformats-officedocument.presentationml
 const ODP: &str = "application/vnd.oasis.opendocument.presentation";
 const ODG: &str = "application/vnd.oasis.opendocument.graphics";
 
-/// A fixture LibreOffice writes at test time, since its Office 97-2003
-/// export of two empty slides is close to half a megabyte: the fixture
-/// `source` converted with the `export` filter (`"ppt:MS PowerPoint 97"`),
-/// in a throwaway profile.
-fn legacy(soffice: &str, source: &str, export: &str) -> Vec<u8> {
-    let dir = tempfile::tempdir().unwrap();
-    let input = dir.path().join(source);
-    std::fs::write(&input, fixture(source)).unwrap();
-    let status = std::process::Command::new(soffice)
-        .arg(format!(
-            "-env:UserInstallation=file://{}",
-            dir.path().join("profile").display()
-        ))
-        .args([
-            "--headless",
-            "--norestore",
-            "--nologo",
-            "--convert-to",
-            export,
-        ])
-        .arg("--outdir")
-        .arg(dir.path())
-        .arg(&input)
-        .stdout(std::process::Stdio::null())
-        .status()
-        .unwrap();
-    assert!(status.success(), "{soffice} --convert-to {export} {source}");
-    let (extension, _) = export.split_once(':').unwrap();
-    let (stem, _) = source.rsplit_once('.').unwrap();
-    std::fs::read(dir.path().join(format!("{stem}.{extension}"))).unwrap()
-}
-
 /// LibreOffice on the `PATH`, or `None` with a message: the converter
 /// tests run where it is installed, which CI is.
 fn soffice() -> Option<&'static str> {
@@ -526,13 +494,12 @@ async fn presentations_and_drawings_get_their_first_slide_through_libreoffice() 
         return;
     };
     let clamd = fake_clamd().await;
-    // The PowerPoint 97 file LibreOffice writes is about half a megabyte.
+    // The PowerPoint 97 file LibreOffice writes is about 600 KB.
     let app = setup_tuned(db, clamd, |c| {
         c.media.render.office.command = Some(soffice.to_string());
         c.upload.max_size = bytesize::ByteSize::mib(1);
     })
     .await;
-    let ppt = legacy(soffice, "slides.pptx", "ppt:MS PowerPoint 97");
     let slides = [
         (
             ready_file(&app, "slides.pptx", PPTX, &fixture("slides.pptx")).await,
@@ -543,7 +510,13 @@ async fn presentations_and_drawings_get_their_first_slide_through_libreoffice() 
             "presentation",
         ),
         (
-            ready_file(&app, "slides.ppt", "application/vnd.ms-powerpoint", &ppt).await,
+            ready_file(
+                &app,
+                "slides.ppt",
+                "application/vnd.ms-powerpoint",
+                &fixture("slides.ppt"),
+            )
+            .await,
             "presentation",
         ),
         (
