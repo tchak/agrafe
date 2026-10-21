@@ -43,6 +43,13 @@ const MAX_ENTRIES: usize = 10_000;
 /// How many `styleUrl` references are followed from a placemark to a
 /// style: a map pointing at a map pointing at a style is two.
 const MAX_STYLE_HOPS: usize = 8;
+/// The icon colour that is no tint: Google Earth's default, which leaves
+/// the configured marker colour to apply.
+const WHITE: Color = Color {
+    r: 0xff,
+    g: 0xff,
+    b: 0xff,
+};
 
 /// The geometries of the KML document `bytes` with the style each is
 /// drawn in, in document order. The style is what the document says and
@@ -51,13 +58,17 @@ const MAX_STYLE_HOPS: usize = 8;
 /// a geometry: nothing to draw. A document that ends before its elements
 /// close is drawn as far as it goes.
 pub(crate) fn placemarks(bytes: &[u8]) -> Option<Vec<(Geometry, Style)>> {
-    let document = Parser::default().parse(bytes)?;
+    let mut document = Parser::default().parse(bytes)?;
+    // The placemarks are moved out, not cloned: their coordinates are
+    // most of a large document's memory, and the styles they name live
+    // in `shared`, which stays.
+    let placemarks = std::mem::take(&mut document.placemarks);
     let mut out = Vec::new();
-    for placemark in &document.placemarks {
+    for placemark in placemarks {
         let named = placemark
             .url
-            .clone()
-            .and_then(|url| document.resolve(&Target::Url(url)));
+            .as_deref()
+            .and_then(|url| document.resolve_url(url));
         let inline = placemark
             .inline
             .as_ref()
@@ -67,9 +78,9 @@ pub(crate) fn placemarks(bytes: &[u8]) -> Option<Vec<(Geometry, Style)>> {
             (Some(style), None) | (None, Some(style)) => style,
             (None, None) => KmlStyle::default(),
         };
-        for geometry in &placemark.geometries {
+        for geometry in placemark.geometries {
             let polygon = matches!(geometry.value, GeometryValue::Polygon { .. });
-            out.push((geometry.clone(), style.style(polygon)));
+            out.push((geometry, style.style(polygon)));
         }
     }
     (!out.is_empty()).then_some(out)
@@ -204,24 +215,31 @@ struct Document {
 }
 
 impl Document {
-    /// The style `target` ends at, through at most `MAX_STYLE_HOPS`
-    /// maps. `None` when it points outside the document, at nothing, or
-    /// round in a circle.
-    fn resolve<'a>(&'a self, mut target: &'a Target) -> Option<KmlStyle> {
+    /// The style `target` ends at: itself when written inline, else what
+    /// its URL resolves to.
+    fn resolve(&self, target: &Target) -> Option<KmlStyle> {
+        match target {
+            Target::Style(style) => Some(style.clone()),
+            Target::Url(url) => self.resolve_url(url),
+        }
+    }
+
+    /// The style the `styleUrl` `url` ends at, through at most
+    /// `MAX_STYLE_HOPS` maps. `None` when it points outside the document,
+    /// at nothing, or round in a circle.
+    fn resolve_url<'a>(&'a self, mut url: &'a str) -> Option<KmlStyle> {
         for _ in 0..MAX_STYLE_HOPS {
-            match target {
-                Target::Style(style) => return Some(style.clone()),
-                Target::Url(url) => {
-                    let id = match url.trim().split_once('#') {
-                        Some(("", id)) => id,
-                        Some(_) => return None,
-                        None => url.trim(),
-                    };
-                    match self.shared.get(id)? {
-                        Shared::Style(style) => return Some(style.clone()),
-                        Shared::Map(normal) => target = normal.as_ref()?,
-                    }
-                }
+            let id = match url.trim().split_once('#') {
+                Some(("", id)) => id,
+                Some(_) => return None,
+                None => url.trim(),
+            };
+            match self.shared.get(id)? {
+                Shared::Style(style) => return Some(style.clone()),
+                Shared::Map(normal) => match normal.as_ref()? {
+                    Target::Style(style) => return Some(style.clone()),
+                    Target::Url(next) => url = next,
+                },
             }
         }
         None
@@ -473,9 +491,7 @@ impl Parser {
                         (Section::Poly, "outline") => style.poly_outline = switch(text),
                         (Section::Icon, "color") => {
                             // White is no tint: the configured colour applies.
-                            style.icon_color = argb(text)
-                                .map(|(c, _)| c)
-                                .filter(|c| c.to_string() != "#ffffff");
+                            style.icon_color = argb(text).map(|(c, _)| c).filter(|&c| c != WHITE);
                         }
                         (Section::Icon, "scale") => style.icon_scale = number(Some(text)),
                         _ => {}
