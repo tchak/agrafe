@@ -109,6 +109,11 @@ impl Config {
                 "server.private_hosts: {host:?} is not a host and port, like agrafe.internal:8080"
             )));
         }
+        if self.server.interfaces.is_empty() {
+            return Err(ConfigError::Invalid(
+                "server.interfaces must name at least one interface, or be omitted for both".into(),
+            ));
+        }
         if self.jobs.kinds.as_ref().is_some_and(Vec::is_empty) {
             return Err(ConfigError::Invalid(
                 "jobs.kinds must name at least one kind, or be omitted for all".into(),
@@ -151,10 +156,12 @@ impl Config {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServerConfig {
     /// Where the private interface listens: no signatures, trusted network
-    /// only. A worker-only process binds it too, for `/healthz` and
-    /// `/metrics` alone.
+    /// only. Every process binds it: one that does not serve the private
+    /// API (a worker, or an API process with `interfaces = ["public"]`)
+    /// answers `/healthz` and `/metrics` on it alone.
     pub private_addr: SocketAddr,
-    /// Where the public interface listens, every URL on it signed.
+    /// Where the public interface listens, every URL on it signed. Bound
+    /// only when the process serves the public interface.
     pub public_addr: SocketAddr,
     /// The base public URLs are minted under, as clients reach the public
     /// interface (`https://files.example`). No trailing slash.
@@ -163,6 +170,11 @@ pub struct ServerConfig {
     /// `--role` flag takes precedence.
     #[serde(default)]
     pub role: Role,
+    /// The interfaces an API process serves; both by default. The
+    /// `--interfaces` flag takes precedence. Says nothing to a `worker`
+    /// process, which serves neither.
+    #[serde(default = "default_interfaces")]
+    pub interfaces: Vec<Interface>,
     /// The names and ports the private interface is reached under
     /// (`agrafe.internal:8080`). Set, a private request whose `Host` is
     /// none of them is refused, which is what stops DNS rebinding from
@@ -174,11 +186,38 @@ pub struct ServerConfig {
     pub private_hosts: Vec<String>,
 }
 
+fn default_interfaces() -> Vec<Interface> {
+    Interface::ALL.to_vec()
+}
+
+impl ServerConfig {
+    /// Whether this process serves `interface`: its role runs the API and
+    /// `interfaces` names it.
+    pub fn serves(&self, interface: Interface) -> bool {
+        self.role.runs_api() && self.interfaces.contains(&interface)
+    }
+}
+
+/// One of the two HTTP interfaces, `server.interfaces`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Interface {
+    /// The private API, trusted network only, with the dashboard.
+    Private,
+    /// The public interface, every URL on it signed.
+    Public,
+}
+
+agrafe_types::str_enum!(Interface {
+    Private => "private",
+    Public => "public",
+});
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 /// The parts of the service a process runs, `server.role`.
 pub enum Role {
-    /// The HTTP interfaces, no workers.
+    /// The HTTP interfaces `interfaces` names, no workers.
     Api,
     /// The job workers, with the private interface for `/healthz` and
     /// `/metrics` alone.
@@ -1247,6 +1286,36 @@ mod tests {
             jail.set_env("AGRAFE_JOBS__KINDS", "[]");
             let err = load(&example()).unwrap_err().to_string();
             assert!(err.contains("at least one kind"), "{err}");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn interfaces_select_what_an_api_process_serves() {
+        Jail::expect_with(|jail| {
+            let config = load(&example())?;
+            assert_eq!(config.server.interfaces, Interface::ALL);
+            assert!(config.server.serves(Interface::Private));
+            assert!(config.server.serves(Interface::Public));
+
+            jail.set_env("AGRAFE_SERVER__INTERFACES", r#"["public"]"#);
+            let config = load(&example())?;
+            assert!(!config.server.serves(Interface::Private));
+            assert!(config.server.serves(Interface::Public));
+
+            jail.set_env("AGRAFE_SERVER__ROLE", "worker");
+            let config = load(&example())?;
+            assert!(
+                !config.server.serves(Interface::Public),
+                "a worker serves no API"
+            );
+
+            jail.set_env("AGRAFE_SERVER__ROLE", "all");
+            jail.set_env("AGRAFE_SERVER__INTERFACES", r#"["privat"]"#);
+            assert!(load(&example()).is_err(), "a typo is an error");
+            jail.set_env("AGRAFE_SERVER__INTERFACES", "[]");
+            let err = load(&example()).unwrap_err().to_string();
+            assert!(err.contains("at least one interface"), "{err}");
             Ok(())
         });
     }

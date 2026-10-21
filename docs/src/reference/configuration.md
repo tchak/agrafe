@@ -32,10 +32,11 @@ be left out.
 
 | Key | Default | Description |
 |---|---|---|
-| `private_addr` | **required** | Address of the private interface. A worker-only process binds it too, for `/healthz` and `/metrics` |
-| `public_addr` | **required** | Address of the public interface |
+| `private_addr` | **required** | Address of the private interface. Every process binds it; one that does not serve the private API answers `/healthz` and `/metrics` there alone |
+| `public_addr` | **required** | Address of the public interface. Bound only by a process that serves it |
 | `public_base_url` | **required** | Base of minted public URLs, as browsers reach the public port. No trailing slash |
 | `role` | `"all"` | `"api"`, `"worker"` or `"all"`. `serve --role` takes precedence |
+| `interfaces` | `["private", "public"]` | The interfaces an API process serves; at least one. Ignored by a worker. `serve --interfaces` takes precedence |
 | `private_hosts` | `[]` | The `host:port` names the private interface is reached under. When set, any other `Host` is refused with `403`, except on `/healthz` and `/metrics`. Set it whenever a browser uses the port |
 
 ## `[database]` (required)

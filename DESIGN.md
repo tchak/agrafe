@@ -188,7 +188,8 @@ handle, `Agrafe::job_counts`, which `/metrics` reads too.
 
 `dashboard_router(state)` is one router with its state applied, like the
 other two. `agrafe-server` nests it under `/dashboard` on the private
-listener when `dashboard.enabled` is set, on the `api` role only; a host
+listener when `dashboard.enabled` is set, on a process that serves the
+private interface only; a host
 nests it wherever it likes, behind its own authentication. The pages build
 their links from the prefix they find themselves under (the part of the
 original URI the nest stripped), and embed the thumbnail from the private
@@ -2398,7 +2399,15 @@ bulk import of the same kind, but the default, `normal` everywhere, is a
 FIFO per kind.
 
 `server.role` (or `serve --role`), `api`, `worker` or `all`, lets workers
-move to separate machines without code changes, and `jobs.kinds` (or
+move to separate machines without code changes; `server.interfaces` (or
+`serve --interfaces`, comma separated), `private`, `public` or both, the
+default, names the interfaces an API process serves, so that the hosts
+the internet reaches need not carry the private API at all, and the
+backend's host need not open a public port. Whatever it says, every
+process binds `server.private_addr`: the private API when it serves it,
+`/healthz` and `/metrics` alone otherwise, so that one address is always
+there to probe and scrape; `server.public_addr` is bound only when
+served. `jobs.kinds` (or
 `serve --kinds`, comma separated) names the kinds a process runs workers for, every kind when
 omitted. That is how the archive builders get machines of their own, or
 the renderers more of them. A kind no process handles only piles up, which

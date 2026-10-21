@@ -173,7 +173,8 @@ reasoning behind every decision.
   retried through the same queue.
 - **Per-blob priorities** (`high`, `normal`, `low`) ordering the blob's
   fetch, scan, render and build jobs within their kind.
-- **Split roles**: run `api`, `worker` or `all` per process, and pick which
+- **Split roles**: run `api`, `worker` or `all` per process, pick which
+  interface an API process serves (`private`, `public` or both) and which
   job kinds a worker runs, without code changes.
 - **Prometheus metrics** for queue depth and the age of the oldest due job,
   per kind and priority, plus job runs, durations and workers per process.
@@ -236,6 +237,17 @@ agrafe --config config/agrafe.toml serve --role api
 agrafe --config config/agrafe.toml serve --role worker
 agrafe --config config/agrafe.toml serve --role worker --kinds archive
 ```
+
+To keep the private API off the hosts the internet reaches, give the public
+port processes of its own:
+
+```sh
+agrafe --config config/agrafe.toml serve --role api --interfaces public
+agrafe --config config/agrafe.toml serve --role all --interfaces private
+```
+
+Every process binds `server.private_addr`; one that does not serve the
+private API answers `/healthz` and `/metrics` there alone.
 
 ## Usage
 

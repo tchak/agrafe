@@ -7,7 +7,7 @@ private port.
 ## Metrics
 
 `GET /metrics` answers in the Prometheus text format. Every process serves
-it, worker-only ones included, on `server.private_addr`.
+it on `server.private_addr`, worker-only and public-only ones included.
 
 ```yaml
 # prometheus.yml
@@ -207,7 +207,8 @@ is missing. See [Security model](security.md#browsers-on-the-private-port).
 ## Health checks
 
 `GET /healthz` answers `200 ok` on both ports, and on the private address of
-worker-only processes. It says the process is up; it does not check
+every process that serves no private API, worker-only and public-only
+alike. It says the process is up; it does not check
 Postgres, the bucket or `clamd`, whose failures show in the job metrics
 instead.
 

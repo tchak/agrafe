@@ -25,12 +25,13 @@ Runs the HTTP interfaces, the workers, or both, until `SIGINT` or
 `SIGTERM`.
 
 ```sh
-agrafe --config agrafe.toml serve [--role <ROLE>] [--kinds <KIND,...>]
+agrafe --config agrafe.toml serve [--role <ROLE>] [--interfaces <INTERFACE,...>] [--kinds <KIND,...>]
 ```
 
 | Option | Overrides | Description |
 |---|---|---|
 | `--role <ROLE>` | `server.role` | `api`, `worker` or `all` |
+| `--interfaces <INTERFACE,...>` | `server.interfaces` | Comma-separated interfaces an API process serves: `private`, `public`. Both when omitted; ignored by a worker |
 | `--kinds <KIND,...>` | `jobs.kinds` | Comma-separated job kinds this process runs workers for: `fetch`, `scan`, `render`, `rows`, `archive`, `document`, `purge`, `reap`, `notify`, `audit` |
 
 ## `agrafe audit`

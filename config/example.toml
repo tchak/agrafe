@@ -5,16 +5,22 @@
 # Secrets should come from the environment in production.
 
 [server]
-# Private interface: no signatures, trusted network only. A worker-only
-# process binds it too, serving /healthz and /metrics alone.
+# Private interface: no signatures, trusted network only. Every process
+# binds it; one that does not serve the private API (a worker, or an API
+# process with interfaces = ["public"]) serves /healthz and /metrics alone.
 private_addr = "127.0.0.1:8080"
-# Public interface: every URL is signed.
+# Public interface: every URL is signed. Bound only when served.
 public_addr = "127.0.0.1:8081"
 # Base used when minting public URLs. No trailing slash.
 public_base_url = "http://127.0.0.1:8081"
 # Which parts of the service this process runs: "api", "worker" or "all".
 # The --role flag on the command line takes precedence.
 role = "all"
+# The interfaces an API process serves, both when omitted: ["private"] for
+# the process the backend talks to, ["public"] for the one behind the
+# internet-facing proxy. Ignored by a worker. The --interfaces flag takes
+# precedence.
+# interfaces = ["private", "public"]
 # The names and ports the private interface is reached under. Set, a
 # private request whose Host is none of them is refused (403), except on
 # /healthz and /metrics, which probes reach by address. This is what stops

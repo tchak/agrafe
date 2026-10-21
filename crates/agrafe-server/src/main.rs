@@ -1,8 +1,11 @@
 //! The `agrafe` binary. `agrafe migrate` applies the pending database
-//! migrations; `agrafe serve` runs what `server.role` names: the private
-//! and public interfaces (the dashboard under `/dashboard` on the private
-//! one, when enabled), the job workers, or both; `agrafe audit` checks
-//! the bucket against the `blobs` table once, on demand.
+//! migrations; `agrafe serve` runs what `server.role` names: the HTTP
+//! interfaces `server.interfaces` lists (private, public or both, the
+//! dashboard under `/dashboard` on the private one when enabled), the job
+//! workers, or both; `agrafe audit` checks the bucket against the `blobs`
+//! table once, on demand. Every process binds the private address: one
+//! that does not serve the private API answers `/healthz` and `/metrics`
+//! on it alone.
 
 use std::net::SocketAddr;
 use std::num::NonZeroU32;
@@ -10,7 +13,7 @@ use std::path::PathBuf;
 
 use agrafe::Agrafe;
 use agrafe::app::InitError;
-use agrafe::config::{Config, ConfigError, Role};
+use agrafe::config::{Config, ConfigError, Interface, Role};
 use agrafe::jobs::JobKind;
 use agrafe::jobs::audit::{self, AuditError};
 use agrafe::{db, jobs};
@@ -41,6 +44,10 @@ enum Command {
         /// all.
         #[arg(long)]
         role: Option<Role>,
+        /// Overrides server.interfaces: the HTTP interfaces an api process
+        /// serves, comma separated (private, public).
+        #[arg(long, value_delimiter = ',')]
+        interfaces: Option<Vec<Interface>>,
         /// Overrides jobs.kinds: the job kinds this process runs workers
         /// for, comma separated (fetch, scan, render, rows, archive,
         /// document, purge, reap, notify, audit).
@@ -169,9 +176,16 @@ async fn main() -> Result<(), Error> {
             tracing::info!("migrations applied");
             Ok(())
         }
-        Command::Serve { role, kinds } => {
+        Command::Serve {
+            role,
+            interfaces,
+            kinds,
+        } => {
             if let Some(role) = role {
                 config.server.role = role;
+            }
+            if let Some(interfaces) = interfaces {
+                config.server.interfaces = interfaces;
             }
             if let Some(kinds) = kinds {
                 config.jobs.kinds = Some(kinds);
@@ -203,21 +217,20 @@ async fn main() -> Result<(), Error> {
 }
 
 async fn serve(config: Config) -> Result<(), Error> {
-    let role = config.server.role;
     let pool = db::connect(&config.database).await?;
     let state = Agrafe::new(config, pool)?;
     let shutdown = shutdown_signal().shared();
+    let cfg = &state.config().server;
 
     let mut tasks = tokio::task::JoinSet::new();
 
-    if role.runs_api() {
-        let cfg = &state.config().server;
-        let private = bind("private", cfg.private_addr).await?;
-        let public = bind("public", cfg.public_addr).await?;
+    // The private address is always bound: the private API when this
+    // process serves it, `/healthz` and `/metrics` alone otherwise, so
+    // that every process has something to probe and scrape.
+    let private = bind("private", cfg.private_addr).await?;
+    let private_app = if cfg.serves(Interface::Private) {
         tracing::info!(addr = %cfg.private_addr, "private interface listening");
-        tracing::info!(addr = %cfg.public_addr, "public interface listening");
-
-        let mut private_app = api::private_router(state.clone());
+        let mut app = api::private_router(state.clone());
         if state.config().dashboard.enabled {
             tracing::info!(addr = %cfg.private_addr, "dashboard at /dashboard");
             if cfg.private_hosts.is_empty() {
@@ -231,19 +244,28 @@ async fn serve(config: Config) -> Result<(), Error> {
             let dashboard = agrafe_dashboard::dashboard_router(state.clone()).layer(
                 axum::middleware::from_fn_with_state(state.clone(), api::host::refuse_unknown_host),
             );
-            private_app = private_app.nest("/dashboard", dashboard);
+            app = app.nest("/dashboard", dashboard);
         }
+        app
+    } else {
+        tracing::info!(addr = %cfg.private_addr, "private interface listening (healthz and metrics only)");
+        api::ops_router(state.clone())
+    };
+    let s = shutdown.clone();
+    tasks.spawn(async move {
+        axum::serve(private, private_app)
+            .with_graceful_shutdown(s)
+            .await
+            .map_err(|source| Error::Serve {
+                interface: "private",
+                source,
+            })
+    });
+
+    if cfg.serves(Interface::Public) {
+        let public = bind("public", cfg.public_addr).await?;
+        tracing::info!(addr = %cfg.public_addr, "public interface listening");
         let public_app = api::public_router(state.clone());
-        let s = shutdown.clone();
-        tasks.spawn(async move {
-            axum::serve(private, private_app)
-                .with_graceful_shutdown(s)
-                .await
-                .map_err(|source| Error::Serve {
-                    interface: "private",
-                    source,
-                })
-        });
         let s = shutdown.clone();
         tasks.spawn(async move {
             axum::serve(public, public_app)
@@ -256,24 +278,7 @@ async fn serve(config: Config) -> Result<(), Error> {
         });
     }
 
-    if role.runs_worker() {
-        if !role.runs_api() {
-            // No API, but still something to probe and scrape.
-            let addr = state.config().server.private_addr;
-            let private = bind("private", addr).await?;
-            tracing::info!(addr = %addr, "private interface listening (healthz and metrics only)");
-            let app = api::ops_router(state.clone());
-            let s = shutdown.clone();
-            tasks.spawn(async move {
-                axum::serve(private, app)
-                    .with_graceful_shutdown(s)
-                    .await
-                    .map_err(|source| Error::Serve {
-                        interface: "private",
-                        source,
-                    })
-            });
-        }
+    if cfg.role.runs_worker() {
         let (state, s) = (state.clone(), shutdown.clone());
         tasks.spawn(async move { Ok(jobs::runner::run(state, s).await?) });
     }

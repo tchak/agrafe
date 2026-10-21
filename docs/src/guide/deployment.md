@@ -256,14 +256,27 @@ host](security.md#keeping-the-keks-off-the-host).
 
 | Role | Serves | Runs workers |
 |---|---|---|
-| `all` (default) | both ports | yes |
-| `api` | both ports | no |
+| `all` (default) | the interfaces `server.interfaces` lists, both by default | yes |
+| `api` | the interfaces `server.interfaces` lists, both by default | no |
 | `worker` | `/healthz` and `/metrics` on `server.private_addr` | yes |
 
 ```sh
 agrafe --config agrafe.toml serve --role api
 agrafe --config agrafe.toml serve --role worker
 agrafe --config agrafe.toml serve --role worker --kinds archive
+```
+
+`--interfaces`, or `server.interfaces`, narrows the interfaces an API
+process serves: `private` for the process the backend talks to, `public`
+for the one behind the internet-facing proxy, so that the private API need
+not exist on a host the internet reaches at all. Whatever it says, every
+process binds `server.private_addr`: one that does not serve the private
+API answers `/healthz` and `/metrics` there alone, and does not bind
+`server.public_addr` unless it serves the public interface.
+
+```sh
+agrafe --config agrafe.toml serve --role api --interfaces public
+agrafe --config agrafe.toml serve --role all --interfaces private
 ```
 
 `--kinds`, or `jobs.kinds`, narrows the job kinds a worker runs. Dedicated
@@ -294,7 +307,8 @@ needed: the read cache is per process and short-lived.
 ## Probes
 
 - **Liveness and readiness:** `GET /healthz` on either port answers `ok`.
-  Worker-only processes answer it on the private address.
+  Every process answers it on the private address, worker-only and
+  public-only ones included.
 - **Startup:** a worker that cannot run `vips` or a helper exits before
   serving, with the failing command in the log.
 - **Shutdown:** `SIGTERM` or `SIGINT` stops accepting requests and lets
