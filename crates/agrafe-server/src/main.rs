@@ -218,6 +218,13 @@ async fn main() -> Result<(), Error> {
 }
 
 async fn serve(config: Config) -> Result<(), Error> {
+    // First, so that the logs of a fleet midway through an upgrade say
+    // which release each process runs.
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        role = %config.server.role,
+        "agrafe starting"
+    );
     let pool = db::connect(&config.database).await?;
     let state = Agrafe::new(config, pool)?;
     let shutdown = shutdown_signal().shared();

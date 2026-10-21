@@ -117,6 +117,21 @@ jobs:
             org.opencontainers.image.version=${{ needs.check.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+      # Each image run once on its own architecture before anything is
+      # tagged or published: it starts, and holds the tag's build.
+      - name: Check the version the images print
+        run: |
+          for digest in "$DEFAULT" "$OFFICE"; do
+            printed=$(docker run --rm "$IMAGE@$digest" --version)
+            if [[ $printed != "agrafe $VERSION" ]]; then
+              echo "::error::$IMAGE@$digest prints '$printed', not 'agrafe $VERSION'"
+              exit 1
+            fi
+          done
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+          DEFAULT: ${{ steps.default.outputs.digest }}
+          OFFICE: ${{ steps.office.outputs.digest }}
       - name: Record the digests
         run: |
           mkdir -p digests/default digests/office
