@@ -728,6 +728,81 @@ async fn workers_refuse_a_broken_renderer() {
     );
 }
 
+/// Workers that pass their probes start, and the periodic jobs get
+/// their first run: the reap at once, the audit one interval out.
+#[tokio::test]
+async fn workers_start_and_schedule_the_periodic_jobs() {
+    use agrafe::jobs::JobKind;
+
+    let db = TestDatabase::new().await;
+    let app = setup_tuned(db, fake_clamd().await, |c| {
+        c.jobs.kinds = Some(vec![
+            JobKind::Render,
+            JobKind::Document,
+            JobKind::Reap,
+            JobKind::Audit,
+        ]);
+        c.database.max_connections = 10;
+    })
+    .await;
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let shutdown = async move {
+        let _ = stopped.await;
+    }
+    .boxed()
+    .shared();
+    let workers = tokio::spawn(agrafe::jobs::runner::run(app.state.clone(), shutdown));
+
+    // The probes run first; the scheduling follows.
+    let due_in = |kind: &'static str| {
+        let pool = app.state.pool().clone();
+        async move {
+            sqlx::query_scalar::<_, f64>(
+                "SELECT EXTRACT(EPOCH FROM run_at - now())::float8 FROM jobs \
+                 WHERE kind = $1 AND failed_at IS NULL",
+            )
+            .bind(kind)
+            .fetch_optional(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    let mut audit = None;
+    for _ in 0..500 {
+        audit = due_in("audit").await;
+        if audit.is_some() {
+            break;
+        }
+        assert!(!workers.is_finished(), "{:?}", workers.await);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let audit = audit.expect("the audit was scheduled");
+    let interval = app.state.config().jobs.audit_interval.as_secs_f64();
+    assert!(
+        audit > interval - 60.0 && audit <= interval,
+        "{audit} against {interval}"
+    );
+    // The reap ran at once, and scheduled the next one.
+    let mut reap = None;
+    for _ in 0..500 {
+        reap = due_in("reap").await;
+        if reap.is_some_and(|due| due > 0.0) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let reap = reap.expect("a reap is scheduled");
+    let interval = app.state.config().jobs.reap_interval.as_secs_f64();
+    assert!(reap > 0.0 && reap <= interval, "{reap} against {interval}");
+
+    stop.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), workers)
+        .await
+        .expect("the workers stop")
+        .unwrap()
+        .unwrap();
+}
+
 /// The verdict on the blob's row follows the job that will finish the
 /// blob, not the one that died: a job dying with a live twin says nothing,
 /// a job succeeding takes a stale verdict with it, and a terminal
