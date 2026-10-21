@@ -56,8 +56,12 @@ pub const DOCX: &str = "application/vnd.openxmlformats-officedocument.wordproces
 /// The content type of an OpenDocument text.
 pub const ODT: &str = "application/vnd.oasis.opendocument.text";
 
-/// Classify a normalised `type/subtype` content type.
+/// Classify a normalised `type/subtype` content type. An alias is
+/// classified as its canonical type (`sniff::canonical`), so `text/rtf`
+/// is a document like `application/rtf` and `application/x-gzip` an
+/// archive like `application/gzip`.
 pub fn classify(content_type: &str) -> Category {
+    let content_type = crate::sniff::canonical(content_type);
     let exact = match content_type {
         PDF | "application/msword" | DOCX | ODT | "application/rtf" | "application/epub+zip" => {
             Some(Category::Document)
@@ -72,16 +76,14 @@ pub fn classify(content_type: &str) -> Category {
         | "application/vnd.oasis.opendocument.presentation" => Some(Category::Presentation),
 
         ZIP
-        | "application/x-zip-compressed"
         | "application/gzip"
         | "application/x-tar"
         | "application/x-7z-compressed"
-        | "application/x-rar-compressed"
         | "application/vnd.rar"
         | "application/x-bzip2"
         | "application/zstd" => Some(Category::Archive),
 
-        "application/json" | "application/xml" | crate::geojson::GEOJSON => Some(Category::Text),
+        "application/json" | crate::geojson::GEOJSON => Some(Category::Text),
 
         _ => None,
     };
@@ -114,5 +116,18 @@ mod tests {
         assert_eq!(classify(crate::geojson::GEOJSON), Category::Text);
         assert_eq!(classify("video/mp4"), Category::Video);
         assert_eq!(classify("application/octet-stream"), Category::Other);
+    }
+
+    #[test]
+    fn aliases_classify_as_their_canonical_type() {
+        assert_eq!(classify("text/rtf"), Category::Document);
+        assert_eq!(classify("application/x-pdf"), Category::Document);
+        assert_eq!(classify("application/x-msword"), Category::Document);
+        assert_eq!(classify("application/x-zip-compressed"), Category::Archive);
+        assert_eq!(classify("application/x-gzip"), Category::Archive);
+        assert_eq!(classify("application/x-rar-compressed"), Category::Archive);
+        assert_eq!(classify("application/x-bzip"), Category::Archive);
+        assert_eq!(classify("application/xml"), Category::Text);
+        assert_eq!(classify("image/jpg"), Category::Image);
     }
 }

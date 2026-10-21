@@ -777,7 +777,9 @@ ends up with a type outside it on a row. Categories:
 `image`, `document`, `spreadsheet`, `presentation`, `archive`, `audio`,
 `video`, `text`, `other`.
 
-The mapping table lives in code (`classify.rs`). PDF is a `document`.
+The mapping table lives in code (`classify.rs`), on the canonical type,
+so an alias (`text/rtf`, `application/x-gzip`) lands where its type does.
+PDF is a `document`.
 
 ## Upload pipeline
 
