@@ -9,7 +9,7 @@
 //! bytes are something vips may be handed at all, and with which loader.
 
 use crate::geojson::{self, GEOJSON};
-use crate::gpx::{self, GPX};
+use crate::gpx::GPX;
 use crate::kml::{self, KML, KMZ};
 
 /// Bytes needed before a verdict. PDF allows its magic anywhere in the first
@@ -43,13 +43,12 @@ pub fn sniff(head: &[u8]) -> Option<&'static str> {
     if geojson::looks_like_geojson(head) {
         return Some(GEOJSON);
     }
-    if gpx::looks_like_gpx(head) {
-        return Some(GPX);
+    // One look at the XML head for both root elements.
+    match crate::xml::root_element(head) {
+        Some(b"gpx") => Some(GPX),
+        Some(b"kml") => Some(KML),
+        _ => inferred,
     }
-    if kml::looks_like_kml(head) {
-        return Some(KML);
-    }
-    inferred
 }
 
 /// The content type a blob declared as `declared` gets once its bytes
