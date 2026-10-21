@@ -116,9 +116,10 @@ abandoned_after = "1d"
 # any. An exact entry also takes its aliases (image/jpg for image/jpeg) but
 # not its variants: listing XLSX does not admit the macro-enabled XLSM.
 # Checked at creation and again at upload. A blob declared as
-# application/octet-stream must have bytes a listed type would have
-# accepted, so listing it admits the files nothing recognises, not every
-# file. Generated blobs (rows, archive, document) are not checked.
+# application/octet-stream must have bytes of a listed type, or packaged
+# in one (a DOCX under a ZIP entry), so listing it admits the files
+# nothing recognises, not every file. Generated blobs (rows, archive,
+# document) are not checked.
 # content_types = ["application/pdf", "image/*", "text/csv"]
 content_types = []
 

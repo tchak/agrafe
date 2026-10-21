@@ -116,7 +116,7 @@ pub fn canonical(mime: &str) -> &str {
 /// master as its document. The declared variant is then checked as that
 /// format, so it is compatible with what its base is compatible with and
 /// a sibling of what its base is a sibling of.
-fn base(mime: &str) -> Option<&'static str> {
+pub(crate) fn base(mime: &str) -> Option<&'static str> {
     const DOCX: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
     const XLSX: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
     const PPTX: &str = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
@@ -152,7 +152,7 @@ fn base(mime: &str) -> Option<&'static str> {
 }
 
 /// The generic format a specific one is packaged in.
-fn container(mime: &str) -> Option<&'static str> {
+pub(crate) fn container(mime: &str) -> Option<&'static str> {
     const ZIP: &str = "application/zip";
     const XML: &str = "text/xml";
     match mime {

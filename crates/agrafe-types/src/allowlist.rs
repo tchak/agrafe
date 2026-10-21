@@ -46,17 +46,26 @@ impl Allowlist {
     /// Whether bytes sniffed as `sniffed` may be stored for a blob declared
     /// as `declared`, once the two were found compatible. Only a
     /// declaration of `application/octet-stream` is compatible with any
-    /// bytes, so only that one is checked further: the bytes must be what
-    /// a listed type other than it would have accepted. Listing
+    /// bytes, so only that one is checked further: the bytes must be a
+    /// listed type, or packaged in one (listing ZIP admits a DOCX). Not the
+    /// other way round, and none of the leniency `sniff::compatible` has
+    /// for a declaration: listing DOCX does not admit a bare ZIP, listing
+    /// `text/csv` does not admit HTML. The declaration said nothing, so
+    /// there is nothing to be lenient towards. Listing
     /// `application/octet-stream` admits the files nothing recognises, not
     /// every file.
     pub fn allows_sniffed(&self, declared: &str, sniffed: &str) -> bool {
         if self.is_empty() || declared != OCTET_STREAM {
             return true;
         }
+        let s = sniff::canonical(sniffed);
         self.0.iter().any(|entry| match entry {
-            Entry::Exact(e) => e != OCTET_STREAM && sniff::compatible(e, sniffed),
-            Entry::Type(t) => major(sniff::canonical(sniffed)) == t,
+            // The sniffer reports a variant as its base format, so an
+            // entry for the variant admits that format's bytes.
+            Entry::Exact(e) => {
+                sniff::base(e).unwrap_or(e) == s || sniff::container(s) == Some(e.as_str())
+            }
+            Entry::Type(t) => major(s) == t,
         })
     }
 }
@@ -168,6 +177,49 @@ mod tests {
         assert!(!list.allows_sniffed(OCTET_STREAM, "text/html"));
         // Any other declaration was already checked against the bytes.
         assert!(list.allows_sniffed("application/pdf", "application/pdf"));
+    }
+
+    /// The leniency `sniff::compatible` has for a declaration is for a
+    /// declaration; `application/octet-stream` made none.
+    #[test]
+    fn octet_stream_gets_none_of_the_declared_leniency() {
+        const DOCX: &str =
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        const XLSX: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        const GEOJSON: &str = "application/geo+json";
+        // A DOCX is a ZIP; a ZIP is not a DOCX.
+        let docx = list(&[DOCX]);
+        assert!(docx.allows_sniffed(OCTET_STREAM, DOCX));
+        assert!(!docx.allows_sniffed(OCTET_STREAM, "application/zip"));
+        assert!(!docx.allows_sniffed(OCTET_STREAM, XLSX));
+        // Text sniffers are heuristics against a text declaration, not
+        // against no declaration.
+        let csv = list(&["text/csv"]);
+        assert!(!csv.allows_sniffed(OCTET_STREAM, "text/html"));
+        assert!(!csv.allows_sniffed(OCTET_STREAM, "text/x-shellscript"));
+        assert!(!csv.allows_sniffed(OCTET_STREAM, GEOJSON));
+        for text in [
+            list(&["text/plain"]),
+            list(&["text/*"]),
+            list(&["application/json"]),
+        ] {
+            assert!(!text.allows_sniffed(OCTET_STREAM, GEOJSON));
+        }
+        assert!(list(&[GEOJSON]).allows_sniffed(OCTET_STREAM, GEOJSON));
+        assert!(list(&["application/*"]).allows_sniffed(OCTET_STREAM, GEOJSON));
+        // A variant sniffs as its base, so listing it admits those bytes.
+        let xlsm = list(&["application/vnd.ms-excel.sheet.macroenabled.12"]);
+        assert!(xlsm.allows_sniffed(OCTET_STREAM, XLSX));
+        assert!(!xlsm.allows_sniffed(OCTET_STREAM, DOCX));
+        // Every OLE file sniffs as the storage, an MSI installer like a Word
+        // 97 document, so a Word 97 entry admits none of them undeclared;
+        // the storage itself can be listed.
+        const OLE: &str = "application/x-ole-storage";
+        assert!(!list(&["application/msword"]).allows_sniffed(OCTET_STREAM, OLE));
+        assert!(list(&[OLE]).allows_sniffed(OCTET_STREAM, OLE));
+        // Aliases on either side.
+        assert!(list(&["image/jpg"]).allows_sniffed(OCTET_STREAM, "image/jpeg"));
+        assert!(list(&["application/pdf"]).allows_sniffed(OCTET_STREAM, "application/x-pdf"));
     }
 
     #[test]

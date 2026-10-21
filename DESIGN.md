@@ -756,9 +756,16 @@ aliases of its type and not its variants, so a list says what it admits.
 An allowlist, not a blocklist: a blocklist misses what nobody thought to
 list. The bytes are checked too where the declaration says nothing:
 `application/octet-stream` is compatible with any bytes, so a blob
-declared as such must sniff as something a listed type other than it
-would have accepted. Otherwise declaring it would get any file past the
-list. Bytes that sniff as nothing pass on the declaration alone. The
+declared as such must sniff as a listed type or as something packaged in
+one (listing ZIP admits a DOCX). Otherwise declaring it would get any
+file past the list. Not the other way round, and with none of the
+leniency the sniffer has for a declaration: listing DOCX does not admit
+a bare ZIP, listing `text/csv` does not admit HTML, listing Word 97 does
+not admit the OLE storage every Office 97 file and every MSI installer
+sniffs as. That leniency
+exists because a declaration carries information the sniffer may fall
+short of, and `octet-stream` carries none. Bytes that sniff as nothing
+pass on the declaration alone. The
 check is a lookup in a list held in memory, nothing per blob in the
 database. The rules live in `allowlist.rs`.
 
