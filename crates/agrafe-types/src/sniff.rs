@@ -14,13 +14,25 @@ use crate::geojson::{self, GEOJSON};
 /// 1 KiB; ZIP-based office formats need a few local file headers.
 pub const SNIFF_LEN: usize = 8 * 1024;
 
+/// The content type of an OLE compound file, the container of the Office
+/// 97-2003 formats, Outlook messages, Visio and Publisher files.
+const OLE: &str = "application/x-ole-storage";
+
 /// What the first bytes of an upload look like, if recognisable. JSON has
 /// no magic, but a JSON document that opens on a Feature or a
 /// FeatureCollection is a GeoJSON one, and is sniffed as such so that a
 /// `.geojson` declared as JSON or text can be refined (see [`refine`]).
+///
+/// An OLE compound file sniffs as the generic storage: without its `std`
+/// feature, which would parse the file's directory in-process, `infer`
+/// calls every one of them a Word document, an Excel workbook, an Outlook
+/// message and a Visio drawing alike.
 pub fn sniff(head: &[u8]) -> Option<&'static str> {
     if let Some(kind) = infer::get(head) {
-        return Some(kind.mime_type());
+        return Some(match kind.mime_type() {
+            "application/msword" => OLE,
+            other => other,
+        });
     }
     geojson::looks_like_geojson(head).then_some(GEOJSON)
 }
@@ -142,7 +154,6 @@ fn base(mime: &str) -> Option<&'static str> {
 /// The generic format a specific one is packaged in.
 fn container(mime: &str) -> Option<&'static str> {
     const ZIP: &str = "application/zip";
-    const OLE: &str = "application/x-ole-storage";
     const XML: &str = "text/xml";
     match mime {
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -417,5 +428,25 @@ mod tests {
             "application/vnd.ms-publisher",
             "application/zip"
         ));
+    }
+
+    #[test]
+    fn any_ole_file_sniffs_as_the_storage() {
+        let mut head = vec![0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
+        head.resize(SNIFF_LEN, 0);
+        assert_eq!(sniff(&head), Some(OLE));
+        for declared in [
+            "application/msword",
+            "application/vnd.ms-excel",
+            "application/vnd.ms-powerpoint",
+            "application/vnd.ms-outlook",
+            "application/vnd.visio",
+            "application/vnd.ms-publisher",
+            OLE,
+            "application/octet-stream",
+        ] {
+            assert!(compatible(declared, OLE), "{declared}");
+        }
+        assert!(!compatible("application/pdf", OLE));
     }
 }
