@@ -506,6 +506,31 @@ async fn a_helper_writing_nothing_is_a_failed_attempt() {
     assert_eq!(get_blob(&app, id).await["state"], "uploaded");
 }
 
+/// A part longer than `upload.max_size` is refused as it streams in.
+#[tokio::test]
+async fn a_part_over_the_maximum_size_is_too_large() {
+    let db = TestDatabase::new().await;
+    let app = setup_tuned(db, fake_clamd().await, |c| {
+        c.upload.max_size = bytesize::ByteSize::kib(1);
+    })
+    .await;
+    let created = create(&app, document_blob("big.pdf")).await;
+    let id = id_of(&created);
+    let (status, body) = put_part(
+        &app,
+        id,
+        1,
+        manifest(&[text("main.typ", &"x".repeat(1100))]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{body}");
+    assert_eq!(
+        body["error"]["message"],
+        "part exceeds the maximum of 1024 bytes"
+    );
+    assert_eq!(get_blob(&app, id).await["source_parts"], 0);
+}
+
 /// What a template may not do: fetch a package, read outside the
 /// workspace, or need a file the manifest does not hold.
 #[tokio::test]

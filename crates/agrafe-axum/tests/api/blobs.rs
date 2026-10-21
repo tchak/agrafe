@@ -755,3 +755,37 @@ async fn retry_enqueues_what_the_blob_waits_on() {
     let (status, body) = retry(&app, expired_id).await;
     assert_eq!(status, StatusCode::GONE, "{body}");
 }
+
+/// What the blob routes answer for a blob that is not there, or that is
+/// infected: an infected blob is still there to be told about, so a
+/// retry is a conflict, not gone.
+#[tokio::test]
+async fn retry_and_mint_on_an_unknown_or_infected_blob() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let unknown = uuid::Uuid::now_v7().to_string();
+    let (status, body) = call(
+        &app.private,
+        json_req(
+            Method::POST,
+            &format!("/blobs/{unknown}/urls"),
+            json!({"ttl": "10m"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+
+    let bytes = infected_png(1500);
+    let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
+    let id = id_of(&created);
+    let (status, _) = put_private(&app, id, bytes).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(get_blob(&app, id).await["state"], "infected");
+    let (status, body) = call(
+        &app.private,
+        req(Method::POST, &format!("/blobs/{id}/retry")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "conflict");
+}
