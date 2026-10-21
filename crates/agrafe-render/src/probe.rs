@@ -61,13 +61,13 @@ pub enum ProbeError {
         /// What it did instead of converting.
         what: String,
     },
-    /// `media.office.command` is set, but the sandbox has no Landlock and
-    /// isolation is not `off`: nothing would keep a document from reading
-    /// what the worker can.
+    /// `media.office.command` is set, but the sandbox has neither Landlock
+    /// nor bubblewrap and isolation is not `off`: nothing would keep a
+    /// document from reading what the worker can.
     #[error(
-        "media.office.command is set but the sandbox is {status}: without Landlock, \
-         LibreOffice reads every file the worker can, the configuration and the keys \
-         included, and a document can lay one out on its first page; set \
+        "media.office.command is set but the sandbox is {status}: without Landlock or \
+         bubblewrap, LibreOffice reads every file the worker can, the configuration and \
+         the keys included, and a document can lay one out on its first page; set \
          media.sandbox.isolation = \"off\" to accept that on a development machine"
     )]
     OfficeUnconfined {
@@ -143,15 +143,18 @@ pub async fn probe_sandbox(
 }
 
 /// Check that the host confines the office converter, before it runs
-/// anything: with `media.office.command` set, the sandbox must have
-/// Landlock, and the work directories must be outside the directory
-/// LibreOffice puts its pipe in. A document names files to LibreOffice
-/// (linked sections, DDE, linked images), and Landlock is what keeps that
-/// to the work directory: without it the configuration and the keys are
-/// a 72-point paragraph away from the thumbnail. And since Landlock has
-/// no "remove sockets only" right, the pipe directory is one LibreOffice
-/// may remove files in, so no other job's files may be there. Isolation
-/// `off` is the operator accepting both, on a development machine.
+/// anything: with `media.office.command` set, the sandbox must confine
+/// the filesystem, with Landlock or bubblewrap's mount namespace, and the
+/// work directories must be outside the directory LibreOffice puts its
+/// pipe in. A document names files to LibreOffice (linked sections, DDE,
+/// linked images), and the filesystem confinement is what keeps that to
+/// the work directory: without it the configuration and the keys are a
+/// 72-point paragraph away from the thumbnail. And since Landlock has no
+/// "remove sockets only" right, the pipe directory is one LibreOffice may
+/// remove files in, so no other job's files may be there (under
+/// bubblewrap the pipe lands in a private `/tmp`, and the rule costs
+/// nothing to keep). Isolation `off` is the operator accepting both, on a
+/// development machine.
 pub fn check_office_host(
     config: &Config,
     tmp_dir: Option<&Path>,
@@ -161,7 +164,7 @@ pub fn check_office_host(
     {
         return Ok(());
     }
-    if sandbox.landlock.is_none() {
+    if !sandbox.confines_filesystem() {
         return Err(ProbeError::OfficeUnconfined {
             status: sandbox.to_string(),
         });
@@ -454,12 +457,13 @@ mod tests {
         agrafe_sandbox::Status {
             landlock,
             seccomp: true,
+            bubblewrap: None,
             rlimits_only: None,
         }
     }
 
     #[test]
-    fn the_office_converter_needs_landlock() {
+    fn the_office_converter_needs_landlock_or_bubblewrap() {
         // Outside the pipe directory, which the system temporary directory
         // is on Linux: under the crate, removed on drop.
         let elsewhere = tempfile::Builder::new()
@@ -471,6 +475,12 @@ mod tests {
         assert!(matches!(err, ProbeError::OfficeUnconfined { .. }), "{err}");
         assert!(err.to_string().contains("no landlock"), "{err}");
         check_office_host(&config, Some(elsewhere.path()), &status(Some(4))).unwrap();
+        // bubblewrap's mount namespace stands in for Landlock.
+        let wrapped = agrafe_sandbox::Status {
+            bubblewrap: Some("0.11.1".to_string()),
+            ..status(None)
+        };
+        check_office_host(&config, Some(elsewhere.path()), &wrapped).unwrap();
 
         // No converter, or isolation off: nothing to check.
         check_office_host(&Config::default(), None, &status(None)).unwrap();

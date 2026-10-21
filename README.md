@@ -692,7 +692,7 @@ and every configuration key is documented in
 | `agrafe-server` | The `agrafe` binary: `serve` and `migrate` |
 | `agrafe-crypto` | Streaming AEAD and key wrapping |
 | `agrafe-types` | Content types, classification, sniffing, the text-sample and map contracts |
-| `agrafe-sandbox` | Subprocesses with resource limits, Landlock and seccomp |
+| `agrafe-sandbox` | Subprocesses with resource limits, Landlock and seccomp, and optionally bubblewrap |
 | `agrafe-render` | What renders and how: `vips`, the helper drivers, the icons |
 | `agrafe-extract` | Sandboxed helper that pulls the image out of a PDF, DOCX or ODT |
 | `agrafe-render-text` | Sandboxed helper that rasterises a text sample |
@@ -705,6 +705,13 @@ On Linux the workers confine each of them, and `vips`, with Landlock and
 seccomp by default, with nothing to install; a default Docker container
 has both. Set `media.sandbox.isolation = "required"` in production so a
 kernel without them fails the deployment instead of running unconfined.
+On a VM or bare metal, `media.sandbox.bubblewrap = "/usr/bin/bwrap"` adds
+[bubblewrap](https://github.com/containers/bubblewrap) around each tool:
+a mount, pid and network namespace of its own, where the configuration
+file does not exist rather than is denied. It needs unprivileged user
+namespaces, which Ubuntu 26.04 grants to the packaged `bwrap` through an
+AppArmor profile and a default Docker container refuses; see the
+[deployment guide](https://betagouv.github.io/files/guide/deployment.html#bubblewrap).
 The render workers are the one place that talks to the network besides the
 fetch and webhook jobs: with `media.map.layers` configured they fetch
 map backgrounds from those hosts over HTTPS, and with the default empty

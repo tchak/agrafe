@@ -531,6 +531,7 @@ mod tests {
             max_output_size: ByteSize::mib(10),
             isolation: sandbox::Isolation::Required,
             readable: vec!["/opt/fonts".into()],
+            bubblewrap: Some("/usr/bin/bwrap".into()),
             ..sandbox::Config::default()
         };
         let config = office.sandbox(&base);
@@ -539,6 +540,7 @@ mod tests {
         assert_eq!(config.max_output_size, ByteSize::mib(10));
         assert_eq!(config.isolation, sandbox::Isolation::Required);
         assert_eq!(config.readable, vec![PathBuf::from("/opt/fonts")]);
+        assert_eq!(config.bubblewrap, Some(PathBuf::from("/usr/bin/bwrap")));
     }
 
     #[test]

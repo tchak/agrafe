@@ -180,6 +180,16 @@ boot line names (`abi 4` adds the TCP refusal, `abi 6` the signal scope). Before
 refuses a read it was not granted. macOS keeps the limits and the timeout
 only.
 
+On a VM or bare metal that grants unprivileged user namespaces,
+`media.sandbox.bubblewrap` adds a third layer,
+[bubblewrap](deployment.md#bubblewrap), around each subprocess: a mount
+namespace in which the configuration file and the other jobs' files do
+not exist rather than are denied, a pid namespace in which the worker
+does not exist, a network namespace with loopback alone, a fresh `/tmp`
+and a uid of the process's own. The seccomp filter is the same, installed
+by `bwrap`; Landlock yields to the mount namespace. Asked for and not
+working, the worker refuses to start.
+
 Before vips sees a file, its magic bytes are checked again against the
 formats agrafe means to render, so a file declared as a PNG that holds
 something else never reaches ImageMagick or another loader.

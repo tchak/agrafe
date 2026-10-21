@@ -56,6 +56,79 @@ fonts are installed:
 RUN fc-cache -f
 ```
 
+### bubblewrap
+
+On a VM or bare metal, [bubblewrap](https://github.com/containers/bubblewrap)
+can wrap each tool in namespaces of its own on top of the limits and the
+seccomp filter:
+
+```toml
+[media]
+tmp_dir = "/var/tmp/agrafe"
+
+[media.sandbox]
+bubblewrap = "/usr/bin/bwrap"
+```
+
+What it adds over Landlock: a mount namespace in which the configuration
+file, the other jobs' directories and the rest of the disk do not exist
+rather than are denied; a pid namespace in which the worker does not
+exist; a network namespace with loopback alone, and a `/proc` that shows the
+process and nothing else; a fresh `/tmp` of 64 MiB that goes with the
+process; and a uid of the process's own. Landlock
+yields to the mount namespace, since a Landlock domain forbids the
+`mount` bubblewrap needs, and the seccomp filter is the same one, handed
+to `bwrap` and installed in the child after the namespaces are set up.
+The boot line reads `sandbox: bubblewrap 0.11.1, seccomp, rlimits`.
+Set and not working, the worker refuses to start, under `"auto"` as under
+`"required"`: asked for and impossible is a configuration error, never a
+silent fallback to Landlock.
+
+It needs `bubblewrap` 0.8 or newer and unprivileged user namespaces for
+`bwrap`:
+
+- **Ubuntu 26.04**: `apt install bubblewrap` is enough. Ubuntu restricts
+  unprivileged user namespaces through AppArmor, and the `apparmor`
+  package ships a `bwrap-userns-restrict` profile that grants one to
+  `/usr/bin/bwrap`, and to it alone: the profile attaches by path, so
+  `media.sandbox.bubblewrap` must name `/usr/bin/bwrap`, and a `bwrap`
+  anywhere else (self-built, under `/usr/local/bin`) fails with `bwrap:
+  loopback: Failed RTM_NEWADDR: Operation not permitted`. The profile
+  also strips every capability from what `bwrap` runs, and audits an
+  attempt to use one, which a decoder never does.
+- **Ubuntu 24.04**: the same restriction without the profile. Copy the
+  26.04 profile into `/etc/apparmor.d/bwrap-userns-restrict` and load it
+  with `apparmor_parser -r`, rather than lowering
+  `kernel.apparmor_restrict_unprivileged_userns` for every process: user
+  namespaces have been in the exploit chain of a large share of kernel
+  privilege escalations, and the restriction exists for that.
+- **Debian and most others**: unprivileged user namespaces are on by
+  default and nothing is needed.
+- **Inside Docker**: not recommended. Docker's default seccomp profile
+  masks the namespace flags on `clone` and gates `unshare` behind
+  `CAP_SYS_ADMIN`, and the `docker-default` AppArmor profile denies
+  `mount`, so a container running `bwrap` needs a custom seccomp profile
+  and AppArmor unconfined or a custom profile, on the orchestrator's
+  side, and the host still has to grant the user namespace. That loosens
+  the confinement of the whole server process to tighten it around the
+  decoders; on a container platform the trade is usually wrong, and
+  Landlock and seccomp, which a default container gets with nothing to
+  configure, are the answer there.
+
+The work directory is bound into the sandbox at its own path, so the
+default `media.tmp_dir`, under `/tmp`, works: the host's `/tmp` is masked
+by the fresh one and the work directory re-exposed through it. Prefer a
+`media.tmp_dir` outside `/tmp` all the same, so that the only thing
+under the sandbox's `/tmp` is what the tool put there, and because the
+[LibreOffice](#libreoffice) rule below asks for it anyway.
+
+The startup probe runs through `bwrap` and reports its errors as a
+configuration failure, with what `bwrap` said, rather than as a render
+failure. `bwrap` reports a tool the kernel killed as an exit of 128 plus
+the signal, the shell's convention, so a blob's failure reads `exit
+status: 137` rather than `signal: 9`; the CPU time limit is still
+reported as a timeout.
+
 ## libvips
 
 libvips decodes untrusted files, so its version matters more than its
@@ -112,13 +185,14 @@ LibreOffice runs as one short-lived process per document, sandboxed like
 it is a far larger attack surface than anything else in the sandbox,
 which is why it is off by default. Where it is on:
 
-- it needs Landlock: a document names files to LibreOffice (linked
-  sections, DDE fields, linked images), and Landlock is what keeps those
-  inside the work directory rather than the configuration and the keys,
-  which a document could lay out on its first page. A worker with the
-  converter configured refuses to start when the sandbox has no Landlock,
-  unless `media.sandbox.isolation` is `"off"`, which is you accepting
-  that on a development machine;
+- it needs Landlock, or [bubblewrap](#bubblewrap): a document names
+  files to LibreOffice (linked sections, DDE fields, linked images), and
+  the filesystem confinement is what keeps those inside the work
+  directory rather than the configuration and the keys, which a document
+  could lay out on its first page. A worker with the converter configured
+  refuses to start when the sandbox has neither, unless
+  `media.sandbox.isolation` is `"off"`, which is you accepting that on a
+  development machine;
 - run it on a worker that handles `render` only (`jobs.kinds`), with no
   outbound network as defence in depth: LibreOffice follows linked images
   and OLE links in a document, and the sandbox refuses it every socket

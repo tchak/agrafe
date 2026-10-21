@@ -226,7 +226,10 @@ configured, converts office files to PDF, each as a subprocess with:
   jobs' files, not the network, not even a unix socket. LibreOffice
   alone may have unix sockets, which it cannot start without, and its
   own limits, `media.office.sandbox`. See [Security
-  model](security.md#sandboxed-rendering).
+  model](security.md#sandboxed-rendering);
+- optionally, on a host that can grant it a user namespace,
+  [bubblewrap](deployment.md#bubblewrap) around all of that: a mount,
+  pid and network namespace of the process's own.
 
 Every file handed to vips is sniffed again right before the call, against
 the same list of formats, so a file declared `image/png` that holds
@@ -247,4 +250,5 @@ of them fails, so a libvips built without PDF or SVG support, a font
 directory the sandbox does not expose, or a LibreOffice without Calc or
 too old for the first-page export, fails the deployment rather than
 every render. The worker logs what the sandbox gives it, `sandbox:
-landlock abi 4, seccomp, rlimits` or `sandbox: rlimits only (macos)`.
+landlock abi 4, seccomp, rlimits`, `sandbox: bubblewrap 0.11.1, seccomp,
+rlimits` or `sandbox: rlimits only (macos)`.

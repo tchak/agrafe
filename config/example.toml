@@ -271,6 +271,18 @@ isolation = "auto"
 # Extra read-only paths for the subprocesses, for a host that keeps its fonts
 # or poppler's data outside /usr, /etc/fonts and /var/cache/fontconfig.
 readable = []
+# bubblewrap around each subprocess, on a VM or bare metal that grants
+# unprivileged user namespaces: a mount namespace where the configuration
+# file does not exist rather than is denied, a pid namespace, a network
+# namespace with loopback alone, a fresh bounded /tmp, and a uid of the
+# subprocess's own. The same seccomp filter is handed to bwrap; Landlock
+# yields to the mount namespace. Unset by default. Must be the packaged
+# /usr/bin/bwrap on Ubuntu, which its AppArmor profile attaches to by path;
+# set and not working, the worker refuses to start, whatever `isolation`
+# says short of "off". Not for a default Docker container, whose seccomp
+# profile refuses the namespaces: Landlock and seccomp are the answer there.
+# With it, keep `media.tmp_dir` outside /tmp (see the deployment guide).
+# bubblewrap = "/usr/bin/bwrap"
 
 [media.thumbnail]
 width = 256

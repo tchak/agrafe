@@ -29,7 +29,7 @@ use crate::{Applied, Layers};
 /// on a host are skipped. Fonts and poppler's data are here on purpose:
 /// without them a PDF with non-embedded fonts renders as a blank page and
 /// exits 0, which nothing reports.
-const SYSTEM: &[&str] = &[
+pub(crate) const SYSTEM: &[&str] = &[
     "/usr",
     "/lib",
     "/lib64",
@@ -45,7 +45,7 @@ const SYSTEM: &[&str] = &[
 
 /// The one device a tool may also write: a library that silences a
 /// stream reopens it on `/dev/null`.
-const NULL: &str = "/dev/null";
+pub(crate) const NULL: &str = "/dev/null";
 
 /// The newest ABI this build knows; the crate degrades to what the kernel
 /// has.
@@ -313,7 +313,7 @@ const NAMESPACE_FLAGS: &[u64] = &[
 /// inspect: threads keep working, namespaces do not. The variant with
 /// unix sockets refuses every other socket family instead of every
 /// socket.
-fn filters(unix_sockets: bool) -> Result<Arc<Vec<BpfProgram>>, String> {
+pub(crate) fn filters(unix_sockets: bool) -> Result<Arc<Vec<BpfProgram>>, String> {
     type Compiled = OnceLock<Result<Arc<Vec<BpfProgram>>, String>>;
     static NO_SOCKETS: Compiled = OnceLock::new();
     static UNIX_SOCKETS: Compiled = OnceLock::new();
@@ -405,6 +405,7 @@ mod tests {
             Layers {
                 landlock: false,
                 seccomp: false,
+                bubblewrap: false,
                 strict: true,
             },
         )

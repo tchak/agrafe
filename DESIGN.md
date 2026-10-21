@@ -65,7 +65,7 @@ into a server process. Dependencies point downwards only.
 |---|---|---|
 | `agrafe-crypto` | Streaming AEAD and key wrapping, reviewed in isolation | |
 | `agrafe-types` | Content type constants, `classify`, `sniff`, the office format table (`office`: application, package and extension per type), the vips loader allowlist, the text-sample contract, the map contract (the input formats, the style vocabulary, the spec and the extent the server and the helper exchange), `str_enum!` | `infer`, `serde` |
-| `agrafe-sandbox` | Running a subprocess with `setrlimit` bounds and a timeout, confined by Landlock and seccomp on Linux; the `Command` builder that declares what it reads and writes; the `[media.sandbox]` config and the startup probe | `tokio`, `libc`, `landlock`, `seccompiler` |
+| `agrafe-sandbox` | Running a subprocess with `setrlimit` bounds and a timeout, confined by Landlock and seccomp on Linux, and by bubblewrap where configured; the `Command` builder that declares what it reads and writes; the `[media.sandbox]` config and the startup probe | `tokio`, `libc`, `landlock`, `seccompiler` |
 | `agrafe-extract` | The `agrafe-extract` helper: pulls the one image out of a PDF or a Writer package (DOCX, ODT and their variants). Library plus binary | `agrafe-types`, `lopdf`, `zip`, `quick-xml` |
 | `agrafe-render-text` | The `agrafe-render-text` helper: rasterises a text sample. Library plus binary | `agrafe-types`, `ab_glyph` |
 | `agrafe-render-document` | The `agrafe-render-document` helper: compiles a typst workspace into a PDF. Library plus binary | `typst`, `typst-pdf`, `typst-assets` |
@@ -2255,6 +2255,8 @@ or an infinite loop costs one job attempt, not the process.
 Three layers confine the child, from the inside out. The first is on every
 platform; the other two are Linux's, installed by the child between `fork`
 and `exec`, next to the `setrlimit` calls, both setting `no_new_privs`.
+A fourth, bubblewrap, is optional and takes Landlock's place where it
+runs; it is described after the three.
 
 **Resource limits and a timeout.** A clean environment (`PATH` and `HOME`
 only, no secrets; vips also gets `TMPDIR`, `VIPS_CONCURRENCY` and
@@ -2295,7 +2297,7 @@ older kernel instead of failing: ABI 1 (5.13) gives the filesystem rules,
 ABI 2 (5.19) renames across directories, ABI 4 (6.7) the TCP refusal,
 ABI 6 (6.12) the signal and socket scopes, and the handled accesses this
 build knows and the kernel does not are dropped. A Landlock domain also
-forbids `mount`, which matters for the bubblewrap stage below.
+forbids `mount`, which is why it yields to bubblewrap below.
 
 **seccomp**, through `seccompiler` (pure Rust, from Firecracker, no
 libseccomp), as a *denylist* answering `EPERM`: `socket`, `socketpair`,
@@ -2368,10 +2370,94 @@ probes a feature and tolerates failure keeps working, and so the error
 shows up in the stderr tail the job already keeps.
 
 Why not reimplement namespaces in Rust with `unshare`: the same kernel
-requirements as bubblewrap, without its review history. That is the
-optional second stage, bubblewrap around the same child, for deployments
-that can grant unprivileged user namespaces; it is designed in issue #3
-and not built yet.
+requirements as bubblewrap, without its review history. Namespaces are
+bubblewrap's job, below, where a deployment can grant them.
+
+**bubblewrap**, optional: `media.sandbox.bubblewrap = "/usr/bin/bwrap"`
+(unset by default) puts `bwrap` around the same child. What it adds over
+Landlock: a mount namespace where the configuration file does not exist
+rather than is denied, a pid namespace where the worker does not exist,
+a network namespace with loopback alone, a fresh `/tmp` (a tmpfs of 64
+MiB; nothing agrafe runs writes there but LibreOffice's pipe), and a
+fixed uid of the child's own, 10000, mapped from the worker's, so the
+same-uid vectors above close as a class rather than one by one. The
+argument list is demarche-numerique's `SandboxedCommand`, the reviewed
+template: `--unshare-all --unshare-user --disable-userns --new-session
+--die-with-parent --cap-drop ALL --uid 10000 --gid 10000 --hostname
+agrafe --size <64 MiB> --tmpfs /tmp --proc /proc --chdir <cwd or />`,
+then `--ro-bind`
+of each path of the system set (`--dev-bind` for the three device
+nodes), of the program, of `media.sandbox.readable` and of the declared
+readable paths, each at its own path and skipped when missing on the
+host, as the ruleset skips them; `--bind` of the writable directory at
+its own path, so the argv needs no rewriting, and of the unix socket
+directory when it is not under the private `/tmp`; `--add-seccomp-fd`
+for each filter; and `--remount-ro / --`, last, since nothing mounts
+after it. The work directory, under the host's `/tmp` by default, is
+masked by the fresh `/tmp` and re-exposed by its bind, which works; the
+deployment guide prefers `media.tmp_dir` outside `/tmp` all the same.
+The `/proc` is the one addition to the system set: a procfs of the pid
+namespace, showing `bwrap` and the child and nothing of the worker's,
+which LibreOffice refuses to start without (`/proc not mounted`).
+Landlock grants no `/proc`, since the worker's own `/proc/<pid>`,
+`environ` included, would be in it for a child of the same uid; it only
+works under Landlock because `stat` is not governed, so the directory
+exists and LibreOffice's check passes. The integration suite run through
+bubblewrap by hand is what found this.
+No `--clearenv`: the parent already clears the environment and `bwrap`
+passes its own through. No `prlimit`: the `setrlimit` calls in
+`pre_exec` apply to `bwrap` and are inherited by the child unchanged.
+
+How the layers combine, which is the design decision this layer adds:
+the rlimits stay in `pre_exec` in both modes; seccomp moves, since
+`bwrap` itself needs `unshare`, `mount` and `pivot_root`, which the
+filter refuses, so the filters cannot be installed ahead of it. The same
+BPF programs `seccompiler` compiled are written to two memory files
+(`memfd_create`), whose descriptors the child clears close-on-exec on
+between `fork` and `exec`, and `bwrap --add-seccomp-fd` installs them in
+the child after the namespaces are set up: one filter, two delivery
+routes. Landlock is off under bubblewrap: a Landlock domain forbids
+`mount`, which `bwrap` needs, and the mount namespace covers what the
+ruleset covered; `HOME` and `XDG_CACHE_HOME` still move to the work
+directory. A `bwrap` that fails before the program runs (exit 1, stderr
+starting `bwrap: `) is `Error::Bubblewrap`, never `Outcome::Failed`: a
+host matter, so the job is retried rather than the blob marked failed;
+`bwrap: execvp <program>: ...` alone is reported as the spawn failure it
+is without bubblewrap. `bwrap`, the init of its pid namespace, reports a
+child the kernel killed as an exit of 128 plus the signal, so the CPU
+limit's `SIGXCPU` is read back from 152 and still a timeout; the office
+driver's pipe sweep, keyed on a death by signal, does not fire, and need
+not, since the pipe was in the sandbox's own `/tmp`. Asked for and
+impossible, the sandbox is an error in every mode short of `off`:
+`isolation = "required"` with `bubblewrap` set means "`bwrap` must
+start", not "Landlock must install", and `auto` never falls back to
+Landlock, since the operator asked for namespaces and would not learn
+from a log line that they were not there.
+
+Why optional and why on a VM: `bwrap` needs unprivileged user
+namespaces, and granting them is a host decision with a cost. Ubuntu
+restricts them through AppArmor
+(`kernel.apparmor_restrict_unprivileged_userns`), because user
+namespaces were in the exploit chain of about 44% of kCTF kernel
+submissions, and the right grant is a profile for `bwrap` alone, not the
+sysctl: Ubuntu 26.04's `apparmor` package ships one,
+`bwrap-userns-restrict`, which gives `/usr/bin/bwrap`, attached by
+path, its namespace and the capabilities inside it, and moves every
+child to a stacked `unpriv_bwrap` profile that strips capabilities
+again and audits an attempt; a `bwrap` at another path fails at its
+first privileged step (`bwrap: loopback: Failed RTM_NEWADDR: Operation
+not permitted`), which the probe reports and a test reproduces by
+pointing the setting at a copy. Ubuntu 24.04 has the restriction and not
+the profile, so the operator installs the 26.04 one. Inside Docker the
+default seccomp profile masks the namespace flags on `clone` and gates
+`unshare` behind `CAP_SYS_ADMIN`, and the `docker-default` AppArmor
+profile denies `mount`, so a container that runs `bwrap` has to be
+started with a custom seccomp profile and AppArmor unconfined, and the
+host still needs the userns grant: runtime flags on the orchestrator
+that loosen confinement of the whole server process to tighten it
+around the decoder. On a container platform that trade is usually wrong
+and Landlock with seccomp is the answer; on a VM, as demarche deploys,
+it is right. The deployment guide says this in so many words.
 
 *The builder is the contract.* Callers put paths in the argv, and the
 sandbox could not tell an input from an output. `agrafe_sandbox::Command`
@@ -2425,8 +2511,13 @@ so instead of reporting a missing layer. The granted read must succeed, or the s
 set misses something this host needs, which is a startup error in every
 mode; the other must fail where Landlock is enforced, or the ruleset is
 not doing its job. Under `required` a kernel that cannot refuse is a
-startup error naming the layer. The worker then logs what it got:
-`sandbox: landlock abi 4, seccomp, rlimits`, or `sandbox: rlimits only
+startup error naming the layer. With `bubblewrap` set the same two reads
+go through `bwrap`, after `bwrap --version` for the boot line: a `bwrap:
+` error is a configuration failure naming the configured binary and
+pointing at the user namespace grant, and the other read must fail, with
+"no such file" now rather than "permission denied". The worker then logs
+what it got: `sandbox: landlock abi 4, seccomp, rlimits`, `sandbox:
+bubblewrap 0.11.1, seccomp, rlimits`, or `sandbox: rlimits only
 (macos)`. The render probe that follows runs the real command lines on
 known-good files under the same confinement, so a path missing from the
 system set fails the deployment instead of every thumbnail.
@@ -2437,7 +2528,20 @@ listening socket on localhost, `unshare`, and that threads still work and
 a spawn stays cheap. They skip with a message where the kernel cannot
 confine, except under `AGRAFE_SANDBOX_REQUIRED=1`, which CI sets so a
 regression is not a green empty suite. The integration suite runs under
-`auto` on CI, which confines every render it makes.
+`auto` on CI, which confines every render it makes. The bubblewrap tests
+are the same refusals through `/usr/bin/bwrap`, plus what the namespaces
+add: the configuration file does not exist, the network is loopback
+alone with nothing listening (seen without the filter, which refuses the
+socket first), the worker's pid does not exist, a unix socket bound in
+`/tmp` never reaches the host's, a death by signal reads back as 128
+plus the signal, a `bwrap` failure is an error and not an outcome, and a
+copy of `bwrap` at another path is refused where the AppArmor
+restriction is on. They need the packaged binary and skip without it,
+under the same variable; CI installs `bubblewrap` on its Ubuntu 26.04
+runner, whose AppArmor grants it the namespace with nothing to
+configure. `AGRAFE_TEST_BUBBLEWRAP=/usr/bin/bwrap` puts the whole
+integration suite through bubblewrap, for checking the probe and the
+real tools under it by hand on the Lima VM.
 
 *LibreOffice.* The office converter (see "Thumbnail") runs through the
 same `Command`, one short-lived process per document and no resident
@@ -2480,7 +2584,8 @@ image), and under Landlock those resolve to nothing outside the work
 directory, while without it the configuration and the KEK file, readable
 to the worker's uid, are a 72-point paragraph away from the thumbnail,
 which is small but fits a key. So a worker with `media.office.command`
-set refuses to start when the sandbox probe found no Landlock
+set refuses to start when the sandbox probe found neither Landlock nor
+bubblewrap, whose mount namespace confines the filesystem the same
 (`check_office_host`, next to the boot line), unless
 `media.sandbox.isolation` is `off`, which is the operator accepting that
 on a development machine. Where it is on, it belongs on a worker that handles `render`
@@ -2490,17 +2595,18 @@ closes egress to it is the seccomp variant it runs under, which refuses
 `socket` for every family but `AF_UNIX` on any kernel with seccomp (TCP,
 UDP, netlink alike), with Landlock refusing TCP as well from ABI 4. A
 network the worker cannot reach is one less layer to be wrong about, and
-#3 is where egress gets closed for every tool. The API image never
-carries it. The fonts are not optional: without them
+bubblewrap's network namespace closes egress for every tool where it
+runs. The API image never carries it. The fonts are not optional: without them
 a page renders as boxes and exits 0, which nothing reports.
 
 *Costs.* A ruleset and two filters add well under a millisecond per
-spawn; libvips startup, which the per-job pipeline already pays, is 25
-to 40 ms. Out of scope: macOS confinement (`sandbox-exec`), a seccomp
-allowlist, cgroup memory accounting (`RLIMIT_AS` plus the pod or service
-limit stay the bound), and a uid of the child's own: the same-uid rules
-above close the vectors we know of, and a separate uid, which the
-bubblewrap stage brings, closes the class.
+spawn, and `bwrap` about two milliseconds (twenty spawns of `true`
+through it in 43 ms on the Lima VM); libvips startup, which the per-job
+pipeline already pays, is 25 to 40 ms. Out of scope: macOS confinement
+(`sandbox-exec`), a seccomp allowlist, cgroup memory accounting
+(`RLIMIT_AS` plus the pod or service limit stay the bound), and a uid of
+the child's own without bubblewrap: the same-uid rules above close the
+vectors we know of, and bubblewrap's uid closes the class where it runs.
 
 ## Jobs
 

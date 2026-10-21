@@ -1,13 +1,17 @@
 # A Linux VM for the code that only runs on Linux: the agrafe-sandbox
-# confinement (Landlock, seccomp, and bubblewrap for stage 2 of #3).
-# Ubuntu 26.04, the CI runner's release, with its stock kernel: Landlock
-# and AppArmor are on, and unprivileged user namespaces are restricted by
-# AppArmor as on a default Ubuntu host. No profile for `bwrap` is
-# installed here; granting one is part of what stage 2 tests.
+# confinement (Landlock, seccomp and bubblewrap). Ubuntu 26.04, the CI
+# runner's release, with its stock kernel: Landlock and AppArmor are on,
+# and unprivileged user namespaces are restricted by AppArmor as on a
+# default Ubuntu host, where the packaged `bwrap-userns-restrict` profile
+# grants `/usr/bin/bwrap` alone its namespace. That is what the
+# bubblewrap tests exercise, the refusal of a copy elsewhere included.
 #
 #   limactl start --name agrafe --mount-only "$PWD:w" scripts/lima.yaml
 #   limactl shell --workdir "$PWD" agrafe \
 #     env CARGO_TARGET_DIR=target/linux cargo nextest run --workspace
+#
+# With AGRAFE_TEST_BUBBLEWRAP=/usr/bin/bwrap every render of the
+# integration suite goes through bubblewrap too.
 #
 # The checkout is mounted at its own path; Linux build artifacts go to
 # target/linux so they do not mix with the macOS ones.

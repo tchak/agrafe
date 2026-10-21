@@ -56,19 +56,27 @@ jobs:
           --health-retries 10
     env:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/agrafe_test
-      # The runner's kernel has Landlock and seccomp: the sandbox tests
-      # must confine, not skip, so a regression is not a green empty suite.
+      # The runner's kernel has Landlock and seccomp, and Ubuntu 26.04's
+      # AppArmor profile grants /usr/bin/bwrap its user namespace: the
+      # sandbox tests, bubblewrap's included, must confine, not skip, so a
+      # regression is not a green empty suite.
       AGRAFE_SANDBOX_REQUIRED: 1
     steps:
-      # LibreOffice for the office thumbnail tests, which skip without it.
-      - name: Install libvips and LibreOffice
+      # LibreOffice for the office thumbnail tests, which skip without it;
+      # bubblewrap for the sandbox's bubblewrap tests, likewise.
+      - name: Install libvips, LibreOffice and bubblewrap
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libvips-tools \
+          sudo apt-get install -y --no-install-recommends libvips-tools bubblewrap \
             libreoffice-writer-nogui libreoffice-calc-nogui libreoffice-impress-nogui \
             libreoffice-draw-nogui fonts-dejavu-core fonts-liberation
           vips --version
           soffice --version
+          bwrap --version
+          # What the sandbox tests will find: the profile, and the sysctl
+          # that makes it matter.
+          ls -l /etc/apparmor.d/bwrap-userns-restrict || true
+          sysctl kernel.apparmor_restrict_unprivileged_userns || true
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@v2

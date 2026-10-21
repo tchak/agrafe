@@ -22,11 +22,22 @@
 //! without them. [`probe`] is how a worker learns what it got. The child
 //! leads a process group of its own, killed whole at the timeout, so a
 //! launcher that forked does not leave what it launched behind.
+//!
+//! On a host that grants unprivileged user namespaces, [`Config::bubblewrap`]
+//! puts bubblewrap around the same child: a mount namespace where the
+//! configuration file does not exist rather than is denied, a pid
+//! namespace, a network namespace with loopback alone, a fresh bounded
+//! `/tmp` and a uid of the child's own. The rlimits stay, the seccomp
+//! filter is handed to `bwrap` over a descriptor, and Landlock yields to
+//! the mount namespace, since a Landlock domain forbids the `mount`
+//! bubblewrap needs. Asked for and impossible, the sandbox is an error.
 
+#[cfg(target_os = "linux")]
+mod bubblewrap;
 #[cfg(target_os = "linux")]
 mod confine;
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -57,6 +68,14 @@ pub struct Config {
     /// fonts or its poppler data somewhere unusual.
     #[serde(default)]
     pub readable: Vec<PathBuf>,
+    /// The `bwrap` binary, when bubblewrap wraps every subprocess in a
+    /// mount, pid and network namespace of its own. Unset by default; it
+    /// needs a host that grants unprivileged user namespaces, and on
+    /// Ubuntu that is the packaged `/usr/bin/bwrap` alone, which its
+    /// AppArmor profile attaches to by path. Set and not working, the
+    /// worker refuses to start, whatever `isolation` says short of `off`.
+    #[serde(default)]
+    pub bubblewrap: Option<PathBuf>,
 }
 
 /// Whether the kernel confines the subprocess beyond its resource limits.
@@ -98,6 +117,7 @@ impl Default for Config {
             max_output_size: default_max_output_size(),
             isolation: Isolation::default(),
             readable: Vec::new(),
+            bubblewrap: None,
         }
     }
 }
@@ -135,6 +155,17 @@ pub enum Error {
         /// What is missing, or why the ruleset or the filter could not be
         /// built.
         reason: String,
+    },
+    /// bubblewrap could not set the sandbox up around `program`: the host
+    /// grants it no user namespace, or a path it was to bind is missing.
+    /// A host matter, never the file's, so a job that meets it is retried
+    /// rather than the blob marked failed.
+    #[error("bubblewrap could not start the sandbox for `{program}`: {message}")]
+    Bubblewrap {
+        /// The resolved program.
+        program: String,
+        /// What `bwrap` said on stderr.
+        message: String,
     },
 }
 
@@ -174,7 +205,9 @@ const INHERITED: &[&str] = &[
 /// child.
 pub struct Command {
     program: PathBuf,
-    inner: tokio::process::Command,
+    args: Vec<OsString>,
+    envs: Vec<(OsString, OsString)>,
+    current_dir: Option<PathBuf>,
     readable: Vec<PathBuf>,
     writable: Option<PathBuf>,
     unix_sockets: Option<PathBuf>,
@@ -186,16 +219,15 @@ impl Command {
     /// name the file the child executes.
     pub fn new(program: impl AsRef<OsStr>) -> Self {
         let program = resolve(program.as_ref());
-        let mut inner = tokio::process::Command::new(&program);
-        inner.env_clear();
-        for &name in INHERITED {
-            if let Some(value) = std::env::var_os(name) {
-                inner.env(name, value);
-            }
-        }
+        let envs = INHERITED
+            .iter()
+            .filter_map(|&name| std::env::var_os(name).map(|value| (name.into(), value)))
+            .collect();
         Self {
             program,
-            inner,
+            args: Vec::new(),
+            envs,
+            current_dir: None,
             readable: Vec::new(),
             writable: None,
             unix_sockets: None,
@@ -204,7 +236,7 @@ impl Command {
 
     /// An argument for the program.
     pub fn arg(&mut self, arg: impl AsRef<OsStr>) -> &mut Self {
-        self.inner.arg(arg);
+        self.args.push(arg.as_ref().to_os_string());
         self
     }
 
@@ -214,21 +246,23 @@ impl Command {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        self.inner.args(args);
+        self.args
+            .extend(args.into_iter().map(|arg| arg.as_ref().to_os_string()));
         self
     }
 
     /// A variable for the child's environment, on top of the inherited
     /// `PATH` and `HOME`.
     pub fn env(&mut self, name: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> &mut Self {
-        self.inner.env(name, value);
+        self.envs
+            .push((name.as_ref().to_os_string(), value.as_ref().to_os_string()));
         self
     }
 
     /// The child's working directory, which it must also be allowed to
     /// read or write to do anything there.
     pub fn current_dir(&mut self, dir: impl AsRef<Path>) -> &mut Self {
-        self.inner.current_dir(dir);
+        self.current_dir = Some(dir.as_ref().to_path_buf());
         self
     }
 
@@ -267,7 +301,11 @@ impl Command {
 
 impl fmt::Debug for Command {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.inner.fmt(f)
+        write!(f, "{:?}", self.program)?;
+        for arg in &self.args {
+            write!(f, " {arg:?}")?;
+        }
+        Ok(())
     }
 }
 
@@ -301,22 +339,35 @@ fn is_executable(path: &Path) -> bool {
 }
 
 /// Which confinement layers a spawn sets up, and whether failing to is an
-/// error.
+/// error. Under bubblewrap Landlock is off, since a Landlock domain
+/// forbids the `mount` `bwrap` needs and the mount namespace covers what
+/// the ruleset covered, and every failure is an error: asked for and
+/// impossible, the sandbox does not run unconfined.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 struct Layers {
     landlock: bool,
     seccomp: bool,
+    bubblewrap: bool,
     strict: bool,
 }
 
 impl Layers {
-    fn of(isolation: Isolation) -> Self {
-        let on = isolation != Isolation::Off;
+    fn of(config: &Config) -> Self {
+        if config.isolation == Isolation::Off {
+            return Self {
+                landlock: false,
+                seccomp: false,
+                bubblewrap: false,
+                strict: false,
+            };
+        }
+        let bubblewrap = config.bubblewrap.is_some();
         Self {
-            landlock: on,
-            seccomp: on,
-            strict: isolation.strict(),
+            landlock: !bubblewrap,
+            seccomp: true,
+            bubblewrap,
+            strict: bubblewrap || config.isolation.strict(),
         }
     }
 }
@@ -343,7 +394,7 @@ pub async fn run(command: Command, config: &Config) -> Result<Outcome, Error> {
         program = %program.to_string_lossy(),
         outcome = tracing::field::Empty,
     );
-    let result = run_with(command, config, Layers::of(config.isolation))
+    let result = run_with(command, config, Layers::of(config))
         .instrument(span.clone())
         .await
         .map(|(outcome, _)| outcome);
@@ -360,26 +411,24 @@ pub async fn run(command: Command, config: &Config) -> Result<Outcome, Error> {
 }
 
 async fn run_with(
-    mut command: Command,
+    command: Command,
     config: &Config,
     layers: Layers,
 ) -> Result<(Outcome, Applied), Error> {
     let program = command.program.to_string_lossy().into_owned();
-    command
-        .inner
+    let (mut inner, applied) =
+        prepare(&command, config, layers).map_err(|reason| Error::Confine {
+            program: program.clone(),
+            reason,
+        })?;
+    inner
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     #[cfg(unix)]
-    command.inner.process_group(0);
-    apply_limits(&mut command.inner, config);
-    let applied =
-        apply_confinement(&mut command, config, layers).map_err(|reason| Error::Confine {
-            program: program.clone(),
-            reason,
-        })?;
-    let child = command.inner.spawn().map_err(|source| Error::Spawn {
+    inner.process_group(0);
+    let child = inner.spawn().map_err(|source| Error::Spawn {
         program: program.clone(),
         source,
     })?;
@@ -389,13 +438,24 @@ async fn run_with(
         // CPU time ran out before the wall clock did, which a process on
         // several threads does: a timeout all the same, not a fault of the
         // file. A launcher reports its child's death its own way, so this
-        // tells a direct tool's.
-        Ok(Ok(output)) if cpu_exhausted(&output.status) => Outcome::TimedOut,
-        Ok(Ok(output)) => Outcome::Failed {
-            code: output.status.code(),
-            status: output.status.to_string(),
-            stderr: tail(&output.stderr),
-        },
+        // tells a direct tool's; bubblewrap reports it as the shell does,
+        // 128 plus the signal.
+        Ok(Ok(output)) if cpu_exhausted(&output.status, layers.bubblewrap) => Outcome::TimedOut,
+        Ok(Ok(output)) => {
+            let stderr = tail(&output.stderr);
+            // `bwrap` failed before the program ran: a host matter.
+            if layers.bubblewrap
+                && output.status.code() == Some(1)
+                && let Some(err) = bubblewrap_failure(program.clone(), &stderr)
+            {
+                return Err(err);
+            }
+            Outcome::Failed {
+                code: output.status.code(),
+                status: output.status.to_string(),
+                stderr,
+            }
+        }
         Ok(Err(source)) => return Err(Error::Wait { program, source }),
         // Dropping the child on timeout kills it; its process group goes
         // with it, for a program that is a launcher around another.
@@ -425,16 +485,40 @@ fn kill_group(pid: Option<u32>) {
 #[cfg(not(unix))]
 fn kill_group(_pid: Option<u32>) {}
 
-/// Whether the process died of `SIGXCPU`, the CPU time limit.
+/// Whether the process died of `SIGXCPU`, the CPU time limit. `bwrap`,
+/// the init of its pid namespace, reports a child the kernel killed as an
+/// exit of 128 plus the signal, the shell's convention.
 #[cfg(unix)]
-fn cpu_exhausted(status: &std::process::ExitStatus) -> bool {
+fn cpu_exhausted(status: &std::process::ExitStatus, bubblewrap: bool) -> bool {
     use std::os::unix::process::ExitStatusExt;
     status.signal() == Some(libc::SIGXCPU)
+        || (bubblewrap && status.code() == Some(128 + libc::SIGXCPU))
 }
 
 #[cfg(not(unix))]
-fn cpu_exhausted(_status: &std::process::ExitStatus) -> bool {
+fn cpu_exhausted(_status: &std::process::ExitStatus, _bubblewrap: bool) -> bool {
     false
+}
+
+/// The error behind an exit of 1 under bubblewrap whose stderr is
+/// `bwrap`'s own: nothing of the program's comes before it, since the
+/// program never ran. A program it could not execute is reported as a
+/// spawn failure, as it is without bubblewrap.
+fn bubblewrap_failure(program: String, stderr: &str) -> Option<Error> {
+    const PREFIX: &str = "bwrap: ";
+    let message = stderr.strip_prefix(PREFIX)?;
+    if let Some(rest) = message.strip_prefix("execvp ")
+        && let Some((_, cause)) = rest.split_once(": ")
+    {
+        return Some(Error::Spawn {
+            program,
+            source: std::io::Error::other(cause.trim().to_string()),
+        });
+    }
+    Some(Error::Bubblewrap {
+        program,
+        message: stderr.to_string(),
+    })
 }
 
 /// Seconds of CPU time past the soft limit before the hard one: the soft
@@ -477,6 +561,52 @@ fn apply_limits(command: &mut tokio::process::Command, config: &Config) {
 #[cfg(not(unix))]
 fn apply_limits(_command: &mut tokio::process::Command, _config: &Config) {}
 
+/// The process to spawn for `command`: the program with its arguments,
+/// environment and limits, confined as `layers` say. The limits go first
+/// among the child's `pre_exec` steps, the confinement after.
+#[cfg(target_os = "linux")]
+fn prepare(
+    command: &Command,
+    config: &Config,
+    layers: Layers,
+) -> Result<(tokio::process::Command, Applied), String> {
+    if layers.bubblewrap {
+        return prepare_bubblewrap(command, config, layers);
+    }
+    let mut inner = plain(command);
+    apply_limits(&mut inner, config);
+    let applied = apply_confinement(command, &mut inner, config, layers)?;
+    Ok((inner, applied))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn prepare(
+    command: &Command,
+    config: &Config,
+    layers: Layers,
+) -> Result<(tokio::process::Command, Applied), String> {
+    if layers.strict {
+        return Err(linux_only());
+    }
+    let mut inner = plain(command);
+    apply_limits(&mut inner, config);
+    Ok((inner, Applied::default()))
+}
+
+/// The program itself, with its arguments, environment and working
+/// directory, and nothing of this process's environment but what the
+/// command carries.
+fn plain(command: &Command) -> tokio::process::Command {
+    let mut inner = tokio::process::Command::new(&command.program);
+    inner.env_clear();
+    inner.args(&command.args);
+    inner.envs(command.envs.iter().map(|(name, value)| (name, value)));
+    if let Some(dir) = &command.current_dir {
+        inner.current_dir(dir);
+    }
+    inner
+}
+
 /// Prepare the Landlock ruleset and the seccomp filter in this process
 /// and have the child install them before `exec`. Under confinement
 /// `HOME` and `XDG_CACHE_HOME` move to the writable directory, so that a
@@ -484,7 +614,8 @@ fn apply_limits(_command: &mut tokio::process::Command, _config: &Config) {}
 /// failing on a home the child cannot write.
 #[cfg(target_os = "linux")]
 fn apply_confinement(
-    command: &mut Command,
+    command: &Command,
+    inner: &mut tokio::process::Command,
     config: &Config,
     layers: Layers,
 ) -> Result<Applied, String> {
@@ -498,38 +629,92 @@ fn apply_confinement(
     )
     .map_err(|err| err.to_string())?;
     let applied = plan.applied();
-    if applied.landlock
-        && let Some(dir) = &command.writable
-    {
-        command.inner.env("HOME", dir).env("XDG_CACHE_HOME", dir);
+    if applied.landlock {
+        home_in_workdir(command, inner);
     }
     let mut plan = plan;
     // SAFETY: the ruleset and the filter were built here; the child only
     // makes the `landlock_restrict_self`, `prctl` and `seccomp` calls,
     // none of which touches the heap or a lock.
     unsafe {
-        command.inner.pre_exec(move || plan.install());
+        inner.pre_exec(move || plan.install());
     }
     Ok(applied)
 }
 
-#[cfg(not(target_os = "linux"))]
-fn apply_confinement(
-    _command: &mut Command,
-    _config: &Config,
+/// `bwrap` around the program, with the system set, the declared paths
+/// and the seccomp filters it installs in the child after the namespaces
+/// are set up. The rlimits are set on `bwrap` and inherited unchanged.
+#[cfg(target_os = "linux")]
+fn prepare_bubblewrap(
+    command: &Command,
+    config: &Config,
     layers: Layers,
-) -> Result<Applied, String> {
-    if layers.strict {
-        return Err(linux_only());
+) -> Result<(tokio::process::Command, Applied), String> {
+    let bwrap = config
+        .bubblewrap
+        .as_deref()
+        .map(|path| resolve(path.as_os_str()))
+        .ok_or_else(|| "bubblewrap is not configured".to_string())?;
+    let filters = if layers.seccomp {
+        match confine::filters(command.unix_sockets.is_some()) {
+            Ok(filters) => Some(filters),
+            Err(err) if layers.strict => {
+                return Err(confine::Error::Seccomp(err).to_string());
+            }
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+    let wrapped = bubblewrap::wrap(
+        command,
+        &config.readable,
+        filters.as_ref().map(|f| f.as_slice()),
+    )
+    .map_err(|err| format!("preparing the seccomp filters for bwrap: {err}"))?;
+    let mut inner = tokio::process::Command::new(&bwrap);
+    inner.env_clear();
+    inner.args(&wrapped.args);
+    inner.envs(command.envs.iter().map(|(name, value)| (name, value)));
+    home_in_workdir(command, &mut inner);
+    apply_limits(&mut inner, config);
+    let descriptors = wrapped.descriptors;
+    // SAFETY: clearing close-on-exec on descriptors this process opened
+    // is one `fcntl` each, with nothing shared touched.
+    unsafe {
+        inner.pre_exec(move || {
+            for descriptor in &descriptors {
+                descriptor.inherit()?;
+            }
+            Ok(())
+        });
     }
-    Ok(Applied::default())
+    Ok((
+        inner,
+        Applied {
+            landlock: false,
+            seccomp: filters.is_some(),
+        },
+    ))
 }
 
-/// Why `isolation = "required"` cannot be met on this platform.
+/// `HOME` and `XDG_CACHE_HOME` in the writable directory, under
+/// confinement, when there is one.
+#[cfg(target_os = "linux")]
+fn home_in_workdir(command: &Command, inner: &mut tokio::process::Command) {
+    if let Some(dir) = &command.writable {
+        inner.env("HOME", dir).env("XDG_CACHE_HOME", dir);
+    }
+}
+
+/// Why `isolation = "required"` or `bubblewrap` cannot be met on this
+/// platform.
 #[cfg(not(target_os = "linux"))]
 fn linux_only() -> String {
     format!(
-        "isolation = \"required\" but Landlock and seccomp exist on Linux only, not {}",
+        "isolation = \"required\" or bubblewrap asked for, but Landlock, seccomp and \
+         bubblewrap exist on Linux only, not {}",
         std::env::consts::OS
     )
 }
@@ -540,8 +725,8 @@ fn tail(stderr: &[u8]) -> String {
 }
 
 /// What the sandbox confines a child with, as [`probe`] found it, for the
-/// boot log: `landlock abi 4, seccomp, rlimits`, or `rlimits only
-/// (macOS)`.
+/// boot log: `landlock abi 4, seccomp, rlimits`, `bubblewrap 0.11.1,
+/// seccomp, rlimits`, or `rlimits only (macOS)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Status {
     /// The Landlock ABI the kernel enforces, when it refused a read the
@@ -549,8 +734,19 @@ pub struct Status {
     pub landlock: Option<i32>,
     /// Whether the seccomp filter installs.
     pub seccomp: bool,
+    /// The bubblewrap version, when it wraps the child: its mount
+    /// namespace then stands in for Landlock.
+    pub bubblewrap: Option<String>,
     /// Why there is nothing but resource limits, when there is not.
     pub rlimits_only: Option<String>,
+}
+
+impl Status {
+    /// Whether the child's filesystem is confined to what it was granted,
+    /// by Landlock or by bubblewrap's mount namespace.
+    pub fn confines_filesystem(&self) -> bool {
+        self.landlock.is_some() || self.bubblewrap.is_some()
+    }
 }
 
 impl fmt::Display for Status {
@@ -558,7 +754,9 @@ impl fmt::Display for Status {
         if let Some(reason) = &self.rlimits_only {
             return write!(f, "rlimits only ({reason})");
         }
-        if let Some(abi) = self.landlock {
+        if let Some(version) = &self.bubblewrap {
+            write!(f, "bubblewrap {version}, ")?;
+        } else if let Some(abi) = self.landlock {
             write!(f, "landlock abi {abi}, ")?;
         } else {
             write!(f, "no landlock, ")?;
@@ -613,6 +811,19 @@ pub enum ProbeError {
         /// The name looked up, `cat`.
         program: String,
     },
+    /// `media.sandbox.bubblewrap` is set and `bwrap` cannot set a sandbox
+    /// up on this host.
+    #[error(
+        "bubblewrap `{program}` cannot start a sandbox: {reason}; it needs an unprivileged \
+         user namespace, which Ubuntu's AppArmor grants to the packaged /usr/bin/bwrap \
+         alone and a default Docker container refuses"
+    )]
+    Bubblewrap {
+        /// The configured `bwrap`.
+        program: String,
+        /// What it said, or why it could not be run.
+        reason: String,
+    },
     /// The probe's temporary directories or files could not be created.
     #[error("temporary files for the sandbox probe: {0}")]
     Io(#[from] std::io::Error),
@@ -634,45 +845,136 @@ pub async fn probe(config: &Config) -> Result<Status, ProbeError> {
         return Ok(Status {
             landlock: None,
             seccomp: false,
+            bubblewrap: None,
             rlimits_only: Some("isolation off".to_string()),
         });
     }
     probe_confinement(config).await
 }
 
+/// The probe's fixture: `cat`, and two sibling directories with a file
+/// in each, of which the commands grant one.
+#[cfg(target_os = "linux")]
+struct Fixture {
+    tool: PathBuf,
+    _root: tempfile::TempDir,
+    granted: PathBuf,
+    other: PathBuf,
+}
+
+#[cfg(target_os = "linux")]
+impl Fixture {
+    fn new() -> Result<Self, ProbeError> {
+        let tool = resolve(OsStr::new(PROBE_TOOL));
+        if !tool.is_absolute() {
+            return Err(ProbeError::Tool {
+                program: PROBE_TOOL.to_string(),
+            });
+        }
+        let root = tempfile::Builder::new()
+            .prefix("agrafe-sandbox-")
+            .tempdir()?;
+        let granted = root.path().join("granted");
+        let other = root.path().join("other");
+        for dir in [&granted, &other] {
+            std::fs::create_dir(dir)?;
+            std::fs::write(dir.join("file"), b"agrafe\n")?;
+        }
+        Ok(Self {
+            tool,
+            _root: root,
+            granted,
+            other,
+        })
+    }
+
+    fn program(&self) -> String {
+        self.tool.to_string_lossy().into_owned()
+    }
+
+    /// `cat` on the granted file.
+    fn read_granted(&self) -> Command {
+        let mut cat = Command::new(&self.tool);
+        cat.arg(self.granted.join("file")).readable(&self.granted);
+        cat
+    }
+
+    /// `cat` on the other file, with the granted directory alone granted.
+    fn read_other(&self) -> Command {
+        let mut cat = Command::new(&self.tool);
+        cat.arg(self.other.join("file")).readable(&self.granted);
+        cat
+    }
+
+    /// The granted read under `layers`, which must succeed: otherwise the
+    /// system set misses something this host needs, or the sandbox is
+    /// wrong.
+    async fn check_granted(&self, config: &Config, layers: Layers) -> Result<Applied, ProbeError> {
+        let (outcome, applied) = run_with(self.read_granted(), config, layers)
+            .await
+            .map_err(|err| bubblewrap_probe_error(config, err))?;
+        match outcome {
+            Outcome::Success => Ok(applied),
+            Outcome::Failed { status, stderr, .. } => Err(ProbeError::Granted {
+                program: self.program(),
+                status,
+                stderr,
+            }),
+            Outcome::TimedOut => Err(ProbeError::Granted {
+                program: self.program(),
+                status: "timed out".to_string(),
+                stderr: String::new(),
+            }),
+        }
+    }
+
+    /// The other read under `layers`, which must fail.
+    async fn check_refused(&self, config: &Config, layers: Layers) -> Result<(), ProbeError> {
+        let (outcome, _) = run_with(self.read_other(), config, layers)
+            .await
+            .map_err(|err| bubblewrap_probe_error(config, err))?;
+        match outcome {
+            Outcome::Success => Err(ProbeError::NotRefused {
+                program: self.program(),
+            }),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// A `bwrap` failure during the probe is the host's configuration, and
+/// reported as such, naming the configured `bwrap`.
+#[cfg(target_os = "linux")]
+fn bubblewrap_probe_error(config: &Config, err: Error) -> ProbeError {
+    match err {
+        Error::Bubblewrap { message, .. } => ProbeError::Bubblewrap {
+            program: config
+                .bubblewrap
+                .as_deref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default(),
+            reason: message,
+        },
+        err => err.into(),
+    }
+}
+
 #[cfg(target_os = "linux")]
 async fn probe_confinement(config: &Config) -> Result<Status, ProbeError> {
+    let fixture = Fixture::new()?;
+    if let Some(bwrap) = &config.bubblewrap {
+        return probe_bubblewrap(config, bwrap, &fixture).await;
+    }
     let strict = config.isolation.strict();
-    let tool = resolve(OsStr::new(PROBE_TOOL));
-    if !tool.is_absolute() {
-        return Err(ProbeError::Tool {
-            program: PROBE_TOOL.to_string(),
-        });
-    }
-    let program = tool.to_string_lossy().into_owned();
-
-    let root = tempfile::Builder::new()
-        .prefix("agrafe-sandbox-")
-        .tempdir()?;
-    let granted = root.path().join("granted");
-    let other = root.path().join("other");
-    for dir in [&granted, &other] {
-        std::fs::create_dir(dir)?;
-        std::fs::write(dir.join("file"), b"agrafe\n")?;
-    }
-    let read_granted = || {
-        let mut cat = Command::new(&tool);
-        cat.arg(granted.join("file")).readable(&granted);
-        cat
-    };
 
     let seccomp = {
         let only_seccomp = Layers {
             landlock: false,
             seccomp: true,
+            bubblewrap: false,
             strict: true,
         };
-        match run_with(read_granted(), config, only_seccomp).await {
+        match run_with(fixture.read_granted(), config, only_seccomp).await {
             Ok(_) => true,
             Err(Error::Spawn { .. }) if !strict => false,
             Err(Error::Spawn { program, source }) => {
@@ -684,35 +986,16 @@ async fn probe_confinement(config: &Config) -> Result<Status, ProbeError> {
     let layers = Layers {
         landlock: true,
         seccomp,
+        bubblewrap: false,
         strict,
     };
 
-    let (outcome, applied) = run_with(read_granted(), config, layers).await?;
-    match outcome {
-        Outcome::Success => {}
-        Outcome::Failed { status, stderr, .. } => {
-            return Err(ProbeError::Granted {
-                program,
-                status,
-                stderr,
-            });
-        }
-        Outcome::TimedOut => {
-            return Err(ProbeError::Granted {
-                program,
-                status: "timed out".to_string(),
-                stderr: String::new(),
-            });
-        }
-    }
-
-    let mut outside = Command::new(&tool);
-    outside.arg(other.join("file")).readable(&granted);
-    let (outcome, _) = run_with(outside, config, layers).await?;
-    let landlock = match (applied.landlock, outcome) {
-        (true, Outcome::Success) => return Err(ProbeError::NotRefused { program }),
-        (true, _) => confine::kernel_abi(),
-        (false, _) => None,
+    let applied = fixture.check_granted(config, layers).await?;
+    let landlock = if applied.landlock {
+        fixture.check_refused(config, layers).await?;
+        confine::kernel_abi()
+    } else {
+        None
     };
 
     let seccomp = applied.seccomp;
@@ -724,13 +1007,45 @@ async fn probe_confinement(config: &Config) -> Result<Status, ProbeError> {
     Ok(Status {
         landlock,
         seccomp,
+        bubblewrap: None,
         rlimits_only,
+    })
+}
+
+/// The same two reads through `bwrap`, which must start, with the seccomp
+/// filters it installs: a `bwrap` that cannot set the sandbox up is a
+/// configuration failure in every mode, since the operator asked for it.
+#[cfg(target_os = "linux")]
+async fn probe_bubblewrap(
+    config: &Config,
+    bwrap: &Path,
+    fixture: &Fixture,
+) -> Result<Status, ProbeError> {
+    let version = bubblewrap::version(bwrap, config.timeout)
+        .await
+        .map_err(|reason| ProbeError::Bubblewrap {
+            program: bwrap.display().to_string(),
+            reason,
+        })?;
+    let layers = Layers {
+        landlock: false,
+        seccomp: true,
+        bubblewrap: true,
+        strict: true,
+    };
+    let applied = fixture.check_granted(config, layers).await?;
+    fixture.check_refused(config, layers).await?;
+    Ok(Status {
+        landlock: None,
+        seccomp: applied.seccomp,
+        bubblewrap: Some(version),
+        rlimits_only: None,
     })
 }
 
 #[cfg(not(target_os = "linux"))]
 async fn probe_confinement(config: &Config) -> Result<Status, ProbeError> {
-    if config.isolation.strict() {
+    if config.isolation.strict() || config.bubblewrap.is_some() {
         return Err(Error::Confine {
             program: PROBE_TOOL.to_string(),
             reason: linux_only(),
@@ -740,6 +1055,7 @@ async fn probe_confinement(config: &Config) -> Result<Status, ProbeError> {
     Ok(Status {
         landlock: None,
         seccomp: false,
+        bubblewrap: None,
         rlimits_only: Some(std::env::consts::OS.to_string()),
     })
 }
@@ -955,6 +1271,21 @@ mod tests {
         assert_eq!(status.to_string(), "rlimits only (isolation off)");
     }
 
+    /// Isolation `off` is the limits and the timeout, bubblewrap or not.
+    #[tokio::test]
+    async fn isolation_off_ignores_bubblewrap() {
+        let config = Config {
+            isolation: Isolation::Off,
+            bubblewrap: Some("/usr/bin/bwrap".into()),
+            ..config()
+        };
+        let status = probe(&config).await.unwrap();
+        assert_eq!(status.to_string(), "rlimits only (isolation off)");
+        let mut t = Command::new("true");
+        t.writable(std::env::temp_dir());
+        assert!(matches!(run(t, &config).await.unwrap(), Outcome::Success));
+    }
+
     #[cfg(not(target_os = "linux"))]
     #[tokio::test]
     async fn other_platforms_have_rlimits_only() {
@@ -966,6 +1297,16 @@ mod tests {
         };
         let err = probe(&required).await.unwrap_err();
         assert!(err.to_string().contains("Linux only"), "{err}");
+        let wrapped = Config {
+            bubblewrap: Some("/usr/bin/bwrap".into()),
+            ..config()
+        };
+        let err = probe(&wrapped).await.unwrap_err();
+        assert!(err.to_string().contains("Linux only"), "{err}");
+        let mut t = Command::new("true");
+        t.writable(std::env::temp_dir());
+        let err = run(t, &wrapped).await.unwrap_err();
+        assert!(err.to_string().contains("Linux only"), "{err}");
     }
 
     /// The configured isolation wins over a required check on another
@@ -975,15 +1316,74 @@ mod tests {
         let status = Status {
             landlock: Some(4),
             seccomp: true,
+            bubblewrap: None,
             rlimits_only: None,
         };
         assert_eq!(status.to_string(), "landlock abi 4, seccomp, rlimits");
+        assert!(status.confines_filesystem());
         let status = Status {
             landlock: None,
             seccomp: true,
+            bubblewrap: None,
             rlimits_only: None,
         };
         assert_eq!(status.to_string(), "no landlock, seccomp, rlimits");
+        assert!(!status.confines_filesystem());
+        let status = Status {
+            landlock: None,
+            seccomp: true,
+            bubblewrap: Some("0.11.1".to_string()),
+            rlimits_only: None,
+        };
+        assert_eq!(status.to_string(), "bubblewrap 0.11.1, seccomp, rlimits");
+        assert!(status.confines_filesystem());
+    }
+
+    /// Under bubblewrap Landlock yields to the mount namespace and every
+    /// failure is an error; `off` turns bubblewrap off with the rest.
+    #[test]
+    fn bubblewrap_replaces_landlock_and_is_strict() {
+        let wrapped = Config {
+            bubblewrap: Some("/usr/bin/bwrap".into()),
+            ..config()
+        };
+        let layers = Layers::of(&wrapped);
+        assert!(layers.bubblewrap && layers.seccomp && layers.strict && !layers.landlock);
+        let layers = Layers::of(&config());
+        assert!(layers.landlock && layers.seccomp && !layers.bubblewrap && !layers.strict);
+        let off = Config {
+            isolation: Isolation::Off,
+            ..wrapped
+        };
+        let layers = Layers::of(&off);
+        assert!(!layers.landlock && !layers.seccomp && !layers.bubblewrap && !layers.strict);
+    }
+
+    /// A `bwrap` failure is told from the program's by its stderr, and a
+    /// program `bwrap` could not execute is a spawn failure as without it.
+    #[test]
+    fn bubblewrap_failures_are_read_from_stderr() {
+        let program = || "/usr/bin/vips".to_string();
+        match bubblewrap_failure(
+            program(),
+            "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted",
+        ) {
+            Some(Error::Bubblewrap { message, .. }) => {
+                assert!(message.starts_with("bwrap: loopback"), "{message}");
+            }
+            other => panic!("{other:?}"),
+        }
+        match bubblewrap_failure(
+            program(),
+            "bwrap: execvp /usr/bin/vips: No such file or directory",
+        ) {
+            Some(Error::Spawn { source, .. }) => {
+                assert_eq!(source.to_string(), "No such file or directory");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(bubblewrap_failure(program(), "vips: unable to load").is_none());
+        assert!(bubblewrap_failure(program(), "warning\nbwrap: late").is_none());
     }
 
     /// What is refused, on a kernel that can refuse it: the Landlock tests
@@ -1156,7 +1556,7 @@ mod tests {
         /// A socket of any family, unix included, is refused unless the
         /// command asks for unix sockets, and then every other family
         /// still is.
-        const SOCKETS: &str = r#"
+        pub(super) const SOCKETS: &str = r#"
 import socket, sys
 try:
     socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -1335,6 +1735,434 @@ socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         #[tokio::test]
         async fn spawns_stay_cheap() {
             let Some(config) = confined().await else {
+                return;
+            };
+            let work = tempdir();
+            let started = std::time::Instant::now();
+            for _ in 0..20 {
+                let mut t = Command::new("true");
+                t.writable(work.path());
+                assert!(matches!(run(t, &config).await.unwrap(), Outcome::Success));
+            }
+            let elapsed = started.elapsed();
+            assert!(
+                elapsed < Duration::from_secs(4),
+                "20 spawns took {elapsed:?}"
+            );
+        }
+    }
+
+    /// The same refusals through bubblewrap, and what its namespaces add:
+    /// the configuration file does not exist, the network is loopback
+    /// alone, the worker is not in the pid namespace. They need the
+    /// packaged `/usr/bin/bwrap`, which is what Ubuntu's AppArmor profile
+    /// grants a user namespace to; elsewhere they skip with a message,
+    /// unless `AGRAFE_SANDBOX_REQUIRED=1`.
+    #[cfg(target_os = "linux")]
+    mod bubblewrap {
+        use super::*;
+
+        const BWRAP: &str = "/usr/bin/bwrap";
+
+        fn required() -> bool {
+            std::env::var_os("AGRAFE_SANDBOX_REQUIRED").is_some_and(|v| v == "1")
+        }
+
+        /// The configuration with bubblewrap, probed, or `None` with a
+        /// message where the host cannot run it and the tests are not
+        /// required.
+        async fn wrapped() -> Option<Config> {
+            let config = Config {
+                bubblewrap: Some(BWRAP.into()),
+                ..config()
+            };
+            if !Path::new(BWRAP).exists() {
+                assert!(
+                    !required(),
+                    "AGRAFE_SANDBOX_REQUIRED=1 but there is no {BWRAP}"
+                );
+                eprintln!("skipped: no {BWRAP}");
+                return None;
+            }
+            match probe(&config).await {
+                Ok(status) => {
+                    assert!(status.bubblewrap.is_some() && status.seccomp, "{status}");
+                    Some(config)
+                }
+                Err(err) => {
+                    assert!(!required(), "AGRAFE_SANDBOX_REQUIRED=1 but {err}");
+                    eprintln!("skipped: {err}");
+                    None
+                }
+            }
+        }
+
+        fn has(program: &str) -> bool {
+            Command::new(program).program().is_absolute()
+        }
+
+        #[tokio::test]
+        async fn the_boot_line_names_bubblewrap() {
+            let Some(config) = wrapped().await else {
+                return;
+            };
+            let status = probe(&config).await.unwrap();
+            assert!(status.landlock.is_none(), "{status}");
+            let line = status.to_string();
+            assert!(line.starts_with("bubblewrap 0."), "{line}");
+            assert!(line.ends_with(", seccomp, rlimits"), "{line}");
+            let required = Config {
+                isolation: Isolation::Required,
+                ..config
+            };
+            assert_eq!(probe(&required).await.unwrap(), status);
+        }
+
+        /// What was denied under Landlock does not exist under bubblewrap:
+        /// a configuration file next to the binary, `/etc/passwd`, another
+        /// job's directory.
+        #[tokio::test]
+        async fn files_outside_do_not_exist() {
+            let Some(config) = wrapped().await else {
+                return;
+            };
+            let beside = tempdir();
+            std::fs::write(beside.path().join("agrafe.toml"), b"[keys]").unwrap();
+            let work = tempdir();
+            std::fs::write(work.path().join("input"), b"input").unwrap();
+
+            let mut cat = Command::new("cat");
+            cat.arg(beside.path().join("agrafe.toml"))
+                .writable(work.path());
+            match run(cat, &config).await.unwrap() {
+                Outcome::Failed { stderr, .. } => {
+                    assert!(stderr.contains("No such file or directory"), "{stderr}");
+                }
+                other => panic!("{other:?}"),
+            }
+            let mut ls = sh("ls \"$1\" || test -e /etc/passwd || test -e /etc/hostname");
+            ls.arg("sh").arg(beside.path()).writable(work.path());
+            assert!(matches!(
+                run(ls, &config).await.unwrap(),
+                Outcome::Failed { .. }
+            ));
+
+            let mut cat = Command::new("cat");
+            cat.arg(work.path().join("input")).writable(work.path());
+            assert!(matches!(run(cat, &config).await.unwrap(), Outcome::Success));
+        }
+
+        #[tokio::test]
+        async fn writes_outside_are_refused() {
+            let Some(config) = wrapped().await else {
+                return;
+            };
+            let work = tempdir();
+            let elsewhere = tempdir();
+
+            // Not there, read-only where bound, and the root remounted.
+            for target in [
+                elsewhere.path().join("out"),
+                PathBuf::from("/usr/agrafe-out"),
+                PathBuf::from("/agrafe-out"),
+            ] {
+                let mut write = sh("echo x > \"$1\"");
+                write.arg("sh").arg(&target).writable(work.path());
+                assert!(
+                    matches!(run(write, &config).await.unwrap(), Outcome::Failed { .. }),
+                    "{}",
+                    target.display()
+                );
+                assert!(!target.exists());
+            }
+            let mut write = sh("echo x > \"$1\"");
+            write
+                .arg("sh")
+                .arg(elsewhere.path().join("out"))
+                .readable(elsewhere.path())
+                .writable(work.path());
+            match run(write, &config).await.unwrap() {
+                Outcome::Failed { stderr, .. } => {
+                    assert!(stderr.contains("Read-only file system"), "{stderr}");
+                }
+                other => panic!("{other:?}"),
+            }
+
+            let mut write = sh("echo x > \"$1\" && mkdir \"$2\" && mv \"$1\" \"$2\"");
+            write
+                .arg("sh")
+                .arg(work.path().join("out"))
+                .arg(work.path().join("sub"))
+                .writable(work.path());
+            assert!(matches!(
+                run(write, &config).await.unwrap(),
+                Outcome::Success
+            ));
+            assert!(work.path().join("sub/out").exists());
+        }
+
+        /// The network namespace has loopback alone, with nothing
+        /// listening: seen without the seccomp filter, which refuses the
+        /// socket before the namespace matters, and with it.
+        #[tokio::test]
+        async fn the_network_is_loopback_alone() {
+            let Some(config) = wrapped().await else {
+                return;
+            };
+            if !has("python3") {
+                eprintln!("skipped: no python3");
+                return;
+            }
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let work = tempdir();
+            // Listing the interfaces takes a socket too, so the filtered
+            // run only connects.
+            const CONNECT: &str = "\
+import socket, sys
+try:
+    socket.create_connection(('127.0.0.1', int(sys.argv[1])), timeout=2)
+    sys.exit(10)
+except ConnectionRefusedError:
+    sys.exit(3)
+except PermissionError:
+    sys.exit(4)
+";
+            let interfaces = format!(
+                "import socket, sys\n\
+                 sys.stderr.write(repr([name for _, name in socket.if_nameindex()]) + '\\n')\n\
+                 {CONNECT}"
+            );
+            let connect = |script: &str| {
+                let mut python = Command::new("python3");
+                python
+                    .args(["-I", "-c", script])
+                    .arg(port.to_string())
+                    .writable(work.path());
+                python
+            };
+            let unfiltered = Layers {
+                landlock: false,
+                seccomp: false,
+                bubblewrap: true,
+                strict: true,
+            };
+            let (outcome, _) = run_with(connect(&interfaces), &config, unfiltered)
+                .await
+                .unwrap();
+            match outcome {
+                Outcome::Failed { code, stderr, .. } => {
+                    assert_eq!(code, Some(3), "{stderr}");
+                    assert!(stderr.starts_with("['lo']"), "{stderr}");
+                }
+                other => panic!("{other:?}"),
+            }
+            match run(connect(CONNECT), &config).await.unwrap() {
+                Outcome::Failed { code, stderr, .. } => {
+                    assert_eq!(code, Some(4), "{stderr}");
+                }
+                other => panic!("{other:?}"),
+            }
+            assert_eq!(
+                listener.accept().map(|_| ()).unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+        }
+
+        /// The child is pid 2 under `bwrap`, and the worker's pid does
+        /// not exist in its namespace.
+        #[tokio::test]
+        async fn the_worker_is_not_in_the_pid_namespace() {
+            let Some(config) = wrapped().await else {
+                return;
+            };
+            let work = tempdir();
+            // `/proc` is the namespace's own, without the worker.
+            let mut kill = sh("test \"$PPID\" = 1 && test ! -e \"/proc/$1\" && kill -0 \"$1\"");
+            kill.arg("sh")
+                .arg(std::process::id().to_string())
+                .writable(work.path());
+            match run(kill, &config).await.unwrap() {
+                Outcome::Failed { stderr, .. } => {
+                    assert!(stderr.contains("No such process"), "{stderr}");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn namespaces_are_refused() {
+            let Some(config) = wrapped().await else {
+                return;
+            };
+            if !has("unshare") {
+                eprintln!("skipped: no unshare");
+                return;
+            }
+            let work = tempdir();
+            let mut unshare = Command::new("unshare");
+            unshare.args(["--user", "true"]).writable(work.path());
+            match run(unshare, &config).await.unwrap() {
+                Outcome::Failed { stderr, .. } => {
+                    assert!(stderr.contains("not permitted"), "{stderr}");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+
+        /// The filters `bwrap` installs are the same: threads work, and a
+        /// socket of any family is refused.
+        #[tokio::test]
+        async fn the_filters_are_installed() {
+            let Some(config) = wrapped().await else {
+                return;
+            };
+            let work = tempdir();
+            let mut threads = sh("seq 1 200000 | sort --parallel=4 -S 64M > /dev/null && \
+                                  seq 1 4 | xargs -P 4 -I{} true");
+            threads.writable(work.path());
+            match run(threads, &config).await.unwrap() {
+                Outcome::Success => {}
+                other => panic!("{other:?}"),
+            }
+            if !has("python3") {
+                eprintln!("skipped: no python3");
+                return;
+            }
+            let mut sockets = Command::new("python3");
+            sockets
+                .args(["-I", "-c", super::refusals::SOCKETS])
+                .writable(work.path());
+            match run(sockets, &config).await.unwrap() {
+                Outcome::Failed { code, stderr, .. } => {
+                    assert_ne!(code, Some(10), "an inet socket was allowed");
+                    assert!(stderr.contains("PermissionError"), "{stderr}");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+
+        /// LibreOffice's pipe lands in the sandbox's own `/tmp`, which
+        /// goes with it: the host's is untouched.
+        #[tokio::test]
+        async fn unix_sockets_bind_in_the_private_tmp() {
+            let Some(config) = wrapped().await else {
+                return;
+            };
+            if !has("python3") {
+                eprintln!("skipped: no python3");
+                return;
+            }
+            let work = tempdir();
+            let pipe = format!("/tmp/agrafe-sandbox-test-pipe-{}", std::process::id());
+            let script = format!(
+                "{}\n\
+                 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n\
+                 s.bind(sys.argv[1])\n\
+                 s.listen(1)\n",
+                super::refusals::SOCKETS
+            );
+            let mut sockets = Command::new("python3");
+            sockets
+                .args(["-I", "-c", &script])
+                .arg(&pipe)
+                .writable(work.path())
+                .unix_sockets("/tmp");
+            match run(sockets, &config).await.unwrap() {
+                Outcome::Success => {}
+                other => panic!("{other:?}"),
+            }
+            assert!(
+                !Path::new(&pipe).exists(),
+                "the pipe reached the host's /tmp"
+            );
+        }
+
+        /// `bwrap` reports a child the kernel killed as an exit of 128
+        /// plus the signal: the CPU limit is still a timeout.
+        #[tokio::test]
+        async fn signals_read_as_exit_codes() {
+            let Some(config) = wrapped().await else {
+                return;
+            };
+            let work = tempdir();
+            let mut xcpu = sh("kill -XCPU $$");
+            xcpu.writable(work.path());
+            assert!(matches!(
+                run(xcpu, &config).await.unwrap(),
+                Outcome::TimedOut
+            ));
+            let mut killed = sh("kill -9 $$");
+            killed.writable(work.path());
+            match run(killed, &config).await.unwrap() {
+                Outcome::Failed { code, .. } => assert_eq!(code, Some(128 + libc::SIGKILL)),
+                other => panic!("{other:?}"),
+            }
+        }
+
+        /// A `bwrap` failure is an error, not an outcome of the file's: a
+        /// writable directory that does not exist; and a program that
+        /// does not exist is the spawn failure it is without bubblewrap.
+        #[tokio::test]
+        async fn bwrap_failures_are_errors() {
+            let Some(config) = wrapped().await else {
+                return;
+            };
+            let mut t = Command::new("true");
+            t.writable("/nonexistent/agrafe-work");
+            match run(t, &config).await {
+                Err(Error::Bubblewrap { message, .. }) => {
+                    assert!(message.contains("Can't find source path"), "{message}");
+                }
+                other => panic!("{other:?}"),
+            }
+            let missing = Command::new("/nonexistent/agrafe-no-such-program");
+            assert!(matches!(
+                run(missing, &config).await,
+                Err(Error::Spawn { .. })
+            ));
+        }
+
+        /// A `bwrap` that is not the profiled one gets no user namespace
+        /// on a host that restricts them, and the probe says so.
+        #[tokio::test]
+        async fn an_unprofiled_bwrap_is_a_configuration_failure() {
+            let Some(config) = wrapped().await else {
+                return;
+            };
+            let restricted =
+                std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+                    .is_ok_and(|v| v.trim() == "1");
+            if !restricted {
+                eprintln!("skipped: this host does not restrict unprivileged user namespaces");
+                return;
+            }
+            let dir = tempdir();
+            let copy = dir.path().join("bwrap");
+            std::fs::copy(BWRAP, &copy).unwrap();
+            let unprofiled = Config {
+                bubblewrap: Some(copy.clone()),
+                ..config
+            };
+            match probe(&unprofiled).await {
+                Err(ProbeError::Bubblewrap { program, reason }) => {
+                    assert_eq!(program, copy.to_string_lossy());
+                    assert!(reason.starts_with("bwrap: "), "{reason}");
+                }
+                other => panic!("{other:?}"),
+            }
+            let mut t = Command::new("true");
+            t.writable(dir.path());
+            assert!(matches!(
+                run(t, &unprofiled).await,
+                Err(Error::Bubblewrap { .. })
+            ));
+        }
+
+        #[tokio::test]
+        async fn spawns_stay_cheap() {
+            let Some(config) = wrapped().await else {
                 return;
             };
             let work = tempdir();

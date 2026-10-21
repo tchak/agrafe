@@ -269,6 +269,12 @@ pub async fn setup_tuned(
     config.media.render.render_document_command = helper("agrafe-render-document");
     config.media.render.render_geo_command = helper("agrafe-render-geo");
     config.media.render.preview.max_dimension = 400;
+    // Set to the packaged `/usr/bin/bwrap` on a Linux host that grants it
+    // a user namespace, every tool the suite runs goes through bubblewrap:
+    // the probe and the renders under it, checked by hand.
+    if let Some(bwrap) = std::env::var_os("AGRAFE_TEST_BUBBLEWRAP") {
+        config.media.render.sandbox.bubblewrap = Some(bwrap.into());
+    }
     tune(&mut config);
 
     let gate = Gate::default();
