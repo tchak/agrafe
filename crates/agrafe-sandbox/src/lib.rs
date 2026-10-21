@@ -288,6 +288,8 @@ impl Command {
     /// pipe in `/tmp`; the trade is that path-based unix sockets the child
     /// can see, such as a local Postgres's, are no longer closed to it
     /// (Landlock scopes abstract sockets only), so it is not the default.
+    /// Under bubblewrap the sockets go in the sandbox's private `/tmp`,
+    /// whatever `dir` says: nothing of the host is bound for them.
     pub fn unix_sockets(&mut self, dir: impl Into<PathBuf>) -> &mut Self {
         self.unix_sockets = Some(dir.into());
         self
@@ -470,6 +472,10 @@ async fn run_with(
 /// Kill the process group the child leads, so that a program that forked
 /// (a launcher script, an office suite's wrapper) does not leave the
 /// worker behind. The child itself is killed by the drop that follows.
+/// Under bubblewrap the group holds `bwrap` alone, since its pid 1 starts
+/// a session of its own (`--new-session`); there `--die-with-parent`
+/// does the work, killing pid 1 when `bwrap` dies, and the kernel takes
+/// the pid namespace down with it.
 #[cfg(unix)]
 fn kill_group(pid: Option<u32>) {
     if let Some(pid) = pid.and_then(|pid| i32::try_from(pid).ok()) {
@@ -1809,7 +1815,8 @@ socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             let status = probe(&config).await.unwrap();
             assert!(status.landlock.is_none(), "{status}");
             let line = status.to_string();
-            assert!(line.starts_with("bubblewrap 0."), "{line}");
+            let version = line.strip_prefix("bubblewrap ").unwrap_or_default();
+            assert!(version.starts_with(|c: char| c.is_ascii_digit()), "{line}");
             assert!(line.ends_with(", seccomp, rlimits"), "{line}");
             let required = Config {
                 isolation: Isolation::Required,
@@ -2077,6 +2084,56 @@ except PermissionError:
                 !Path::new(&pipe).exists(),
                 "the pipe reached the host's /tmp"
             );
+        }
+
+        /// A timeout takes the whole namespace down. The group the worker
+        /// kills holds `bwrap` alone, since its pid 1 starts a session of
+        /// its own, so what ends a `sleep` the program forked is
+        /// `--die-with-parent`: pid 1 dies with `bwrap`, and the kernel
+        /// kills the rest. The `sleep` is found from the host by a marker
+        /// in its arguments, since its pid inside the namespace says
+        /// nothing out here.
+        #[tokio::test]
+        async fn timeouts_take_the_namespace_down() {
+            let Some(config) = wrapped().await else {
+                return;
+            };
+            let work = tempdir();
+            let started = work.path().join("started");
+            let marker = format!("30.{:06}", std::process::id() % 1_000_000);
+            let mut command = Command::new("sh");
+            command
+                .args([
+                    "-c",
+                    "sleep \"$AGRAFE_SANDBOX_MARKER\" & echo > \"$1\"; wait",
+                    "sh",
+                ])
+                .arg(&started)
+                .env("AGRAFE_SANDBOX_MARKER", &marker)
+                .writable(work.path());
+            assert!(matches!(
+                run(command, &config).await.unwrap(),
+                Outcome::TimedOut
+            ));
+            assert!(started.exists(), "the sleep was never forked");
+            // Only the `sleep` carries the marker in its arguments; the
+            // shell and `bwrap` had it in the environment alone.
+            let running = || {
+                std::fs::read_dir("/proc").unwrap().flatten().any(|entry| {
+                    std::fs::read(entry.path().join("cmdline")).is_ok_and(|cmdline| {
+                        cmdline
+                            .split(|byte| *byte == 0)
+                            .any(|arg| arg == marker.as_bytes())
+                    })
+                })
+            };
+            for _ in 0..200 {
+                if !running() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            panic!("the forked `sleep {marker}` outlived the timeout");
         }
 
         /// `bwrap` reports a child the kernel killed as an exit of 128

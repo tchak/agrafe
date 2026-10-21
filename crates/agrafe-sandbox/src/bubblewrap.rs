@@ -88,12 +88,16 @@ pub(crate) struct Wrapped {
 
 /// The `bwrap` argument list for `command`: the namespaces, the fresh
 /// `/tmp` and `/proc`, the system set and the program read-only, the extra and
-/// declared paths read-only, the writable directory and the unix socket
-/// directory read-write at their own paths, the filters, then the
-/// program and its arguments. Paths missing on the host are skipped, as
-/// the ruleset skips them; the writable directory is not, since a caller
-/// that declares one that does not exist has a bug, which `bwrap` then
-/// reports.
+/// declared paths read-only, the writable directory read-write at its
+/// own path, the filters, then the program and its arguments. Paths
+/// missing on the host are skipped, as the ruleset skips them; the
+/// writable directory is not, since a caller that declares one that does
+/// not exist has a bug, which `bwrap` then reports. Nothing is bound for
+/// the unix socket directory: inside the sandbox `/tmp` is a writable
+/// tmpfs, which is where a program that needs a socket puts it (LibreOffice
+/// checks `/tmp` first, and finds it writable), and a read-write bind of
+/// the host's directory would grant far more than the ruleset's right to
+/// make and remove sockets there.
 pub(crate) fn wrap(
     command: &Command,
     extra: &[PathBuf],
@@ -159,12 +163,6 @@ pub(crate) fn wrap(
         }
     }
     if let Some(dir) = &command.writable {
-        mount("--bind", dir);
-    }
-    // The private `/tmp` is where a socket directory there already is.
-    if let Some(dir) = &command.unix_sockets
-        && !dir.starts_with(TMP)
-    {
         mount("--bind", dir);
     }
     let mut descriptors = Vec::new();
@@ -264,7 +262,7 @@ mod tests {
         // The system set and `/dev/null`, device nodes as devices.
         assert_eq!(args[position("/usr") - 1], "--ro-bind");
         assert_eq!(args[position("/dev/null") - 1], "--dev-bind");
-        // Missing paths are skipped; the private `/tmp` is not bound.
+        // Missing paths are skipped; the socket directory is not bound.
         assert!(!args.iter().any(|arg| arg.contains("nonexistent")));
         assert_eq!(args.iter().filter(|arg| *arg == "--bind").count(), 1);
         // Two filters, two descriptors.
@@ -280,8 +278,11 @@ mod tests {
         assert!(args[..end].iter().all(|arg| arg != "--"));
     }
 
+    /// A socket directory outside `/tmp` is not bound either: the
+    /// sockets go in the private `/tmp`, and a read-write bind of the
+    /// host's `/var/tmp` would be the other jobs' directories.
     #[test]
-    fn a_socket_directory_outside_tmp_is_bound() {
+    fn a_socket_directory_is_never_bound() {
         let pipes = tempfile::Builder::new()
             .tempdir_in(env!("CARGO_MANIFEST_DIR"))
             .unwrap();
@@ -289,8 +290,9 @@ mod tests {
         command.unix_sockets(pipes.path());
         let wrapped = wrap(&command, &[], None).unwrap();
         let args = strings(&wrapped.args);
-        let bind = args.iter().position(|arg| arg == "--bind").unwrap();
-        assert_eq!(args[bind + 1], pipes.path().to_string_lossy());
+        assert!(!args.iter().any(|arg| arg == "--bind"));
+        let pipes = pipes.path().to_string_lossy();
+        assert!(!args.iter().any(|arg| *arg == pipes));
         assert!(wrapped.descriptors.is_empty());
         assert!(!args.iter().any(|arg| arg == "--add-seccomp-fd"));
     }

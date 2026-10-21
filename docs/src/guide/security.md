@@ -181,7 +181,7 @@ refuses a read it was not granted. macOS keeps the limits and the timeout
 only.
 
 On a VM or bare metal that grants unprivileged user namespaces,
-`media.sandbox.bubblewrap` adds a third layer,
+`media.sandbox.bubblewrap` adds a further layer,
 [bubblewrap](deployment.md#bubblewrap), around each subprocess: a mount
 namespace in which the configuration file and the other jobs' files do
 not exist rather than are denied, a pid namespace in which the worker

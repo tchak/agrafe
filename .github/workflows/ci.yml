@@ -88,6 +88,14 @@ jobs:
       # No doctests in the workspace: nextest runs everything there is.
       - name: Test
         run: cargo nextest run --workspace --profile ci
+      # The real tools through bubblewrap: the probe, vips, the helpers
+      # and LibreOffice. A mount namespace checks the system set harder
+      # than Landlock does (a path Landlock lets `stat` does not exist
+      # here), so what the API suite renders is run under it too.
+      - name: Test the renders under bubblewrap
+        run: cargo nextest run -p agrafe-axum --profile ci
+        env:
+          AGRAFE_TEST_BUBBLEWRAP: /usr/bin/bwrap
 
   msrv:
     name: MSRV (1.94)

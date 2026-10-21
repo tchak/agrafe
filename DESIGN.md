@@ -2353,6 +2353,11 @@ unchanged. The two filter variants are compiled once each.
 alone would leave LibreOffice running. Every child is made the leader of a
 process group of its own, and a timeout kills the group before the child
 is dropped. The resource limits were already inherited down the tree.
+Under bubblewrap the group holds `bwrap` alone, since its pid 1 starts
+a session of its own (`--new-session`); there `--die-with-parent` does
+the work, killing pid 1 when `bwrap` dies, and the kernel takes the pid
+namespace down with it. A test times out a forked `sleep` under
+bubblewrap and finds it gone from the host's `/proc`.
 
 Why a denylist: an allowlist has to track every syscall glibc, glib and
 libvips make and breaks silently on an upgrade, in the probe if we are
@@ -2390,10 +2395,14 @@ of each path of the system set (`--dev-bind` for the three device
 nodes), of the program, of `media.sandbox.readable` and of the declared
 readable paths, each at its own path and skipped when missing on the
 host, as the ruleset skips them; `--bind` of the writable directory at
-its own path, so the argv needs no rewriting, and of the unix socket
-directory when it is not under the private `/tmp`; `--add-seccomp-fd`
+its own path, so the argv needs no rewriting; `--add-seccomp-fd`
 for each filter; and `--remount-ro / --`, last, since nothing mounts
-after it. The work directory, under the host's `/tmp` by default, is
+after it. Nothing is bound for the unix socket directory: inside the
+sandbox `/tmp` is a writable tmpfs, so LibreOffice's `access` check
+picks it there whatever the host's `/tmp` says, and a read-write bind
+of the host's `/var/tmp`, which is what the fallback would be, is the
+other jobs' directories, far more than the ruleset's right to make and
+remove sockets. The work directory, under the host's `/tmp` by default, is
 masked by the fresh `/tmp` and re-exposed by its bind, which works; the
 deployment guide prefers `media.tmp_dir` outside `/tmp` all the same.
 The `/proc` is the one addition to the system set: a procfs of the pid
@@ -2407,6 +2416,13 @@ bubblewrap by hand is what found this.
 No `--clearenv`: the parent already clears the environment and `bwrap`
 passes its own through. No `prlimit`: the `setrlimit` calls in
 `pre_exec` apply to `bwrap` and are inherited by the child unchanged.
+Two differences from the ruleset are accepted: a bind has no `noexec`,
+so the work directory and the readable paths are executable under
+bubblewrap where Landlock withheld execute, which gives a program that
+already runs `/usr/bin/python3` nothing it lacked; and a declared path
+given relative is resolved by `bwrap` against the worker's working
+directory rather than by the child, so the callers declare absolute
+paths, as they all do.
 
 How the layers combine, which is the design decision this layer adds:
 the rlimits stay in `pre_exec` in both modes; seccomp moves, since
@@ -2534,14 +2550,18 @@ add: the configuration file does not exist, the network is loopback
 alone with nothing listening (seen without the filter, which refuses the
 socket first), the worker's pid does not exist, a unix socket bound in
 `/tmp` never reaches the host's, a death by signal reads back as 128
-plus the signal, a `bwrap` failure is an error and not an outcome, and a
-copy of `bwrap` at another path is refused where the AppArmor
+plus the signal, a `bwrap` failure is an error and not an outcome, a
+timeout takes the namespace down with the `sleep` the program forked,
+and a copy of `bwrap` at another path is refused where the AppArmor
 restriction is on. They need the packaged binary and skip without it,
 under the same variable; CI installs `bubblewrap` on its Ubuntu 26.04
 runner, whose AppArmor grants it the namespace with nothing to
 configure. `AGRAFE_TEST_BUBBLEWRAP=/usr/bin/bwrap` puts the whole
-integration suite through bubblewrap, for checking the probe and the
-real tools under it by hand on the Lima VM.
+integration suite through bubblewrap: the probe, vips, the helpers and
+LibreOffice under the real namespaces. CI runs the API suite that way
+as a second step, since a mount namespace checks the system set harder
+than Landlock does (the `/proc` LibreOffice needs is the example), and
+the same variable serves on the Lima VM.
 
 *LibreOffice.* The office converter (see "Thumbnail") runs through the
 same `Command`, one short-lived process per document and no resident

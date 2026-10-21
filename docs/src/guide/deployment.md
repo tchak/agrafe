@@ -85,7 +85,9 @@ Set and not working, the worker refuses to start, under `"auto"` as under
 silent fallback to Landlock.
 
 It needs `bubblewrap` 0.8 or newer and unprivileged user namespaces for
-`bwrap`:
+`bwrap`. The version is not checked: an older `bwrap` rejects
+`--disable-userns`, and the startup probe reports that as a configuration
+failure with what `bwrap` said.
 
 - **Ubuntu 26.04**: `apt install bubblewrap` is enough. Ubuntu restricts
   unprivileged user namespaces through AppArmor, and the `apparmor`
