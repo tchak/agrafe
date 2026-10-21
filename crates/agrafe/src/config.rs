@@ -5,6 +5,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use agrafe_types::allowlist::Allowlist;
 use bytesize::ByteSize;
 use figment::Figment;
 use figment::providers::{Env, Format, Toml};
@@ -517,6 +518,13 @@ pub struct UploadConfig {
     /// default.
     #[serde(with = "humantime_serde", default = "default_abandoned_after")]
     pub abandoned_after: Duration,
+    /// The content types a `raw`, `multipart` or `url` blob may be
+    /// created with, exact or `type/*`; empty, the default, accepts any.
+    /// Checked at creation, again at upload, and on the bytes of a blob
+    /// declared as `application/octet-stream`. Generated blobs are the
+    /// service's own and are not checked.
+    #[serde(default)]
+    pub content_types: Allowlist,
 }
 
 impl UploadConfig {
@@ -553,6 +561,7 @@ impl Default for UploadConfig {
             stale_after: default_stale_after(),
             purge_delay: default_purge_delay(),
             abandoned_after: default_abandoned_after(),
+            content_types: Allowlist::default(),
         }
     }
 }

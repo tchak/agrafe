@@ -115,6 +115,7 @@ The bucket needs an `AbortIncompleteMultipartUpload` lifecycle rule.
 | `stale_after` | `"10m"` | An upload not touched for this long was left by a crashed process, and the reaper resets it. Running uploads touch their blob every third of it |
 | `purge_delay` | `"1h"` | Grace period between a delete or an expiry and the purge of the objects |
 | `abandoned_after` | `"1d"` | An unfinished generated source, or an attached `created` blob, untouched for this long is expired by the reaper |
+| `content_types` | `[]` | The content types a `raw`, `multipart` or `url` blob may be created with, exact or `type/*`. Empty accepts any. Checked at creation, at upload, and on the bytes of a blob declared as `application/octet-stream` |
 
 ## `[blobs]`
 

@@ -77,6 +77,7 @@ All `422 unprocessable`, from `POST /blobs`:
 | `filename is not valid` | `.` or `..` |
 | `filename must not contain path separators or control characters` | `/`, `\`, control or bidirectional formatting characters |
 | `content_type is not a valid media type`, `content_type must not contain wildcards`, `content_type is too long` | |
+| `` content_type `…` is not accepted `` | A `raw`, `multipart` or `url` blob of a type outside `upload.content_types` |
 | `checksum is required for raw and multipart input`, `size is required for raw and multipart input` | |
 | `checksum must be base64`, `checksum must be a base64 SHA-256 digest (32 bytes)` | |
 | `checksum_md5 must be base64`, `checksum_md5 must be a base64 MD5 digest (16 bytes)` | |
@@ -121,6 +122,7 @@ From `PUT /blobs/:id` on either port, and `PUT /blobs/:id/parts/:n`:
 | `422` | `unprocessable` | `body checksum does not match the declared checksum` | |
 | `422` | `unprocessable` | `body MD5 does not match the declared checksum_md5` | |
 | `422` | `unprocessable` | `` content looks like `…`, not `…` `` | The sniffed type contradicts the declared one |
+| `422` | `unprocessable` | `` content type `…` is not accepted `` | The declared type is no longer in `upload.content_types`, or the bytes of a blob declared as `application/octet-stream` are of a type outside it |
 | `422` | `unprocessable` | ``multipart body has no part named `file` `` | |
 | `422` | `unprocessable` | `line N: …` | A source line failed its rules, see below |
 | `422` | `unprocessable` | `a source has at most 10000 parts` | |

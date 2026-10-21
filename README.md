@@ -57,6 +57,9 @@ reasoning behind every decision.
   form, for backends migrating from it.
 - **Content sniffing**: the declared type is checked against the bytes,
   with sensible leniency for aliases and containers.
+- **Accepted types**: `upload.content_types` restricts the files an
+  installation takes to a list of types, exact or `image/*`, checked at
+  creation and on the bytes.
 - **Write-once blobs**: a blob receives bytes exactly once, so a leaked
   upload URL is worthless after the first upload and originals can be
   served `immutable`.

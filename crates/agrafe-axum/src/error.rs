@@ -233,6 +233,7 @@ impl From<UploadError> for ApiError {
             | UploadError::ChecksumMismatch
             | UploadError::Md5Mismatch
             | UploadError::TypeMismatch { .. }
+            | UploadError::TypeNotAccepted(_)
             | UploadError::TooManyParts(_)
             | UploadError::Line { .. }
             | UploadError::ArchiveTooLarge(_)

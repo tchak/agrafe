@@ -38,6 +38,7 @@ use crate::blob::{Blob, BlobState, InputType, ScanOutcome};
 use crate::clamav::{self, Verdict};
 use crate::config::UploadConfig;
 use crate::sniff;
+use agrafe_types::allowlist::Allowlist;
 
 /// The error a body stream may yield. The HTTP layer puts its own error
 /// type in the box and takes it back out of `UploadError::Body`.
@@ -216,6 +217,11 @@ pub enum UploadError {
     /// The MD5 of the body is not the one declared.
     #[error("body MD5 does not match the declared checksum_md5")]
     Md5Mismatch,
+    /// The content type is not in `upload.content_types`: the declared one,
+    /// or, for a blob declared as `application/octet-stream`, the one its
+    /// bytes sniffed as.
+    #[error("content type `{0}` is not accepted")]
+    TypeNotAccepted(String),
     /// The magic bytes say the file is of a type the declared content type
     /// does not cover.
     #[error("content looks like `{sniffed}`, not `{declared}`")]
@@ -332,7 +338,8 @@ where
     let envelope = state.keks().new_envelope(blob.id);
     let layout = state.keks().layout();
     let scanner = inline_scanner(&state, &blob, &declared).await;
-    let checks = Checks::new(&declared, &blob.content_type, scanner);
+    let accepted = state.config().upload.content_types.clone();
+    let checks = Checks::new(&declared, &blob.content_type, accepted, scanner);
 
     let stored = stream_to_store(
         &state,
@@ -593,6 +600,9 @@ where
 struct Checks {
     declared: Declared,
     content_type: String,
+    /// `upload.content_types`, which the declaration and the bytes must
+    /// satisfy.
+    accepted: Allowlist,
     hasher: Sha256,
     md5: Md5,
     received: u64,
@@ -605,10 +615,11 @@ struct Checks {
 }
 
 impl Checks {
-    fn new(declared: &Declared, content_type: &str, scanner: Scanner) -> Self {
+    fn new(declared: &Declared, content_type: &str, accepted: Allowlist, scanner: Scanner) -> Self {
         Self {
             declared: declared.clone(),
             content_type: content_type.to_string(),
+            accepted,
             hasher: Sha256::new(),
             md5: Md5::new(),
             received: 0,
@@ -654,7 +665,7 @@ impl Tap for Checks {
             let take = (sniff::SNIFF_LEN - self.head.len()).min(chunk.len());
             self.head.extend_from_slice(&chunk[..take]);
             if self.head.len() == sniff::SNIFF_LEN {
-                self.refined = check_type(&self.content_type, &self.head)?;
+                self.refined = check_type(&self.content_type, &self.head, &self.accepted)?;
                 self.sniffed = true;
             }
         }
@@ -668,7 +679,7 @@ impl Tap for Checks {
             return Err(UploadError::SizeMismatch);
         }
         if !self.sniffed {
-            self.refined = check_type(&self.content_type, &self.head)?;
+            self.refined = check_type(&self.content_type, &self.head, &self.accepted)?;
         }
         let sha256 = self.hasher.finalize().to_vec();
         if self
@@ -711,14 +722,26 @@ impl Tap for Checks {
 }
 
 /// The bytes against the declared type: an error when they are clearly
-/// another kind of file, the more precise type when they refine the
-/// declaration, see `sniff::refine`.
-fn check_type(declared: &str, head: &[u8]) -> Result<Option<&'static str>, UploadError> {
+/// another kind of file or one `upload.content_types` does not accept, the
+/// more precise type when they refine the declaration, see `sniff::refine`.
+/// The declaration is checked against the list again, which may have
+/// changed since the blob was created.
+fn check_type(
+    declared: &str,
+    head: &[u8],
+    accepted: &Allowlist,
+) -> Result<Option<&'static str>, UploadError> {
+    if !accepted.allows(declared) {
+        return Err(UploadError::TypeNotAccepted(declared.to_string()));
+    }
     match sniff::sniff(head) {
         Some(sniffed) if !sniff::compatible(declared, sniffed) => Err(UploadError::TypeMismatch {
             declared: declared.to_string(),
             sniffed,
         }),
+        Some(sniffed) if !accepted.allows_sniffed(declared, sniffed) => {
+            Err(UploadError::TypeNotAccepted(sniffed.to_string()))
+        }
         Some(sniffed) => Ok(sniff::refine(declared, sniffed)),
         None => Ok(None),
     }

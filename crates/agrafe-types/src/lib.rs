@@ -1,9 +1,11 @@
 //! What a file is: content type constants, classification into categories,
-//! magic-byte sniffing, and the loader allowlist for the renderer, plus the
+//! magic-byte sniffing, the loader allowlist for the renderer, the list of
+//! content types an installation accepts, plus the
 //! contracts between the server and its helpers (the text sample, the
 //! GeoJSON spec). Shared by the server, the renderer and the sandboxed
 //! helpers, so it stays pure and small.
 
+pub mod allowlist;
 pub mod classify;
 pub mod geojson;
 pub mod sniff;

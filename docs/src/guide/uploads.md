@@ -24,7 +24,7 @@ The answer is `201 Created` with the blob's full metadata, including its
 | Field | Required | Notes |
 |---|---|---|
 | `filename` | yes | Trimmed. At most 255 bytes, not `.` or `..`, no path separators, control characters or bidirectional formatting characters |
-| `content_type` | yes | Normalised to `type/subtype`; parameters such as `; charset=` are dropped |
+| `content_type` | yes | Normalised to `type/subtype`; parameters such as `; charset=` are dropped. One of `upload.content_types` when the installation sets it |
 | `input_type` | yes | `raw` or `multipart` for an upload |
 | `checksum` | yes | SHA-256 of the bytes, standard base64 |
 | `size` | yes | Size in bytes, at most `upload.max_size` |
@@ -133,6 +133,9 @@ The bytes flow once through a chain of checks, in this order:
    on a GeoJSON `Feature` or `FeatureCollection`, declared as
    `application/json`, `text/json` or `text/plain`, gets
    `application/geo+json` as its `content_type`, so it is drawn as a map.
+   When `upload.content_types` is set, the declaration must still be in
+   it, and the bytes of a blob declared as `application/octet-stream`
+   must be of a listed type: that declaration does not widen the list.
 4. **Virus scan**, inline when the file is small enough and `clamd` is
    reachable.
 5. **Encryption** and the multipart upload to the object store.

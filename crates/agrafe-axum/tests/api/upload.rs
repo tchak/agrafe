@@ -393,3 +393,79 @@ async fn delete_during_upload() {
         .unwrap();
     assert_eq!(jobs, 0);
 }
+
+/// The app with `upload.content_types` set to `types`.
+async fn setup_accepting(db: TestDatabase, types: &[&str]) -> TestApp {
+    let types: Vec<String> = types.iter().map(|t| t.to_string()).collect();
+    setup_tuned(db, fake_clamd().await, |c| {
+        c.upload.content_types = types.try_into().unwrap();
+    })
+    .await
+}
+
+/// A type outside `upload.content_types` is refused at creation; a listed
+/// one, an alias of it or a type its wildcard covers is not, and a
+/// generated blob is the service's own.
+#[tokio::test]
+async fn unlisted_content_types_are_refused_at_creation() {
+    let db = TestDatabase::new().await;
+    let app = setup_accepting(db, &["application/pdf", "image/*"]).await;
+
+    for accepted in ["application/pdf", "application/x-pdf", "image/heic"] {
+        create(&app, blob_for(b"x", accepted, "raw")).await;
+    }
+    for (refused, input_type) in [("text/html", "raw"), ("application/zip", "multipart")] {
+        let (status, body) = call(
+            &app.private,
+            json_req(Method::POST, "/blobs", blob_for(b"x", refused, input_type)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(
+            body["error"]["message"],
+            format!("content_type `{refused}` is not accepted")
+        );
+    }
+    let (status, body) = call(
+        &app.private,
+        json_req(
+            Method::POST,
+            "/blobs",
+            serde_json::json!({
+                "filename": "export.csv",
+                "content_type": "text/csv",
+                "input_type": "rows",
+                "columns": [{"name": "Dossier"}],
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+}
+
+/// `application/octet-stream` declares nothing, so the bytes of a blob
+/// declared as such must be of a listed type, and the declaration does not
+/// widen the list.
+#[tokio::test]
+async fn octet_stream_bytes_must_be_of_a_listed_type() {
+    let db = TestDatabase::new().await;
+    let app = setup_accepting(db, &["application/octet-stream", "application/pdf"]).await;
+
+    let png = png_bytes(3000);
+    let created = create(&app, blob_for(&png, "application/octet-stream", "raw")).await;
+    let (status, body) = put_private(&app, id_of(&created), png).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(
+        body["error"]["message"],
+        "content type `image/png` is not accepted"
+    );
+    assert_eq!(get_blob(&app, id_of(&created)).await["state"], "created");
+
+    // A PDF is listed, and bytes nothing recognises are what the
+    // declaration is for.
+    for bytes in [b"%PDF-1.4\n%%EOF\n".to_vec(), b"plain bytes".to_vec()] {
+        let created = create(&app, blob_for(&bytes, "application/octet-stream", "raw")).await;
+        let (status, body) = put_private(&app, id_of(&created), bytes).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+}

@@ -170,6 +170,11 @@ pub(crate) fn validate(
     let filename = validate_filename(&req.filename)?;
     let content_type = normalize_content_type(&req.content_type).map_err(unprocessable)?;
     let category = classify::classify(&content_type);
+    if !req.input_type.is_generated() && !upload.content_types.allows(&content_type) {
+        return Err(unprocessable(format!(
+            "content_type `{content_type}` is not accepted"
+        )));
+    }
 
     let (checksum_sha256, size) = match req.input_type {
         InputType::Raw | InputType::Multipart => {

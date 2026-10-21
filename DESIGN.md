@@ -731,6 +731,24 @@ XLSX or PPTX, an OpenDocument template or master as its document, so an
 XLSM is accepted on XLSX bytes and refused on DOCX ones. The rules live in
 `sniff.rs`.
 
+**Accepted types.** `upload.content_types` is an installation's
+allowlist, exact types or `type/*`, empty by default to accept any. It
+is one list for the installation, as the installation serves one
+application; a narrower list per form field is the application's to
+enforce before it creates the blob. It is checked on the declaration of
+a `raw`, `multipart` or `url` blob at creation, and again at upload in
+case the list changed meanwhile. Generated blobs get their type from the
+service's own build and are not checked. An exact entry takes the
+aliases of its type and not its variants, so a list says what it admits.
+An allowlist, not a blocklist: a blocklist misses what nobody thought to
+list. The bytes are checked too where the declaration says nothing:
+`application/octet-stream` is compatible with any bytes, so a blob
+declared as such must sniff as something a listed type other than it
+would have accepted. Otherwise declaring it would get any file past the
+list. Bytes that sniff as nothing pass on the declaration alone. The
+check is a lookup in a list held in memory, nothing per blob in the
+database. The rules live in `allowlist.rs`.
+
 JSON has no magic, but a JSON document that opens on a `Feature` or a
 `FeatureCollection` in its first KiB is a GeoJSON one, and the sniffer says
 so. Declared as `application/json`, `text/json` or `text/plain`, which is
