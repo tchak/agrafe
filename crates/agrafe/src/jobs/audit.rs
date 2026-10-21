@@ -51,6 +51,7 @@ use crate::app::Agrafe;
 use crate::blob::read::{Columns, ReadError, Reader, Stored};
 use crate::blob::{self, BlobState, Representation, RepresentationState, repo};
 use crate::config::StorageConfig;
+use crate::trace::TraceContext;
 
 /// Why an audit could not run to the end. A mismatch it finds is a
 /// finding, not an error.
@@ -391,16 +392,17 @@ pub(crate) async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
     }
 }
 
-/// Enqueue an audit at `run_at`, unless one is already pending.
+/// Enqueue an audit at `run_at`, unless one is already pending. Outside
+/// any trace context, as `reap::schedule`: each run starts a trace.
 pub async fn schedule(exec: impl PgExecutor<'_>, run_at: Timestamp) -> sqlx::Result<bool> {
-    super::enqueue(
+    TraceContext::detached(super::enqueue(
         exec,
         JobKind::Audit,
         None,
         Priority::Normal,
         serde_json::json!({}),
         run_at,
-    )
+    ))
     .await
 }
 

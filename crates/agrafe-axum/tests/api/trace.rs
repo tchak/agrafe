@@ -1,9 +1,10 @@
 //! The trace context a request hands to the jobs it enqueues, and a job to
 //! the jobs it enqueues in turn.
 
-use agrafe::jobs::JobKind;
+use agrafe::jobs::{JobKind, reap};
 use agrafe::trace::TraceContext;
 use axum::http::{Method, StatusCode};
+use jiff::Timestamp;
 
 use crate::support::*;
 
@@ -113,4 +114,30 @@ async fn the_public_interface_ignores_the_callers_trace(pool: PgPool) {
 
     let (_, scan) = context_of(&app, id, JobKind::Scan).await;
     assert_ne!(scan.trace_id().to_string(), CALLER_TRACE);
+}
+
+/// A periodic job schedules its successor from inside its own run. The
+/// successor records no context, whatever is current, so each run starts a
+/// trace instead of every run since the first chaining into one.
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn a_periodic_job_schedules_its_successor_outside_its_trace(pool: PgPool) {
+    let app = setup(pool).await;
+    let pool = app.state.pool();
+    async fn traceparents(pool: &PgPool) -> Vec<Option<String>> {
+        sqlx::query_scalar("SELECT traceparent FROM jobs WHERE kind = 'reap'")
+            .fetch_all(pool)
+            .await
+            .unwrap()
+    }
+
+    // Scheduled from within a trace, as a run does.
+    let scheduled = TraceContext::root()
+        .scope(reap::schedule(pool, Timestamp::now()))
+        .await;
+    assert!(scheduled.unwrap());
+    assert_eq!(traceparents(pool).await, [None]);
+
+    // The run, in a trace of its own, leaves its successor without one.
+    assert!(run_job(&app, JobKind::Reap).await);
+    assert_eq!(traceparents(pool).await, [None], "the successor, rootless");
 }

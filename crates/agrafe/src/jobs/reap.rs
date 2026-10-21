@@ -17,6 +17,7 @@ use super::notify::{self, Event};
 use super::{Job, JobError, JobKind, Priority};
 use crate::app::Agrafe;
 use crate::blob::repo;
+use crate::trace::TraceContext;
 
 pub(crate) async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
     if job.kind != JobKind::Reap {
@@ -46,16 +47,18 @@ pub(crate) async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
 /// another process, and the two would update the same rows at once.
 const REAP_LOCK: i64 = 0x6167_7261_6665; // "agrafe"
 
-/// Enqueue a reap at `run_at`, unless one is already pending.
+/// Enqueue a reap at `run_at`, unless one is already pending. Outside any
+/// trace context: a run schedules its successor from inside its own, and
+/// each run is to start a trace, not continue every run since the first.
 pub async fn schedule(exec: impl PgExecutor<'_>, run_at: Timestamp) -> sqlx::Result<bool> {
-    super::enqueue(
+    TraceContext::detached(super::enqueue(
         exec,
         JobKind::Reap,
         None,
         Priority::Normal,
         serde_json::json!({}),
         run_at,
-    )
+    ))
     .await
 }
 

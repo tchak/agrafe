@@ -2641,11 +2641,22 @@ they share and an id of their own. The request middleware and the job
 runner set it in a task-local for the duration of the unit, and
 `jobs::enqueue` (and the notify inserts) store the current one on the row
 as `traceparent`, naming the enqueuing unit as the job's parent. A run
-continues the stored context with an id of its own; a job without one, the
-periodic `reap` and `audit`, starts a trace. Retries are further children
-of the same parent. A duplicate dropped by `ON CONFLICT DO NOTHING` keeps
-the first enqueuer's context; a `notify` that replaces the pending one
-takes the newer event's, as it takes its payload.
+continues the stored context with an id of its own; a job without one
+starts a trace. Retries are further children of the same parent. A
+duplicate dropped by `ON CONFLICT DO NOTHING` keeps the first enqueuer's
+context; a `notify` that replaces the pending one takes the newer event's,
+as it takes its payload.
+
+The periodic `reap` and `audit` schedule their successor from inside their
+own run, where the ambient context is the run's: stored as is, it would
+chain every run since the worker started into one trace, with every purge
+and expiry webhook any of them enqueued. `reap::schedule` and
+`audit::schedule` therefore enqueue under `TraceContext::detached`, which
+sets no context, so each run is a root and its own fan-out is its trace.
+That fan-out is large by nature, thousands of purges from one reap on a
+big table, which is right for the logs, one id for one sweep's
+consequences, and heavy for an exporter; span links are the answer when
+one lands.
 
 The context is ambient rather than a parameter because the enqueues sit
 deep under the handle's methods, a dozen call sites, and every one of them

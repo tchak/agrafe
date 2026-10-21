@@ -18,7 +18,9 @@ use std::future::Future;
 use tracing::Instrument as _;
 
 tokio::task_local! {
-    static CURRENT: TraceContext;
+    // `None` inside `detached`: a unit that must not be the parent of what
+    // it enqueues, under a scope that would otherwise make it so.
+    static CURRENT: Option<TraceContext>;
 }
 
 /// The `traceparent` of the running unit of work: a request or a job.
@@ -103,13 +105,22 @@ impl TraceContext {
 
     /// The context of the unit running in this task, if one was set.
     pub fn current() -> Option<Self> {
-        CURRENT.try_with(|current| *current).ok()
+        CURRENT.try_with(|current| *current).ok().flatten()
     }
 
     /// Run `future` as the unit this context is: `current` returns it
     /// there, and jobs enqueued there name it as their parent.
     pub fn scope<F: Future>(self, future: F) -> impl Future<Output = F::Output> {
-        CURRENT.scope(self, future)
+        CURRENT.scope(Some(self), future)
+    }
+
+    /// Run `future` in no context, whatever the task's: `current` returns
+    /// `None` there, and a job enqueued there starts a trace when it runs.
+    /// For a periodic job scheduling its successor from inside its own
+    /// run, which would otherwise chain every run since the first into one
+    /// trace.
+    pub fn detached<F: Future>(future: F) -> impl Future<Output = F::Output> {
+        CURRENT.scope(None, future)
     }
 }
 
@@ -120,11 +131,7 @@ where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
-    let future = future.in_current_span();
-    match TraceContext::current() {
-        Some(context) => tokio::spawn(context.scope(future)),
-        None => tokio::spawn(future),
-    }
+    tokio::spawn(CURRENT.scope(TraceContext::current(), future.in_current_span()))
 }
 
 /// The `traceparent` header value, version `00`.
@@ -270,5 +277,20 @@ mod tests {
         assert_eq!(inside, Some(context));
         assert_eq!(spawned.unwrap(), Some(context));
         assert_eq!(TraceContext::current(), None);
+    }
+
+    #[tokio::test]
+    async fn detached_hides_the_scope_and_the_scope_comes_back_after() {
+        let context = TraceContext::root();
+        let (detached, after) = context
+            .scope(async {
+                (
+                    TraceContext::detached(async { TraceContext::current() }).await,
+                    TraceContext::current(),
+                )
+            })
+            .await;
+        assert_eq!(detached, None);
+        assert_eq!(after, Some(context));
     }
 }
