@@ -3203,3 +3203,48 @@ two agrafe installations in two schemas of one database never contend.
 | Maps | `geojson`, `quick-xml` and `serde_json` in the sandboxed `agrafe-render-geo` helper, the WMS of `[media.map.layers]` through `reqwest`, `vips composite` with rsvg in the sandbox |
 | Ids | UUID v7 |
 | Time | `jiff`. `Timestamp` throughout the model; `jiff-sqlx` wrappers only at the SQL boundary |
+
+## Releases
+
+Every crate is released together, at the version in `[workspace.package]`;
+the internal requirements in `[workspace.dependencies]` carry the same
+one. The crates are one product cut in pieces for the reasons in
+[Crates](#crates), not libraries with lives of their own, and versioning
+them apart would ask every change which of twelve versions it bumps.
+
+The changelog is written by hand, under `Unreleased`, in the commit that
+makes the change. The commit messages say what changed for a reader of
+the code; the changelog says it for an operator or an embedder, and
+generating one from the other (release-plz, git-cliff) would need
+conventional commits and still list every test and refactor.
+
+A release is a tag. `scripts/release.sh <version>` bumps the version,
+dates the section, commits `Release <version>` on `main`, tags it
+`v<version>` and pushes both with jj; nothing else writes to `main` or
+creates tags. The tag runs `.github/workflows/release.yml`, in the order
+that keeps an irreversible step last but one:
+
+1. the tag against the workspace version and the changelog section;
+2. the CI suite, `ci.yml` called on the tagged commit;
+3. the Docker images, both variants built per architecture on native
+   runners, pushed by digest, then tagged together;
+4. the crates, `cargo publish --workspace`, which orders them and waits
+   for the index between them. crates.io never takes a version back, so
+   this waits for everything that can fail before it; re-running the
+   workflow skips the crates already published. It authenticates
+   through crates.io's trusted publishing (OIDC, no stored token) once
+   the crates exist; the first release, which creates them, uses a
+   `CARGO_REGISTRY_TOKEN` secret, deleted afterwards;
+5. the GitHub release, its notes the changelog section.
+
+The images are Debian trixie, whose libvips carries the security fixes
+(see "libvips" in the deployment guide), built in two stages: the
+toolchain in a `rust:*-slim-trixie` stage, the binaries copied into a
+`debian:trixie-slim` one, so that what runs is linked against the glibc
+it was built with and carries no compiler. Two variants, the second
+adding LibreOffice and a warmed profile: LibreOffice is 400 MB and the
+largest attack surface in the sandbox, and most deployments, every API
+process among them, never need it. The image's settings for a container
+(addresses on all interfaces, `media.tmp_dir` outside `/tmp`, the office
+converter) are a configuration file named by `AGRAFE_CONFIG`, not
+environment variables, since those would override an operator's own file.

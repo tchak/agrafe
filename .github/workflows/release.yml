@@ -1,0 +1,255 @@
+name: Release
+
+# A v<version> tag, pushed by scripts/release.sh, releases that commit: the
+# CI suite, then the Docker images, then the crates, then the GitHub
+# release. Publishing to crates.io cannot be undone, so it waits for the
+# rest that can fail; a run that stops partway is re-run as it is, and
+# skips the crates already published.
+on:
+  push:
+    tags: ["v*"]
+
+# The jobs below hold the registry and release credentials, so every
+# action is pinned to a commit, its version in the comment.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  IMAGE: ghcr.io/tchak/agrafe
+
+jobs:
+  check:
+    name: Check the tag
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Compare the tag with the workspace version and the changelog
+        id: version
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          manifest=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml)
+          if [[ $version != "$manifest" ]]; then
+            echo "::error::the tag is $GITHUB_REF_NAME, the workspace's version $manifest"
+            exit 1
+          fi
+          # The version's section, up to the next heading or the links.
+          awk -v heading="## [$version]" '
+            index($0, heading) == 1 { on = 1; next }
+            /^## \[/ || /^\[[^]]*\]: / { on = 0 }
+            on
+          ' CHANGELOG.md > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            echo "::error::CHANGELOG.md has no section for $version"
+            exit 1
+          fi
+          cat >> notes.md <<EOF
+
+          ### Docker images
+
+          \`\`\`sh
+          docker pull $IMAGE:$version
+          docker pull $IMAGE:$version-office  # with LibreOffice
+          \`\`\`
+          EOF
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$([[ $version == *-* ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: notes
+          path: notes.md
+
+  ci:
+    name: CI
+    needs: check
+    uses: ./.github/workflows/ci.yml
+
+  image:
+    name: Image (${{ matrix.arch }})
+    needs: [check, ci]
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-26.04
+          - arch: arm64
+            runner: ubuntu-26.04-arm
+    runs-on: ${{ matrix.runner }}
+    # A release build of the workspace from cold, then the second variant
+    # from the first one's build stage.
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # Each variant is pushed by digest; the manifest job tags both
+      # architectures together.
+      - name: Build without LibreOffice
+        id: default
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          build-args: VARIANT=default
+          labels: |
+            org.opencontainers.image.version=${{ needs.check.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+      - name: Build with LibreOffice
+        id: office
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          build-args: VARIANT=office
+          labels: |
+            org.opencontainers.image.version=${{ needs.check.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+      - name: Record the digests
+        run: |
+          mkdir -p digests/default digests/office
+          touch "digests/default/${DEFAULT#sha256:}" "digests/office/${OFFICE#sha256:}"
+        env:
+          DEFAULT: ${{ steps.default.outputs.digest }}
+          OFFICE: ${{ steps.office.outputs.digest }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: digests-${{ matrix.arch }}
+          path: digests
+          if-no-files-found: error
+
+  manifest:
+    name: Tag the images
+    needs: [check, image]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: digests-*
+          merge-multiple: true
+          path: digests
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # 0.2.0, 0.2 and latest; a pre-release gets its own version alone.
+      - id: default
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+      # 0.2.0-office, 0.2-office and latest-office.
+      - id: office
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: suffix=-office,onlatest=true
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+      - name: Tag both architectures of each variant
+        run: |
+          for variant in default office; do
+            case $variant in
+              default) tags=$DEFAULT_TAGS ;;
+              office) tags=$OFFICE_TAGS ;;
+            esac
+            args=()
+            for tag in $tags; do args+=(--tag "$tag"); done
+            for digest in "digests/$variant"/*; do args+=("$IMAGE@sha256:${digest##*/}"); done
+            docker buildx imagetools create "${args[@]}"
+          done
+          docker buildx imagetools inspect "$IMAGE:$VERSION"
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+          DEFAULT_TAGS: ${{ steps.default.outputs.tags }}
+          OFFICE_TAGS: ${{ steps.office.outputs.tags }}
+
+  crates:
+    name: Publish the crates
+    needs: [check, manifest]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    # crates.io's trusted publisher names this environment.
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      # crates.io trusts a workflow only for a crate that exists: the first
+      # release publishes with a token, later ones through OIDC.
+      HAS_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
+        id: auth
+        if: env.HAS_TOKEN != 'true'
+      - name: Publish what crates.io does not have yet
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token || secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          names=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[].name')
+          total=$(wc -w <<<"$names")
+          exclude=()
+          for name in $names; do
+            # crates.io asks API clients for a User-Agent naming them.
+            if curl -sf -A "agrafe-release (https://github.com/tchak/agrafe)" \
+                "https://crates.io/api/v1/crates/$name/$VERSION" > /dev/null; then
+              echo "$name $VERSION is published already"
+              exclude+=(--exclude "$name")
+            fi
+          done
+          if (( ${#exclude[@]} / 2 == total )); then
+            echo "every crate is published"
+            exit 0
+          fi
+          cargo publish --workspace --locked "${exclude[@]}"
+
+  github:
+    name: GitHub release
+    needs: [check, crates]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: notes
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ needs.check.outputs.prerelease }}
+        run: |
+          flags=()
+          [[ $PRERELEASE == true ]] && flags+=(--prerelease)
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag \
+              --title "$GITHUB_REF_NAME" --notes-file notes.md "${flags[@]}"
+          fi

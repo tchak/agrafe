@@ -232,6 +232,11 @@ agrafe --config config/agrafe.toml migrate
 agrafe --config config/agrafe.toml serve
 ```
 
+Or run a release's Docker image, `ghcr.io/tchak/agrafe` (with
+LibreOffice: `ghcr.io/tchak/agrafe:<version>-office`), configured through
+the environment; see [Docker
+images](https://tchak.github.io/agrafe/guide/deployment.html#docker-images).
+
 The private interface listens on `127.0.0.1:8080` and the public one on
 `127.0.0.1:8081`. Secrets can come from the environment instead of the file:
 
@@ -758,6 +763,31 @@ cargo coverage                        # summary per file
 cargo coverage --show-missing-lines   # plus the uncovered lines
 cargo coverage --html --open          # browsable report
 ```
+
+### Releasing
+
+Every crate is released at one version, with the changelog written by
+hand under `Unreleased` as changes land. From an empty change on top of
+`main` (`jj new main`):
+
+```sh
+scripts/release.sh 0.2.0
+```
+
+It bumps the version, dates the changelog's section, commits `Release
+0.2.0`, tags it `v0.2.0` and, once asked, pushes `main` and the tag. The
+tag runs `.github/workflows/release.yml`: the CI suite, the Docker images
+on `ghcr.io/tchak/agrafe` (`0.2.0` and `0.2.0-office`, for amd64 and
+arm64), the crates on crates.io, and the GitHub release with the
+changelog section as its notes. A run that fails partway is re-run as it
+is; it skips the crates already published.
+
+crates.io's trusted publishing authenticates the workflow, with no
+stored token, but only for crates that exist. The first release creates
+them with a `CARGO_REGISTRY_TOKEN` repository secret, a token scoped to
+publishing new crates; afterwards, add the trusted publisher
+(`tchak/agrafe`, `release.yml`, environment `release`) to each crate on
+crates.io and delete the secret.
 
 ## License
 
