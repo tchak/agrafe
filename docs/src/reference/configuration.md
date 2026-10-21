@@ -230,7 +230,7 @@ template variants, RTF, drawings) a first-page thumbnail; see
 | Key | Default | Description |
 |---|---|---|
 | `command` | unset | The LibreOffice binary, a name on the `PATH` or a path. Unset, office files get the icon. Set, the worker needs Landlock (unless `media.sandbox.isolation` is `"off"`) and a `media.tmp_dir` outside `/tmp` |
-| `profile_template` | unset | A warmed user profile copied into the work directory for every run; unset, LibreOffice creates one per run. Either way the profile's macro security is pinned to "very high" before the run |
+| `profile_template` | unset | A warmed user profile copied into the work directory for every run; unset, LibreOffice creates one per run. Either way the profile's macro security is pinned before the run: "very high", no trusted location, macro execution off, over whatever the template says |
 
 ### `[media.office.sandbox]`
 

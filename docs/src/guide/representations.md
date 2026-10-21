@@ -46,7 +46,8 @@ DOTM, OTT, ODM, OTM, OTH variants), Calc (XLSX, XLS, ODS and XLSM, XLTX,
 XLTM, XLSB, OTS), Impress (PPTX, PPT, ODP and PPTM, PPSX, PPSM, POTX,
 POTM, OTP) and Draw (ODG, OTG). Macros in a document never run: the
 conversion loads it in never-execute mode, and the profile it runs with
-pins macro security to "very high" besides. Without a converter, office
+pins macro security to "very high", with no trusted location and macro
+execution switched off, besides. Without a converter, office
 files get the icon, as they do when the file is over
 `media.max_source_size`. Turning it on later regenerates existing
 thumbnails through a `media.variant_version` bump. Spreadsheets exported

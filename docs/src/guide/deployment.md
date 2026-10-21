@@ -103,7 +103,9 @@ rather than every office file of that kind.
 
 Macros in a document never run during a conversion: LibreOffice loads
 the file in never-execute mode, and besides, the user profile of every
-run, `profile_template` or not, pins macro security to "very high".
+run, `profile_template` or not, pins macro security to "very high" with
+no trusted location and macro execution switched off, over whatever the
+template says.
 
 LibreOffice runs as one short-lived process per document, sandboxed like
 `vips`, with a private user profile under the job's work directory, and

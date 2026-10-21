@@ -391,7 +391,7 @@ pub async fn probe_office(config: &Config, tmp_dir: Option<&Path>) -> Result<(),
             return Err(ProbeError::Office {
                 command,
                 what: "ran the macro bound to the load event of an ODT, which neither the \
-                       conversion nor the pinned macro security level stopped"
+                       conversion nor the pinned macro security stopped"
                     .to_string(),
             });
         }

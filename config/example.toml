@@ -309,7 +309,9 @@ max_text_chars = 50
 # A user profile warmed at image build time, copied into the work directory
 # for every run instead of being created there: a copy is milliseconds, a
 # fresh profile longer, and every run still gets a private one. Template or
-# not, the profile's macro security is pinned to "very high" before each run.
+# not, the profile's macro security is pinned before each run: "very high",
+# no trusted location and macro execution off, over whatever the template
+# says.
 # profile_template = "/var/lib/agrafe/soffice-profile"
 # LibreOffice needs more address space and more time than vips; its output
 # size, isolation and extra readable paths are those of [media.sandbox].

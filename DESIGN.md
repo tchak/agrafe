@@ -1993,16 +1993,22 @@ never-execute, whatever the profile says: measured on 26.8, a document
 macro bound to the load event runs when invoked and does not run through
 `--convert-to` at any security level, "low" included. That is a default
 in LibreOffice's code, not a setting of ours, so the user profile every
-conversion runs with also pins `MacroSecurityLevel` to 3, "very high":
-only macros from the profile's trusted locations run, and the profile
-names none. The driver writes the item into the profile's
+conversion runs with also pins three settings of `Security/Scripting`:
+`MacroSecurityLevel` to 3, "very high", under which only macros from
+the trusted locations run; `SecureURL`, the trusted locations, to the
+empty list, since "very high" is only as strict as that list and a
+template warmed by hand may have trusted a path, a parent of the work
+directory included; and `DisableMacrosExecution`, the switch above the
+levels, to on. The driver writes the items into the profile's
 `registrymodifications.xcu` before every run, appended last to a
 template's, where a later item overrides an earlier one for the same
-property, so a template whose level was set low is still pinned, and as
-the whole registry of a fresh profile, which LibreOffice reads on first
-start. The probe's `macro.odt` checks the behaviour itself, whichever of
-the two provides it (see "Rendering"). How it runs, and what it costs, is
-under "Sandboxing".
+property, so a template whose level was set low or whose trusted
+locations were widened is still pinned, and as the whole registry of a
+fresh profile, which LibreOffice reads on first start; 26.8 keeps all
+three when it rewrites the registry, each over the template's earlier
+value. The probe's `macro.odt` checks the behaviour itself, whichever
+of the two lines provides it (see "Rendering"). How it runs, and what it
+costs, is under "Sandboxing".
 
 ### Preview
 

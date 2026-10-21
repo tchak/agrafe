@@ -629,7 +629,8 @@ the macro would too.
 
 Macros never run during a conversion: LibreOffice loads the file it
 converts in never-execute mode, and besides, the user profile of every
-run, template or not, pins macro security to "very high".
+run, template or not, pins macro security to "very high" with no
+trusted location and macro execution switched off.
 
 LibreOffice is a far larger attack surface than anything else in the
 sandbox, which is why it is off by default. Where it is on:

@@ -8,8 +8,9 @@
 //! One process per document, through `agrafe_sandbox` like every other
 //! tool, with a private user profile under the work directory: nothing a
 //! document does persists past the job, and concurrent workers never
-//! share a profile. The profile pins macro security to "very high"
-//! whether it is the template's or a fresh one. Off by default: a
+//! share a profile. The profile pins macro security, to "very high" with
+//! no trusted location and macros switched off, whether it is the
+//! template's or a fresh one. Off by default: a
 //! deployment without `command` gets the icon for office files, as before.
 
 use std::path::{Path, PathBuf};
@@ -119,24 +120,34 @@ pub fn document(content_type: &str) -> Option<Document> {
 /// defaults, which LibreOffice reads on every start, a first one included.
 const REGISTRY: &str = "user/registrymodifications.xcu";
 
-/// `MacroSecurityLevel` 3, "very high": only macros from the profile's
-/// trusted locations run, and the profile names none. A conversion loads
-/// its document with no `MacroExecutionMode`, which LibreOffice takes as
-/// never-execute whatever the level, so this is the second line: it holds
-/// if that default changes, and over a template whose level was set low.
+/// The macro pin, three settings of `Security/Scripting`:
+/// `MacroSecurityLevel` 3, "very high", under which only macros from the
+/// trusted locations run; `SecureURL`, the trusted locations, emptied,
+/// so a template that trusted a path, say a parent of the work
+/// directory, no longer does; and `DisableMacrosExecution`, the switch
+/// above the levels, on. A conversion loads its document with no
+/// `MacroExecutionMode`, which LibreOffice takes as never-execute
+/// whatever the profile says, so this is the second line: it holds if
+/// that default changes, and over a template whose settings were loosened.
+/// LibreOffice 26.8 keeps all three when it rewrites the registry, each
+/// over a template's earlier value.
 const MACRO_SECURITY: &str = "<item oor:path=\"/org.openoffice.Office.Common/Security/Scripting\">\
-    <prop oor:name=\"MacroSecurityLevel\" oor:op=\"fuse\"><value>3</value></prop></item>";
+    <prop oor:name=\"MacroSecurityLevel\" oor:op=\"fuse\"><value>3</value></prop></item>\n\
+    <item oor:path=\"/org.openoffice.Office.Common/Security/Scripting\">\
+    <prop oor:name=\"SecureURL\" oor:op=\"fuse\"><value/></prop></item>\n\
+    <item oor:path=\"/org.openoffice.Office.Common/Security/Scripting\">\
+    <prop oor:name=\"DisableMacrosExecution\" oor:op=\"fuse\"><value>true</value></prop></item>";
 const REGISTRY_HEAD: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
     <oor:items xmlns:oor=\"http://openoffice.org/2001/registry\" \
     xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" \
     xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n";
 const REGISTRY_TAIL: &str = "</oor:items>\n";
 
-/// Pin macro security to "very high" in the profile at `profile`, created
-/// when there is none. A template's registry gets the item appended before
-/// its closing tag: LibreOffice applies the items in order, so a later one
-/// overrides an earlier one for the same property. A fresh profile gets a
-/// registry of the one item.
+/// Pin macro security ([`MACRO_SECURITY`]) in the profile at `profile`,
+/// created when there is none. A template's registry gets the items
+/// appended before its closing tag: LibreOffice applies the items in
+/// order, so a later one overrides an earlier one for the same property.
+/// A fresh profile gets a registry of the pin alone.
 pub(crate) async fn pin_macro_security(profile: &Path) -> std::io::Result<()> {
     let path = profile.join(REGISTRY);
     if let Some(parent) = path.parent() {
@@ -426,11 +437,24 @@ mod tests {
         assert!(registry.starts_with("<?xml"), "{registry}");
         assert_eq!(registry.matches("MacroSecurityLevel").count(), 1);
         assert!(registry.contains("<value>3</value>"), "{registry}");
+        assert_eq!(registry.matches("SecureURL").count(), 1);
+        assert!(
+            registry.contains("oor:name=\"SecureURL\" oor:op=\"fuse\"><value/>"),
+            "{registry}"
+        );
+        assert_eq!(registry.matches("DisableMacrosExecution").count(), 1);
+        assert!(
+            registry.contains(
+                "oor:name=\"DisableMacrosExecution\" oor:op=\"fuse\"><value>true</value>"
+            ),
+            "{registry}"
+        );
         assert!(registry.trim_end().ends_with("</oor:items>"), "{registry}");
     }
 
     /// A template's registry keeps its items and gets the pin last, which
-    /// is the one LibreOffice keeps for the property.
+    /// is the one LibreOffice keeps for each property: a low level and a
+    /// trusted location are both overridden.
     #[tokio::test]
     async fn pins_macro_security_after_a_template_registry() {
         let root = tempfile::tempdir().unwrap();
@@ -438,18 +462,27 @@ mod tests {
         std::fs::create_dir_all(profile.join("user")).unwrap();
         let low = "<item oor:path=\"/org.openoffice.Office.Common/Security/Scripting\">\
             <prop oor:name=\"MacroSecurityLevel\" oor:op=\"fuse\"><value>0</value></prop></item>";
+        let trusted = "<item oor:path=\"/org.openoffice.Office.Common/Security/Scripting\">\
+            <prop oor:name=\"SecureURL\" oor:op=\"fuse\"><value><it>file:///tmp</it></value></prop></item>";
         std::fs::write(
             profile.join(REGISTRY),
-            format!("{REGISTRY_HEAD}{low}\n<item oor:path=\"/org.openoffice.Setup/L10N\"/>\n{REGISTRY_TAIL}"),
+            format!("{REGISTRY_HEAD}{low}\n{trusted}\n<item oor:path=\"/org.openoffice.Setup/L10N\"/>\n{REGISTRY_TAIL}"),
         )
         .unwrap();
         pin_macro_security(&profile).await.unwrap();
         let registry = std::fs::read_to_string(profile.join(REGISTRY)).unwrap();
         assert!(registry.contains("<value>0</value>"), "{registry}");
+        assert!(registry.contains("<it>file:///tmp</it>"), "{registry}");
         assert!(registry.contains("org.openoffice.Setup/L10N"), "{registry}");
         let low = registry.find("<value>0</value>").unwrap();
         let pin = registry.find("<value>3</value>").unwrap();
         assert!(low < pin, "{registry}");
+        let trusted = registry.find("<it>file:///tmp</it>").unwrap();
+        let emptied = registry
+            .find("\"SecureURL\" oor:op=\"fuse\"><value/>")
+            .unwrap();
+        assert!(trusted < emptied, "{registry}");
+        assert!(registry.contains("DisableMacrosExecution"), "{registry}");
         assert!(registry.trim_end().ends_with("</oor:items>"), "{registry}");
 
         std::fs::write(profile.join(REGISTRY), "<oor:items>").unwrap();
