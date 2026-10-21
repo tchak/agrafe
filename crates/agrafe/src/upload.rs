@@ -293,7 +293,8 @@ where
     T: Send + 'static,
 {
     let (tx, rx) = mpsc::channel(CHANNEL_DEPTH);
-    let task = tokio::spawn(task(ReceiverStream::new(rx)));
+    // In the request's span and trace: the pipeline enqueues the scan.
+    let task = crate::trace::spawn(task(ReceiverStream::new(rx)));
     while let Some(chunk) = body.next().await {
         // A closed receiver means the pipeline already failed; its error is
         // what the task returns.

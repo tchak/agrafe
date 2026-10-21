@@ -178,6 +178,10 @@ reasoning behind every decision.
   job kinds a worker runs, without code changes.
 - **Prometheus metrics** for queue depth and the age of the oldest due job,
   per kind and priority, plus job runs, durations and workers per process.
+- **Request-to-job tracing**: a request's trace id, its caller's when it
+  sends a W3C `traceparent` on the private port, is carried by every job it
+  leads to, in the logs and the jobs API. Object store calls, sandboxed
+  helpers and clamd have spans of their own, ready for an exporter.
 - **Jobs API** to list, retry or discard failed jobs, and a retry on the
   blob itself, which records the death of the job it was waiting on.
 - **Dashboard**, off by default: the queue, the blobs and the attachments

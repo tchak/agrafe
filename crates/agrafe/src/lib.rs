@@ -45,6 +45,7 @@ pub mod metrics;
 pub mod signing;
 pub mod source;
 pub mod storage;
+pub mod trace;
 pub mod upload;
 
 pub use agrafe_render::icons;

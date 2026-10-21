@@ -24,15 +24,14 @@ mod private;
 mod public;
 mod representation;
 mod signed;
+pub mod trace;
 
 use axum::Router;
-use axum::body::Body;
 use axum::extract::State;
-use axum::http::{Request, header};
+use axum::http::header;
 use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use tower_http::trace::TraceLayer;
 
 use agrafe::Agrafe;
 use agrafe::upload;
@@ -44,10 +43,11 @@ pub use error::{ApiError, ApiResult};
 /// jobs, `/healthz` and `/metrics`. Unsigned, for trusted networks only:
 /// a request must name one of `server.private_hosts` when it is set
 /// (`/healthz` and `/metrics` aside), and an unsafe one a browser marks as
-/// cross-site is refused. The state is applied, so it can be nested under
-/// a prefix as is.
+/// cross-site is refused. A request continues the trace its `traceparent`
+/// header names, if any; see [`trace`]. The state is applied, so it can be
+/// nested under a prefix as is.
 pub fn private_router(state: Agrafe) -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/healthz", get(healthz))
         .route("/metrics", get(metrics))
         .merge(private::routes(upload::body_limit(&state.config().upload)))
@@ -59,48 +59,38 @@ pub fn private_router(state: Agrafe) -> Router {
         .layer(middleware::from_fn_with_state(
             state.clone(),
             host::refuse_unknown_host,
-        ))
-        .layer(TraceLayer::new_for_http())
-        .with_state(state)
+        ));
+    trace::private(router).with_state(state)
 }
 
 /// The public interface: the upload, metadata, original, preview and
 /// thumbnail of one blob under `/blobs/{token}/{id}`, each verifying its
 /// signature before touching the database, and `/healthz`. Request spans
-/// record the path with the token redacted. The state is applied, so it
+/// record the path with the token redacted, and every request starts a
+/// trace of its own; see [`trace`]. The state is applied, so it
 /// can be nested under a prefix as is; minted URLs are
 /// `server.public_base_url` followed by `/blobs/...`, so the base must end
 /// with that prefix.
 pub fn public_router(state: Agrafe) -> Router {
     // Public URLs carry bearer tokens; the span records a redacted path
     // instead of the full URI so tokens never reach log storage.
-    let trace = TraceLayer::new_for_http().make_span_with(|req: &Request<Body>| {
-        tracing::debug_span!(
-            "request",
-            method = %req.method(),
-            path = %signed::redact_token(req.uri().path()),
-            version = ?req.version(),
-        )
-    });
-    Router::new()
+    let router = Router::new()
         .route("/healthz", get(healthz))
         .merge(public::routes(upload::body_limit(&state.config().upload)))
         .fallback(not_found)
-        .method_not_allowed_fallback(method_not_allowed)
-        .layer(trace)
-        .with_state(state)
+        .method_not_allowed_fallback(method_not_allowed);
+    trace::public(router).with_state(state)
 }
 
 /// What a process without an API serves on the private address: enough
 /// for liveness checks and scraping.
 pub fn ops_router(state: Agrafe) -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/healthz", get(healthz))
         .route("/metrics", get(metrics))
         .fallback(not_found)
-        .method_not_allowed_fallback(method_not_allowed)
-        .layer(TraceLayer::new_for_http())
-        .with_state(state)
+        .method_not_allowed_fallback(method_not_allowed);
+    trace::private(router).with_state(state)
 }
 
 async fn healthz() -> &'static str {

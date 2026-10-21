@@ -19,6 +19,9 @@ CREATE TABLE jobs (
     -- worker that gave up and marked here, so it is never claimed again and
     -- never holds the one pending slot per (kind, blob).
     failed_at    timestamptz,
+    -- The W3C traceparent of the request or job that enqueued this one, so
+    -- that its run joins that trace. NULL when nothing was being traced.
+    traceparent  text,
     created_at   timestamptz NOT NULL DEFAULT now()
 );
 

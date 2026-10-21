@@ -27,5 +27,6 @@ mod rows;
 mod scan;
 mod schema;
 mod sealed;
+mod trace;
 mod upload;
 mod webhook;

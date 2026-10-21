@@ -1,12 +1,21 @@
 //! Object store construction from configuration.
 
+use std::ops::Range;
 use std::sync::Arc;
 
-use object_store::ObjectStore;
+use async_trait::async_trait;
+use bytes::Bytes;
+use futures::stream::BoxStream;
 use object_store::aws::AmazonS3Builder;
 use object_store::azure::MicrosoftAzureBuilder;
 use object_store::gcp::GoogleCloudStorageBuilder;
 use object_store::local::LocalFileSystem;
+use object_store::path::Path;
+use object_store::{
+    CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
+    PutMultipartOptions, PutOptions, PutPayload, PutResult, RenameOptions, Result, UploadPart,
+};
+use tracing::{Instrument as _, Span};
 
 use crate::config::StorageConfig;
 
@@ -84,6 +93,151 @@ pub fn build(config: &StorageConfig) -> Result<Store, Error> {
             let store = builder.build()?;
             Ok(Arc::new(store))
         }
+    }
+}
+
+/// A store whose operations each run in a `storage` span, `op` and `path`
+/// as fields: what the request or the job waited on, and for how long.
+/// `Agrafe::with_store` wraps every store in it. A read's span ends with
+/// the response head, before the body streams; a listing, a stream that
+/// outlives any call, and the deletes of `delete_stream` have none.
+#[derive(Debug)]
+pub struct Traced(Store);
+
+impl Traced {
+    /// `store`, traced.
+    pub fn new(store: Store) -> Self {
+        Self(store)
+    }
+}
+
+fn span(op: &'static str, path: &Path) -> Span {
+    tracing::info_span!("storage", op, path = %path)
+}
+
+impl std::fmt::Display for Traced {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
+}
+
+// Every method forwarded, the provided ones too: a backend's own
+// `get_ranges` or `rename_opts` is better than the trait's default.
+#[async_trait]
+#[deny(clippy::missing_trait_methods)]
+impl ObjectStore for Traced {
+    async fn put_opts(
+        &self,
+        location: &Path,
+        payload: PutPayload,
+        opts: PutOptions,
+    ) -> Result<PutResult> {
+        self.0
+            .put_opts(location, payload, opts)
+            .instrument(span("put", location))
+            .await
+    }
+
+    async fn put_multipart_opts(
+        &self,
+        location: &Path,
+        opts: PutMultipartOptions,
+    ) -> Result<Box<dyn MultipartUpload>> {
+        let upload = self
+            .0
+            .put_multipart_opts(location, opts)
+            .instrument(span("put_multipart", location))
+            .await?;
+        Ok(Box::new(TracedUpload {
+            inner: upload,
+            path: location.clone(),
+        }))
+    }
+
+    async fn get_opts(&self, location: &Path, options: GetOptions) -> Result<GetResult> {
+        let op = if options.head { "head" } else { "get" };
+        self.0
+            .get_opts(location, options)
+            .instrument(span(op, location))
+            .await
+    }
+
+    async fn get_ranges(&self, location: &Path, ranges: &[Range<u64>]) -> Result<Vec<Bytes>> {
+        self.0
+            .get_ranges(location, ranges)
+            .instrument(span("get_ranges", location))
+            .await
+    }
+
+    fn delete_stream(
+        &self,
+        locations: BoxStream<'static, Result<Path>>,
+    ) -> BoxStream<'static, Result<Path>> {
+        self.0.delete_stream(locations)
+    }
+
+    fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, Result<ObjectMeta>> {
+        self.0.list(prefix)
+    }
+
+    fn list_with_offset(
+        &self,
+        prefix: Option<&Path>,
+        offset: &Path,
+    ) -> BoxStream<'static, Result<ObjectMeta>> {
+        self.0.list_with_offset(prefix, offset)
+    }
+
+    async fn list_with_delimiter(&self, prefix: Option<&Path>) -> Result<ListResult> {
+        let root = Path::default();
+        self.0
+            .list_with_delimiter(prefix)
+            .instrument(span("list_with_delimiter", prefix.unwrap_or(&root)))
+            .await
+    }
+
+    async fn copy_opts(&self, from: &Path, to: &Path, options: CopyOptions) -> Result<()> {
+        self.0
+            .copy_opts(from, to, options)
+            .instrument(span("copy", to))
+            .await
+    }
+
+    async fn rename_opts(&self, from: &Path, to: &Path, options: RenameOptions) -> Result<()> {
+        self.0
+            .rename_opts(from, to, options)
+            .instrument(span("rename", to))
+            .await
+    }
+}
+
+/// A multipart upload whose parts, completion and abort are traced, under
+/// the span current where each is called.
+#[derive(Debug)]
+struct TracedUpload {
+    inner: Box<dyn MultipartUpload>,
+    path: Path,
+}
+
+#[async_trait]
+#[deny(clippy::missing_trait_methods)]
+impl MultipartUpload for TracedUpload {
+    fn put_part(&mut self, data: PutPayload) -> UploadPart {
+        Box::pin(
+            self.inner
+                .put_part(data)
+                .instrument(span("put_part", &self.path)),
+        )
+    }
+
+    async fn complete(&mut self) -> Result<PutResult> {
+        let span = span("complete", &self.path);
+        self.inner.complete().instrument(span).await
+    }
+
+    async fn abort(&mut self) -> Result<()> {
+        let span = span("abort", &self.path);
+        self.inner.abort().instrument(span).await
     }
 }
 

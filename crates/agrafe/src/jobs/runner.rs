@@ -20,6 +20,7 @@ use super::{
 };
 use crate::app::Agrafe;
 use crate::metrics::Outcome;
+use crate::trace::TraceContext;
 
 /// Pause after a listener error before asking Postgres again.
 const LISTEN_RETRY: Duration = Duration::from_secs(1);
@@ -140,17 +141,26 @@ pub async fn run_one(state: &Agrafe, kind: JobKind, worker: &str) -> sqlx::Resul
     let Some(job) = super::claim(state.pool(), &[kind], worker, lease).await? else {
         return Ok(false);
     };
+    // Each attempt is a unit of the trace that enqueued the job, or the
+    // first of its own for a job nothing traced (the periodic ones): the
+    // jobs it enqueues in turn join that trace.
+    let context = job
+        .trace_context()
+        .map_or_else(TraceContext::root, |parent| parent.child());
     let span = tracing::info_span!(
         "job",
         id = job.id,
         kind = %job.kind,
         blob = ?job.blob_id,
-        attempt = job.attempts
+        attempt = job.attempts,
+        trace_id = %context.trace_id(),
     );
     // The span is attached to the future rather than entered on the
     // thread: a guard held across an await would tag whatever else the
     // thread polls meanwhile.
-    run_claimed(state, &job, worker).instrument(span).await?;
+    context
+        .scope(run_claimed(state, &job, worker).instrument(span))
+        .await?;
     Ok(true)
 }
 

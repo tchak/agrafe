@@ -17,6 +17,9 @@ reachable only from a trusted network. Every operation of agrafe is here.
   last one. `limit` is 1 to 200, 50 by default.
 - **Errors** are JSON, `{"error": {"code": "...", "message": "..."}}`. See
   [Errors](errors.md).
+- **Tracing**: a W3C `traceparent` header is continued: the request and
+  the jobs it enqueues log the caller's trace id. See
+  [Monitoring](../guide/monitoring.md#following-a-request-to-its-jobs).
 - **Cross-site browser requests** that change anything are refused with
   `403`, and so is any `Host` outside `server.private_hosts` when it is set.
   See [Security model](../guide/security.md#browsers-on-the-private-port).
@@ -421,6 +424,7 @@ Detaches. The last detach sets the blob's expiry to
   "locked_by": "worker-3-0199f6…/scan/1",
   "last_error": "clamd at 127.0.0.1:3310: Connection refused (os error 111)",
   "failed_at": "2026-10-19T09:40:12.880301Z",
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
   "created_at": "2026-10-19T09:12:03.418273Z"
 }
 ```
@@ -436,6 +440,7 @@ Detaches. The last detach sets the blob's expiry to
 | `locked_at`, `locked_by` | The worker holding it, or the last one for a dead job |
 | `last_error` | The error of the last failed attempt |
 | `failed_at` | When it died |
+| `trace_id` | The trace of the request or job that enqueued it, which its log lines carry; null for a job enqueued outside one. See [Monitoring](../guide/monitoring.md#following-a-request-to-its-jobs) |
 
 ### `GET /jobs`
 

@@ -95,7 +95,7 @@ macro_rules! on_conflict {
     () => {
         "ON CONFLICT (kind, blob_id) WHERE locked_at IS NULL \
          DO UPDATE SET payload = EXCLUDED.payload, run_at = EXCLUDED.run_at, \
-                       attempts = 0, last_error = NULL"
+                       attempts = 0, last_error = NULL, traceparent = EXCLUDED.traceparent"
     };
 }
 
@@ -122,8 +122,8 @@ pub async fn enqueue(
 ) -> sqlx::Result<()> {
     sqlx::query(concat!(
         "WITH written AS (\
-             INSERT INTO jobs (kind, blob_id, priority, payload, run_at) \
-             VALUES ($1, $2, $3, $4, $5) ",
+             INSERT INTO jobs (kind, blob_id, priority, payload, run_at, traceparent) \
+             VALUES ($1, $2, $3, $4, $5, $7) ",
         on_conflict!(),
         " RETURNING kind\
          ) \
@@ -135,6 +135,7 @@ pub async fn enqueue(
     .bind(payload(event, now))
     .bind(now.to_sqlx())
     .bind(super::CHANNEL)
+    .bind(super::current_traceparent())
     .execute(exec)
     .await?;
     Ok(())
@@ -155,8 +156,8 @@ pub(crate) async fn enqueue_each(
     let payloads: Vec<serde_json::Value> = blob_ids.iter().map(|_| payload(event, now)).collect();
     sqlx::query(concat!(
         "WITH written AS (\
-             INSERT INTO jobs (kind, blob_id, priority, payload, run_at) \
-             SELECT $1, b.id, b.priority, e.payload, $4 \
+             INSERT INTO jobs (kind, blob_id, priority, payload, run_at, traceparent) \
+             SELECT $1, b.id, b.priority, e.payload, $4, $6 \
              FROM unnest($2::uuid[], $3::jsonb[]) AS e (id, payload) \
              JOIN blobs b ON b.id = e.id ",
         on_conflict!(),
@@ -169,6 +170,7 @@ pub(crate) async fn enqueue_each(
     .bind(payloads)
     .bind(now.to_sqlx())
     .bind(super::CHANNEL)
+    .bind(super::current_traceparent())
     .execute(exec)
     .await?;
     Ok(())

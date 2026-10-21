@@ -27,6 +27,7 @@ use uuid::Uuid;
 
 use crate::app::Agrafe;
 use crate::config::WebhookConfig;
+use crate::trace::TraceContext;
 
 /// Why a job listing was refused.
 #[derive(Debug, thiserror::Error)]
@@ -298,6 +299,10 @@ pub struct Job {
     /// attempt would repeat: it is dead and never claimed again.
     #[sqlx(try_from = "crate::db::NullableTimestamp")]
     pub failed_at: Option<Timestamp>,
+    /// The `traceparent` of the request or job that enqueued it, which its
+    /// runs continue; see `crate::trace`. Written by `enqueue`, so well
+    /// formed, and parsed by `trace_context`.
+    pub traceparent: Option<String>,
     /// When the job was enqueued.
     #[sqlx(try_from = "jiff_sqlx::Timestamp")]
     pub created_at: Timestamp,
@@ -327,6 +332,11 @@ agrafe_types::str_enum!(JobState {
 });
 
 impl Job {
+    /// The context of the unit that enqueued the job, if one was set.
+    pub fn trace_context(&self) -> Option<TraceContext> {
+        self.traceparent.as_deref().and_then(TraceContext::parse)
+    }
+
     pub(crate) fn state(&self, lease: Duration, now: Timestamp) -> JobState {
         if self.failed_at.is_some() {
             return JobState::Dead;
@@ -553,11 +563,18 @@ pub(crate) async fn discard(conn: &mut PgConnection, id: i64) -> sqlx::Result<Ac
     })
 }
 
+/// The `traceparent` a job enqueued now records: the running unit's.
+pub(crate) fn current_traceparent() -> Option<String> {
+    TraceContext::current().map(|context| context.to_string())
+}
+
 /// Insert a job. At most one pending job of each kind exists per blob, the
 /// blob-less ones counting as one blob, and duplicates are dropped. Returns
 /// whether a row was inserted. Workers are notified when the surrounding
-/// transaction commits. A job that finishes its blob clears the failure a
-/// dead predecessor left on the blob's row, see `fail`.
+/// transaction commits. The row records the current trace context, see
+/// `crate::trace`; a duplicate dropped keeps the first one's. A job that
+/// finishes its blob clears the failure a dead predecessor left on the
+/// blob's row, see `fail`.
 // Public for the integration tests, not part of the API.
 #[doc(hidden)]
 pub async fn enqueue(
@@ -570,8 +587,8 @@ pub async fn enqueue(
 ) -> sqlx::Result<bool> {
     let result = sqlx::query(
         "WITH inserted AS (\
-             INSERT INTO jobs (kind, blob_id, priority, payload, run_at) \
-             VALUES ($1, $2, $3, $4, $5) \
+             INSERT INTO jobs (kind, blob_id, priority, payload, run_at, traceparent) \
+             VALUES ($1, $2, $3, $4, $5, $8) \
              ON CONFLICT DO NOTHING RETURNING kind, blob_id\
          ), cleared AS (\
              UPDATE blobs SET failed_at = NULL, last_error = NULL \
@@ -587,6 +604,7 @@ pub async fn enqueue(
     .bind(run_at.to_sqlx())
     .bind(CHANNEL)
     .bind(kind.finishes_blob())
+    .bind(current_traceparent())
     .execute(exec)
     .await?;
     Ok(result.rows_affected() == 1)

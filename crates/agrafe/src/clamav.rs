@@ -120,6 +120,7 @@ impl Clamd {
         self.connect(Some(permit)).await
     }
 
+    #[tracing::instrument(name = "clamav", level = "info", skip_all, fields(op = "connect"))]
     async fn connect(&self, permit: Option<OwnedSemaphorePermit>) -> Result<Session, Error> {
         let mut stream = self
             .wait_for(self.connect_timeout, TcpStream::connect(&self.addr))
@@ -202,7 +203,9 @@ impl Session {
         true
     }
 
-    /// Close the stream and read the verdict.
+    /// Close the stream and read the verdict. Traced: the wait for the
+    /// verdict is clamd's scan of whatever it has not scanned yet.
+    #[tracing::instrument(name = "clamav", level = "info", skip_all, fields(op = "verdict"))]
     pub async fn finish(mut self) -> Result<Verdict, Error> {
         if self.broken.is_none() {
             let end = 0u32.to_be_bytes();

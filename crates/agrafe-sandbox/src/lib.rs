@@ -34,6 +34,7 @@ use std::time::Duration;
 
 use bytesize::ByteSize;
 use serde::Deserialize;
+use tracing::Instrument as _;
 
 /// What a subprocess that decodes or renders a user file may do.
 /// Deserialises from the `[media.sandbox]` table of the server
@@ -329,11 +330,33 @@ struct Applied {
     seccomp: bool,
 }
 
-/// Run `command` to completion under `config`.
+/// Run `command` to completion under `config`, in a `sandbox` span that
+/// names the program, never its arguments (paths of the files it reads),
+/// and records how it ended.
 pub async fn run(command: Command, config: &Config) -> Result<Outcome, Error> {
-    run_with(command, config, Layers::of(config.isolation))
+    let program = command
+        .program
+        .file_name()
+        .unwrap_or(command.program.as_os_str());
+    let span = tracing::info_span!(
+        "sandbox",
+        program = %program.to_string_lossy(),
+        outcome = tracing::field::Empty,
+    );
+    let result = run_with(command, config, Layers::of(config.isolation))
+        .instrument(span.clone())
         .await
-        .map(|(outcome, _)| outcome)
+        .map(|(outcome, _)| outcome);
+    span.record(
+        "outcome",
+        match &result {
+            Ok(Outcome::Success) => "success",
+            Ok(Outcome::Failed { .. }) => "failed",
+            Ok(Outcome::TimedOut) => "timed_out",
+            Err(_) => "error",
+        },
+    );
+    result
 }
 
 async fn run_with(

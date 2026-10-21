@@ -65,9 +65,9 @@ let internal = axum::Router::new()
 The dashboard finds its prefix from the request, and embeds thumbnails from
 the private API one segment up: `/agrafe/dashboard` expects the private
 routes under `/agrafe`. Put it behind your own authentication. When nesting
-it yourself, wrap it in `agrafe_axum::host::refuse_unknown_host` as the
-binary does, since a layer on a router does not reach routes nested after
-it.
+it yourself, wrap it in `agrafe_axum::host::refuse_unknown_host` and
+`agrafe_axum::trace::private` as the binary does, since a layer on a router
+does not reach routes nested after it.
 
 ## Running the workers
 
@@ -96,6 +96,18 @@ let blob = agrafe.create_blob(request).await?;          // CreateError
 let urls = agrafe.mint_urls(blob.id, &options).await?;  // MintError
 let page = agrafe.list_blobs(params).await?;            // ListError
 agrafe.delete_blob(blob.id).await?;                     // DeleteError
+```
+
+A job enqueued by a method records the trace context current in the
+task, which the routers set from the request. Called from your own code,
+run the call in your request's context so its jobs join your trace:
+
+```rust,ignore
+use agrafe::trace::TraceContext;
+
+let context = TraceContext::continue_from(&my_traceparent)
+    .unwrap_or_else(TraceContext::root);
+let blob = context.scope(agrafe.create_blob(request)).await?;
 ```
 
 The handlers in `agrafe-axum` are a line or two each over these methods,

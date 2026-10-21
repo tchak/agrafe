@@ -38,12 +38,16 @@ pub struct JobResponse {
     pub locked_by: Option<String>,
     pub last_error: Option<String>,
     pub failed_at: Option<Timestamp>,
+    /// The trace of the request or job that enqueued it, which its log
+    /// lines carry as `trace_id`.
+    pub trace_id: Option<String>,
     pub created_at: Timestamp,
 }
 
 impl JobResponse {
     fn new(state: &Agrafe, job: Job) -> Self {
         let job_state = state.job_state(&job);
+        let trace_id = job.trace_context().map(|c| c.trace_id().to_string());
         Self {
             id: job.id,
             kind: job.kind,
@@ -58,6 +62,7 @@ impl JobResponse {
             locked_by: job.locked_by,
             last_error: job.last_error,
             failed_at: job.failed_at,
+            trace_id,
             created_at: job.created_at,
         }
     }

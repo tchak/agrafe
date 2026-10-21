@@ -18,6 +18,8 @@ workspace = true
 agrafe-crypto = { version = "0.1.0", path = "../agrafe-crypto" }
 agrafe-render = { version = "0.1.0", path = "../agrafe-render" }
 agrafe-types = { version = "0.1.0", path = "../agrafe-types" }
+# The object store's trait, implemented by the wrapper that traces it.
+async-trait = "0.1.92"
 base64 = "0.23.1"
 bytes = "1"
 bytesize = { version = "2.7.0", features = ["serde"] }
@@ -26,6 +28,8 @@ figment = { version = "0.10.19", features = ["toml", "env"] }
 flate2 = "1.1.10"
 form_urlencoded = "1.2.2"
 futures = "0.3.34"
+# The ids of traces started here. Already in the tree.
+getrandom = "0.4.3"
 hmac = "0.13.0"
 http = "1.5.0"
 humantime-serde = "1.1.1"

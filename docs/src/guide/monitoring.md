@@ -222,10 +222,42 @@ RUST_LOG=agrafe=debug,info agrafe serve    # agrafe's own debug output
 ```
 
 Internal errors are logged in full with the `internal error` message the
-client receives. Every job attempt runs in a span naming its kind and id:
+client receives. Every request runs in a `request` span naming its method
+and path, and every job attempt in a `job` span naming its kind and id:
 a success logs `job done` at `info`, a failure to be retried `job failed`
 at `warn`, and the last attempt `job failed for the last time` at `error`,
 which is the line to route to an alert channel.
 Public request paths are logged with the token redacted, and the HTTP client
 crates stay at `info` unless named explicitly, so presigned fetch URLs never
 reach the logs.
+
+### Following a request to its jobs
+
+Both spans carry a `trace_id`, and a job has the `trace_id` of the request
+or the job that enqueued it. Grep the logs for one id to see an upload, its
+scan, the render the scan led to and the webhook that reported the result:
+
+```text
+INFO request{method=PUT path=/blobs/0199f6a0-… trace_id=4bf92f35…}: …
+INFO job{id=1842 kind=scan … trace_id=4bf92f35…}: agrafe::jobs::runner: job done
+INFO job{id=1843 kind=render … trace_id=4bf92f35…}: agrafe::jobs::runner: job done
+```
+
+The jobs API and the dashboard's job page show a job's `trace_id` too, so a
+dead job leads back to the request that caused it.
+
+A request on the private port continues the trace of a W3C `traceparent`
+header when it sends one, so a backend that propagates its own trace
+context gets the same id in agrafe's logs as in its own. Without the
+header, or with a malformed one, the request starts a new trace. The public
+port always starts a new trace: its callers are browsers, and the id is not
+theirs to pick. Jobs nothing traced, such as the periodic reaper and audit,
+start their own.
+
+Inside those spans, the slow operations have spans of their own: `storage`
+for each object store call, with `op` and `path`; `sandbox` for each
+renderer or helper run, with the `program` and its `outcome`; and `clamav`
+for the connection and the wait for the verdict. They show in a log line's
+context when something is logged inside them. Nothing is exported yet; the
+spans and the stored trace context are what an OpenTelemetry or Sentry
+exporter will build on.

@@ -138,8 +138,7 @@ far as the public port is concerned: every public route answers `404`, upload
 included, even with a valid signature. A URL that leaks after the blob is gone
 therefore reveals nothing, not even that it once existed. The private port
 keeps reporting the real state. Public request spans record the path with the
-token segment redacted, so a debug log level never writes capabilities to log
-storage.
+token segment redacted, so no log level writes capabilities to log storage.
 
 The `:filename` segment of representation routes must match the blob's
 filename (percent-decoded), otherwise `404`. It exists so browsers get a
@@ -2605,6 +2604,59 @@ finish its blob, and a running one is a worker's. A retry whose blob already
 has a pending job of that kind is `409` too; the newer job does the work.
 The same census and listing as pages, with the buttons, is the dashboard;
 see "Dashboard" under "Interfaces".
+
+### Tracing
+
+**A request and the jobs it leads to are one trace.** The work an upload
+sets off is asynchronous and spread over processes: the request enqueues a
+scan, the scan's run a render, the render's a webhook. Each of those units
+runs under a W3C trace context, `agrafe::trace::TraceContext`: a trace id
+they share and an id of their own. The request middleware and the job
+runner set it in a task-local for the duration of the unit, and
+`jobs::enqueue` (and the notify inserts) store the current one on the row
+as `traceparent`, naming the enqueuing unit as the job's parent. A run
+continues the stored context with an id of its own; a job without one, the
+periodic `reap` and `audit`, starts a trace. Retries are further children
+of the same parent. A duplicate dropped by `ON CONFLICT DO NOTHING` keeps
+the first enqueuer's context; a `notify` that replaces the pending one
+takes the newer event's, as it takes its payload.
+
+The context is ambient rather than a parameter because the enqueues sit
+deep under the handle's methods, a dozen call sites, and every one of them
+would otherwise thread it through. A task-local does not cross
+`tokio::spawn`, so the one spawn in a request's path, the upload
+pipeline's task, goes through `trace::spawn`, which carries the context
+and the current span. A host calling the handle directly runs the call in
+`TraceContext::scope` to have its jobs join its trace.
+
+**The private port continues the caller's trace; the public port does not.**
+A single valid `traceparent` header on a private request is continued, so
+the host application's trace id is the one in agrafe's logs; none, several
+or a malformed one starts a new trace, as W3C says. Public requests always
+start one: their clients are browsers and anyone, and a trace id chosen by
+the client could merge unrelated work or flood one trace. Roots are marked
+sampled: the sampling decision is an exporter's, and a parent marked
+unsampled would make a parent-based sampler drop the jobs.
+
+**Spans.** `request` (method, path, `trace_id`) and `job` (id, kind, blob,
+attempt, `trace_id`) are at `info`, so every log line inside one carries
+the trace id. The public span records the path with the token redacted, the
+private one the path without its query string. Inside them, `storage`
+(`op`, `path`) wraps every object store call, through `storage::Traced`,
+which `Agrafe::with_store` puts around any store; a read's span ends at the
+response head, and listings have none, being streams. `sandbox`
+(`program`, `outcome`) wraps every subprocess, never naming its arguments,
+which are paths of user files. `clamav` covers the connection and the wait
+for the verdict. The fetch and webhook calls are not spanned apart: each is
+the whole of its job.
+
+**No exporter yet.** The spans and the stored context are what an
+OpenTelemetry or Sentry layer needs: the job span's parent comes from
+`Job::trace_context`, the request span's from the middleware's context.
+Until then the trace id ties log lines together, and the jobs API and the
+dashboard show it on each job. When an exporter lands, the context should
+come from its span instead of being generated here, so that the stored
+parent ids name spans the backend has.
 
 ## Webhooks
 

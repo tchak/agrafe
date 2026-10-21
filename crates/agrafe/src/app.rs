@@ -70,7 +70,10 @@ impl Agrafe {
     }
 
     /// `new` over a store built elsewhere; `config.storage` goes unused.
+    /// The store is wrapped in `storage::Traced`, so its operations get
+    /// spans like the configured one's.
     pub fn with_store(config: Config, pool: PgPool, store: Store) -> Result<Self, InitError> {
+        let store: Store = Arc::new(storage::Traced::new(store));
         let signer = Signer::from_config(&config.signing)?;
         let keks = Keks::from_config(&config.encryption)?;
         let clamd = Clamd::from_config(&config.clamav);

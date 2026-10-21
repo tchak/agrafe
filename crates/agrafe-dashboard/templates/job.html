@@ -23,6 +23,7 @@
     <tr><th>locked at</th><td>{{ view.job.locked_at|opt_ts }}</td></tr>
     <tr><th>locked by</th><td>{{ view.job.locked_by|opt }}</td></tr>
     <tr><th>failed at</th><td>{{ view.job.failed_at|opt_ts }}</td></tr>
+    <tr><th>trace</th><td>{% if let Some(context) = view.job.trace_context() %}<span class="font-mono">{{ context.trace_id() }}</span>{% else %}<span class="opacity-60">none</span>{% endif %}</td></tr>
     <tr><th>created at</th><td>{{ view.job.created_at|ts }}</td></tr>
   </tbody>
 </table>
