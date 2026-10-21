@@ -22,6 +22,7 @@ use agrafe::blob::envelope::Envelope;
 use agrafe::blob::representation::Resolved;
 use agrafe::blob::urls::MAX_WAIT;
 use agrafe::blob::{BlobHead, Rendered, Representation, RepresentationState};
+use agrafe::filename::split_extension;
 use agrafe::icons;
 
 use super::original;
@@ -252,10 +253,8 @@ fn state_value(state: RepresentationState) -> HeaderValue {
 /// The download name of a representation: the file's name with a `.webp`
 /// extension in place of its own.
 fn webp_name(filename: &str) -> String {
-    match filename.rsplit_once('.') {
-        Some((stem, _)) if !stem.is_empty() => format!("{stem}.webp"),
-        _ => format!("{filename}.webp"),
-    }
+    let (stem, _) = split_extension(filename);
+    format!("{stem}.webp")
 }
 
 #[cfg(test)]
@@ -265,7 +264,8 @@ mod tests {
     #[test]
     fn webp_names() {
         assert_eq!(webp_name("photo été.jpg"), "photo été.webp");
-        assert_eq!(webp_name("archive.tar.gz"), "archive.tar.webp");
+        assert_eq!(webp_name("archive.tar.gz"), "archive.webp");
+        assert_eq!(webp_name("my.report.pdf"), "my.report.webp");
         assert_eq!(webp_name("README"), "README.webp");
         assert_eq!(webp_name(".bashrc"), ".bashrc.webp");
     }

@@ -40,6 +40,7 @@ pub mod clamav;
 pub mod config;
 pub mod db;
 pub mod encryption;
+pub mod filename;
 pub mod jobs;
 pub mod metrics;
 pub mod signing;

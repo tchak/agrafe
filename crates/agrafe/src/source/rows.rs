@@ -19,6 +19,7 @@ use crate::app::Agrafe;
 use crate::blob::Blob;
 use crate::blob::repo::{PartAccepted, SheetPosition};
 use crate::classify;
+use crate::filename::split_extension;
 use crate::text::is_bidi_control;
 use crate::upload::{Tap, UploadError};
 
@@ -141,10 +142,7 @@ pub(crate) fn switch_target(sheets: &[Sheet], current: usize, name: &str) -> Res
 /// apostrophe, reserves `History` for its change tracking, and wants
 /// something there.
 pub(crate) fn sheet_name(filename: &str) -> String {
-    let stem = match filename.rsplit_once('.') {
-        Some((stem, _)) if !stem.is_empty() => stem,
-        _ => filename,
-    };
+    let (stem, _) = split_extension(filename);
     let cleaned: String = stem
         .chars()
         .map(|c| match c {
@@ -685,6 +683,7 @@ mod tests {
         assert_eq!(sheet_name("export.xlsx"), "export");
         assert_eq!(sheet_name("dossiers 2026.ods"), "dossiers 2026");
         assert_eq!(sheet_name("export"), "export");
+        assert_eq!(sheet_name("export.csv.gz"), "export");
         assert_eq!(sheet_name(".xlsx"), ".xlsx");
         assert_eq!(sheet_name("a:b[c]*d?e.xlsx"), "a_b_c__d_e");
         assert_eq!(sheet_name("'quoted'.xlsx"), "quoted");

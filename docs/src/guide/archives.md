@@ -45,7 +45,9 @@ several paths and is written each time.
 
 Duplicate paths are not refused. They are renamed in manifest order: a path
 already taken becomes `stem-1.ext`, then `stem-2.ext`, with the counter
-before the last extension. Paths are compared ignoring case, since
+before the extension; a compressed file keeps its double extension whole,
+so `a.tar.gz` becomes `a-1.tar.gz` and `export.csv.gz` becomes
+`export-1.csv.gz`. Paths are compared ignoring case, since
 `Report.pdf` and `report.pdf` land on the same file on macOS and Windows.
 The first occurrence keeps its name.
 

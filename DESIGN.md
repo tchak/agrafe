@@ -174,8 +174,21 @@ previews and thumbnails included, even though those serve WebP: the segment
 names the file the representation is of, and the download name comes from
 `Content-Disposition`, which for a representation is the filename with a
 `.webp` extension in place of its own (`photo.jpg` → `photo.webp`, `README`
-→ `README.webp`). Browsers take the header over the URL, so a saved
-preview is never a WebP file with a `.jpg` name.
+→ `README.webp`, `archive.tar.gz` → `archive.webp`). Browsers take the
+header over the URL, so a saved preview is never a WebP file with a `.jpg`
+name.
+
+Wherever a filename is split into stem and extension (this download name,
+the archive dedupe, the sheet named after a `rows` blob), the extension is
+what follows the last dot, with a rule for compression wrappers: a last
+extension of `gz`, `bz2`, `xz`, `zst`, `lz`, `lzma`, `Z` or `br` takes the
+extension before it when that one is one to five ASCII alphanumerics with a
+letter among them. So `a.tar.gz` and `export.csv.gz` split before `.tar.gz`
+and `.csv.gz`, while `my.report.gz` splits before `.gz`, since `report` is
+no extension, and `.bashrc` or `README` have none. A rule rather than a
+list of `.tar.*`, because `.csv.gz` and `.sql.xz` are at least as common as
+tarballs in what agrafe stores and a list would never be complete; the
+five-character cap lets `jsonl` and `fastq` through and keeps words out.
 
 ### Errors
 
@@ -1109,8 +1122,8 @@ the manifest. At accept, per line:
 
 Duplicate paths are deduplicated by the build rather than refused at accept,
 in manifest order: a path already taken becomes `stem-1.ext`, `stem-2.ext`,
-... with the counter before the last extension (`a.tar.gz` collides into
-`a.tar-1.gz`; a name without a dot, or with only a leading one, gets the
+... with the counter before the extension (`a.tar.gz` collides into
+`a-1.tar.gz`; a name without a dot, or with only a leading one, gets the
 counter at the end), the first free name wins and is taken in turn. Taken is
 case-insensitive, since `Report.pdf` and `report.pdf` land on the same file
 when extracted on macOS or Windows. The taken set is the build's, held in

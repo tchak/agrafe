@@ -26,6 +26,7 @@ use crate::app::Agrafe;
 use crate::blob::read::{Reader, Stored};
 use crate::blob::repo;
 use crate::blob::{Blob, BlobState, InputType};
+use crate::filename::split_extension;
 use crate::source::Source;
 use crate::source::archive::{ERRORS_FILE, Entry, parse_line};
 
@@ -266,8 +267,9 @@ impl Taken {
     }
 
     /// The name `path` gets: itself when free, else `stem-1.ext`,
-    /// `stem-2.ext`, ... with the counter before the last extension of the
-    /// last component, the first free one. The name is taken in turn.
+    /// `stem-2.ext`, ... with the counter before the extension of the last
+    /// component (as [`split_extension`] sees it, so `a.tar.gz` becomes
+    /// `a-1.tar.gz`), the first free one. The name is taken in turn.
     pub fn claim(&mut self, path: &str) -> String {
         let lower = path.to_lowercase();
         if self.names.insert(lower.clone()) {
@@ -277,10 +279,7 @@ impl Taken {
             Some((dir, file)) => (format!("{dir}/"), file),
             None => (String::new(), path),
         };
-        let (stem, ext) = match file.rsplit_once('.') {
-            Some((stem, _)) if !stem.is_empty() => (stem, &file[stem.len()..]),
-            _ => (file, ""),
-        };
+        let (stem, ext) = split_extension(file);
         // A name the backend sent itself may sit on the counter; each is
         // skipped once, so the whole pass stays linear in the manifest.
         let next = self.counters.entry(lower).or_insert(1);
@@ -299,7 +298,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dedupes_in_manifest_order_before_the_last_extension() {
+    fn dedupes_in_manifest_order_before_the_extension() {
         let mut taken = Taken::new();
         assert_eq!(taken.claim("docs/Report.pdf"), "docs/Report.pdf");
         assert_eq!(taken.claim("docs/report.pdf"), "docs/report-1.pdf");
@@ -308,7 +307,9 @@ mod tests {
         assert_eq!(taken.claim("docs/report-3.pdf"), "docs/report-3.pdf");
         assert_eq!(taken.claim("docs/REPORT.PDF"), "docs/REPORT-4.PDF");
         assert_eq!(taken.claim("a.tar.gz"), "a.tar.gz");
-        assert_eq!(taken.claim("a.tar.gz"), "a.tar-1.gz");
+        assert_eq!(taken.claim("a.tar.gz"), "a-1.tar.gz");
+        assert_eq!(taken.claim("export.csv.gz"), "export.csv.gz");
+        assert_eq!(taken.claim("export.csv.gz"), "export-1.csv.gz");
         assert_eq!(taken.claim("README"), "README");
         assert_eq!(taken.claim("README"), "README-1");
         assert_eq!(taken.claim(".bashrc"), ".bashrc");
