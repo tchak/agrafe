@@ -123,11 +123,11 @@ reasoning behind every decision.
   get one too when an optional LibreOffice is configured, see "Thumbnails
   for office files" below; without it they get the icon.
 - **Text thumbnails** showing the first lines of text, CSV and TSV files.
-- **Maps for GeoJSON files**: the geometry drawn over a WMS background of
-  your choosing, none by default, in the file's own
+- **Maps for GeoJSON and GPX files**: the geometry drawn over a WMS
+  background of your choosing, none by default, in a GeoJSON file's own
   [simplestyle](https://github.com/mapbox/simplestyle-spec) colours or a
-  configured default. A `.geojson` uploaded as JSON or text is recognised
-  as one.
+  configured default. A `.geojson` uploaded as JSON or text, or a `.gpx`
+  uploaded as XML or text, is recognised as one.
 - **Category icons** for everything else. The thumbnail URL answers `200`
   for as long as the blob exists, so it can go straight into an `<img>`
   tag.
@@ -674,13 +674,13 @@ and every configuration key is documented in
 | `agrafe-dashboard` | The HTML dashboard as an axum router, templates compiled in |
 | `agrafe-server` | The `agrafe` binary: `serve` and `migrate` |
 | `agrafe-crypto` | Streaming AEAD and key wrapping |
-| `agrafe-types` | Content types, classification, sniffing, the text-sample contract |
+| `agrafe-types` | Content types, classification, sniffing, the text-sample and map contracts |
 | `agrafe-sandbox` | Subprocesses with resource limits, Landlock and seccomp |
 | `agrafe-render` | What renders and how: `vips`, the helper drivers, the icons |
 | `agrafe-extract` | Sandboxed helper that pulls the image out of a PDF, DOCX or ODT |
 | `agrafe-render-text` | Sandboxed helper that rasterises a text sample |
 | `agrafe-render-document` | Sandboxed helper that compiles a typst workspace into a PDF |
-| `agrafe-render-geo` | Sandboxed helper that draws a GeoJSON file as SVG over the map extent it chose |
+| `agrafe-render-geo` | Sandboxed helper that draws a GeoJSON or GPX file as SVG over the map extent it chose |
 
 A deployment ships five binaries together: `agrafe`, `agrafe-extract`,
 `agrafe-render-text`, `agrafe-render-document` and `agrafe-render-geo`.
@@ -689,7 +689,7 @@ seccomp by default, with nothing to install; a default Docker container
 has both. Set `media.sandbox.isolation = "required"` in production so a
 kernel without them fails the deployment instead of running unconfined.
 The render workers are the one place that talks to the network besides the
-fetch and webhook jobs: with `media.geojson.layers` configured they fetch
+fetch and webhook jobs: with `media.map.layers` configured they fetch
 map backgrounds from those hosts over HTTPS, and with the default empty
 list they fetch nothing.
 

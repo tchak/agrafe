@@ -5,6 +5,8 @@ use std::path::Path;
 use agrafe_types::classify::{DOCX, XLSX};
 
 use crate::vips::{self, Fit, Input};
+use agrafe_types::map::Format;
+
 use crate::{Config, Error, Rejection, Verdict, geo, helpers, office};
 
 /// Why a worker may not start: its tools do not work on files known to be
@@ -239,15 +241,15 @@ async fn probe_tools(config: &Config, tmp_dir: Option<&Path>) -> Result<(), Prob
     tokio::fs::write(&geojson, PROBE_GEOJSON).await?;
     let spec = workdir.path().join(geo::SPEC);
     let bare = Config {
-        geojson: crate::GeoJson {
+        map: crate::Map {
             layers: Vec::new(),
-            ..config.geojson.clone()
+            ..config.map.clone()
         },
         ..config.clone()
     };
     tokio::fs::write(
         &spec,
-        serde_json::to_vec(&bare.geojson.spec(fit)).expect("a spec serialises"),
+        serde_json::to_vec(&bare.map.spec(Format::GeoJson, fit)).expect("a spec serialises"),
     )
     .await?;
     let svg = workdir.path().join(geo::PATHS);

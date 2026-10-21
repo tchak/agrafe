@@ -128,16 +128,18 @@ The bytes flow once through a chain of checks, in this order:
    declaration, and `application/octet-stream`, which declares nothing.
    Siblings, such as a DOCX declared as an XLSX, are refused. A variant
    the bytes cannot tell from its base format, such as a macro-enabled
-   workbook or an OpenDocument template, is checked as that format. One
-   declaration is refined rather than checked: a JSON document that opens
-   on a GeoJSON `Feature` or `FeatureCollection`, declared as
+   workbook or an OpenDocument template, is checked as that format. Two
+   declarations are refined rather than checked: a JSON document that
+   opens on a GeoJSON `Feature` or `FeatureCollection`, declared as
    `application/json`, `text/json` or `text/plain`, gets
-   `application/geo+json` as its `content_type`, so it is drawn as a map.
-   When `upload.content_types` is set, the declaration must still be in
-   it, and the bytes of a blob declared as `application/octet-stream`
-   must be of a listed type: that declaration does not widen the list.
-   A GeoJSON file is refined to `application/geo+json` only when the list
-   admits that type; otherwise it keeps its declaration.
+   `application/geo+json` as its `content_type`, and an XML document
+   whose root element is `<gpx>`, declared as `application/xml`,
+   `text/xml` or `text/plain`, gets `application/gpx+xml`, so both are
+   drawn as maps. When `upload.content_types` is set, the declaration
+   must still be in it, and the bytes of a blob declared as
+   `application/octet-stream` must be of a listed type: that declaration
+   does not widen the list. A file is refined only when the list admits
+   the refined type; otherwise it keeps its declaration.
 4. **Virus scan**, inline when the file is small enough and `clamd` is
    reachable.
 5. **Encryption** and the multipart upload to the object store.

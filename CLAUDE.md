@@ -42,7 +42,8 @@ See "Crates" in `DESIGN.md` for the dependency graph.
   `crates/agrafe-render-document`, `crates/agrafe-render-geo` — the
   sandboxed helpers, each a library plus a binary of the same name. The
   server does not link them; it finds the binaries on `PATH`. The document
-  one embeds the typst compiler; the geo one parses GeoJSON and writes SVG.
+  one embeds the typst compiler; the geo one parses GeoJSON and GPX and
+  writes SVG.
 - `crates/agrafe-render` — what renders and how: `vips`, the helper
   drivers, the icons, the probe, the `[media]` tool config, and the
   fetcher of map backgrounds (`geo`), the one network client in it.
@@ -124,7 +125,7 @@ See "Crates" in `DESIGN.md` for the dependency graph.
   (`lopdf`, `zip`, `quick-xml`, `ab_glyph`, `typst`, `geojson`) are
   dependencies of the helper crates only; never add them to `agrafe` or
   `agrafe-render`. What a helper and the server exchange (the text sample,
-  the GeoJSON spec and extent) is typed in `agrafe-types`.
+  the map spec and extent) is typed in `agrafe-types`.
 - Errors are `thiserror` enums, one per module that fails in its own way
   (`ConfigError`, `ReadError`, `JobError`, `UploadError`, …). No `anyhow`.
   Messages inline their cause (`"reading the object: {0}"`), so log them

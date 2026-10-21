@@ -22,7 +22,7 @@ stripped.
 | Other PDF | none | the first page |
 | Other DOCX, ODT, XLSX and ODS | none | the first page, through [LibreOffice](deployment.md#libreoffice) when `media.office.command` is set; the icon otherwise |
 | Text, CSV and TSV | none | the first lines, in a monospace font |
-| GeoJSON | the geometry over a map, see [Maps](#maps) | the map |
+| GeoJSON, GPX | the geometry over a map, see [Maps](#maps) | the map |
 | Anything else | none | the icon |
 
 A document "wraps a single image" when it is what users produce when asked
@@ -51,32 +51,43 @@ A user interface should key on whether a blob has a preview
 
 ## Maps
 
-A GeoJSON file, `application/geo+json`, gets its geometry drawn over a map
-as its preview, and that map fitted into the thumbnail box. A `.geojson`
-uploaded as `application/json` or `text/plain`, which is how they tend to
-arrive, is recognised by its first KiB and its `content_type` becomes
+A GeoJSON file, `application/geo+json`, or a GPX file,
+`application/gpx+xml`, gets its geometry drawn over a map as its preview,
+and that map fitted into the thumbnail box. A `.geojson` uploaded as
+`application/json` or `text/plain`, which is how they tend to arrive, is
+recognised by its first KiB and its `content_type` becomes
 `application/geo+json` as the upload completes. The recognition is a look
 at that first KiB for a `"type"` of `Feature` or `FeatureCollection` at
 any depth, so a JSON document that merely embeds a feature there is
 refined too; it holds no GeoJSON at the top level and gets the text
-thumbnail. A file with no geometry has no map and gets the text thumbnail
-instead.
+thumbnail. Likewise a `.gpx` uploaded as `application/xml`, `text/xml` or
+`text/plain` whose root element, within the first KiB, is `<gpx>` becomes
+`application/gpx+xml`. A file with no geometry has no map and gets the
+text thumbnail instead.
 
-Coordinates are longitude and latitude in degrees, as RFC 7946 requires.
-A file that declares another system with the legacy `crs` member, as QGIS
-and GDAL write it for a layer that is not WGS 84, is drawn when that
-system is Lambert-93 (EPSG:2154) or Web Mercator (EPSG:3857). Any other
-declared system, or coordinates that are not degrees with no declaration,
-is nothing the renderer can place: no map, the text thumbnail.
+GeoJSON coordinates are longitude and latitude in degrees, as RFC 7946
+requires. A file that declares another system with the legacy `crs`
+member, as QGIS and GDAL write it for a layer that is not WGS 84, is drawn
+when that system is Lambert-93 (EPSG:2154) or Web Mercator (EPSG:3857).
+Any other declared system, or coordinates that are not degrees with no
+declaration, is nothing the renderer can place: no map, the text
+thumbnail.
 
-The map shows the geometry's bounding box, padded by `media.geojson.padding`
+A GPX file is drawn from its waypoints (points), its routes (a line each)
+and the segments of its tracks (a line each); a segment of fewer than two
+points is dropped. Coordinates are always WGS 84 by the specification.
+GPX has no style vocabulary: names, symbols, elevations, times and the
+colour extensions of Garmin or OsmAnd are ignored, and the file is drawn
+in the default style.
+
+The map shows the geometry's bounding box, padded by `media.map.padding`
 (a tenth of its larger side) and at least `min_span` (200 m) wide, so a
 single point still gets a readable map, widened to the shape of the
-preview box. It is drawn at the preview box or `media.geojson.max_size`
-(2048 pixels), whichever is smaller. Features keep their
+preview box. It is drawn at the preview box or `media.map.max_size`
+(2048 pixels), whichever is smaller. GeoJSON features keep their
 [simplestyle-spec](https://github.com/mapbox/simplestyle-spec) properties,
 which geojson.io, uMap and most GIS exports write, over the default of
-`[media.geojson.style]`:
+`[media.map.style]`:
 
 | Property | Honoured as |
 |---|---|
@@ -89,7 +100,7 @@ which geojson.io, uMap and most GIS exports write, over the default of
 the wrong kind is ignored. Lines and polygons get a darker casing under
 their stroke, polygon holes stay holes, and points are discs with a ring.
 
-The background comes from the WMS layers of `[[media.geojson.layers]]`,
+The background comes from the WMS layers of `[[media.map.layers]]`,
 each a `GetMap` URL template that agrafe fills with the bounding box in
 EPSG:3857 and the pixel size, composited bottom to top, and each drawn
 only on an extent between its `min_span` and `max_span`. The attribution
@@ -100,7 +111,7 @@ extent of a user's geometry to that provider, so the render workers'
 egress must allow those hosts, and nothing else needs it. A layer that
 cannot be fetched, times out or does not decode fails the render attempt,
 which is retried; the file is never marked `failed` for the provider's
-downtime. See [Configuration](../reference/configuration.md#mediageojson).
+downtime. See [Configuration](../reference/configuration.md#mediamap).
 
 ## States
 
@@ -164,7 +175,7 @@ that repair. Use `POST /blobs/:id/retry` (see [Jobs and retries](jobs.md)).
 No user file is decoded in the server process. `vips` renders images and
 PDF pages and composites maps, `agrafe-extract` pulls embedded images out
 of PDF and office files, `agrafe-render-text` rasterises text samples,
-`agrafe-render-geo` draws GeoJSON files, and LibreOffice, when
+`agrafe-render-geo` draws GeoJSON and GPX files, and LibreOffice, when
 configured, converts office files to PDF, each as a subprocess with:
 
 - a clean environment, with no secrets;

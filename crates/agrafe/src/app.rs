@@ -32,7 +32,7 @@ pub enum InitError {
     #[error("building the fetch client: {0}")]
     Fetch(#[from] reqwest::Error),
     /// The HTTP client the background layers of maps are fetched through
-    /// could not be built from `[media.geojson]`.
+    /// could not be built from `[media.map]`.
     #[error("building the map layer client: {0}")]
     Maps(reqwest::Error),
     /// The HTTP client webhook deliveries go through could not be built.
@@ -78,7 +78,7 @@ impl Agrafe {
         let keks = Keks::from_config(&config.encryption)?;
         let clamd = Clamd::from_config(&config.clamav);
         let fetcher = fetch::Client::from_config(&config.fetch)?;
-        let maps = agrafe_render::geo::Client::from_config(&config.media.render.geojson)
+        let maps = agrafe_render::geo::Client::from_config(&config.media.render.map)
             .map_err(InitError::Maps)?;
         let webhook = match &config.webhook.url {
             Some(url) => Some(

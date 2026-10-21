@@ -609,7 +609,8 @@ struct Checks {
     head: Vec<u8>,
     sniffed: bool,
     /// A content type more precise than the declared one, read off the
-    /// bytes: a GeoJSON file declared as JSON.
+    /// bytes: a GeoJSON file declared as JSON, a GPX file declared as
+    /// XML.
     refined: Option<&'static str>,
     scanner: Scanner,
 }
@@ -782,5 +783,26 @@ mod tests {
             check_type("application/json", geojson, &application).unwrap(),
             Some("application/geo+json")
         );
+        let gpx =
+            b"<?xml version=\"1.0\"?>\n<gpx version=\"1.1\"><wpt lat=\"45\" lon=\"4\"/></gpx>";
+        assert_eq!(
+            check_type("application/xml", gpx, &any).unwrap(),
+            Some("application/gpx+xml")
+        );
+        // `text/*` admits the XML declaration, not the refined type.
+        assert_eq!(
+            check_type("text/xml", gpx, &list(&["text/*"])).unwrap(),
+            None
+        );
+        assert_eq!(
+            check_type(
+                "application/xml",
+                gpx,
+                &list(&["text/xml", "application/gpx+xml"])
+            )
+            .unwrap(),
+            Some("application/gpx+xml")
+        );
+        assert!(check_type("image/png", gpx, &any).is_err());
     }
 }

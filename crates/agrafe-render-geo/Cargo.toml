@@ -4,10 +4,10 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Sandboxed helper: draws the geometry of a GeoJSON file as SVG paths over the map extent it chose"
+description = "Sandboxed helper: draws the geometry of a GeoJSON or GPX file as SVG paths over the map extent it chose"
 repository.workspace = true
 homepage.workspace = true
-keywords = ["geojson", "map", "svg", "mercator"]
+keywords = ["geojson", "gpx", "map", "svg", "mercator"]
 categories = ["science::geo", "rendering"]
 
 [lints]
@@ -17,5 +17,6 @@ workspace = true
 agrafe-types = { version = "0.1.0", path = "../agrafe-types" }
 clap = { version = "4.6.7", features = ["derive"] }
 geojson = { version = "1.0.0", default-features = false }
+quick-xml = "0.42.0"
 serde_json = "1.0.154"
 thiserror = "2.0.21"

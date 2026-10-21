@@ -11,7 +11,7 @@ the `agrafe` binary with its four helpers next to it.
 | `agrafe-extract` | Pulls the embedded image out of a PDF, DOCX or ODT |
 | `agrafe-render-text` | Rasterises the first lines of a text file |
 | `agrafe-render-document` | Compiles a typst workspace into a PDF |
-| `agrafe-render-geo` | Draws a GeoJSON file as SVG over the map extent it chose |
+| `agrafe-render-geo` | Draws a GeoJSON or GPX file as SVG over the map extent it chose |
 
 The helpers are found on the `PATH`, or at the paths given by
 `media.extract_command`, `media.render_text_command`,
@@ -27,7 +27,7 @@ before the new processes start.
 
 Outbound connections: the fetch workers reach the URLs of `url` blobs, the
 notify workers reach `webhook.url`, and the render workers reach the hosts
-of `media.geojson.layers`, if any are configured. Nothing else in agrafe
+of `media.map.layers`, if any are configured. Nothing else in agrafe
 talks to the network besides Postgres, the object store and `clamd`.
 
 ## The sandbox

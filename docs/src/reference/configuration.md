@@ -184,7 +184,7 @@ above `max_inline_scans` plus `jobs.concurrency.scan`.
 | `extract_command` | `"agrafe-extract"` | The embedded image helper |
 | `render_text_command` | `"agrafe-render-text"` | The text thumbnail helper |
 | `render_document_command` | `"agrafe-render-document"` | The typst helper |
-| `render_geo_command` | `"agrafe-render-geo"` | The GeoJSON map helper |
+| `render_geo_command` | `"agrafe-render-geo"` | The map helper, for GeoJSON and GPX files |
 | `max_source_size` | `"64 MiB"` | Larger originals get the icon and no preview; text thumbnails still render |
 | `tmp_dir` | the system temporary directory | Where workers unpack originals and document workspaces |
 
@@ -239,9 +239,9 @@ The limits that differ from `[media.sandbox]`, whose other keys apply.
 | `timeout` | `"120s"` | Wall-clock limit per conversion |
 | `memory` | `"2 GiB"` | Address space limit, enforced on Linux only |
 
-### `[media.geojson]`
+### `[media.map]`
 
-How the map of a GeoJSON file is drawn; see [Maps](../guide/representations.md#maps).
+How the map of a GeoJSON or GPX file is drawn; see [Maps](../guide/representations.md#maps).
 
 | Key | Default | Description |
 |---|---|---|
@@ -253,10 +253,11 @@ How the map of a GeoJSON file is drawn; see [Maps](../guide/representations.md#m
 | `fetch_timeout` | `"10s"` | The whole of one layer request |
 | `max_layer_size` | `"8 MiB"` | A larger layer response is a failure |
 
-### `[media.geojson.style]`
+### `[media.map.style]`
 
-The default style, in the simplestyle-spec vocabulary; a feature's own
-properties override it key by key.
+The default style, in the simplestyle-spec vocabulary; a GeoJSON feature's
+own properties override it key by key, and a GPX file, which has no style,
+is drawn in it.
 
 | Key | Default |
 |---|---|
@@ -268,7 +269,7 @@ properties override it key by key.
 | `marker-color` | `"#FFD400"` |
 | `marker-size` | `"medium"` |
 
-### `[[media.geojson.layers]]`
+### `[[media.map.layers]]`
 
 Background layers, composited bottom to top. None by default.
 
@@ -347,8 +348,8 @@ message naming the key:
 | `encryption.chunk_size must be at most 16777216 bytes (16 MiB)` | Lower it |
 | `blobs.default_expires_in must be at least 1h: …` | Raise it |
 | `media.variant_version must be at least 1` | Raise it |
-| `media.geojson.layers[0].url must contain {bbox}` | Add the placeholder; `{width}` and `{height}` likewise |
-| `media.geojson.layers[0].url must be an http or https URL` | Fix the URL |
+| `media.map.layers[0].url must contain {bbox}` | Add the placeholder; `{width}` and `{height}` likewise |
+| `media.map.layers[0].url must be an http or https URL` | Fix the URL |
 | `archive.max_size must be at most … bytes: …` | Lower it to 309 GiB or less |
 | `jobs.kinds must name at least one kind, or be omitted for all` | Remove the empty list |
 | `webhook.secret is required with webhook.url` | Set the secret |

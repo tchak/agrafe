@@ -4,9 +4,9 @@
 //!
 //! One job serves both representations and does whatever is `pending` on
 //! the row. The picture is the file rendered as a whole, from the sources
-//! its content type lists (`agrafe_render::plan`), for a GeoJSON file its
-//! map, drawn by a helper over a background fetched from a configured
-//! provider; the preview is the
+//! its content type lists (`agrafe_render::plan`), for a GeoJSON or GPX
+//! file its map, drawn by a helper over a background fetched from a
+//! configured provider; the preview is the
 //! picture in the preview box, and the thumbnail is the preview fitted
 //! into the thumbnail box. The original is thus decoded once, the two
 //! pictures agree, and a thumbnail regenerated on its own is made from the
@@ -280,13 +280,21 @@ impl<'a> Render<'a> {
                     }
                     (embedded, Input::Raster, PreviewSource::EmbeddedImage)
                 }
-                Source::GeoJson => {
+                Source::Map(format) => {
+                    let format = *format;
                     let whole = self.whole_original().await?;
                     let maps = self.state.maps();
-                    match geo::render_map(&media.render, maps, &whole, self.workdir.path(), fit)
-                        .await?
+                    match geo::render_map(
+                        &media.render,
+                        maps,
+                        format,
+                        &whole,
+                        self.workdir.path(),
+                        fit,
+                    )
+                    .await?
                     {
-                        Verdict::Rendered(map) => (map, Input::Raster, PreviewSource::GeoJson),
+                        Verdict::Rendered(map) => (map, Input::Raster, PreviewSource::from(format)),
                         Verdict::Declined => continue,
                         Verdict::Rejected(rejection) => {
                             tracing::warn!(?source, %rejection, "drawing the map failed");

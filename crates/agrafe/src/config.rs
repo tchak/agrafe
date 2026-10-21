@@ -139,7 +139,7 @@ impl Config {
         self.webhook.validate()?;
         self.media
             .render
-            .geojson
+            .map
             .validate()
             .map_err(ConfigError::Invalid)?;
         if self.archive.max_size.as_u64() > ArchiveConfig::MAX_SIZE_LIMIT {
@@ -1000,7 +1000,7 @@ pub struct MediaConfig {
     /// read from the same `[media]` table: `vips_command`,
     /// `extract_command`, `render_text_command`,
     /// `render_document_command`, `render_geo_command`, `thumbnail`,
-    /// `preview`, `embedded_image`, `geojson`, `sandbox`.
+    /// `preview`, `embedded_image`, `map`, `sandbox`.
     #[serde(flatten)]
     pub render: agrafe_render::Config,
 }

@@ -427,13 +427,29 @@ pub enum PreviewSource {
     EmbeddedImage,
     /// The geometry of a GeoJSON file drawn over a map background.
     GeoJson,
+    /// The waypoints, routes and tracks of a GPX file drawn over a map
+    /// background.
+    Gpx,
 }
 
 agrafe_types::str_enum!(PreviewSource {
     Image => "image",
     EmbeddedImage => "embedded_image",
     GeoJson => "geojson",
+    Gpx => "gpx",
 });
+
+impl From<agrafe_types::map::Format> for PreviewSource {
+    /// The source a map drawn from a file in `format` is recorded as:
+    /// one value per format, so the row says what was drawn.
+    fn from(format: agrafe_types::map::Format) -> Self {
+        use agrafe_types::map::Format;
+        match format {
+            Format::GeoJson => PreviewSource::GeoJson,
+            Format::Gpx => PreviewSource::Gpx,
+        }
+    }
+}
 
 /// A row of `blobs`: one stored, or to-be-stored, file. See [DESIGN.md,
 /// "Blobs"].

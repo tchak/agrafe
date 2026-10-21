@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="hand-written for agrafe"
+     xmlns="http://www.topografix.com/GPX/1/1"
+     xmlns:gpxx="http://www.garmin.com/xmlschemas/GpxExtensions/v3"
+     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+     xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd">
+  <metadata>
+    <name>Une sortie à Lyon</name>
+    <time>2026-05-10T08:00:00Z</time>
+    <bounds minlat="45.75" minlon="4.80" maxlat="45.78" maxlon="4.86"/>
+  </metadata>
+  <wpt lat="45.7623" lon="4.8225">
+    <ele>287</ele>
+    <time>2026-05-10T08:00:00Z</time>
+    <name>Fourvière</name>
+    <sym>Flag, Blue</sym>
+  </wpt>
+  <rte>
+    <name>Itinéraire</name>
+    <rtept lat="45.7578" lon="4.8320"><name>Bellecour</name></rtept>
+    <rtept lat="45.7640" lon="4.8357"><name>Terreaux</name></rtept>
+    <rtept lat="45.7700" lon="4.8290"><name>Croix-Rousse</name></rtept>
+  </rte>
+  <trk>
+    <name>Trace</name>
+    <extensions>
+      <gpxx:TrackExtension>
+        <gpxx:DisplayColor>Red</gpxx:DisplayColor>
+      </gpxx:TrackExtension>
+    </extensions>
+    <trkseg>
+      <trkpt lat="45.7500" lon="4.8000"><ele>170</ele><time>2026-05-10T08:10:00Z</time></trkpt>
+      <trkpt lat="45.7550" lon="4.8100"><ele>172</ele><time>2026-05-10T08:12:00Z</time></trkpt>
+      <trkpt lat="45.7520" lon="4.8200"><ele>175</ele><time>2026-05-10T08:14:00Z</time></trkpt>
+      <trkpt lat="45.7600" lon="4.8300"><ele>180</ele><time>2026-05-10T08:16:00Z</time></trkpt>
+    </trkseg>
+    <trkseg>
+      <trkpt lat="45.7700" lon="4.8400"><ele>190</ele><time>2026-05-10T08:30:00Z</time></trkpt>
+      <trkpt lat="45.7750" lon="4.8500"><ele>195</ele><time>2026-05-10T08:32:00Z</time></trkpt>
+      <trkpt lat="45.7800" lon="4.8600"><ele>200</ele><time>2026-05-10T08:34:00Z</time></trkpt>
+    </trkseg>
+  </trk>
+</gpx>

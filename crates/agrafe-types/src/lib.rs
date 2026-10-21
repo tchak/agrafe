@@ -2,12 +2,14 @@
 //! magic-byte sniffing, the loader allowlist for the renderer, the list of
 //! content types an installation accepts, plus the
 //! contracts between the server and its helpers (the text sample, the
-//! GeoJSON spec). Shared by the server, the renderer and the sandboxed
+//! map spec). Shared by the server, the renderer and the sandboxed
 //! helpers, so it stays pure and small.
 
 pub mod allowlist;
 pub mod classify;
 pub mod geojson;
+pub mod gpx;
+pub mod map;
 pub mod sniff;
 pub mod text;
 

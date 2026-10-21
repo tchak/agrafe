@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Builds the fixture files next to this script, and the renderer probe
 files under crates/agrafe-render/assets/probe. Needs Pillow. The outputs are
-committed; run this only to change them."""
+committed; run this only to change them. The XML map fixtures (`.gpx`) are
+hand-written and edited directly."""
 
 import io
 import json

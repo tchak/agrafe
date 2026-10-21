@@ -1,7 +1,7 @@
 //! The sandboxed helpers: `agrafe-extract` pulls the embedded image out of
 //! a document, `agrafe-render-text` rasterises a text sample,
 //! `agrafe-render-document` compiles a typst workspace into a PDF,
-//! `agrafe-render-geo` draws a GeoJSON file as SVG. Each is a separate
+//! `agrafe-render-geo` draws a GeoJSON or GPX file as SVG. Each is a separate
 //! binary with its own parsers, so none of that code is linked into the
 //! process that calls it. Each declares what it reads and the one
 //! directory it writes, which is what the sandbox confines it to. A
@@ -91,9 +91,9 @@ pub async fn render_document(
     run(config, command, output).await
 }
 
-/// Run `agrafe-render-geo` on `original`, a GeoJSON file, as `spec`
-/// asks, writing the geometry as SVG paths to `svg` and the extent it
-/// chose to `extent` when the file holds any geometry.
+/// Run `agrafe-render-geo` on `original`, a file in the format `spec`
+/// names, as `spec` asks, writing the geometry as SVG paths to `svg` and
+/// the extent it chose to `extent` when the file holds any geometry.
 pub(crate) async fn render_geo(
     config: &Config,
     original: &Path,

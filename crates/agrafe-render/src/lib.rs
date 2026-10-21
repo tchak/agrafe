@@ -18,11 +18,13 @@ use std::path::Path;
 
 use agrafe_types::classify::{self, Category};
 use agrafe_types::geojson::GEOJSON;
+use agrafe_types::gpx::GPX;
+use agrafe_types::map::Format;
 use agrafe_types::sniff;
 use serde::Deserialize;
 
 use agrafe_types::classify::{DOCX, ODS, ODT, XLSX};
-use geo::GeoJson;
+use geo::Map;
 pub use office::Office;
 pub use probe::{
     ProbeError, check_office_host, probe, probe_document, probe_office, probe_sandbox,
@@ -46,8 +48,8 @@ pub struct Config {
     /// `PATH` by default.
     #[serde(default = "default_render_document_command")]
     pub render_document_command: String,
-    /// The helper that draws a GeoJSON file as SVG, found on `PATH` by
-    /// default.
+    /// The helper that draws a GeoJSON or GPX file as SVG, found on
+    /// `PATH` by default.
     #[serde(default = "default_render_geo_command")]
     pub render_geo_command: String,
     /// The thumbnail box and quality, the `[media.thumbnail]` table.
@@ -60,9 +62,10 @@ pub struct Config {
     /// `[media.embedded_image]` table.
     #[serde(default)]
     pub embedded_image: EmbeddedImage,
-    /// How the map of a GeoJSON file is drawn, and what it is drawn over.
+    /// How the map of a GeoJSON or GPX file is drawn, and what it is
+    /// drawn over, the `[media.map]` table.
     #[serde(default)]
-    pub geojson: GeoJson,
+    pub map: Map,
     /// The optional LibreOffice that converts office files for their
     /// first-page thumbnail, the `[media.office]` table.
     #[serde(default)]
@@ -100,7 +103,7 @@ impl Default for Config {
             thumbnail: Thumbnail::default(),
             preview: Preview::default(),
             embedded_image: EmbeddedImage::default(),
-            geojson: GeoJson::default(),
+            map: Map::default(),
             office: Office::default(),
             sandbox: agrafe_sandbox::Config::default(),
         }
@@ -281,8 +284,9 @@ pub enum Source {
     /// A document that wraps one image with next to no text: pull the image
     /// out at full resolution.
     EmbeddedImage,
-    /// A GeoJSON file: its geometry drawn over a map background.
-    GeoJson,
+    /// A map file in this format: its geometry drawn over a map
+    /// background.
+    Map(Format),
 }
 
 /// Where a thumbnail comes from when the file has no picture: a hint of
@@ -324,14 +328,18 @@ impl Plan {
 /// that wraps one picture is rendered from it; otherwise a PDF gets its
 /// first page as a thumbnail, and a DOCX, ODT, XLSX or ODS its first page
 /// through LibreOffice when one is configured, else the icon. A GeoJSON
-/// file gets a map, and the text sample of the text file it is when it
-/// holds no geometry. The `text` category, plus CSV and TSV, which
-/// classify as spreadsheets, get a text sample as a thumbnail.
+/// or GPX file gets a map, and the text sample of the text file it is
+/// when it holds no geometry. The `text` category, plus CSV and TSV,
+/// which classify as spreadsheets, get a text sample as a thumbnail.
 pub fn plan(content_type: &str) -> Plan {
     let canonical = sniff::canonical(content_type);
     match canonical {
         GEOJSON => Plan {
-            picture: &[Source::GeoJson],
+            picture: &[Source::Map(Format::GeoJson)],
+            fallback: Some(Fallback::TextSample),
+        },
+        GPX => Plan {
+            picture: &[Source::Map(Format::Gpx)],
             fallback: Some(Fallback::TextSample),
         },
         "image/jpeg" | "image/png" | "image/gif" | "image/webp" | "image/tiff" | "image/heif"
@@ -399,7 +407,14 @@ mod tests {
         assert_eq!(
             plan(GEOJSON),
             Plan {
-                picture: &[Source::GeoJson],
+                picture: &[Source::Map(Format::GeoJson)],
+                fallback: Some(Fallback::TextSample),
+            }
+        );
+        assert_eq!(
+            plan(GPX),
+            Plan {
+                picture: &[Source::Map(Format::Gpx)],
                 fallback: Some(Fallback::TextSample),
             }
         );

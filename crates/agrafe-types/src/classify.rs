@@ -22,7 +22,8 @@ pub enum Category {
     Audio,
     /// Any `video/*` type.
     Video,
-    /// Any `text/*` type except CSV and TSV, plus JSON, XML and GeoJSON.
+    /// Any `text/*` type except CSV and TSV, plus JSON, XML, GeoJSON and
+    /// GPX.
     Text,
     /// Everything else, `application/octet-stream` included.
     Other,
@@ -83,7 +84,7 @@ pub fn classify(content_type: &str) -> Category {
         | "application/x-bzip2"
         | "application/zstd" => Some(Category::Archive),
 
-        "application/json" | crate::geojson::GEOJSON => Some(Category::Text),
+        "application/json" | crate::geojson::GEOJSON | crate::gpx::GPX => Some(Category::Text),
 
         _ => None,
     };
@@ -114,6 +115,7 @@ mod tests {
         assert_eq!(classify("text/plain"), Category::Text);
         assert_eq!(classify("application/json"), Category::Text);
         assert_eq!(classify(crate::geojson::GEOJSON), Category::Text);
+        assert_eq!(classify(crate::gpx::GPX), Category::Text);
         assert_eq!(classify("video/mp4"), Category::Video);
         assert_eq!(classify("application/octet-stream"), Category::Other);
     }

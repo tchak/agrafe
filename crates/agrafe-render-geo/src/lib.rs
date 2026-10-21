@@ -1,18 +1,26 @@
-//! Maps for GeoJSON files: the geometry projected to Web Mercator, fitted
-//! into a pixel box with some margin, simplified to the pixel, and drawn as
-//! SVG paths in the simplestyle-spec colours of the file or the default.
-//! The file is untrusted, so this runs in the `agrafe-render-geo` helper,
-//! in the sandbox; the server never parses a GeoJSON. The helper writes the
-//! SVG and the extent it chose; the server fetches the background for that
-//! extent and `vips` composites the two.
+//! Maps for GeoJSON and GPX files: the geometry projected to Web
+//! Mercator, fitted into a pixel box with some margin, simplified to the
+//! pixel, and drawn as SVG paths in the simplestyle-spec colours of the
+//! file or the default. The file is untrusted, so this runs in the
+//! `agrafe-render-geo` helper, in the sandbox; the server never parses a
+//! map file. The helper writes the SVG and the extent it chose; the
+//! server fetches the background for that extent and `vips` composites
+//! the two.
+//!
+//! Each format has a reader that yields geometry, in memory as
+//! `geojson::Geometry` values, with a style and a coordinate system; the
+//! projection, the extent, the simplification and the SVG are shared.
+//! The server names the format in the spec; nothing is sniffed here.
 //!
 //! The contract with the server, [`Spec`] in and [`Extent`] out, lives in
-//! `agrafe_types::geojson`, along with the style vocabulary.
+//! `agrafe_types::map`, along with the style vocabulary.
+
+mod gpx;
 
 use std::fmt::Write as _;
 
-use agrafe_types::geojson::{
-    Color, DEFAULT_COLOR, Extent, MAX_STROKE_WIDTH, MarkerSize, Spec, Style,
+use agrafe_types::map::{
+    Color, DEFAULT_COLOR, Extent, Format, MAX_STROKE_WIDTH, MarkerSize, Spec, Style,
 };
 use geojson::{GeoJson, Geometry, GeometryValue, JsonObject, Position};
 
@@ -190,12 +198,30 @@ enum Shape {
     Polygon(Vec<Vec<P>>),
 }
 
-/// Draw `bytes` as `spec` asks. `None` when the file is not a GeoJSON
-/// document, holds no geometry, or has a coordinate that is not on Earth
-/// in degrees: then there is nothing to draw and the file gets whatever a
-/// text file gets. Nothing about the file is an error: a file that
-/// cannot be drawn today would not be drawn tomorrow either.
+/// Draw `bytes`, in the format `spec` names, as `spec` asks. `None` when
+/// the file is not a document of that format, holds no geometry, or has
+/// a coordinate that is not on Earth in its system: then there is
+/// nothing to draw and the file gets whatever a text file gets. Nothing
+/// about the file is an error: a file that cannot be drawn today would
+/// not be drawn tomorrow either.
 pub fn render(bytes: &[u8], spec: &Spec) -> Option<Rendered> {
+    let shapes = match spec.format {
+        Format::GeoJson => geojson_shapes(bytes, spec),
+        Format::Gpx => gpx_shapes(bytes, spec),
+    }?;
+    if shapes.is_empty() {
+        return None;
+    }
+    let extent = extent_of(shapes.iter().map(|(shape, _)| shape), spec);
+    let svg = draw(&shapes, &extent, spec);
+    Some(Rendered { svg, extent })
+}
+
+/// The shapes of the GeoJSON document `bytes`, each in its feature's
+/// style over the default, in the system its `crs` declares. `None`
+/// when the document does not parse, declares a system that is not
+/// handled, or has a coordinate off Earth in its system.
+fn geojson_shapes(bytes: &[u8], spec: &Spec) -> Option<Vec<(Shape, Style)>> {
     let geojson = serde_json::from_slice::<GeoJson>(bytes).ok()?;
     let crs = Crs::of(match &geojson {
         GeoJson::Geometry(geometry) => geometry.foreign_members.as_ref(),
@@ -226,12 +252,24 @@ pub fn render(bytes: &[u8], spec: &Spec) -> Option<Rendered> {
             })
         }
     };
-    if projected.is_err() || shapes.is_empty() {
-        return None;
+    projected.ok().map(|()| shapes)
+}
+
+/// The shapes of the GPX document `bytes`, all in the default style,
+/// since the schema has none, and in degrees, since the specification
+/// allows nothing else. `None` when the document is not GPX, holds no
+/// point, or has a coordinate off Earth.
+fn gpx_shapes(bytes: &[u8], spec: &Spec) -> Option<Vec<(Shape, Style)>> {
+    let geometries = gpx::geometries(bytes)?;
+    let mut out = Vec::new();
+    for geometry in &geometries {
+        project_geometry(geometry, &Crs::Degrees, &mut out).ok()?;
     }
-    let extent = extent_of(shapes.iter().map(|(shape, _)| shape), spec);
-    let svg = draw(&shapes, &extent, spec);
-    Some(Rendered { svg, extent })
+    Some(
+        out.into_iter()
+            .map(|shape| (shape, spec.style.clone()))
+            .collect(),
+    )
 }
 
 /// The style a feature's properties ask for. A value of the wrong type or
@@ -640,7 +678,7 @@ fn escape(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agrafe_types::geojson::LayerRule;
+    use agrafe_types::map::LayerRule;
 
     fn fixture(name: &str) -> Vec<u8> {
         let path = format!("{}/../../fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
@@ -649,6 +687,7 @@ mod tests {
 
     fn spec() -> Spec {
         Spec {
+            format: Format::GeoJson,
             width: 400,
             height: 300,
             padding: 0.1,
@@ -1031,6 +1070,72 @@ mod tests {
         );
         let map = rendered("multiline.geojson", &one_shape);
         assert_eq!(map.svg.matches("<path").count(), 2, "{}", map.svg);
+    }
+
+    #[test]
+    fn a_gpx_file_is_drawn_in_the_default_style() {
+        let spec = Spec {
+            format: Format::Gpx,
+            ..spec()
+        };
+        let map = render(&fixture("track.gpx"), &spec).expect("rendered");
+        // The waypoint; the route and the two segments, a casing and a
+        // stroke each, none filled.
+        assert_eq!(map.svg.matches("<circle").count(), 1, "{}", map.svg);
+        let paths: Vec<&str> = map.svg.lines().filter(|l| l.starts_with("<path")).collect();
+        assert_eq!(paths.len(), 6, "{}", map.svg);
+        assert!(paths.iter().all(|p| p.contains(r##"fill="none""##)));
+        assert!(!map.svg.contains('Z'));
+        assert!(
+            map.svg
+                .contains(r##"r="8" fill="#ffd400" stroke="#8c7400""##)
+        );
+        assert!(map.svg.contains(r##"stroke="#ffd400" stroke-width="4""##));
+        // Nothing the file names reaches the SVG.
+        assert!(!map.svg.contains("Fourvière"));
+        assert!(!map.svg.contains("Red"));
+        // Lyon, a few kilometres across.
+        let (cx, cy) = (
+            (map.extent.minx + map.extent.maxx) / 2.0,
+            (map.extent.miny + map.extent.maxy) / 2.0,
+        );
+        let lyon = project(&Position::from([4.8357, 45.764]), &Crs::Degrees).unwrap();
+        assert!(
+            (cx - lyon.x).abs() < 5000.0 && (cy - lyon.y).abs() < 5000.0,
+            "{cx} {cy}"
+        );
+        assert!(
+            (3000.0..20_000.0).contains(&map.extent.span()),
+            "{}",
+            map.extent.span()
+        );
+        assert_eq!(map.extent.layers, vec![0, 1]);
+    }
+
+    #[test]
+    fn a_gpx_file_declines_like_a_geojson_one() {
+        let spec = Spec {
+            format: Format::Gpx,
+            ..spec()
+        };
+        assert_eq!(render(&fixture("empty.gpx"), &spec), None);
+        // A GPX file handed over as GeoJSON, or the reverse, is not a
+        // document of that format.
+        assert_eq!(render(&fixture("track.gpx"), &self::spec()), None);
+        assert_eq!(render(&fixture("point.geojson"), &spec), None);
+        // Off the globe declines; the GPX schema has no `crs` to honour.
+        assert_eq!(
+            render(br#"<gpx><wpt lat="95" lon="200"/></gpx>"#, &spec),
+            None
+        );
+        assert_eq!(
+            render(br#"<gpx><wpt lat="6862035" lon="652469"/></gpx>"#, &spec),
+            None
+        );
+        let one =
+            render(br#"<gpx><wpt lat="48.8566" lon="2.3522"/></gpx>"#, &spec).expect("rendered");
+        let point = rendered("point.geojson", &self::spec());
+        assert_eq!(one.extent, point.extent);
     }
 
     #[test]

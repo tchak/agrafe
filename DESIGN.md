@@ -64,12 +64,12 @@ into a server process. Dependencies point downwards only.
 | Crate | Contents | Depends on |
 |---|---|---|
 | `agrafe-crypto` | Streaming AEAD and key wrapping, reviewed in isolation | |
-| `agrafe-types` | Content type constants, `classify`, `sniff`, the vips loader allowlist, the text-sample contract, the GeoJSON contract (the style vocabulary, the spec and the extent the server and the helper exchange), `str_enum!` | `infer`, `serde` |
+| `agrafe-types` | Content type constants, `classify`, `sniff`, the vips loader allowlist, the text-sample contract, the map contract (the input formats, the style vocabulary, the spec and the extent the server and the helper exchange), `str_enum!` | `infer`, `serde` |
 | `agrafe-sandbox` | Running a subprocess with `setrlimit` bounds and a timeout, confined by Landlock and seccomp on Linux; the `Command` builder that declares what it reads and writes; the `[media.sandbox]` config and the startup probe | `tokio`, `libc`, `landlock`, `seccompiler` |
 | `agrafe-extract` | The `agrafe-extract` helper: pulls the one image out of a PDF, DOCX or ODT. Library plus binary | `agrafe-types`, `lopdf`, `zip`, `quick-xml` |
 | `agrafe-render-text` | The `agrafe-render-text` helper: rasterises a text sample. Library plus binary | `agrafe-types`, `ab_glyph` |
 | `agrafe-render-document` | The `agrafe-render-document` helper: compiles a typst workspace into a PDF. Library plus binary | `typst`, `typst-pdf`, `typst-assets` |
-| `agrafe-render-geo` | The `agrafe-render-geo` helper: projects, fits, simplifies and draws a GeoJSON file as SVG paths, with the extent it chose. Library plus binary | `agrafe-types`, `geojson`, `serde_json` |
+| `agrafe-render-geo` | The `agrafe-render-geo` helper: reads a GeoJSON or GPX file, projects, fits, simplifies and draws it as SVG paths, with the extent it chose. Library plus binary | `agrafe-types`, `geojson`, `quick-xml`, `serde_json` |
 | `agrafe-render` | Which files render and from what, `vips thumbnail` and `vips composite`, the icons, the drivers that spawn the helpers, the fetcher of map backgrounds, the startup probe, the `[media]` tool config | `agrafe-types`, `agrafe-sandbox`, `reqwest` |
 | `agrafe` | The library: config, database, blobs, upload pipeline, the fetch client, the webhook, encryption, signing, storage, ClamAV, jobs, metrics, URL minting, and the `Agrafe` handle whose methods are the private API | `agrafe-crypto`, `agrafe-types`, `agrafe-render`, `sqlx`, `object_store`, `reqwest` |
 | `agrafe-axum` | The two HTTP interfaces as axum routers, the extractors, `ApiError` and the mapping of the library's errors onto status codes | `agrafe`, `axum` |
@@ -79,7 +79,9 @@ into a server process. Dependencies point downwards only.
 The helpers are separate binaries, not subcommands of the server, so that
 the server links none of their parsers: `lopdf`, `zip`, `quick-xml`,
 `ab_glyph`, `typst` and `geojson` exist only in processes the sandbox
-bounds. They are found on `PATH` by default (`media.extract_command`,
+bounds. A new map format is a reader in `agrafe-render-geo`, not a
+helper of its own: one helper, one sandbox profile, one binary, and the
+projection, extent and drawing shared. They are found on `PATH` by default (`media.extract_command`,
 `media.render_text_command`, `media.render_document_command`,
 `media.render_geo_command`), read no configuration, write no logs and
 never touch the network. A deployment ships the five binaries together. A
@@ -89,7 +91,7 @@ one, that vips then fits into the box; a `Source` or `Fallback` variant,
 a row in the plan table (`agrafe_render::plan`) and a driver in
 `agrafe_render::helpers` are where it plugs in. What a helper and the
 server exchange beyond a file name, the text sample's length or the
-GeoJSON spec and extent, is a type in `agrafe-types`, so the two sides
+map spec and extent, is a type in `agrafe-types`, so the two sides
 agree by construction.
 
 The library knows nothing of HTTP. Its operations are methods on the
@@ -788,13 +790,17 @@ JSON has no magic, but a JSON document that opens on a `Feature` or a
 `FeatureCollection` in its first KiB is a GeoJSON one, and the sniffer says
 so. Declared as `application/json`, `text/json` or `text/plain`, which is
 how a `.geojson` tends to arrive, the blob's `content_type` becomes
-`application/geo+json` as the upload completes (`sniff::refine`): the
-only case where the bytes change the declaration, in the direction of
-precision only, and the category, `text`, is the same either way. The
-row and the `Content-Type` the original is served with carry the refined
-type. A refinement `upload.content_types` does not admit is not made:
-the blob keeps its declaration, which is in the list, so a list never
-ends up with a type outside it on a row. Categories:
+`application/geo+json` as the upload completes (`sniff::refine`). The XML
+analogue: an XML document whose root element, past the declaration,
+comments and a doctype, is `<gpx>` within the first KiB is a GPX one,
+`application/gpx+xml`, and a declaration of `application/xml`, `text/xml`
+or `text/plain` is refined to it. These are the only cases where the
+bytes change the declaration, in the direction of precision only, and
+the category, `text`, is the same either way. The row and the
+`Content-Type` the original is served with carry the refined type. A
+refinement `upload.content_types` does not admit is not made: the blob
+keeps its declaration, which is in the list, so a list never ends up
+with a type outside it on a row. Categories:
 
 `image`, `document`, `spreadsheet`, `presentation`, `archive`, `audio`,
 `video`, `text`, `other`.
@@ -1708,8 +1714,8 @@ Only files with a known source are attempted:
   XLSX or ODS when `media.office.command` names a LibreOffice to convert
   it (see "Thumbnail");
 - text files (the `text` category plus CSV and TSV), thumbnails only;
-- GeoJSON files, as a map (see "Preview"), with the text thumbnail when
-  they hold no geometry;
+- GeoJSON and GPX files, as a map (see "Preview"), with the text
+  thumbnail when they hold no geometry;
 - originals at most `media.max_source_size` (default 64 MiB), except for
   the text thumbnail, which reads the first 8 KiB whatever the size. The
   default is low on purpose: the pictures and scans people want to see
@@ -1952,14 +1958,17 @@ on "has preview", never on category. Sources, in order:
    containing a screenshot. The parsing runs in the `agrafe-extract`
    helper, its own binary executed in the sandbox, never in a server
    process.
-3. **Map** (`preview_source = geojson`): a GeoJSON file's geometry drawn
-   over a map background, the way a form's map field prints in a PDF
-   export. Three steps, two of them in the sandbox. The
-   `agrafe-render-geo` helper reads the file and writes `paths.svg`, the
-   geometry as SVG paths in the pixel box, and `extent.json`, the
-   bounding box it chose in EPSG:3857 metres with the pixel size and the
-   layers that apply to it; the `geojson` parser lives only there. The
-   worker checks the extent against the spec it wrote (the pixel box it
+3. **Map** (`preview_source = geojson` or `gpx`, one value per format,
+   so the row says what was drawn): a GeoJSON or GPX file's geometry
+   drawn over a map background, the way a form's map field prints in a
+   PDF export. Three steps, two of them in the sandbox. The
+   `agrafe-render-geo` helper reads the file, in the format the spec
+   names, since the server knows the content type and the helper does
+   not sniff, and writes `paths.svg`, the geometry as SVG paths in the
+   pixel box, and `extent.json`, the bounding box it chose in EPSG:3857
+   metres with the pixel size and the layers that apply to it; the
+   `geojson` and `quick-xml` parsers live only there. The worker checks
+   the extent against the spec it wrote (the pixel box it
    asked for, layer indices that exist, in order, a box that is a box)
    before acting on it, since the helper is the untrusted side and a
    compromised one must not choose what the worker fetches or indexes:
@@ -1980,6 +1989,26 @@ on "has preview", never on category. Sources, in order:
    One render costs one helper run, one request and one vips run per
    applicable layer, and two vips runs.
 
+   Inside the helper, the seam between the formats is the list of
+   projected shapes, each with its style, that the drawing works from:
+   each format has a reader that yields geometry, as `geojson::Geometry`
+   values built in memory, a style and a coordinate system, and the
+   projection, the extent, the simplification and the SVG are shared.
+   Nothing serialises to GeoJSON bytes and parses them back. The GPX
+   reader is a hundred lines over `quick-xml` events: a `<wpt>` is a
+   point, a `<rte>` is a line of its `<rtept>`, each `<trkseg>` of a
+   `<trk>` is a line of its `<trkpt>`, a segment of fewer than two
+   points is dropped like an empty line, the `lat` and `lon` attributes
+   are always WGS 84 by the specification, and every element the reader
+   does not know, extensions included, is skipped, so future elements
+   cost nothing. GPX has no style vocabulary: Garmin's and OsmAnd's
+   colour extensions are ignored like `marker-symbol`, and the file is
+   drawn in the configured default. A document that is not GPX, or
+   holds no point with coordinates, declines; one cut short is drawn as
+   far as it goes. The georust `gpx` crate was weighed and passed over:
+   the glue to it is about the size of the subset needed, and it brings
+   `xml-rs` where the helper already has `quick-xml`.
+
    The helper projects every coordinate to Web Mercator, clamping the
    latitude to the projection's edge. RFC 7946 allows only longitude and
    latitude in degrees and has no way to declare another system, but the
@@ -1998,7 +2027,7 @@ on "has preview", never on category. Sources, in order:
    is guessed from the ranges of the numbers, which would be right for
    France and silently wrong elsewhere. A decline, not a rejection: the
    file gets the text thumbnail and no preview, never `failed`. The extent is the
-   geometry's bounding box padded by `media.geojson.padding` of its larger
+   geometry's bounding box padded by `media.map.padding` of its larger
    side, grown to at least `min_span` metres so a single point or a tiny
    parcel still gets a readable map, then widened to the aspect ratio of
    the box: the image is the whole box, never letterboxed. The map is
@@ -2021,7 +2050,7 @@ on "has preview", never on category. Sources, in order:
    GeometryCollections recurse. Anything else, or nothing with
    coordinates, is a decline, and the thumbnail is the text sample.
 
-   A feature's style is the configured default, `[media.geojson.style]`,
+   A GeoJSON feature's style is the configured default, `[media.map.style]`,
    overlaid with its own simplestyle-spec properties: the convention most
    exports write, so a client that wants some features drawn green sets
    `stroke` on them at export time, and there is no second mechanism in
@@ -2038,7 +2067,7 @@ on "has preview", never on category. Sources, in order:
    spec the server writes for the helper and a feature's properties, with
    a merge of the two.
 
-   The background is a list of layers, `[[media.geojson.layers]]`, each a
+   The background is a list of layers, `[[media.map.layers]]`, each a
    `GetMap` URL template with `{bbox}`, `{width}` and `{height}` to fill
    in, composited bottom to top, and drawn only on an extent between its
    `min_span` and `max_span`: a boundaries-and-names layer that carries no
@@ -2054,7 +2083,7 @@ on "has preview", never on category. Sources, in order:
 
    Fetching: one request per applicable layer, each under
    `fetch_timeout` and `max_layer_size`, at most four in flight per
-   process, since a `variant_version` bump re-renders every GeoJSON blob
+   process, since a `variant_version` bump re-renders every map blob
    and must not be a burst against the provider. The response is an image
    only if its `Content-Type` says so and the loader sniff agrees: the
    Géoplateforme answers an XML `ServiceException` with a `200`. A
@@ -2078,7 +2107,7 @@ on "has preview", never on category. Sources, in order:
    of gigabytes and vector tiles need a style-aware renderer that does not
    exist in Rust and would have to be written inside a sandboxed helper.
    Out of scope for now: XYZ and WMTS layers, caching backgrounds between
-   renders, KML, GPX and Shapefile.
+   renders, KML and Shapefile, which are readers to come in this helper.
 A document that is not one of these has no preview, whether PDF or office:
 the first page of a PDF is its thumbnail (see "Thumbnail"), not a preview.
 
@@ -2921,6 +2950,6 @@ two agrafe installations in two schemas of one database never contend.
 | Generated ZIP, XLSX, ODS | Own streaming ZIP writer (`jobs::build::zip`), `flate2` for the deflated sheet XML, XML written by hand |
 | Text thumbnails | `ab_glyph` with an embedded DejaVu Sans Mono, in the sandboxed `agrafe-render-text` helper |
 | Generated PDF documents | `typst` and `typst-pdf` with the embedded fonts of `typst-assets`, in the sandboxed `agrafe-render-document` helper |
-| GeoJSON maps | `geojson` and `serde_json` in the sandboxed `agrafe-render-geo` helper, the WMS of `[media.geojson.layers]` through `reqwest`, `vips composite` with rsvg in the sandbox |
+| Maps | `geojson`, `quick-xml` and `serde_json` in the sandboxed `agrafe-render-geo` helper, the WMS of `[media.map.layers]` through `reqwest`, `vips composite` with rsvg in the sandbox |
 | Ids | UUID v7 |
 | Time | `jiff`. `Timestamp` throughout the model; `jiff-sqlx` wrappers only at the SQL boundary |

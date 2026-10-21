@@ -9,6 +9,7 @@
 //! bytes are something vips may be handed at all, and with which loader.
 
 use crate::geojson::{self, GEOJSON};
+use crate::gpx::{self, GPX};
 
 /// Bytes needed before a verdict. PDF allows its magic anywhere in the first
 /// 1 KiB; ZIP-based office formats need a few local file headers.
@@ -22,29 +23,38 @@ const OLE: &str = "application/x-ole-storage";
 /// no magic, but a JSON document that opens on a Feature or a
 /// FeatureCollection is a GeoJSON one, and is sniffed as such so that a
 /// `.geojson` declared as JSON or text can be refined (see [`refine`]).
+/// XML has a text sniffer that fires on the declaration; an XML document
+/// whose root element is `<gpx>` is a GPX one, for the same reason.
 ///
 /// An OLE compound file sniffs as the generic storage: without its `std`
 /// feature, which would parse the file's directory in-process, `infer`
 /// calls every one of them a Word document, an Excel workbook, an Outlook
 /// message and a Visio drawing alike.
 pub fn sniff(head: &[u8]) -> Option<&'static str> {
-    if let Some(kind) = infer::get(head) {
-        return Some(match kind.mime_type() {
-            "application/msword" => OLE,
-            other => other,
-        });
+    let inferred = infer::get(head).map(|kind| kind.mime_type());
+    match inferred {
+        Some("application/msword") => return Some(OLE),
+        Some("text/xml") | None => {}
+        Some(other) => return Some(other),
     }
-    geojson::looks_like_geojson(head).then_some(GEOJSON)
+    if geojson::looks_like_geojson(head) {
+        return Some(GEOJSON);
+    }
+    if gpx::looks_like_gpx(head) {
+        return Some(GPX);
+    }
+    inferred
 }
 
 /// The content type a blob declared as `declared` gets once its bytes
 /// sniffed as `sniffed`: the sniffed type when it is more precise than a
 /// declaration that covers it, as a GeoJSON file declared as JSON or plain
-/// text; `None` to keep the declaration. The category is the same either
-/// way.
+/// text or a GPX file declared as XML or plain text; `None` to keep the
+/// declaration. The category is the same either way.
 pub fn refine(declared: &str, sniffed: &str) -> Option<&'static str> {
     match (canonical(declared), sniffed) {
         ("application/json" | "text/json" | "text/plain", GEOJSON) => Some(GEOJSON),
+        ("text/xml" | "text/plain", GPX) => Some(GPX),
         _ => None,
     }
 }
@@ -66,6 +76,10 @@ pub fn compatible(declared: &str, sniffed: &str) -> bool {
     // A GeoJSON file is JSON, and text.
     if s == GEOJSON {
         return matches!(d, "application/json" | "text/json") || d.starts_with("text/");
+    }
+    // A GPX file is XML, which the container rule covers, and text.
+    if s == GPX {
+        return d.starts_with("text/");
     }
     // Text sniffers (HTML, shell scripts, XML) are heuristics; any text
     // declaration covers them.
@@ -290,6 +304,13 @@ mod tests {
             sniff(br#"{"type": "FeatureCollection", "features": []}"#),
             Some(GEOJSON)
         );
+        assert_eq!(
+            sniff(b"<?xml version=\"1.0\"?>\n<gpx version=\"1.1\">"),
+            Some(GPX)
+        );
+        assert_eq!(sniff(b"<gpx version=\"1.1\">"), Some(GPX));
+        assert_eq!(sniff(b"<?xml version=\"1.0\"?>\n<kml>"), Some("text/xml"));
+        assert_eq!(sniff(b"<kml>"), None);
     }
 
     #[test]
@@ -307,6 +328,28 @@ mod tests {
         assert!(!compatible("image/png", GEOJSON));
         assert!(!compatible("application/pdf", GEOJSON));
         assert_eq!(refine("application/json", "image/png"), None);
+    }
+
+    #[test]
+    fn refines_xml_declarations_to_gpx() {
+        for declared in ["application/xml", "text/xml", "text/plain"] {
+            assert!(compatible(declared, GPX), "{declared}");
+            assert_eq!(refine(declared, GPX), Some(GPX), "{declared}");
+        }
+        assert!(compatible(GPX, GPX));
+        assert_eq!(refine(GPX, GPX), None);
+        // A declared GPX whose root element sits past the sniffed head.
+        assert!(compatible(GPX, "text/xml"));
+        assert_eq!(refine(GPX, "text/xml"), None);
+        assert!(compatible("text/csv", GPX));
+        assert_eq!(refine("text/csv", GPX), None);
+        assert!(compatible("application/octet-stream", GPX));
+        assert_eq!(refine("application/octet-stream", GPX), None);
+        assert!(!compatible("image/png", GPX));
+        assert!(!compatible("application/json", GPX));
+        assert!(!compatible(GEOJSON, GPX));
+        assert!(!compatible(GPX, GEOJSON));
+        assert_eq!(refine("application/xml", "text/xml"), None);
     }
 
     #[test]

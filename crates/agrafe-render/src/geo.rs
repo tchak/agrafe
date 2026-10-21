@@ -1,6 +1,7 @@
-//! Maps for GeoJSON files. Three steps, two of them in the sandbox: the
-//! `agrafe-render-geo` helper reads the file and writes the geometry as
-//! SVG paths with the extent it chose; this module, trusted code in the
+//! Maps for GeoJSON and GPX files. Three steps, two of them in the
+//! sandbox: the `agrafe-render-geo` helper reads the file, in the format
+//! the spec names, and writes the geometry as SVG paths with the extent
+//! it chose; this module, trusted code in the
 //! worker, fetches one WMS `GetMap` image per background layer that
 //! applies to that extent; `vips composite` stacks the layers and the SVG
 //! into a raster that then goes through `to_webp` like any picture.
@@ -16,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use agrafe_types::geojson::{Color, DEFAULT_COLOR, Extent, LayerRule, Spec, Style};
+use agrafe_types::map::{Color, DEFAULT_COLOR, Extent, Format, LayerRule, Spec, Style};
 use agrafe_types::sniff::{LOADER_SNIFF_LEN, loader_for};
 use bytesize::ByteSize;
 use reqwest::Url;
@@ -44,15 +45,15 @@ const BACKGROUND: Color = Color {
 };
 
 /// Background requests in flight at once, per process: a
-/// `variant_version` bump re-renders every GeoJSON blob and must not be a
+/// `variant_version` bump re-renders every map blob and must not be a
 /// burst against the provider.
 const CONCURRENT_FETCHES: usize = 4;
 
-/// `[media.geojson]`: how the map of a GeoJSON file is drawn and what it
-/// is drawn over.
+/// `[media.map]`: how the map of a GeoJSON or GPX file is drawn and what
+/// it is drawn over.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
-pub struct GeoJson {
+pub struct Map {
     /// Added around the geometry, as a fraction of its larger side.
     pub padding: f64,
     /// The smallest extent drawn, so a single point or a tiny parcel still
@@ -73,14 +74,14 @@ pub struct GeoJson {
     /// A layer response larger than this is a failure, not a bomb to
     /// decode.
     pub max_layer_size: ByteSize,
-    /// The default style, in the simplestyle-spec vocabulary; a feature's
-    /// own properties override it key by key.
+    /// The default style, in the simplestyle-spec vocabulary; a GeoJSON
+    /// feature's own properties override it key by key.
     pub style: Style,
     /// Background layers, composited bottom to top. None by default.
     pub layers: Vec<Layer>,
 }
 
-impl Default for GeoJson {
+impl Default for Map {
     fn default() -> Self {
         let yellow = DEFAULT_COLOR;
         Self {
@@ -98,14 +99,14 @@ impl Default for GeoJson {
                 fill: Some(yellow),
                 fill_opacity: Some(0.35),
                 marker_color: Some(yellow),
-                marker_size: Some(agrafe_types::geojson::MarkerSize::Medium),
+                marker_size: Some(agrafe_types::map::MarkerSize::Medium),
             },
             layers: Vec::new(),
         }
     }
 }
 
-/// One `[[media.geojson.layers]]`: a WMS `GetMap` as a URL template.
+/// One `[[media.map.layers]]`: a WMS `GetMap` as a URL template.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Layer {
     /// With `{bbox}` (`minx,miny,maxx,maxy` in EPSG:3857), `{width}` and
@@ -147,7 +148,7 @@ impl Layer {
     }
 }
 
-impl GeoJson {
+impl Map {
     /// What is wrong with the section, if anything: a layer URL without
     /// its placeholders, or that is not an HTTP URL once they are filled.
     pub fn validate(&self) -> Result<(), String> {
@@ -155,7 +156,7 @@ impl GeoJson {
             for placeholder in ["{bbox}", "{width}", "{height}"] {
                 if !layer.url.contains(placeholder) {
                     return Err(format!(
-                        "media.geojson.layers[{i}].url must contain {placeholder}"
+                        "media.map.layers[{i}].url must contain {placeholder}"
                     ));
                 }
             }
@@ -169,26 +170,27 @@ impl GeoJson {
                 layers: Vec::new(),
             };
             let url = Url::parse(&layer.url_for(&probe))
-                .map_err(|err| format!("media.geojson.layers[{i}].url is not a URL: {err}"))?;
+                .map_err(|err| format!("media.map.layers[{i}].url is not a URL: {err}"))?;
             if !matches!(url.scheme(), "http" | "https") {
                 return Err(format!(
-                    "media.geojson.layers[{i}].url must be an http or https URL"
+                    "media.map.layers[{i}].url must be an http or https URL"
                 ));
             }
         }
         if !self.padding.is_finite() || self.padding < 0.0 {
-            return Err("media.geojson.padding must be zero or more".into());
+            return Err("media.map.padding must be zero or more".into());
         }
         if self.max_size == 0 {
-            return Err("media.geojson.max_size must be at least 1".into());
+            return Err("media.map.max_size must be at least 1".into());
         }
         Ok(())
     }
 
-    /// The spec for the helper, drawing at `fit` or `max_size`, whichever
-    /// is smaller.
-    pub(crate) fn spec(&self, fit: Fit) -> Spec {
+    /// The spec for the helper, reading `format` and drawing at `fit` or
+    /// `max_size`, whichever is smaller.
+    pub(crate) fn spec(&self, format: Format, fit: Fit) -> Spec {
         Spec {
+            format,
             width: fit.width.min(self.max_size),
             height: fit.height.min(self.max_size),
             padding: self.padding,
@@ -255,7 +257,7 @@ pub enum FetchError {
     /// The request failed or timed out before a whole response came.
     #[error("requesting layer {layer} from {host}: {source}")]
     Request {
-        /// The layer's index in `[[media.geojson.layers]]`.
+        /// The layer's index in `[[media.map.layers]]`.
         layer: usize,
         /// The provider's host; the rest of the URL carries the extent.
         host: String,
@@ -265,7 +267,7 @@ pub enum FetchError {
     /// The provider answered with a status other than a success.
     #[error("layer {layer} from {host} answered {status}")]
     Status {
-        /// The layer's index in `[[media.geojson.layers]]`.
+        /// The layer's index in `[[media.map.layers]]`.
         layer: usize,
         /// The provider's host; the rest of the URL carries the extent.
         host: String,
@@ -276,17 +278,17 @@ pub enum FetchError {
     /// `ServiceException` is.
     #[error("layer {layer} from {host} answered `{content_type}`, not an image")]
     NotAnImage {
-        /// The layer's index in `[[media.geojson.layers]]`.
+        /// The layer's index in `[[media.map.layers]]`.
         layer: usize,
         /// The provider's host; the rest of the URL carries the extent.
         host: String,
         /// The `Content-Type` it answered, empty when it sent none.
         content_type: String,
     },
-    /// The response grew past `media.geojson.max_layer_size`.
+    /// The response grew past `media.map.max_layer_size`.
     #[error("layer {layer} from {host} answered more than {max}")]
     TooLarge {
-        /// The layer's index in `[[media.geojson.layers]]`.
+        /// The layer's index in `[[media.map.layers]]`.
         layer: usize,
         /// The provider's host; the rest of the URL carries the extent.
         host: String,
@@ -297,7 +299,7 @@ pub enum FetchError {
     /// whatever the `Content-Type` said.
     #[error("layer {layer} from {host} answered bytes that are not an image the renderer may load")]
     Unloadable {
-        /// The layer's index in `[[media.geojson.layers]]`.
+        /// The layer's index in `[[media.map.layers]]`.
         layer: usize,
         /// The provider's host; the rest of the URL carries the extent.
         host: String,
@@ -306,7 +308,7 @@ pub enum FetchError {
     /// map's size.
     #[error("layer {layer} from {host} answered an image vips could not decode: {why}")]
     Undecodable {
-        /// The layer's index in `[[media.geojson.layers]]`.
+        /// The layer's index in `[[media.map.layers]]`.
         layer: usize,
         /// The provider's host; the rest of the URL carries the extent.
         host: String,
@@ -321,7 +323,7 @@ pub enum FetchError {
 /// The HTTP client background layers are fetched through: a timeout on
 /// the whole request, a few redirects, and at most
 /// `CONCURRENT_FETCHES` requests in flight per process. One per
-/// process, built from `[media.geojson]`.
+/// process, built from `[media.map]`.
 #[derive(Clone)]
 pub struct Client {
     inner: reqwest::Client,
@@ -331,7 +333,7 @@ pub struct Client {
 impl Client {
     /// A client with `fetch_timeout` on the connection and on the whole
     /// request. Fails when reqwest cannot build the client.
-    pub fn from_config(config: &GeoJson) -> Result<Self, reqwest::Error> {
+    pub fn from_config(config: &Map) -> Result<Self, reqwest::Error> {
         let inner = reqwest::Client::builder()
             .user_agent(concat!("agrafe/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(config.fetch_timeout)
@@ -351,7 +353,7 @@ impl Client {
     /// a `200`.
     async fn fetch(
         &self,
-        config: &GeoJson,
+        config: &Map,
         index: usize,
         extent: &Extent,
         path: &Path,
@@ -461,8 +463,8 @@ fn check_extent(extent: &Extent, spec: &Spec) -> Result<(), String> {
     Ok(())
 }
 
-/// Render the map of the GeoJSON at `original` into `MAP` under
-/// `workdir`, at `fit` or `media.geojson.max_size`, whichever is smaller:
+/// Render the map of the `format` file at `original` into `MAP` under
+/// `workdir`, at `fit` or `media.map.max_size`, whichever is smaller:
 /// the helper, the fetch, each layer fitted to the box, the composite.
 /// `Declined` when the file holds no geometry, `Rejected` when the helper
 /// or vips fail on it, an error when a layer cannot be fetched or
@@ -470,12 +472,13 @@ fn check_extent(extent: &Extent, spec: &Spec) -> Result<(), String> {
 pub async fn render_map(
     config: &Config,
     client: &Client,
+    format: Format,
     original: &Path,
     workdir: &Path,
     fit: Fit,
 ) -> Result<Verdict<PathBuf>, Error> {
-    let geojson = &config.geojson;
-    let spec = geojson.spec(fit);
+    let map = &config.map;
+    let spec = map.spec(format, fit);
     let spec_path = workdir.join(SPEC);
     tokio::fs::write(
         &spec_path,
@@ -509,7 +512,7 @@ pub async fn render_map(
     let fetches = extent.layers.iter().map(|&index| {
         let path = workdir.join(layer_file(index));
         let extent = &extent;
-        async move { client.fetch(geojson, index, extent, &path).await }
+        async move { client.fetch(map, index, extent, &path).await }
     });
     futures::future::try_join_all(fetches).await?;
     // Each layer decoded at the box's size, one at a time: a layer that
@@ -528,7 +531,7 @@ pub async fn render_map(
         if let Verdict::Rejected(rejection) = fitted {
             return Err(Error::Fetch(FetchError::Undecodable {
                 layer: index,
-                host: host_of(&geojson.layers[index].url_for(&extent)),
+                host: host_of(&map.layers[index].url_for(&extent)),
                 why: rejection.to_string(),
             }));
         }
@@ -580,7 +583,7 @@ mod tests {
 
     #[test]
     fn validates_layer_urls() {
-        let mut config = GeoJson::default();
+        let mut config = Map::default();
         assert_eq!(config.validate(), Ok(()));
         let layer = |url: &str| Layer {
             url: url.to_string(),
@@ -595,19 +598,19 @@ mod tests {
         config.layers = vec![layer("https://wms.example/?BBOX={bbox}&WIDTH={width}")];
         assert_eq!(
             config.validate().unwrap_err(),
-            "media.geojson.layers[0].url must contain {height}"
+            "media.map.layers[0].url must contain {height}"
         );
         config.layers = vec![layer("wms.example/?{bbox}{width}{height}")];
         assert!(
             config
                 .validate()
                 .unwrap_err()
-                .starts_with("media.geojson.layers[0].url is not a URL")
+                .starts_with("media.map.layers[0].url is not a URL")
         );
         config.layers = vec![layer("ftp://wms.example/?{bbox}{width}{height}")];
         assert_eq!(
             config.validate().unwrap_err(),
-            "media.geojson.layers[0].url must be an http or https URL"
+            "media.map.layers[0].url must be an http or https URL"
         );
         config.layers.clear();
         config.padding = -0.1;
@@ -640,7 +643,7 @@ mod tests {
 
     #[test]
     fn checks_the_extent_against_the_spec() {
-        let config = GeoJson {
+        let config = Map {
             layers: vec![
                 Layer {
                     url: "https://wms.example/?{bbox}{width}{height}".into(),
@@ -650,13 +653,16 @@ mod tests {
                 };
                 2
             ],
-            ..GeoJson::default()
+            ..Map::default()
         };
-        let spec = config.spec(Fit {
-            width: 400,
-            height: 300,
-            quality: 80,
-        });
+        let spec = config.spec(
+            Format::GeoJson,
+            Fit {
+                width: 400,
+                height: 300,
+                quality: 80,
+            },
+        );
         let good = Extent {
             minx: 0.0,
             miny: 0.0,
@@ -709,16 +715,17 @@ mod tests {
 
     #[test]
     fn the_spec_follows_the_box_and_the_cap() {
-        let config = GeoJson {
+        let config = Map {
             max_size: 1024,
-            ..GeoJson::default()
+            ..Map::default()
         };
         let fit = Fit {
             width: 2048,
             height: 2048,
             quality: 85,
         };
-        let spec = config.spec(fit);
+        let spec = config.spec(Format::Gpx, fit);
+        assert_eq!(spec.format, Format::Gpx);
         assert_eq!((spec.width, spec.height), (1024, 1024));
         assert_eq!(spec.style, config.style);
         assert!(spec.layers.is_empty());
@@ -727,7 +734,7 @@ mod tests {
             height: 128,
             quality: 80,
         };
-        let spec = config.spec(small);
+        let spec = config.spec(Format::GeoJson, small);
         assert_eq!((spec.width, spec.height), (256, 128));
     }
 }
