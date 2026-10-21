@@ -3221,7 +3221,10 @@ conventional commits and still list every test and refactor.
 A release is a tag. `scripts/release.sh <version>` bumps the version,
 dates the section, commits `Release <version>` on `main`, tags it
 `v<version>` and pushes both with jj; nothing else writes to `main` or
-creates tags. The tag runs `.github/workflows/release.yml`, in the order
+creates tags. Versions are ordered as semver orders them, a pre-release
+before its release, which `sort -V` does not do. A pre-release takes no
+changelog section: its notes are `Unreleased`, which the release after it
+takes whole, so the release's entry says everything since the last one. The tag runs `.github/workflows/release.yml`, in the order
 that keeps an irreversible step last but one:
 
 1. the tag against the workspace version and the changelog section;

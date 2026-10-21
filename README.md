@@ -782,6 +782,11 @@ arm64), the crates on crates.io, and the GitHub release with the
 changelog section as its notes. A run that fails partway is re-run as it
 is; it skips the crates already published.
 
+A pre-release, `scripts/release.sh 0.2.0-rc.1`, is released the same way,
+crates included, but leaves the changelog alone: its notes are what
+`Unreleased` says, and the section goes to the release that follows it.
+Its images get their own tags alone, never `0.2` or `latest`.
+
 crates.io's trusted publishing authenticates the workflow, with no
 stored token, but only for crates that exist. The first release creates
 them with a `CARGO_REGISTRY_TOKEN` repository secret, a token scoped to

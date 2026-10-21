@@ -37,14 +37,17 @@ jobs:
             echo "::error::the tag is $GITHUB_REF_NAME, the workspace's version $manifest"
             exit 1
           fi
-          # The version's section, up to the next heading or the links.
-          awk -v heading="## [$version]" '
+          # The version's section, up to the next heading or the links; a
+          # pre-release has none, and its notes are what Unreleased says.
+          section=$version
+          [[ $version == *-* ]] && section=Unreleased
+          awk -v heading="## [$section]" '
             index($0, heading) == 1 { on = 1; next }
             /^## \[/ || /^\[[^]]*\]: / { on = 0 }
             on
           ' CHANGELOG.md > notes.md
           if ! grep -q '[^[:space:]]' notes.md; then
-            echo "::error::CHANGELOG.md has no section for $version"
+            echo "::error::CHANGELOG.md has nothing under $section"
             exit 1
           fi
           cat >> notes.md <<EOF
