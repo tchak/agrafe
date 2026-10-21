@@ -136,6 +136,18 @@ fn a_missing_config_file_or_a_bad_flag_is_refused() {
     assert_eq!(out.status.code(), Some(2), "{}", text(&out.stderr));
 }
 
+#[test]
+fn version_is_the_workspace_version() {
+    let dir = tempfile::tempdir().unwrap();
+    // Needs no configuration: the file is not read.
+    let out = agrafe(&dir.path().join("nope.toml"), &["--version"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(
+        text(&out.stdout),
+        concat!("agrafe ", env!("CARGO_PKG_VERSION"), "\n")
+    );
+}
+
 async fn sqlx_count(db: &TestDatabase) -> i64 {
     sqlx::query_scalar("SELECT count(*) FROM information_schema.tables WHERE table_name = 'blobs'")
         .fetch_one(db.pool())

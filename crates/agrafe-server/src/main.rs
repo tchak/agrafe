@@ -26,6 +26,7 @@ use tracing_subscriber::EnvFilter;
 #[derive(Parser)]
 #[command(
     name = "agrafe",
+    version,
     about = "Encrypted, scanned file storage with previews"
 )]
 struct Cli {
