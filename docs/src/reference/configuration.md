@@ -44,6 +44,7 @@ be left out.
 | Key | Default | Description |
 |---|---|---|
 | `url` | **required** | Postgres connection URL. A secret |
+| `schema` | unset | The schema the tables live in, when not the connection's default (`public`). Created by `migrate`. A plain lowercase identifier |
 | `max_connections` | `10` | Pool size of this process |
 
 ## `[storage]` (required)

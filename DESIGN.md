@@ -2711,6 +2711,21 @@ Secrets (database URL, KEKs, signing keys, bucket credentials) are expected
 from the environment in production, and are held in types whose `Debug` output
 is redacted so a dumped config cannot leak them. See `config/example.toml`.
 
+**One schema, by search path.** `database.schema` puts the tables in a
+schema of the operator's choosing, for a host application that keeps
+agrafe in its own database. The queries and the migrations name their
+tables unqualified, so the schema is a connection setting, `search_path`
+passed as a startup parameter of every pooled connection, not a string
+spliced into SQL: the same query runs against `public` and against a
+named schema, and the schema can differ per deployment. `migrate` creates
+the schema when it is missing, before the migrator runs, so that
+`_sqlx_migrations` lands there too and a host that also uses sqlx keeps
+its own history in `public`. The name is validated at load to a plain
+lowercase identifier, which is what makes interpolating it into `CREATE
+SCHEMA` safe and keeps the unquoted `search_path` and the quoted form
+the same name. The audit's advisory lock is keyed by database, so two
+agrafe installations in two schemas of one database take turns at it.
+
 ## Stack
 
 | Concern | Choice |

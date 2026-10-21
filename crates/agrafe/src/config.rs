@@ -134,6 +134,7 @@ impl Config {
                 "media.variant_version must be at least 1".into(),
             ));
         }
+        self.database.validate()?;
         self.webhook.validate()?;
         self.media
             .render
@@ -250,9 +251,36 @@ pub struct DatabaseConfig {
     /// The connection URL, `postgres://…`. Carries the password, so it is
     /// a `Secret`.
     pub url: Secret,
+    /// The schema the tables live in: the connection's default, `public`,
+    /// when unset. A host application that embeds agrafe in its own
+    /// database sets it to keep the tables, the migration history and the
+    /// trigger function apart from its own. A plain identifier: lowercase
+    /// letters, digits and underscores, not starting with a digit.
+    /// `migrate` creates it when missing.
+    #[serde(default)]
+    pub schema: Option<String>,
     /// Connections the pool opens at most; 10 by default.
     #[serde(default = "default_max_connections")]
     pub max_connections: u32,
+}
+
+impl DatabaseConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        if let Some(schema) = &self.schema {
+            let mut chars = schema.chars();
+            let plain = chars
+                .next()
+                .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
+                && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+            if !plain {
+                return Err(ConfigError::Invalid(format!(
+                    "database.schema {schema:?} must be a plain identifier: lowercase \
+                     letters, digits and underscores, not starting with a digit"
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 fn default_max_connections() -> u32 {
@@ -1177,6 +1205,31 @@ mod tests {
             jail.set_env("AGRAFE_SERVER__PUBLIC_BASE_URL", "https://files.example/");
             let err = load(&example()).unwrap_err().to_string();
             assert!(err.contains("must not end with a slash"), "{err}");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn the_schema_is_a_plain_identifier() {
+        Jail::expect_with(|jail| {
+            assert_eq!(load(&example())?.database.schema, None);
+            jail.set_env("AGRAFE_DATABASE__SCHEMA", "agrafe_v2");
+            assert_eq!(
+                load(&example())?.database.schema.as_deref(),
+                Some("agrafe_v2")
+            );
+            for bad in [
+                "",
+                "2agrafe",
+                "Agrafe",
+                "agrafe files",
+                "a\"b",
+                "app.agrafe",
+            ] {
+                jail.set_env("AGRAFE_DATABASE__SCHEMA", bad);
+                let err = load(&example()).unwrap_err().to_string();
+                assert!(err.contains("database.schema"), "{bad:?}: {err}");
+            }
             Ok(())
         });
     }

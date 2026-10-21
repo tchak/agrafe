@@ -249,6 +249,10 @@ agrafe --config config/agrafe.toml serve --role all --interfaces private
 Every process binds `server.private_addr`; one that does not serve the
 private API answers `/healthz` and `/metrics` there alone.
 
+The tables can share a database with another application: set
+`database.schema` and `migrate` creates the schema and keeps everything
+agrafe owns, its migration history included, inside it.
+
 ## Usage
 
 The examples below talk to the private port with `curl` and `jq`.

@@ -31,6 +31,10 @@ role = "all"
 
 [database]
 url = "postgres://localhost/agrafe_dev"
+# The schema the tables live in; the connection's default (public) when
+# unset. Set it to share a database with another application: `migrate`
+# creates it. Lowercase letters, digits and underscores.
+# schema = "agrafe"
 max_connections = 10
 
 [storage]

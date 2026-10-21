@@ -172,7 +172,7 @@ async fn main() -> Result<(), Error> {
     match cli.command {
         Command::Migrate => {
             let pool = db::connect(&config.database).await?;
-            db::migrate(&pool).await?;
+            db::migrate(&pool, &config.database).await?;
             tracing::info!("migrations applied");
             Ok(())
         }

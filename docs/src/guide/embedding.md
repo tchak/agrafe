@@ -18,12 +18,30 @@ use agrafe::{Agrafe, config::Config, db, jobs};
 
 let config = Config::load(Some("agrafe.toml".as_ref()))?;
 let pool = db::connect(&config.database).await?;
-db::migrate(&pool).await?;
+db::migrate(&pool, &config.database).await?;
 let agrafe = Agrafe::new(config, pool)?;
 ```
 
 `Config::load` reads the TOML file, if any, and the `AGRAFE_` environment
 variables, exactly as the binary does. `Agrafe` is cheap to clone.
+
+### Sharing the host's database
+
+agrafe can live in the application's own database, in a schema of its own:
+
+```toml
+[database]
+url = "postgres://localhost/my_app"
+schema = "agrafe"
+```
+
+`db::connect` opens every connection with that schema as its `search_path`,
+and `db::migrate` creates it when missing, so the tables, the migration
+history (`_sqlx_migrations`, kept apart from the host's own if it uses
+sqlx too) and the trigger function all land there. Open agrafe's pool with
+`db::connect` rather than handing it the application's: a pool built
+elsewhere searches the host's schema, and the handle would read and write
+there.
 
 ## Nesting the routers
 

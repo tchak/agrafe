@@ -23,7 +23,7 @@
 //! # async fn start() -> Result<(), Box<dyn std::error::Error>> {
 //! let config = Config::load(Some("config/agrafe.toml".as_ref()))?;
 //! let pool = db::connect(&config.database).await?;
-//! db::migrate(&pool).await?;
+//! db::migrate(&pool, &config.database).await?;
 //! let agrafe = Agrafe::new(config, pool)?;
 //! // Hand `agrafe.clone()` to the routers of `agrafe-axum`, then:
 //! jobs::runner::run(agrafe, std::future::pending()).await?;
