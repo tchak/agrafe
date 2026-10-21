@@ -43,6 +43,7 @@ pub fn compatible(declared: &str, sniffed: &str) -> bool {
         return true;
     }
     let d = canonical(declared);
+    let d = base(d).unwrap_or(d);
     let s = canonical(sniffed);
     if d == s {
         return true;
@@ -83,6 +84,7 @@ pub fn canonical(mime: &str) -> &str {
         "application/xml" => "text/xml",
         "application/x-pdf" => "application/pdf",
         "application/x-msword" => "application/msword",
+        "text/rtf" => "application/rtf",
         "application/x-sqlite3" => "application/vnd.sqlite3",
         "font/ttf"
         | "font/otf"
@@ -93,6 +95,47 @@ pub fn canonical(mime: &str) -> &str {
         "application/java-archive" | "application/x-java-archive" => "application/java",
         "application/vnd.android.package-archive" => "application/zip",
         other => other,
+    }
+}
+
+/// The format the sniffer reports for a variant it cannot tell apart from
+/// it: a macro-enabled or template Office Open XML file sniffs as the
+/// plain document, workbook or presentation, an OpenDocument template or
+/// master as its document. The declared variant is then checked as that
+/// format, so it is compatible with what its base is compatible with and
+/// a sibling of what its base is a sibling of.
+fn base(mime: &str) -> Option<&'static str> {
+    const DOCX: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    const XLSX: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    const PPTX: &str = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+    match mime {
+        "application/vnd.ms-word.document.macroenabled.12"
+        | "application/vnd.openxmlformats-officedocument.wordprocessingml.template"
+        | "application/vnd.ms-word.template.macroenabled.12" => Some(DOCX),
+        "application/vnd.ms-excel.sheet.macroenabled.12"
+        | "application/vnd.ms-excel.sheet.binary.macroenabled.12"
+        | "application/vnd.openxmlformats-officedocument.spreadsheetml.template"
+        | "application/vnd.ms-excel.template.macroenabled.12"
+        | "application/vnd.ms-excel.addin.macroenabled.12" => Some(XLSX),
+        "application/vnd.ms-powerpoint.presentation.macroenabled.12"
+        | "application/vnd.openxmlformats-officedocument.presentationml.slideshow"
+        | "application/vnd.ms-powerpoint.slideshow.macroenabled.12"
+        | "application/vnd.openxmlformats-officedocument.presentationml.template"
+        | "application/vnd.ms-powerpoint.template.macroenabled.12"
+        | "application/vnd.ms-powerpoint.addin.macroenabled.12" => Some(PPTX),
+        "application/vnd.oasis.opendocument.text-template"
+        | "application/vnd.oasis.opendocument.text-master"
+        | "application/vnd.oasis.opendocument.text-master-template"
+        | "application/vnd.oasis.opendocument.text-web" => {
+            Some("application/vnd.oasis.opendocument.text")
+        }
+        "application/vnd.oasis.opendocument.spreadsheet-template" => {
+            Some("application/vnd.oasis.opendocument.spreadsheet")
+        }
+        "application/vnd.oasis.opendocument.presentation-template" => {
+            Some("application/vnd.oasis.opendocument.presentation")
+        }
+        _ => None,
     }
 }
 
@@ -109,6 +152,24 @@ fn container(mime: &str) -> Option<&'static str> {
         | "application/vnd.oasis.opendocument.spreadsheet"
         | "application/vnd.oasis.opendocument.presentation"
         | "application/vnd.oasis.opendocument.graphics"
+        | "application/vnd.oasis.opendocument.graphics-template"
+        | "application/vnd.oasis.opendocument.chart"
+        | "application/vnd.oasis.opendocument.formula"
+        | "application/vnd.oasis.opendocument.image"
+        | "application/vnd.oasis.opendocument.database"
+        | "application/vnd.sun.xml.writer"
+        | "application/vnd.sun.xml.calc"
+        | "application/vnd.sun.xml.impress"
+        | "application/vnd.sun.xml.draw"
+        | "application/vnd.apple.pages"
+        | "application/vnd.apple.numbers"
+        | "application/vnd.apple.keynote"
+        | "application/x-iwork-pages-sffpages"
+        | "application/x-iwork-numbers-sffnumbers"
+        | "application/x-iwork-keynote-sffkey"
+        | "application/vnd.ms-xpsdocument"
+        | "application/oxps"
+        | "application/vnd.google-earth.kmz"
         | "application/epub+zip"
         | "application/java"
         | "application/x-google-chrome-extension"
@@ -117,6 +178,7 @@ fn container(mime: &str) -> Option<&'static str> {
         | "application/vnd.ms-excel"
         | "application/vnd.ms-powerpoint"
         | "application/vnd.ms-outlook"
+        | "application/vnd.ms-publisher"
         | "application/vnd.visio" => Some(OLE),
         "image/svg+xml"
         | "application/xhtml+xml"
@@ -266,5 +328,94 @@ mod tests {
 
         assert!(compatible("application/octet-stream", "image/png"));
         assert!(compatible("font/ttf", "application/font-sfnt"));
+        assert!(compatible("text/rtf", "application/rtf"));
+    }
+
+    #[test]
+    fn variants_are_checked_as_their_base_format() {
+        const ZIP: &str = "application/zip";
+        let docx = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        let xlsx = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        let pptx = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+        let odt = "application/vnd.oasis.opendocument.text";
+        let ods = "application/vnd.oasis.opendocument.spreadsheet";
+        let odp = "application/vnd.oasis.opendocument.presentation";
+        for (variant, sniffed, sibling) in [
+            (
+                "application/vnd.ms-word.document.macroenabled.12",
+                docx,
+                xlsx,
+            ),
+            (
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
+                docx,
+                pptx,
+            ),
+            ("application/vnd.ms-excel.sheet.macroenabled.12", xlsx, docx),
+            (
+                "application/vnd.ms-excel.sheet.binary.macroenabled.12",
+                xlsx,
+                docx,
+            ),
+            (
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.template",
+                xlsx,
+                pptx,
+            ),
+            (
+                "application/vnd.openxmlformats-officedocument.presentationml.slideshow",
+                pptx,
+                docx,
+            ),
+            (
+                "application/vnd.ms-powerpoint.presentation.macroenabled.12",
+                pptx,
+                xlsx,
+            ),
+            ("application/vnd.oasis.opendocument.text-template", odt, ods),
+            ("application/vnd.oasis.opendocument.text-master", odt, odp),
+            (
+                "application/vnd.oasis.opendocument.spreadsheet-template",
+                ods,
+                odt,
+            ),
+            (
+                "application/vnd.oasis.opendocument.presentation-template",
+                odp,
+                ods,
+            ),
+        ] {
+            assert!(compatible(variant, sniffed), "{variant} as {sniffed}");
+            // The sniffer may only get as far as the ZIP.
+            assert!(compatible(variant, ZIP), "{variant} as zip");
+            assert!(!compatible(variant, sibling), "{variant} as {sibling}");
+            assert!(!compatible(variant, "application/pdf"), "{variant} as pdf");
+        }
+    }
+
+    #[test]
+    fn zip_and_ole_packaged_formats() {
+        for zipped in [
+            "application/vnd.apple.pages",
+            "application/vnd.apple.numbers",
+            "application/vnd.apple.keynote",
+            "application/x-iwork-pages-sffpages",
+            "application/vnd.ms-xpsdocument",
+            "application/oxps",
+            "application/vnd.sun.xml.writer",
+            "application/vnd.oasis.opendocument.graphics-template",
+            "application/vnd.google-earth.kmz",
+        ] {
+            assert!(compatible(zipped, "application/zip"), "{zipped}");
+            assert!(!compatible(zipped, "application/pdf"), "{zipped}");
+        }
+        assert!(compatible(
+            "application/vnd.ms-publisher",
+            "application/x-ole-storage"
+        ));
+        assert!(!compatible(
+            "application/vnd.ms-publisher",
+            "application/zip"
+        ));
     }
 }

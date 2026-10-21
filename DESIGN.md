@@ -724,8 +724,12 @@ declared and sniffed type is rejected with `422`. The check is lenient where
 rejecting would be wrong: aliases (`image/jpg`), a declared container of the
 sniffed type in either direction (a DOCX is a ZIP), text sniffers (HTML, XML,
 shell) against any `text/*` declaration, and `application/octet-stream`,
-which declares nothing. Siblings such as DOCX against XLSX are rejected. The
-rules live in `sniff.rs`.
+which declares nothing. Siblings such as DOCX against XLSX are rejected. A
+variant the sniffer cannot tell from its base format is checked as that
+format: a macro-enabled or template Office file sniffs as the plain DOCX,
+XLSX or PPTX, an OpenDocument template or master as its document, so an
+XLSM is accepted on XLSX bytes and refused on DOCX ones. The rules live in
+`sniff.rs`.
 
 JSON has no magic, but a JSON document that opens on a `Feature` or a
 `FeatureCollection` in its first KiB is a GeoJSON one, and the sniffer says
