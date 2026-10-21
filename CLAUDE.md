@@ -102,8 +102,12 @@ See "Crates" in `DESIGN.md` for the dependency graph.
   `bwrap-userns-restrict` AppArmor profile; a copy at another path is
   refused, which is the unprofiled host. CI (`ubuntu-26.04`) sets
   `AGRAFE_SANDBOX_REQUIRED=1` too, so a pushed bookmark with a draft PR
-  is the same run. `cargo clippy --target x86_64-unknown-linux-gnu`
-  (target installed) catches type and cfg errors without the VM.
+  is the same run. `cargo clippy -p agrafe-sandbox --all-targets --target
+  x86_64-unknown-linux-gnu` (target installed) catches type and cfg
+  errors in the sandbox crate without the VM. Only that crate: the
+  others pull in `aws-lc-sys` through rustls, whose C build needs a
+  Linux cross compiler macOS does not have, so they wait for the VM or
+  CI.
 
 ## Conventions
 
