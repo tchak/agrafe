@@ -707,3 +707,148 @@ async fn the_job_schedules_the_next_run_and_yields_to_a_running_one() {
         .unwrap();
     assert_eq!(pending.items.len(), 1);
 }
+
+/// A representation object the row does not expect: one a render is about
+/// to replace is left alone, one the row says failed is an orphan.
+#[tokio::test]
+async fn representation_objects_are_checked_against_the_row_state() {
+    let db = TestDatabase::new().await;
+    let app = settled_setup(db).await;
+    let photo = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
+    let id = id_of(&photo);
+    render_all(&app).await;
+
+    sqlx::query(
+        "UPDATE blobs SET thumbnail_state = 'pending', preview_state = 'failed' WHERE id = $1",
+    )
+    .bind(parse_id(id))
+    .execute(app.state.pool())
+    .await
+    .unwrap();
+    let report = audit_now(&app).await;
+    assert_eq!(counts(&report), vec![(Finding::Orphan, 1)], "{report}");
+    assert_eq!(report.deleted, 0, "reported, not deleted");
+    assert_eq!(
+        object_keys(&app).await.len(),
+        3,
+        "the original and both representations stay"
+    );
+}
+
+/// An original that decrypts whole, to a file that is not the one
+/// recorded.
+#[tokio::test]
+async fn the_deep_check_compares_the_digest() {
+    let db = TestDatabase::new().await;
+    let app = settled_setup(db).await;
+    let blob = ready_blob(&app, &png_bytes(100)).await;
+    let id = id_of(&blob);
+    sqlx::query("UPDATE blobs SET checksum_sha256 = $2 WHERE id = $1")
+        .bind(parse_id(id))
+        .bind(vec![0u8; 32])
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+
+    let report = audit_with(&app, DEEP).await;
+    assert_eq!(
+        counts(&report),
+        vec![(Finding::DamagedOriginal, 1)],
+        "{report}"
+    );
+    let got = get_blob(&app, id).await;
+    let error = got["last_error"].as_str().unwrap();
+    assert!(
+        error.starts_with("audit: the original decrypts to a file with SHA-256 "),
+        "{error}"
+    );
+    assert!(error.ends_with(", not the one recorded"), "{error}");
+}
+
+/// A payload that is not a `Progress` starts the audit over rather than
+/// failing the job.
+#[tokio::test]
+async fn the_job_starts_over_on_a_progress_it_cannot_read() {
+    let db = TestDatabase::new().await;
+    let app = settled_setup(db).await;
+    let blob = ready_blob(&app, &png_bytes(100)).await;
+    let id = id_of(&blob);
+    delete_object(&app, &storage_key(&app, id).await).await;
+    sqlx::query("INSERT INTO jobs (kind, payload, run_at) VALUES ('audit', $1, now())")
+        .bind(json!({"cursor": 5}))
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+
+    assert!(run_job(&app, JobKind::Audit).await);
+    assert!(get_blob(&app, id).await["failed_at"].is_string());
+}
+
+/// The last attempt of a failing audit schedules the next one: a dead
+/// job does not end the weekly sweep. An earlier attempt does not, its
+/// retry carrying the progress on.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_failed_last_attempt_still_schedules_the_next_run() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let db = TestDatabase::new().await;
+    let app = settled_setup(db).await;
+    let blob = ready_blob(&app, &png_bytes(100)).await;
+    let agrafe::config::StorageConfig::Local { local } = &app.state.config().storage else {
+        panic!("the tests store locally");
+    };
+    // A prefix the listing cannot enter.
+    let prefix = std::path::Path::new(&local.path).join(id_of(&blob));
+    std::fs::set_permissions(&prefix, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let restore = || std::fs::set_permissions(&prefix, std::fs::Permissions::from_mode(0o755));
+
+    let jobs = |app: &TestApp| {
+        let pool = app.state.pool().clone();
+        async move {
+            sqlx::query_as::<_, (i64, i64)>(
+                "SELECT count(*) FILTER (WHERE failed_at IS NOT NULL), \
+                        count(*) FILTER (WHERE failed_at IS NULL) \
+                 FROM jobs WHERE kind = 'audit'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+
+    sqlx::query(
+        "INSERT INTO jobs (kind, payload, run_at, max_attempts) VALUES ('audit', '{}', now(), 2)",
+    )
+    .execute(app.state.pool())
+    .await
+    .unwrap();
+    assert!(run_job(&app, JobKind::Audit).await);
+    let (dead, pending) = jobs(&app).await;
+    assert_eq!((dead, pending), (0, 1), "a retry, and nothing else");
+
+    sqlx::query("UPDATE jobs SET run_at = now() WHERE kind = 'audit'")
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+    assert!(run_job(&app, JobKind::Audit).await);
+    restore().unwrap();
+    let (dead, pending) = jobs(&app).await;
+    assert_eq!((dead, pending), (1, 1), "dead, and the next one scheduled");
+    let error: String = sqlx::query_scalar(
+        "SELECT last_error FROM jobs WHERE kind = 'audit' AND failed_at IS NOT NULL",
+    )
+    .fetch_one(app.state.pool())
+    .await
+    .unwrap();
+    assert!(error.contains("object store"), "{error}");
+    let due_in: f64 = sqlx::query_scalar(
+        "SELECT EXTRACT(EPOCH FROM run_at - now())::float8 FROM jobs \
+         WHERE kind = 'audit' AND failed_at IS NULL",
+    )
+    .fetch_one(app.state.pool())
+    .await
+    .unwrap();
+    let week = 7.0 * 24.0 * 3600.0;
+    assert!(due_in > week - 60.0 && due_in <= week, "{due_in}");
+}
