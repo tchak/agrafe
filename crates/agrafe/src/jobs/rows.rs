@@ -97,29 +97,35 @@ impl<'a> SourceRows<'a> {
 
     /// The next row's cells of the current sheet, or `None` after its last.
     /// The line is handed to `f` rather than returned, since the cells
-    /// borrow it.
+    /// borrow it. A switch naming the current sheet is skipped like the
+    /// accept pass skips it; holding it as pending would end the sheet and
+    /// never clear, leaving every later sheet empty.
     async fn next_row<R>(
         &mut self,
         f: impl FnOnce(&[Cell<'_>]) -> R,
     ) -> Result<Option<R>, BuildError> {
-        if self.done || self.pending.is_some() {
-            return Ok(None);
-        }
-        let Some(line) = self.source.next_line().await? else {
-            self.done = true;
-            return Ok(None);
-        };
-        let sheets = self.sheets;
-        let parsed = parse_source_line(&line.bytes, &sheets[self.current].columns)
-            .map_err(|reason| self.source.malformed(line.line, reason))?;
-        match parsed {
-            Line::Switch(name) => {
-                let target = switch_target(sheets, self.current, &name)
-                    .map_err(|reason| self.source.malformed(line.line, reason))?;
-                self.pending = Some(target);
-                Ok(None)
+        loop {
+            if self.done || self.pending.is_some() {
+                return Ok(None);
             }
-            Line::Row(cells) => Ok(Some(f(&cells))),
+            let Some(line) = self.source.next_line().await? else {
+                self.done = true;
+                return Ok(None);
+            };
+            let sheets = self.sheets;
+            let parsed = parse_source_line(&line.bytes, &sheets[self.current].columns)
+                .map_err(|reason| self.source.malformed(line.line, reason))?;
+            match parsed {
+                Line::Switch(name) => {
+                    let target = switch_target(sheets, self.current, &name)
+                        .map_err(|reason| self.source.malformed(line.line, reason))?;
+                    if target != self.current {
+                        self.pending = Some(target);
+                        return Ok(None);
+                    }
+                }
+                Line::Row(cells) => return Ok(Some(f(&cells))),
+            }
         }
     }
 }

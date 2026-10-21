@@ -91,8 +91,9 @@ rows of each following sheet, in the declared order:
 ["Compilers", 2]
 ```
 
-A switch must name a declared sheet after the current one. A sheet no switch
-points at gets its header alone.
+A switch must name the current sheet or a declared sheet after it. Naming the
+current sheet changes nothing, so a loop may announce every sheet, the first
+included, before its rows. A sheet no switch points at gets its header alone.
 
 Sheet names follow Excel's rules, since Excel refuses to open a workbook
 that breaks them: not blank, at most 31 characters, none of `[ ] : * ? / \`,

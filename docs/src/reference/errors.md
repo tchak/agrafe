@@ -142,7 +142,7 @@ part. Common reasons:
 | any | `line is longer than 1048576 bytes`, `last line does not end with a newline` |
 | `rows` | `expected a JSON array of cell values: …`, `expected N cells, one per declared column, got M` |
 | `rows` | `cell N (column): …`, such as a value that is not a scalar, a malformed date, `is a number too large for a spreadsheet cell`, or a text over the cell limit |
-| `rows` | `no sheet named "…" is declared`, `sheet "…" is already the current sheet`, a switch to an earlier sheet |
+| `rows` | `no sheet named "…" is declared`, `sheet "…" comes before the current sheet "…"` |
 | `archive`, `document` | `path must not be empty`, `path must be relative`, `path must not contain empty components or end with a slash`, ``path must not contain `.` or `..` components``, `path must not contain backslashes, control or bidirectional formatting characters`, `path is longer than N bytes` |
 | `archive`, `document` | `blob … does not exist`, `blob … is uploaded, not ready` |
 | `archive` | `ERRORS.txt at the root is reserved` |

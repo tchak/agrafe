@@ -1,7 +1,8 @@
 //! The source of a `rows` blob: the sheets and their columns declared at
 //! creation, and one JSON array of cell values per line, positional
 //! against the current sheet's columns, checked as the part arrives. An
-//! object line `{"sheet": "..."}` switches to a later sheet. See
+//! object line `{"sheet": "..."}` switches to a later sheet, or names the
+//! current one to no effect. See
 //! [DESIGN.md, "Rows"].
 //!
 //! [DESIGN.md, "Rows"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#rows
@@ -115,22 +116,16 @@ pub(crate) fn check_sheet_name(name: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// The index of the sheet a `{"sheet": "..."}` line names, which must come
-/// after `current` in workbook order: the source is grouped by sheet, so
-/// a sheet is written whole before the next. The message says what is
-/// wrong with the switch.
+/// The index of the sheet a `{"sheet": "..."}` line names, which must be
+/// `current` or come after it in workbook order: the source is grouped by
+/// sheet, so a sheet is written whole before the next. Naming the current
+/// sheet is a no-op, so that a backend may announce every sheet, the first
+/// included, without a special case. The message says what is wrong with
+/// the switch.
 pub(crate) fn switch_target(sheets: &[Sheet], current: usize, name: &str) -> Result<usize, String> {
     let Some(index) = sheets.iter().position(|s| s.name == name) else {
         return Err(format!("no sheet named {name:?} is declared"));
     };
-    if index == current {
-        let hint = if current == 0 {
-            "; rows before any switch belong to the first sheet"
-        } else {
-            ""
-        };
-        return Err(format!("sheet {name:?} is already the current sheet{hint}"));
-    }
     if index < current {
         return Err(format!(
             "sheet {name:?} comes before the current sheet {:?}; a source is grouped by sheet in workbook order",
@@ -477,9 +472,14 @@ impl Tap for Accept {
                 .map_err(|reason| LineError { line, reason })?
             {
                 Line::Switch(name) => {
-                    self.current = switch_target(&self.sheets, self.current, &name)
+                    let target = switch_target(&self.sheets, self.current, &name)
                         .map_err(|reason| LineError { line, reason })?;
-                    self.sheet_rows = 0;
+                    // The count is per sheet: naming the current one again
+                    // does not start it over, or the row limit would give.
+                    if target != self.current {
+                        self.current = target;
+                        self.sheet_rows = 0;
+                    }
                     continue;
                 }
                 Line::Row(cells) => cells,
@@ -748,13 +748,9 @@ mod tests {
         assert_eq!(switch_target(&sheets, 0, "two"), Ok(1));
         assert_eq!(switch_target(&sheets, 0, "three"), Ok(2));
         assert_eq!(switch_target(&sheets, 1, "three"), Ok(2));
-        let err = switch_target(&sheets, 0, "one").unwrap_err();
-        assert!(
-            err.contains("already the current sheet; rows before any switch belong to the first"),
-            "{err}"
-        );
-        let err = switch_target(&sheets, 1, "two").unwrap_err();
-        assert_eq!(err, "sheet \"two\" is already the current sheet");
+        // The current sheet, the first before any switch included: a no-op.
+        assert_eq!(switch_target(&sheets, 0, "one"), Ok(0));
+        assert_eq!(switch_target(&sheets, 1, "two"), Ok(1));
         let err = switch_target(&sheets, 2, "one").unwrap_err();
         assert!(
             err.contains("comes before the current sheet \"three\""),

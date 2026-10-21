@@ -577,16 +577,25 @@ async fn sheet_row_limit(pool: PgPool) {
 
 /// A workbook: the sheets declared in order, the source switching between
 /// them with `{"sheet": "..."}` lines, in any part, and every sheet in
-/// the package, a header alone for one no switch pointed at.
+/// the package, a header alone for one no switch pointed at. A switch
+/// naming the current sheet, the first included, changes nothing: a
+/// backend announcing every sheet in a loop needs no special case, and
+/// the build keeps reading the sheet instead of ending it.
 #[sqlx::test(migrator = "MIGRATOR")]
 async fn xlsx_workbook(pool: PgPool) {
     let app = setup(pool).await;
     let created = create(&app, workbook_blob("dossiers.xlsx", XLSX)).await;
     let id = id_of(&created);
     assert!(created.get("sheets").is_none(), "not reported back");
-    // Rows before any switch belong to the first sheet; a switch may come
-    // in a later part than the rows before it.
-    let (status, body) = put_part(&app, id, 1, lines(&SAMPLE[..2])).await;
+    // Rows before any switch belong to the first sheet, announced or not;
+    // a switch may come in a later part than the rows before it.
+    let (status, body) = put_part(
+        &app,
+        id,
+        1,
+        lines(&[r#"{"sheet": "Dossiers"}"#, SAMPLE[0], SAMPLE[1]]),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let (status, body) = put_part(
         &app,
@@ -601,7 +610,16 @@ async fn xlsx_workbook(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["source_rows"], 4, "switch lines are not rows");
-    let (status, body) = put_part(&app, id, 3, lines(&[r#"["Martin", "Défavorable"]"#])).await;
+    let (status, body) = put_part(
+        &app,
+        id,
+        3,
+        lines(&[
+            r#"{"sheet": "Avis & notes"}"#,
+            r#"["Martin", "Défavorable"]"#,
+        ]),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["source_rows"], 5);
     let (status, body) = finish(&app, id).await;
@@ -715,7 +733,7 @@ async fn ods_workbook(pool: PgPool) {
     );
 }
 
-/// A switch must name a declared sheet after the current one; a wrong one
+/// A switch must name the current sheet or a declared one after it; a wrong one
 /// fails the part like any bad line, and the blob keeps what it had.
 #[sqlx::test(migrator = "MIGRATOR")]
 async fn sheet_switch_rejections(pool: PgPool) {
@@ -747,11 +765,6 @@ async fn sheet_switch_rejections(pool: PgPool) {
             "line 1: sheet \"Dossiers\" comes before the current sheet \"Avis & notes\"",
         ),
         (
-            "the current sheet",
-            r#"{"sheet": "Avis & notes"}"#,
-            "already the current sheet",
-        ),
-        (
             "not a switch",
             r#"{"sheet": "Vide", "rows": 2}"#,
             "line 1: expected {\"sheet\": \"...\"} to switch sheets",
@@ -777,13 +790,20 @@ async fn sheet_switch_rejections(pool: PgPool) {
         assert_eq!(got["source_parts"], 1, "{name}");
         assert_eq!(got["source_rows"], 2, "{name}");
     }
-    // The position survives a refused part: still on the second sheet.
-    let (status, body) = put_part(&app, id, 2, lines(&[r#"["c", "d"]"#])).await;
+    // The position survives a refused part: still on the second sheet, and
+    // naming it again is a no-op, not a switch.
+    let (status, body) = put_part(
+        &app,
+        id,
+        2,
+        lines(&[r#"{"sheet": "Avis & notes"}"#, r#"["c", "d"]"#]),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["source_rows"], 3);
 
     // A blob declared with `columns` has one sheet, so no switch can name a
-    // later one, whatever the format.
+    // later one, whatever the format; naming the one sheet is allowed.
     for (filename, content_type) in [("one.xlsx", XLSX), ("one.csv", "text/csv")] {
         let created = create(&app, rows_blob(filename, content_type)).await;
         let (status, body) =
@@ -793,13 +813,13 @@ async fn sheet_switch_rejections(pool: PgPool) {
         assert!(message.contains("no sheet named \"Avis\""), "{body}");
         let (status, body) =
             put_part(&app, id_of(&created), 1, lines(&[r#"{"sheet": "one"}"#])).await;
-        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
-        let message = body["error"]["message"].as_str().unwrap();
-        assert!(message.contains("already the current sheet"), "{body}");
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["source_rows"], 0, "a switch is not a row");
     }
 }
 
-/// The row limit is per sheet: a switch starts the count over.
+/// The row limit is per sheet: a switch starts the count over, while
+/// naming the current sheet again does not.
 #[sqlx::test(migrator = "MIGRATOR")]
 async fn sheet_row_limit_is_per_sheet(pool: PgPool) {
     let app = setup(pool).await;
@@ -815,7 +835,9 @@ async fn sheet_row_limit_is_per_sheet(pool: PgPool) {
     .execute(app.state.pool())
     .await
     .unwrap();
-    let (status, body) = put_part(&app, id, 2, source(std::slice::from_ref(&one))).await;
+    let mut same = lines(&[r#"{"sheet": "Dossiers"}"#]);
+    same.extend(source(std::slice::from_ref(&one)));
+    let (status, body) = put_part(&app, id, 2, same).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert!(
         body["error"]["message"]

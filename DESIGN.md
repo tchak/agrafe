@@ -1007,14 +1007,19 @@ nothing is left or when the stem is `History`.
 **Switching sheets.** In the source, an object line `{"sheet": "..."}`
 switches the current sheet; rows are arrays, so the shape is unambiguous.
 Lines before any switch belong to the first sheet, so a single-sheet source
-never carries one. The switch must name a declared sheet after the current
-one, which keeps the source grouped by sheet in workbook order: an XLSX
-sheet is one zip entry written whole before the next, an ODS `content.xml`
-holds its tables in sequence, and without grouping the build would need one
-pass over the source per sheet. A switch to the current sheet, to an earlier
-one or to an undeclared name fails the part at its line, like any bad line,
-and so does an object line that is anything but `{"sheet": "..."}`. A sheet
-no switch points at gets a header only. A switch is valid in any part, so
+never carries one. The switch must name the current sheet or a declared
+sheet after it, which keeps the source grouped by sheet in workbook order:
+an XLSX sheet is one zip entry written whole before the next, an ODS
+`content.xml` holds its tables in sequence, and without grouping the build
+would need one pass over the source per sheet. Naming the current sheet is
+a no-op, the first sheet included, so that a backend looping over its
+sheets may announce each one before its rows without special-casing the
+first; it does not start the per-sheet row count over. A switch to an
+earlier sheet or to an undeclared name fails the part at its line, like any
+bad line, and so does an object line that is anything but
+`{"sheet": "..."}`. A sheet no switch points at gets a header only. The
+build reads switches the same way, skipping one that names the sheet it is
+writing rather than ending the sheet on it. A switch is valid in any part, so
 parts stay uniform and resuming stays `source_parts` alone; switch lines are
 not counted in `source_rows`. Parts per sheet were rejected because they
 break that one-counter resume rule, and a sheet field on every line because
