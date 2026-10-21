@@ -459,6 +459,53 @@ async fn a_helper_failing_for_its_own_reasons_is_retried() {
     assert_eq!(get_blob(&app, id).await["state"], "uploaded");
 }
 
+/// A template that outruns `media.sandbox.timeout` is a template that
+/// does not compile: no retry would let it finish.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_build_that_times_out_dies_at_once() {
+    use std::os::unix::fs::PermissionsExt;
+    let db = TestDatabase::new().await;
+    let slow = std::env::temp_dir().join(format!("agrafe-slow-document-{}", uuid::Uuid::now_v7()));
+    std::fs::write(&slow, "#!/bin/sh\nsleep 5\n").unwrap();
+    std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let app = setup_tuned(db, fake_clamd().await, |c| {
+        c.media.render.render_document_command = slow.to_string_lossy().into_owned();
+        c.media.render.sandbox.timeout = std::time::Duration::from_millis(300);
+    })
+    .await;
+    let created = create(&app, document_blob("slow.pdf")).await;
+    let id = id_of(&created);
+    let (status, _) = put_private(&app, id, manifest(&[text("main.typ", "= Hi\n")])).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(run_job(&app, JobKind::Document).await);
+    std::fs::remove_file(&slow).unwrap();
+    let (attempts, dead, error) = job_outcome(&app, id).await;
+    assert_eq!((attempts, dead), (1, true), "{error}");
+    assert!(error.contains("does not compile"), "{error}");
+    assert!(error.contains("exceeded the time limit"), "{error}");
+}
+
+/// A helper that exits cleanly without writing the PDF is not the
+/// compiler: a failed attempt, and the file it did not write named.
+#[tokio::test]
+async fn a_helper_writing_nothing_is_a_failed_attempt() {
+    let db = TestDatabase::new().await;
+    let app = setup_tuned(db, fake_clamd().await, |c| {
+        c.media.render.render_document_command = "/usr/bin/true".into();
+    })
+    .await;
+    let created = create(&app, document_blob("empty.pdf")).await;
+    let id = id_of(&created);
+    let (status, _) = put_private(&app, id, manifest(&[text("main.typ", "= Hi\n")])).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(run_job(&app, JobKind::Document).await);
+    let (attempts, dead, error) = job_outcome(&app, id).await;
+    assert_eq!((attempts, dead), (1, false), "{error}");
+    assert!(error.contains("without writing the PDF"), "{error}");
+    assert_eq!(get_blob(&app, id).await["state"], "uploaded");
+}
+
 /// What a template may not do: fetch a package, read outside the
 /// workspace, or need a file the manifest does not hold.
 #[tokio::test]
