@@ -185,10 +185,25 @@ extension of `gz`, `bz2`, `xz`, `zst`, `lz`, `lzma`, `Z` or `br` takes the
 extension before it when that one is one to five ASCII alphanumerics with a
 letter among them. So `a.tar.gz` and `export.csv.gz` split before `.tar.gz`
 and `.csv.gz`, while `my.report.gz` splits before `.gz`, since `report` is
-no extension, and `.bashrc` or `README` have none. A rule rather than a
-list of `.tar.*`, because `.csv.gz` and `.sql.xz` are at least as common as
-tarballs in what agrafe stores and a list would never be complete; the
-five-character cap lets `jsonl` and `fastq` through and keeps words out.
+no extension, and `.bashrc` or `README` have none.
+
+A heuristic, and a known one. The compression suffix is an encoding over
+the real extension, as `Content-Encoding` is over `Content-Type`, and the
+usual way to find the real one is to strip the encoding and look the rest
+up in an extension table (Python's `mimetypes`, Apache's `mod_mime`,
+nginx's `gzip_static`). agrafe has no such table and does not want one
+for a cosmetic rule, so "is a known extension" is replaced by "looks like
+one", and the cap of five letters is what lets `jsonl` and `fastq`
+through. It also lets `notes`, `data` and `draft` through: `my.notes.gz`
+splits before `.notes.gz`. That costs a dedupe counter in an odd place
+(`my-1.notes.gz`), a sheet named `my` and a preview called `my.webp`,
+all of them cosmetic, and is preferred to the alternatives: the last dot
+alone, which breaks every `a.tar.gz` and is what Rails, Go and Firefox
+live with; a curated list, which is what Chromium (`tar` only) and the
+freedesktop database do and is never complete, since `.csv.gz` and
+`.sql.xz` are at least as common as tarballs in what agrafe stores; or
+appending to the download name (`archive.tar.gz.webp`), which never
+errs and is uglier every time.
 
 ### Errors
 
