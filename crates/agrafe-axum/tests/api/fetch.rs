@@ -855,3 +855,70 @@ async fn a_direct_upload_may_declare_its_md5() {
     );
     assert_eq!(get_blob(&app, id_of(&created)).await["state"], "created");
 }
+
+/// A remote that does not speak TLS fails the handshake, which no retry
+/// mends; a port nobody listens on is the network, and retried.
+#[tokio::test]
+async fn a_tls_failure_is_permanent_and_a_refused_connection_is_not() {
+    let db = TestDatabase::new().await;
+    let app = setup_fetching(db).await;
+    // Answers before the client says anything: the handshake reads it.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let https = format!("https://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        while let Ok((mut sock, _)) = listener.accept().await {
+            let _ = sock.write_all(&ok(b"plain text, not a handshake")).await;
+            let _ = sock.shutdown().await;
+        }
+    });
+
+    let created = create(&app, url_blob(&format!("{https}/photo.png"))).await;
+    let id = id_of(&created);
+    assert!(run_job(&app, JobKind::Fetch).await);
+    let (attempts, dead, error) = fetch_job(&app, id).await;
+    assert_eq!((attempts, dead), (1, true), "{error}");
+    assert!(error.contains("tls"), "{error}");
+
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = closed.local_addr().unwrap().port();
+    drop(closed);
+    let created = create(
+        &app,
+        url_blob(&format!("http://127.0.0.1:{port}/photo.png")),
+    )
+    .await;
+    let id = id_of(&created);
+    assert!(run_job(&app, JobKind::Fetch).await);
+    let (attempts, dead, error) = fetch_job(&app, id).await;
+    assert_eq!((attempts, dead), (1, false), "{error}");
+    assert_eq!(get_blob(&app, id).await["state"], "created");
+}
+
+/// A fetch job that finds its row `uploading` (a fetch cut short, a
+/// duplicate job) waits for the reaper to reset it rather than racing it.
+#[tokio::test]
+async fn a_fetch_finding_the_row_uploading_waits_for_the_reaper() {
+    let db = TestDatabase::new().await;
+    let app = setup_fetching(db).await;
+    let base = remote(|hit| panic!("nothing is fetched: {}", hit.path)).await;
+    let created = create(&app, url_blob(&format!("{base}/photo.png"))).await;
+    let id = id_of(&created);
+    sqlx::query(
+        "UPDATE blobs SET state = 'uploading', upload_started_at = now(), \
+         upload_heartbeat_at = now() WHERE id = $1",
+    )
+    .bind(parse_id(id))
+    .execute(app.state.pool())
+    .await
+    .unwrap();
+
+    assert!(run_job(&app, JobKind::Fetch).await);
+    let (attempts, dead, error) = fetch_job(&app, id).await;
+    assert_eq!((attempts, dead), (1, false), "{error}");
+    assert!(error.contains("blob is uploading"), "{error}");
+    let config = app.state.config();
+    let reset = (config.upload.stale_after + config.jobs.reap_interval).as_secs_f64();
+    let due = fetch_due_in(&app, id).await;
+    assert!(due > reset - 5.0 && due <= reset, "{due} against {reset}");
+    assert_eq!(get_blob(&app, id).await["state"], "uploading");
+}
