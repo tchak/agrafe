@@ -9,14 +9,18 @@
 pub mod streaming;
 pub mod wrap;
 
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use aes_gcm::{Aes256Gcm, KeyInit};
+use hkdf::Hkdf;
+use sha2::Sha256;
+use subtle::ConstantTimeEq;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 /// Length in bytes of a data key and of a key-encryption key.
 pub const KEY_LEN: usize = 32;
 
-/// A random 256-bit key. `Debug` never prints the bytes, and the bytes are
-/// wiped when the key is dropped.
-#[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
+/// A random 256-bit key. `Debug` never prints the bytes, the bytes are
+/// wiped when the key is dropped, and two keys compare in constant time.
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct Key([u8; KEY_LEN]);
 
 impl Key {
@@ -46,10 +50,28 @@ impl Key {
     }
 }
 
+impl PartialEq for Key {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.ct_eq(&other.0).into()
+    }
+}
+
+impl Eq for Key {}
+
 impl std::fmt::Debug for Key {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Key(…)")
     }
+}
+
+/// The AES-256-GCM cipher under HKDF-SHA256(ikm = `key`, `salt`, `info`),
+/// with the derived key wiped once the cipher holds its schedule.
+fn derive(key: &Key, salt: Option<&[u8]>, info: &[u8]) -> Aes256Gcm {
+    let hk = Hkdf::<Sha256>::new(salt, key.as_bytes());
+    let mut derived = Zeroizing::new([0u8; KEY_LEN]);
+    hk.expand(info, &mut *derived)
+        .expect("32 bytes is a valid HKDF output length");
+    Aes256Gcm::new((&*derived).into())
 }
 
 /// Why a key, a header or a ciphertext was refused. None of them says

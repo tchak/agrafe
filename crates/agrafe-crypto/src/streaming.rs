@@ -27,12 +27,9 @@ use std::ops::Range;
 
 use aes_gcm::aead::inout::InOutBuf;
 use aes_gcm::aead::{Aead, AeadInOut};
-use aes_gcm::{Aes256Gcm, KeyInit, Nonce, Tag};
-use hkdf::Hkdf;
-use sha2::Sha256;
-use zeroize::Zeroizing;
+use aes_gcm::{Aes256Gcm, Nonce, Tag};
 
-use crate::{Error, KEY_LEN, Key};
+use crate::{Error, KEY_LEN, Key, derive};
 
 /// Length of the HKDF salt in the header, the size of the derived key as
 /// in Tink.
@@ -211,14 +208,6 @@ impl Layout {
     }
 }
 
-fn derive(key: &Key, salt: &[u8], associated_data: &[u8]) -> Aes256Gcm {
-    let hk = Hkdf::<Sha256>::new(Some(salt), key.as_bytes());
-    let mut derived = Zeroizing::new([0u8; KEY_LEN]);
-    hk.expand(associated_data, &mut *derived)
-        .expect("32 bytes is a valid HKDF output length");
-    Aes256Gcm::new((&*derived).into())
-}
-
 fn nonce(
     prefix: &[u8; NONCE_PREFIX_LEN],
     segment: u32,
@@ -263,7 +252,7 @@ impl Encryptor {
         nonce_prefix: [u8; NONCE_PREFIX_LEN],
     ) -> Self {
         Self {
-            cipher: derive(key, &salt, associated_data),
+            cipher: derive(key, Some(&salt), associated_data),
             header: Header::new(salt, nonce_prefix),
             nonce_prefix,
             layout,
@@ -335,7 +324,7 @@ impl Decryptor {
     /// wrong key or associated data fails on the first segment opened.
     pub fn new(key: &Key, associated_data: &[u8], header: &Header, layout: Layout) -> Self {
         Self {
-            cipher: derive(key, header.salt(), associated_data),
+            cipher: derive(key, Some(header.salt()), associated_data),
             nonce_prefix: header.nonce_prefix(),
             layout,
         }

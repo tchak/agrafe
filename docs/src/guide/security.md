@@ -18,10 +18,11 @@ The private port must be reachable only from a trusted network.
 ## Encryption at rest
 
 Every blob gets a random 256-bit data key when its upload starts. The key is
-wrapped with a key-encryption key (KEK) from the configuration, with
-AES-256-GCM and the blob id as associated data, so a wrapped key copied to
-another row does not unwrap. The wrapped key and the KEK's id are stored on
-the blob's row.
+wrapped with a key-encryption key (KEK) from the configuration: AES-256-GCM
+under a key derived from the KEK and the blob id, with the blob id as
+associated data, so a wrapped key copied to another row does not unwrap, and
+no AES-GCM key ever wraps more than one blob, however many a KEK covers. The
+wrapped key and the KEK's id are stored on the blob's row.
 
 The bytes are encrypted with a streaming AEAD in [Tink's
 AES-GCM-HKDF-STREAMING](https://developers.google.com/tink/streaming-aead/aes_gcm_hkdf_streaming)

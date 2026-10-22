@@ -1627,10 +1627,13 @@ rotation rewrites every object header, and its fixed 64 KiB chunks and
 sync-only seek make range requests awkward.
 
 - Each blob gets a random 256-bit data key when its upload starts, wrapped
-  with a key-encryption key (KEK) from config: AES-256-GCM with a random
-  nonce and the blob id as associated data, so a wrapped key moved to another
-  row does not unwrap. The wrapped key and the `kek_id` are stored on the blob
-  row. Several KEKs live in config: `encryption.current_kek` wraps new keys
+  with a key-encryption key (KEK) from config: AES-256-GCM under a key
+  derived from the KEK with HKDF and the blob id, with a random nonce and
+  the blob id as associated data, so a wrapped key moved to another row
+  does not unwrap. Deriving the wrapping key per blob keeps every AES-GCM
+  key to one message, so the 2^32 random nonces NIST allows under one key
+  are never approached, however many blobs a KEK wraps. The wrapped key
+  and the `kek_id` are stored on the blob row. Several KEKs live in config: `encryption.current_kek` wraps new keys
   and the row's `kek_id` picks the one that unwraps, so a new KEK is a
   config change. Retiring an old one means rewrapping the keys it wraps, a
   database update with zero bucket traffic, for which agrafe has no command.
