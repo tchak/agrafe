@@ -81,12 +81,15 @@ pub fn refine(declared: &str, sniffed: &str) -> Option<&'static str> {
     }
 }
 
+/// The content type that declares nothing, compatible with any bytes.
+pub const OCTET_STREAM: &str = "application/octet-stream";
+
 /// Whether bytes sniffed as `sniffed` may be served as `declared`.
 pub fn compatible(declared: &str, sniffed: &str) -> bool {
-    if declared == "application/octet-stream" {
+    let d = canonical(declared);
+    if d == OCTET_STREAM {
         return true;
     }
-    let d = canonical(declared);
     let d = base(d).unwrap_or(d);
     let s = canonical(sniffed);
     if d == s {
@@ -135,6 +138,8 @@ fn has_magic(mime: &str) -> bool {
 /// admits.
 pub fn canonical(mime: &str) -> &str {
     match mime {
+        // S3's spelling, which SDKs pass on.
+        "binary/octet-stream" => OCTET_STREAM,
         "image/jpg" | "image/pjpeg" => "image/jpeg",
         "image/x-icon" | "image/icon" => "image/vnd.microsoft.icon",
         "image/x-ms-bmp" => "image/bmp",
@@ -482,6 +487,7 @@ mod tests {
         assert!(!compatible("text/plain", "image/png"));
 
         assert!(compatible("application/octet-stream", "image/png"));
+        assert!(compatible("binary/octet-stream", "image/png"));
         assert!(compatible("text/rtf", "application/rtf"));
     }
 

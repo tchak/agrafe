@@ -846,7 +846,8 @@ aliases of its type and not its variants (listing `image/heif` does not
 admit `image/heic`), so a list says what it admits.
 An allowlist, not a blocklist: a blocklist misses what nobody thought to
 list. The bytes are checked too where the declaration says nothing:
-`application/octet-stream` is compatible with any bytes, so a blob
+`application/octet-stream` (or `binary/octet-stream`, S3's spelling of
+it) is compatible with any bytes, so a blob
 declared as such must sniff as a listed type or as something packaged in
 one (listing ZIP admits a DOCX). Otherwise declaring it would get any
 file past the list. Not the other way round, and with none of the

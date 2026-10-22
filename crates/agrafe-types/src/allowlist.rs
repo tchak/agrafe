@@ -4,9 +4,7 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
-use crate::sniff;
-
-const OCTET_STREAM: &str = "application/octet-stream";
+use crate::sniff::{self, OCTET_STREAM};
 
 /// A list of content types, exact or `type/*`, that the files a blob is
 /// created for must have. Empty, the default, accepts any. An exact entry
@@ -55,7 +53,7 @@ impl Allowlist {
     /// `application/octet-stream` admits the files nothing recognises, not
     /// every file.
     pub fn allows_sniffed(&self, declared: &str, sniffed: &str) -> bool {
-        if self.is_empty() || declared != OCTET_STREAM {
+        if self.is_empty() || sniff::canonical(declared) != OCTET_STREAM {
             return true;
         }
         let s = sniff::canonical(sniffed);
@@ -183,6 +181,10 @@ mod tests {
         ]);
         assert!(list.allows(OCTET_STREAM));
         assert!(list.allows_sniffed(OCTET_STREAM, "application/pdf"));
+        // S3's spelling declares as little.
+        assert!(list.allows("binary/octet-stream"));
+        assert!(list.allows_sniffed("binary/octet-stream", "application/pdf"));
+        assert!(!list.allows_sniffed("binary/octet-stream", "text/html"));
         assert!(list.allows_sniffed(OCTET_STREAM, "image/png"));
         // A ZIP entry covers what is packaged in one.
         assert!(list.allows_sniffed(
