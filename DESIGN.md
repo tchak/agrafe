@@ -2362,7 +2362,11 @@ time. Its soft limit sends `SIGXCPU` and the hard one, a second later,
 such rather than as a fault of the file. (With the two limits equal the
 kernel checks the hard one first and sends `SIGKILL`, which says
 nothing.) The address space limit is enforced by Linux and ignored by
-macOS, so development machines get only the timeout.
+macOS, so development machines get only the timeout. The child's stderr
+is a pipe, which no rlimit bounds: the worker reads it as it is written
+and keeps the last 4 KiB, so a decoder that prints an error per broken
+object of a hostile file costs the worker 4 KiB, not the flood. A test
+floods it with 32 MiB and checks the worker's high-water mark.
 
 **Landlock**, through the `landlock` crate, maintained by the feature's
 kernel author. The child's filesystem is the *system set*, read and

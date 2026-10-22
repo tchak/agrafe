@@ -430,43 +430,77 @@ async fn run_with(
         .kill_on_drop(true);
     #[cfg(unix)]
     inner.process_group(0);
-    let child = inner.spawn().map_err(|source| Error::Spawn {
+    let mut child = inner.spawn().map_err(|source| Error::Spawn {
         program: program.clone(),
         source,
     })?;
     let pid = child.id();
-    let outcome = match tokio::time::timeout(config.timeout, child.wait_with_output()).await {
-        Ok(Ok(output)) if output.status.success() => Outcome::Success,
+    // The exit and the end of stderr, read as it comes so that a tool
+    // that floods it costs this process 4 KiB, not the flood.
+    let stderr = child.stderr.take();
+    let waited = async {
+        let (status, stderr) = tokio::join!(child.wait(), stderr_tail(stderr));
+        Ok::<_, std::io::Error>((status?, stderr?))
+    };
+    let outcome = match tokio::time::timeout(config.timeout, waited).await {
+        Ok(Ok((status, _))) if status.success() => Outcome::Success,
         // CPU time ran out before the wall clock did, which a process on
         // several threads does: a timeout all the same, not a fault of the
         // file. A launcher reports its child's death its own way, so this
         // tells a direct tool's; bubblewrap reports it as the shell does,
         // 128 plus the signal.
-        Ok(Ok(output)) if cpu_exhausted(&output.status, layers.bubblewrap) => Outcome::TimedOut,
-        Ok(Ok(output)) => {
-            let stderr = tail(&output.stderr);
+        Ok(Ok((status, _))) if cpu_exhausted(&status, layers.bubblewrap) => Outcome::TimedOut,
+        Ok(Ok((status, stderr))) => {
+            let stderr = tail(&stderr);
             // `bwrap` failed before the program ran: a host matter.
             if layers.bubblewrap
-                && output.status.code() == Some(1)
+                && status.code() == Some(1)
                 && let Some(err) = bubblewrap_failure(program.clone(), &stderr)
             {
                 return Err(err);
             }
             Outcome::Failed {
-                code: output.status.code(),
-                status: output.status.to_string(),
+                code: status.code(),
+                status: status.to_string(),
                 stderr,
             }
         }
-        Ok(Err(source)) => return Err(Error::Wait { program, source }),
-        // Dropping the child on timeout kills it; its process group goes
-        // with it, for a program that is a launcher around another.
+        // The child may still be running: it goes with its group, as at
+        // the timeout.
+        Ok(Err(source)) => {
+            kill_group(pid);
+            return Err(Error::Wait { program, source });
+        }
+        // The child is killed with its process group, for a program that
+        // is a launcher around another, and dropped after.
         Err(_) => {
             kill_group(pid);
             Outcome::TimedOut
         }
     };
     Ok((outcome, applied))
+}
+
+/// The last [`STDERR_KEEP`] bytes of what the child writes on stderr,
+/// read as it is written: the pipe is drained to the end so that the
+/// child never blocks on it, and nothing past the tail is kept.
+async fn stderr_tail(stderr: Option<tokio::process::ChildStderr>) -> std::io::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt as _;
+    let Some(mut stderr) = stderr else {
+        return Ok(Vec::new());
+    };
+    let mut kept = Vec::with_capacity(2 * STDERR_KEEP);
+    let mut chunk = [0u8; STDERR_KEEP];
+    loop {
+        let read = stderr.read(&mut chunk).await?;
+        if read == 0 {
+            return Ok(kept);
+        }
+        kept.extend_from_slice(&chunk[..read]);
+        if kept.len() > STDERR_KEEP {
+            kept.drain(..kept.len() - STDERR_KEEP);
+        }
+    }
 }
 
 /// Kill the process group the child leads, so that a program that forked
@@ -1230,6 +1264,44 @@ mod tests {
         assert!(
             written <= ByteSize::kib(64).as_u64(),
             "{written} bytes written"
+        );
+    }
+
+    /// A tool that floods stderr costs this process the tail it keeps,
+    /// not the flood: 32 MiB written, the last 4 KiB kept, and the
+    /// process's high-water mark where it was.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn stderr_is_kept_by_its_tail_alone() {
+        fn high_water_mark() -> u64 {
+            let status = std::fs::read_to_string("/proc/self/status").unwrap();
+            let line = status.lines().find(|l| l.starts_with("VmHWM:")).unwrap();
+            let kib: u64 = line.split_whitespace().nth(1).unwrap().parse().unwrap();
+            kib << 10
+        }
+        let config = Config {
+            timeout: Duration::from_secs(10),
+            ..config()
+        };
+        let before = high_water_mark();
+        let flood = sh("head -c 33554432 /dev/zero | tr '\\0' a >&2; echo end >&2; exit 3");
+        match run(flood, &config).await.unwrap() {
+            Outcome::Failed { code, stderr, .. } => {
+                assert_eq!(code, Some(3));
+                // The tail, less the newline `tail` trims.
+                assert_eq!(stderr.len(), STDERR_KEEP - 1);
+                assert!(
+                    stderr.ends_with("aaaend"),
+                    "{}",
+                    &stderr[stderr.len() - 16..]
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        let grown = high_water_mark().saturating_sub(before);
+        assert!(
+            grown < ByteSize::mib(8).as_u64(),
+            "the high-water mark grew by {grown} bytes"
         );
     }
 
