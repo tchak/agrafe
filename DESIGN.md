@@ -1659,8 +1659,9 @@ sync-only seek make range requests awkward.
   operations, one could be added behind `Kek` later. A malformed file is
   reported by line number, never by quoting the line: the error lands in
   the journal and the line is a key, likely one just mistyped at the
-  prompt. The text and every intermediate copy of the secrets are wiped
-  once the `Kek`s are built.
+  prompt. The file's text, the parsed secrets and their decoded bytes are
+  wiped once the `Kek`s are built; the buffers the TOML parser passes
+  through on the way are not agrafe's to wipe.
 - The stream's associated data is the object key, so a ciphertext copied to
   another key does not decrypt.
 - Payload follows **Tink's AES-GCM-HKDF-STREAMING** wire format. It is a

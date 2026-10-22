@@ -158,7 +158,8 @@ fn parse_kek(id: &str, secret: &Base64Secret) -> Result<Kek, ConfigError> {
 /// up in the journal, and the content is a key, most likely one a human
 /// just mistyped at a prompt. The text is wiped once parsed, and so are
 /// the parsed secrets and their decoded bytes; only the `Kek`s outlive
-/// this, and those wipe themselves too.
+/// this, and those wipe themselves too. What the TOML parser copies on
+/// the way is beyond reach.
 fn read_keks_file(path: &Path) -> Result<HashMap<String, Base64Secret>, ConfigError> {
     let text = std::fs::read_to_string(path)
         .map(Zeroizing::new)
