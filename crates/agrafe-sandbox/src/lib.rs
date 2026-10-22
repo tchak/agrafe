@@ -1637,6 +1637,56 @@ mod tests {
             ));
         }
 
+        /// `media.sandbox.readable`, the operator's paths, are readable
+        /// by every command and read-only, like a declared path.
+        #[tokio::test]
+        async fn the_operator_paths_are_readable_and_read_only() {
+            let Some(config) = confined().await else {
+                return;
+            };
+            let fonts = tempdir();
+            std::fs::write(fonts.path().join("font"), b"glyphs").unwrap();
+            let config = Config {
+                readable: vec![fonts.path().to_path_buf()],
+                ..config
+            };
+            let work = tempdir();
+
+            let mut cat = Command::new("cat");
+            cat.arg(fonts.path().join("font")).writable(work.path());
+            assert!(matches!(run(cat, &config).await.unwrap(), Outcome::Success));
+
+            let mut write = sh("echo x > \"$1\"");
+            write
+                .arg("sh")
+                .arg(fonts.path().join("out"))
+                .writable(work.path());
+            assert!(matches!(
+                run(write, &config).await.unwrap(),
+                Outcome::Failed { .. }
+            ));
+            assert!(!fonts.path().join("out").exists());
+        }
+
+        /// Under confinement the home and the cache are the writable
+        /// directory, so that what a library writes there goes with the
+        /// job instead of failing on a home the child cannot write.
+        #[tokio::test]
+        async fn the_home_is_the_writable_directory() {
+            let Some(config) = confined().await else {
+                return;
+            };
+            let work = tempdir();
+            let mut home = sh(
+                "test \"$HOME\" = \"$1\" && test \"$XDG_CACHE_HOME\" = \"$1\" \
+                               && touch \"$HOME/cache\"",
+            );
+            home.arg("sh").arg(work.path()).writable(work.path());
+            let outcome = run(home, &config).await.unwrap();
+            assert!(matches!(outcome, Outcome::Success), "{outcome:?}");
+            assert!(work.path().join("cache").exists());
+        }
+
         #[tokio::test]
         async fn connects_are_refused() {
             let Some(config) = filtered().await else {
@@ -2123,6 +2173,47 @@ socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                 Outcome::Success
             ));
             assert!(work.path().join("sub/out").exists());
+        }
+
+        /// The operator's paths are bound read-only, and the home is the
+        /// writable directory, as under Landlock.
+        #[tokio::test]
+        async fn the_operator_paths_and_the_home_are_as_under_landlock() {
+            let Some(config) = wrapped().await else {
+                return;
+            };
+            let fonts = tempdir();
+            std::fs::write(fonts.path().join("font"), b"glyphs").unwrap();
+            let config = Config {
+                readable: vec![fonts.path().to_path_buf()],
+                ..config
+            };
+            let work = tempdir();
+
+            let mut cat = Command::new("cat");
+            cat.arg(fonts.path().join("font")).writable(work.path());
+            assert!(matches!(run(cat, &config).await.unwrap(), Outcome::Success));
+            let mut write = sh("echo x > \"$1\"");
+            write
+                .arg("sh")
+                .arg(fonts.path().join("out"))
+                .writable(work.path());
+            match run(write, &config).await.unwrap() {
+                Outcome::Failed { stderr, .. } => {
+                    assert!(stderr.contains("Read-only file system"), "{stderr}");
+                }
+                other => panic!("{other:?}"),
+            }
+            assert!(!fonts.path().join("out").exists());
+
+            let mut home = sh(
+                "test \"$HOME\" = \"$1\" && test \"$XDG_CACHE_HOME\" = \"$1\" \
+                               && touch \"$HOME/cache\"",
+            );
+            home.arg("sh").arg(work.path()).writable(work.path());
+            let outcome = run(home, &config).await.unwrap();
+            assert!(matches!(outcome, Outcome::Success), "{outcome:?}");
+            assert!(work.path().join("cache").exists());
         }
 
         /// The network namespace has loopback alone, with nothing

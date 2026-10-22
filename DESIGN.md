@@ -2656,8 +2656,9 @@ system set fails the deployment instead of every thumbnail.
 *Tests* in `agrafe-sandbox` assert what is refused: a read outside the
 granted directories, a write outside the writable one, a `connect` to a
 listening socket on localhost, `unshare`, `setsid` and `setpgid`, the
-worker's limits, priority, affinity and I/O class, and that threads
-still work and a spawn stays cheap. They skip with a
+worker's limits, priority, affinity and I/O class; and what is granted:
+`media.sandbox.readable` reads and does not write, the home is the work
+directory, threads still work and a spawn stays cheap. They skip with a
 message where the kernel cannot confine, except under
 `AGRAFE_SANDBOX_REQUIRED=1`, which CI sets so a regression is not a
 green empty suite. The integration suite runs under
