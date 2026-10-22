@@ -20,7 +20,7 @@ libc = "0.2.191"
 serde = { version = "1.0.229", features = ["derive"] }
 tempfile = "3.27.0"
 thiserror = "2.0.21"
-tokio = { version = "1.54.0", features = ["process", "time", "io-util"] }
+tokio = { version = "1.54.0", features = ["process", "time", "io-util", "macros"] }
 tracing = "0.1.44"
 
 [dev-dependencies]

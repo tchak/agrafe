@@ -126,7 +126,7 @@ impl Plan {
     /// between `fork` and `exec`: nothing here allocates or takes a lock
     /// on the happy path. A layer that fails is skipped unless strict.
     ///
-    /// The ruleset is taken, not cloned: a [`Command`](crate::Command) is
+    /// The ruleset is taken, not cloned: a [`Command`] is
     /// spawned once, so the closure runs once, and `restrict_self`
     /// consumes it.
     pub(crate) fn install(&mut self) -> io::Result<()> {
