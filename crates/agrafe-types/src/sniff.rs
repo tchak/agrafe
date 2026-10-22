@@ -20,6 +20,14 @@ pub const SNIFF_LEN: usize = 8 * 1024;
 /// 97-2003 formats, Outlook messages, Visio and Publisher files.
 const OLE: &str = "application/x-ole-storage";
 
+/// The content type of a ZIP archive, the container of the Office Open
+/// XML and OpenDocument packages among others.
+const ZIP: &str = "application/zip";
+
+/// The content type of an XML document, the container of SVG, GPX, KML and
+/// every `+xml` type.
+const XML: &str = "text/xml";
+
 /// What the first bytes of an upload look like, if recognisable. JSON has
 /// no magic, but a JSON document that opens on a Feature or a
 /// FeatureCollection is a GeoJSON one, and is sniffed as such so that a
@@ -31,11 +39,17 @@ const OLE: &str = "application/x-ole-storage";
 /// An OLE compound file sniffs as the generic storage: without its `std`
 /// feature, which would parse the file's directory in-process, `infer`
 /// calls every one of them a Word document, an Excel workbook, an Outlook
-/// message and a Visio drawing alike.
+/// message and a Visio drawing alike. The Excel and PowerPoint types are
+/// remapped too, so that the feature flipping on through unification
+/// would cost the in-process parse and nothing else.
 pub fn sniff(head: &[u8]) -> Option<&'static str> {
     let inferred = infer::get(head).map(|kind| kind.mime_type());
     match inferred {
-        Some("application/msword") => return Some(OLE),
+        Some(
+            "application/msword" | "application/vnd.ms-excel" | "application/vnd.ms-powerpoint",
+        ) => {
+            return Some(OLE);
+        }
         Some("application/zip") if kml::looks_like_kmz(head) => return Some(KMZ),
         Some("text/xml") | None => {}
         Some(other) => return Some(other),
@@ -67,12 +81,15 @@ pub fn refine(declared: &str, sniffed: &str) -> Option<&'static str> {
     }
 }
 
+/// The content type that declares nothing, compatible with any bytes.
+pub const OCTET_STREAM: &str = "application/octet-stream";
+
 /// Whether bytes sniffed as `sniffed` may be served as `declared`.
 pub fn compatible(declared: &str, sniffed: &str) -> bool {
-    if declared == "application/octet-stream" {
+    let d = canonical(declared);
+    if d == OCTET_STREAM {
         return true;
     }
-    let d = canonical(declared);
     let d = base(d).unwrap_or(d);
     let s = canonical(sniffed);
     if d == s {
@@ -89,16 +106,41 @@ pub fn compatible(declared: &str, sniffed: &str) -> bool {
     if s == GPX || s == KML {
         return d.starts_with("text/");
     }
-    // Text sniffers (HTML, shell scripts, XML) are heuristics; any text
-    // declaration covers them.
-    d.starts_with("text/") && s.starts_with("text/")
+    // The text sniffers (HTML, XML, shell scripts) are heuristics on the
+    // first bytes: an SVG that opens on a comment sniffs as HTML, a script
+    // declared as JavaScript as a shell script. They contradict a
+    // declaration only when that one has magic of its own, since its real
+    // bytes would have sniffed as it.
+    s.starts_with("text/") && !has_magic(d)
 }
 
-/// Collapse aliases onto one spelling.
+/// Whether a file of this type opens on bytes the sniffer recognises: a
+/// type `infer` has a matcher for, or one packaged in a ZIP or an OLE
+/// compound file. The XML-packaged types open on text, like JSON, scripts
+/// and everything the sniffer does not know; so do the text sniffers'
+/// own types, which are heuristics and not magic.
+fn has_magic(mime: &str) -> bool {
+    if mime.starts_with("text/") {
+        return false;
+    }
+    match container(mime) {
+        Some(XML) => false,
+        Some(_) => true,
+        None => infer::is_mime_supported(mime),
+    }
+}
+
+/// Collapse the spellings of one format onto one. Only spellings: a
+/// format the sniffer reports as another (HEIC as HEIF, WOFF2 as WOFF) is
+/// a variant, [`base`]'s, and a format packaged in another (an APK in a
+/// ZIP) is [`container`]'s. The allowlist and the category are on the
+/// canonical spelling, so what is collapsed here is what a list entry
+/// admits.
 pub fn canonical(mime: &str) -> &str {
     match mime {
+        // S3's spelling, which SDKs pass on.
+        "binary/octet-stream" => OCTET_STREAM,
         "image/jpg" | "image/pjpeg" => "image/jpeg",
-        "image/heic" | "image/heic-sequence" | "image/heif-sequence" => "image/heif",
         "image/x-icon" | "image/icon" => "image/vnd.microsoft.icon",
         "image/x-ms-bmp" => "image/bmp",
         "image/x-tiff" => "image/tiff",
@@ -108,7 +150,6 @@ pub fn canonical(mime: &str) -> &str {
         "audio/flac" => "audio/x-flac",
         "audio/aiff" => "audio/x-aiff",
         "video/x-m4v" => "video/mp4",
-        "video/x-matroska" => "video/webm",
         "video/avi" | "video/msvideo" => "video/x-msvideo",
         "application/x-zip-compressed" => "application/zip",
         "application/x-rar-compressed" | "application/x-rar" => "application/vnd.rar",
@@ -120,14 +161,12 @@ pub fn canonical(mime: &str) -> &str {
         "application/x-msword" => "application/msword",
         "text/rtf" => "application/rtf",
         "application/x-sqlite3" => "application/vnd.sqlite3",
-        "font/ttf"
-        | "font/otf"
-        | "font/sfnt"
-        | "application/x-font-ttf"
-        | "application/x-font-opentype" => "application/font-sfnt",
-        "font/woff" | "font/woff2" => "application/font-woff",
-        "application/java-archive" | "application/x-java-archive" => "application/java",
-        "application/vnd.android.package-archive" => "application/zip",
+        // The names `infer` reports fonts under predate RFC 8081.
+        "font/sfnt" => "application/font-sfnt",
+        "font/woff" => "application/font-woff",
+        "application/x-font-ttf" => "font/ttf",
+        "application/x-font-opentype" => "font/otf",
+        "application/x-java-archive" => "application/java-archive",
         other => other,
     }
 }
@@ -135,14 +174,20 @@ pub fn canonical(mime: &str) -> &str {
 /// The format the sniffer reports for a variant it cannot tell apart from
 /// it: a macro-enabled or template Office Open XML file sniffs as the
 /// plain document, workbook or presentation, an OpenDocument template or
-/// master as its document. The declared variant is then checked as that
-/// format, so it is compatible with what its base is compatible with and
-/// a sibling of what its base is a sibling of.
-pub(crate) fn base(mime: &str) -> Option<&'static str> {
+/// master as its document, a HEIC image as HEIF, a TrueType or OpenType
+/// font as the SFNT container, a WOFF2 font as WOFF. The declared variant
+/// is then checked as that format, so it is compatible with what its base
+/// is compatible with and a sibling of what its base is a sibling of. A
+/// variant is not an alias: a list that names the base does not admit it,
+/// and the renderer plans it as its base.
+pub fn base(mime: &str) -> Option<&'static str> {
     const DOCX: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
     const XLSX: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
     const PPTX: &str = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
     match mime {
+        "image/heic" | "image/heic-sequence" | "image/heif-sequence" => Some("image/heif"),
+        "font/ttf" | "font/otf" => Some("application/font-sfnt"),
+        "font/woff2" => Some("application/font-woff"),
         "application/vnd.ms-word.document.macroenabled.12"
         | "application/vnd.openxmlformats-officedocument.wordprocessingml.template"
         | "application/vnd.ms-word.template.macroenabled.12" => Some(DOCX),
@@ -175,8 +220,6 @@ pub(crate) fn base(mime: &str) -> Option<&'static str> {
 
 /// The generic format a specific one is packaged in.
 pub(crate) fn container(mime: &str) -> Option<&'static str> {
-    const ZIP: &str = "application/zip";
-    const XML: &str = "text/xml";
     match mime {
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -204,7 +247,8 @@ pub(crate) fn container(mime: &str) -> Option<&'static str> {
         | "application/oxps"
         | "application/vnd.google-earth.kmz"
         | "application/epub+zip"
-        | "application/java"
+        | "application/java-archive"
+        | "application/vnd.android.package-archive"
         | "application/x-google-chrome-extension"
         | "image/openraster" => Some(ZIP),
         "application/msword"
@@ -440,16 +484,123 @@ mod tests {
         ));
         assert!(!compatible("application/msword", "application/pdf"));
 
-        // Text is never rejected on a text heuristic.
-        assert!(compatible("text/plain", "text/html"));
-        assert!(compatible("text/csv", "text/x-shellscript"));
-        assert!(compatible("image/svg+xml", "text/xml"));
-        assert!(compatible("application/xml", "text/xml"));
         assert!(!compatible("text/plain", "image/png"));
 
         assert!(compatible("application/octet-stream", "image/png"));
-        assert!(compatible("font/ttf", "application/font-sfnt"));
+        assert!(compatible("binary/octet-stream", "image/png"));
         assert!(compatible("text/rtf", "application/rtf"));
+    }
+
+    /// What the sniffer reports a format as is not a spelling of it: the
+    /// declared variant is checked as its base, and nothing else is.
+    #[test]
+    fn families_the_sniffer_cannot_tell_apart() {
+        assert!(compatible("image/heic", "image/heif"));
+        assert!(compatible("image/heic-sequence", "image/heif"));
+        assert!(compatible("image/heif", "image/heif"));
+        assert!(!compatible("image/heic", "image/png"));
+        assert!(compatible("font/ttf", "application/font-sfnt"));
+        assert!(compatible("font/otf", "application/font-sfnt"));
+        assert!(compatible(
+            "application/x-font-ttf",
+            "application/font-sfnt"
+        ));
+        assert!(compatible("font/sfnt", "application/font-sfnt"));
+        assert!(compatible("font/woff", "application/font-woff"));
+        assert!(compatible("font/woff2", "application/font-woff"));
+        assert!(!compatible("font/woff2", "application/font-sfnt"));
+        // Packaged in a ZIP, like a DOCX.
+        assert!(compatible(
+            "application/vnd.android.package-archive",
+            "application/zip"
+        ));
+        assert!(!compatible(
+            "application/vnd.android.package-archive",
+            "application/pdf"
+        ));
+        // A JAR is a ZIP; `application/java`, which `infer` reports for a
+        // class file, is neither a JAR nor a ZIP.
+        assert_eq!(
+            sniff(b"\xca\xfe\xba\xbe\x00\x00\x00\x41\x00\x10"),
+            Some("application/java")
+        );
+        assert!(compatible("application/java-archive", "application/zip"));
+        assert!(compatible("application/x-java-archive", "application/zip"));
+        assert!(!compatible("application/java-archive", "application/java"));
+        assert!(!compatible("application/zip", "application/java"));
+        // `infer` tells a Matroska file from a WebM one by its doctype, so
+        // the one is not the other.
+        assert!(compatible("video/x-matroska", "video/x-matroska"));
+        assert!(!compatible("video/webm", "video/x-matroska"));
+        assert!(!compatible("video/x-matroska", "video/webm"));
+        for (variant, base) in [
+            ("image/heic", "image/heif"),
+            ("font/ttf", "application/font-sfnt"),
+            ("font/woff2", "application/font-woff"),
+            ("application/vnd.android.package-archive", "application/zip"),
+            ("video/x-matroska", "video/webm"),
+        ] {
+            assert_ne!(canonical(variant), base, "{variant} is not a spelling");
+        }
+    }
+
+    /// The text sniffers are heuristics on the first bytes: they
+    /// contradict a declaration only when its real bytes would have
+    /// sniffed as something, so a type with magic of its own.
+    #[test]
+    fn text_heuristics_contradict_only_magic() {
+        // What the heuristics fire on.
+        assert_eq!(
+            sniff(b"<!-- icon -->\n<svg xmlns=\"http://www.w3.org/2000/svg\"/>"),
+            Some("text/html")
+        );
+        assert_eq!(sniff(b"<!DOCTYPE html>\n<html/>"), Some("text/html"));
+        assert_eq!(sniff(b"#!/bin/sh\necho hi\n"), Some("text/x-shellscript"));
+        assert_eq!(sniff(b"<?xml version=\"1.0\"?>\n<svg/>"), Some("text/xml"));
+
+        // Text, and the types that open on text: no magic to contradict.
+        for (declared, sniffed) in [
+            ("text/plain", "text/html"),
+            ("text/csv", "text/x-shellscript"),
+            ("text/html", "text/x-shellscript"),
+            ("image/svg+xml", "text/xml"),
+            ("image/svg+xml", "text/html"),
+            ("application/xml", "text/xml"),
+            ("application/xhtml+xml", "text/html"),
+            ("application/gpx+xml", "text/html"),
+            ("application/vnd.google-earth.kml+xml", "text/html"),
+            ("application/json", "text/html"),
+            ("application/x-sh", "text/x-shellscript"),
+            ("application/x-shellscript", "text/x-shellscript"),
+            ("application/javascript", "text/x-shellscript"),
+            ("application/x-python", "text/x-shellscript"),
+            ("application/octet-stream", "text/html"),
+        ] {
+            assert!(compatible(declared, sniffed), "{declared} as {sniffed}");
+        }
+
+        // A type with magic, `infer`'s or a package's, is another kind of
+        // file when its bytes sniff as text.
+        let docx = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        for (declared, sniffed) in [
+            ("image/png", "text/html"),
+            ("image/jpg", "text/xml"),
+            ("audio/mpeg", "text/x-shellscript"),
+            ("video/mp4", "text/html"),
+            ("font/ttf", "text/x-shellscript"),
+            ("application/pdf", "text/x-shellscript"),
+            ("application/zip", "text/html"),
+            ("application/gzip", "text/html"),
+            ("application/rtf", "text/html"),
+            (docx, "text/html"),
+            ("application/vnd.ms-excel.sheet.macroenabled.12", "text/xml"),
+            ("application/msword", "text/html"),
+            // Packaged in a ZIP, unknown to `infer`.
+            ("application/vnd.oasis.opendocument.graphics", "text/html"),
+            ("application/vnd.google-earth.kmz", "text/xml"),
+        ] {
+            assert!(!compatible(declared, sniffed), "{declared} as {sniffed}");
+        }
     }
 
     #[test]
@@ -544,6 +695,17 @@ mod tests {
     fn any_ole_file_sniffs_as_the_storage() {
         let mut head = vec![0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
         head.resize(SNIFF_LEN, 0);
+        // Without its `std` feature `infer` calls every OLE signature a
+        // Word document; with it, it parses the directory in-process with
+        // `cfb`, a parser on hostile bytes, which fails on this head and
+        // falls through to the MSI matcher. The feature is off in
+        // `Cargo.toml`, and unification from another crate in the
+        // workspace would switch it on silently: this is the alarm.
+        assert_eq!(
+            infer::get(&head).map(|kind| kind.mime_type()),
+            Some("application/msword"),
+            "infer's `std` feature is on: an OLE file is parsed in-process"
+        );
         assert_eq!(sniff(&head), Some(OLE));
         for declared in [
             "application/msword",

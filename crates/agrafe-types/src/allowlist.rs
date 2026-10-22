@@ -4,9 +4,7 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
-use crate::sniff;
-
-const OCTET_STREAM: &str = "application/octet-stream";
+use crate::sniff::{self, OCTET_STREAM};
 
 /// A list of content types, exact or `type/*`, that the files a blob is
 /// created for must have. Empty, the default, accepts any. An exact entry
@@ -55,7 +53,7 @@ impl Allowlist {
     /// `application/octet-stream` admits the files nothing recognises, not
     /// every file.
     pub fn allows_sniffed(&self, declared: &str, sniffed: &str) -> bool {
-        if self.is_empty() || declared != OCTET_STREAM {
+        if self.is_empty() || sniff::canonical(declared) != OCTET_STREAM {
             return true;
         }
         let s = sniff::canonical(sniffed);
@@ -86,7 +84,7 @@ fn parse(raw: &str) -> Result<Entry, String> {
     let invalid = || format!("`{raw}` is not a content type (`type/subtype` or `type/*`)");
     let (major, minor) = lower.split_once('/').ok_or_else(invalid)?;
     if !token(major) {
-        return Err(if major == "*" {
+        return Err(if major == "*" && minor == "*" {
             format!("`{raw}`: leave the list empty to accept any content type")
         } else {
             invalid()
@@ -144,8 +142,24 @@ mod tests {
 
     #[test]
     fn variants_are_not_their_base() {
-        let list = list(&["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"]);
-        assert!(!list.allows("application/vnd.ms-excel.sheet.macroenabled.12"));
+        let xlsx = list(&["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"]);
+        assert!(!xlsx.allows("application/vnd.ms-excel.sheet.macroenabled.12"));
+        // What the sniffer reports a format as, or packages it in, is not
+        // a spelling of it, in either direction.
+        for (one, other) in [
+            ("image/heif", "image/heic"),
+            ("font/woff", "font/woff2"),
+            ("font/ttf", "font/otf"),
+            ("font/sfnt", "font/ttf"),
+            ("video/webm", "video/x-matroska"),
+            ("application/zip", "application/vnd.android.package-archive"),
+        ] {
+            assert!(!list(&[one]).allows(other), "{one} admits {other}");
+            assert!(!list(&[other]).allows(one), "{other} admits {one}");
+        }
+        // A spelling is.
+        assert!(list(&["application/font-woff"]).allows("font/woff"));
+        assert!(list(&["font/ttf"]).allows("application/x-font-ttf"));
     }
 
     #[test]
@@ -167,6 +181,10 @@ mod tests {
         ]);
         assert!(list.allows(OCTET_STREAM));
         assert!(list.allows_sniffed(OCTET_STREAM, "application/pdf"));
+        // S3's spelling declares as little.
+        assert!(list.allows("binary/octet-stream"));
+        assert!(list.allows_sniffed("binary/octet-stream", "application/pdf"));
+        assert!(!list.allows_sniffed("binary/octet-stream", "text/html"));
         assert!(list.allows_sniffed(OCTET_STREAM, "image/png"));
         // A ZIP entry covers what is packaged in one.
         assert!(list.allows_sniffed(
@@ -211,6 +229,9 @@ mod tests {
         let xlsm = list(&["application/vnd.ms-excel.sheet.macroenabled.12"]);
         assert!(xlsm.allows_sniffed(OCTET_STREAM, XLSX));
         assert!(!xlsm.allows_sniffed(OCTET_STREAM, DOCX));
+        assert!(list(&["image/heic"]).allows_sniffed(OCTET_STREAM, "image/heif"));
+        assert!(list(&["font/woff2"]).allows_sniffed(OCTET_STREAM, "application/font-woff"));
+        assert!(!list(&["font/woff2"]).allows_sniffed(OCTET_STREAM, "application/font-sfnt"));
         // Every OLE file sniffs as the storage, an MSI installer like a Word
         // 97 document, so a Word 97 entry admits none of them undeclared;
         // the storage itself can be listed.
@@ -237,6 +258,8 @@ mod tests {
         }
         let err = Allowlist::try_from(vec!["*/*".to_string()]).unwrap_err();
         assert!(err.contains("leave the list empty"), "{err}");
+        let err = Allowlist::try_from(vec!["*/pdf".to_string()]).unwrap_err();
+        assert!(err.contains("is not a content type"), "{err}");
     }
 
     #[test]

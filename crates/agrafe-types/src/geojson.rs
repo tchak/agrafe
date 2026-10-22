@@ -9,35 +9,66 @@ pub const GEOJSON: &str = "application/geo+json";
 const HEAD_LEN: usize = 1024;
 
 /// Whether a JSON document is a GeoJSON one: an object whose first KiB
-/// carries `"type": "FeatureCollection"` or `"type": "Feature"`. A bare
-/// geometry at the top level is not recognised here, only when declared.
+/// carries `"type": "FeatureCollection"` or `"type": "Feature"` among its
+/// own members. A bare geometry at the top level is not recognised here,
+/// only when declared, and neither is a `type` member of a nested object,
+/// which is any JSON's to have.
 pub fn looks_like_geojson(head: &[u8]) -> bool {
     let head = &head[..head.len().min(HEAD_LEN)];
     let body = head.strip_prefix(b"\xef\xbb\xbf").unwrap_or(head);
-    let mut i = 0;
-    while i < body.len() && body[i].is_ascii_whitespace() {
-        i += 1;
-    }
-    if body.get(i) != Some(&b'{') {
+    let Some(mut rest) = body.trim_ascii_start().strip_prefix(b"{") else {
         return false;
-    }
-    let mut rest = &body[i..];
-    while let Some(at) = find(rest, b"\"type\"") {
-        rest = &rest[at + b"\"type\"".len()..];
-        let value = rest.trim_ascii_start();
-        let Some(value) = value.strip_prefix(b":") else {
-            continue;
-        };
-        let value = value.trim_ascii_start();
-        if value.starts_with(b"\"FeatureCollection\"") || value.starts_with(b"\"Feature\"") {
-            return true;
+    };
+    // Strings are stepped over whole, so a brace or a `"type"` inside one
+    // counts for nothing; a member name is looked at on the top level
+    // only, and only when a colon follows it.
+    let mut depth = 1usize;
+    while let Some((&byte, after)) = rest.split_first() {
+        rest = after;
+        match byte {
+            b'"' => {
+                let Some((string, after)) = string(rest) else {
+                    return false;
+                };
+                rest = after;
+                if depth == 1 && string == b"type" {
+                    let value = rest.trim_ascii_start();
+                    if let Some(value) = value.strip_prefix(b":") {
+                        let value = value.trim_ascii_start();
+                        if value.starts_with(b"\"FeatureCollection\"")
+                            || value.starts_with(b"\"Feature\"")
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+            b'{' | b'[' => depth += 1,
+            b'}' | b']' => {
+                if depth == 1 {
+                    return false;
+                }
+                depth -= 1;
+            }
+            _ => {}
         }
     }
     false
 }
 
-fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|w| w == needle)
+/// The content of the JSON string that opens before `rest`, escapes left
+/// as written, and what follows its closing quote; `None` when it does
+/// not close within `rest`.
+fn string(rest: &[u8]) -> Option<(&[u8], &[u8])> {
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i] {
+            b'\\' => i += 2,
+            b'"' => return Some((&rest[..i], &rest[i + 1..])),
+            _ => i += 1,
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -60,6 +91,23 @@ mod tests {
             br#"{"type": "Point", "coordinates": [1, 2]}"#
         ));
         assert!(!looks_like_geojson(br#"{"kind": "Feature"}"#));
+        // A nested object's `type` is its own; a string may hold anything.
+        assert!(!looks_like_geojson(
+            br#"{"properties": {"type": "Feature"}, "layers": []}"#
+        ));
+        assert!(!looks_like_geojson(
+            br#"{"items": [{"type": "FeatureCollection"}]}"#
+        ));
+        assert!(!looks_like_geojson(
+            br#"{"note": "}, \"type\": \"Feature\"", "kind": "x"}"#
+        ));
+        assert!(looks_like_geojson(
+            br#"{"note": "{\"a\": 1}", "type": "Feature"}"#
+        ));
+        assert!(!looks_like_geojson(br#"{"name": "type", "x": "Feature"}"#));
+        assert!(!looks_like_geojson(br#"{"a": 1} {"type": "Feature"}"#));
+        assert!(!looks_like_geojson(br#"{"type": "Feature"#));
+        assert!(!looks_like_geojson(br#"{"unterminated"#));
         assert!(!looks_like_geojson(br#"["Feature"]"#));
         assert!(!looks_like_geojson(b"type: Feature"));
         assert!(!looks_like_geojson(b""));

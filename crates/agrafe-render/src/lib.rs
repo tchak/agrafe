@@ -353,6 +353,10 @@ pub fn plan(content_type: &str) -> Plan {
             fallback: Some(Fallback::ConvertedFirstPage),
         };
     }
+    // A variant the sniffer cannot tell from its base format, HEIC from
+    // HEIF, renders as that format. The office variants are the table's
+    // above; an add-in, which it leaves out, stays out.
+    let canonical = sniff::base(canonical).unwrap_or(canonical);
     match canonical {
         GEOJSON => Plan {
             picture: &[Source::Map(Format::GeoJson)],
@@ -464,6 +468,8 @@ mod tests {
         for text in [
             "text/plain",
             "application/json",
+            "application/xhtml+xml",
+            "application/x-yaml",
             classify::CSV,
             "text/tab-separated-values",
         ] {

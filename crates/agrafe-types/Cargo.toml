@@ -14,6 +14,9 @@ categories = ["encoding", "parser-implementations"]
 workspace = true
 
 [dependencies]
+# Without `std`: with it, infer parses an OLE file's directory in-process
+# (`cfb`), which `sniff.rs` neither wants nor expects; a test there fails
+# if unification from another crate switches the feature on.
 infer = { version = "0.22.0", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 thiserror = "2.0.21"

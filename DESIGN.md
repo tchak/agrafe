@@ -814,13 +814,27 @@ Content type is mapped to a category at creation and re-checked against sniffed
 magic bytes during upload (`infer`, on the first 8 KiB). A mismatch between
 declared and sniffed type is rejected with `422`. The check is lenient where
 rejecting would be wrong: aliases (`image/jpg`), a declared container of the
-sniffed type in either direction (a DOCX is a ZIP), text sniffers (HTML, XML,
-shell) against any `text/*` declaration, and `application/octet-stream`,
-which declares nothing. Siblings such as DOCX against XLSX are rejected. A
+sniffed type in either direction (a DOCX is a ZIP), the text sniffers (HTML,
+XML, shell) against any declaration without magic of its own, and
+`application/octet-stream`, which declares nothing. The text sniffers are
+heuristics on the first bytes: an SVG that opens on a comment sniffs as
+HTML, a script declared as JavaScript as a shell script. They contradict a
+`text/*`, JSON, script or XML-packaged declaration (SVG, XHTML, GPX) never,
+and a declaration `infer` has a matcher for or that is packaged in a ZIP or
+an OLE file always, since its real bytes would have sniffed as it: a PNG
+declaration on HTML bytes is a mismatch. Siblings such as DOCX against XLSX
+are rejected, and so is the common mislabel of an XLSX declared as
+`application/vnd.ms-excel`, which Excel-centric backends and some browsers
+send for an `.xlsx`: to the sniffer it is another kind of file, and the
+backend declares the type the file has. A
 variant the sniffer cannot tell from its base format is checked as that
 format: a macro-enabled or template Office file sniffs as the plain DOCX,
-XLSX or PPTX, an OpenDocument template or master as its document, so an
-XLSM is accepted on XLSX bytes and refused on DOCX ones. The rules live in
+XLSX or PPTX, an OpenDocument template or master as its document, a HEIC
+image as HEIF, a TrueType or OpenType font as the SFNT container, a WOFF2
+font as WOFF, so an XLSM is accepted on XLSX bytes and refused on DOCX
+ones. A variant is not an alias of its base: aliases are spellings of one
+format (`image/jpg`, `application/x-gzip`), and only those are collapsed
+before the allowlist and the category look at a type. The rules live in
 `sniff.rs`.
 
 **Accepted types.** `upload.content_types` is an installation's
@@ -831,10 +845,12 @@ enforce before it creates the blob. It is checked on the declaration of
 a `raw`, `multipart` or `url` blob at creation, and again at upload in
 case the list changed meanwhile. Generated blobs get their type from the
 service's own build and are not checked. An exact entry takes the
-aliases of its type and not its variants, so a list says what it admits.
+aliases of its type and not its variants (listing `image/heif` does not
+admit `image/heic`), so a list says what it admits.
 An allowlist, not a blocklist: a blocklist misses what nobody thought to
 list. The bytes are checked too where the declaration says nothing:
-`application/octet-stream` is compatible with any bytes, so a blob
+`application/octet-stream` (or `binary/octet-stream`, S3's spelling of
+it) is compatible with any bytes, so a blob
 declared as such must sniff as a listed type or as something packaged in
 one (listing ZIP admits a DOCX). Otherwise declaring it would get any
 file past the list. Not the other way round, and with none of the
@@ -887,7 +903,12 @@ formats (DOC, XLS, PPT), RTF and the macro-enabled, template, slideshow
 and master variants (DOCM, DOTX, XLSM, XLSB, PPSX, POTX, OTT, ODM, …)
 with their base, so an `.xlsm` is not `other` and gets the spreadsheet
 icon and filter. Draw's ODG and OTG are `document`s: pages, with nothing
-closer.
+closer. Every `+json` or `+xml` type is `text` whatever the registry put
+before the suffix (XHTML, RSS, JSON-LD, GeoJSON, GPX, KML), as are JSON
+and the script and configuration types (JavaScript, YAML, TOML, SQL,
+shell, JSON lines), so they get the text sample as a thumbnail; the
+compression formats xz, lzip, lz4 and compress are `archive`s with gzip,
+bzip2 and zstd.
 
 ## Upload pipeline
 
