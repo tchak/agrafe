@@ -814,9 +814,16 @@ Content type is mapped to a category at creation and re-checked against sniffed
 magic bytes during upload (`infer`, on the first 8 KiB). A mismatch between
 declared and sniffed type is rejected with `422`. The check is lenient where
 rejecting would be wrong: aliases (`image/jpg`), a declared container of the
-sniffed type in either direction (a DOCX is a ZIP), text sniffers (HTML, XML,
-shell) against any `text/*` declaration, and `application/octet-stream`,
-which declares nothing. Siblings such as DOCX against XLSX are rejected. A
+sniffed type in either direction (a DOCX is a ZIP), the text sniffers (HTML,
+XML, shell) against any declaration without magic of its own, and
+`application/octet-stream`, which declares nothing. The text sniffers are
+heuristics on the first bytes: an SVG that opens on a comment sniffs as
+HTML, a script declared as JavaScript as a shell script. They contradict a
+`text/*`, JSON, script or XML-packaged declaration (SVG, XHTML, GPX) never,
+and a declaration `infer` has a matcher for or that is packaged in a ZIP or
+an OLE file always, since its real bytes would have sniffed as it: a PNG
+declaration on HTML bytes is a mismatch. Siblings such as DOCX against XLSX
+are rejected. A
 variant the sniffer cannot tell from its base format is checked as that
 format: a macro-enabled or template Office file sniffs as the plain DOCX,
 XLSX or PPTX, an OpenDocument template or master as its document, so an

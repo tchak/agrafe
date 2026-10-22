@@ -20,6 +20,14 @@ pub const SNIFF_LEN: usize = 8 * 1024;
 /// 97-2003 formats, Outlook messages, Visio and Publisher files.
 const OLE: &str = "application/x-ole-storage";
 
+/// The content type of a ZIP archive, the container of the Office Open
+/// XML and OpenDocument packages among others.
+const ZIP: &str = "application/zip";
+
+/// The content type of an XML document, the container of SVG, GPX, KML and
+/// every `+xml` type.
+const XML: &str = "text/xml";
+
 /// What the first bytes of an upload look like, if recognisable. JSON has
 /// no magic, but a JSON document that opens on a Feature or a
 /// FeatureCollection is a GeoJSON one, and is sniffed as such so that a
@@ -89,9 +97,28 @@ pub fn compatible(declared: &str, sniffed: &str) -> bool {
     if s == GPX || s == KML {
         return d.starts_with("text/");
     }
-    // Text sniffers (HTML, shell scripts, XML) are heuristics; any text
-    // declaration covers them.
-    d.starts_with("text/") && s.starts_with("text/")
+    // The text sniffers (HTML, XML, shell scripts) are heuristics on the
+    // first bytes: an SVG that opens on a comment sniffs as HTML, a script
+    // declared as JavaScript as a shell script. They contradict a
+    // declaration only when that one has magic of its own, since its real
+    // bytes would have sniffed as it.
+    s.starts_with("text/") && !has_magic(d)
+}
+
+/// Whether a file of this type opens on bytes the sniffer recognises: a
+/// type `infer` has a matcher for, or one packaged in a ZIP or an OLE
+/// compound file. The XML-packaged types open on text, like JSON, scripts
+/// and everything the sniffer does not know; so do the text sniffers'
+/// own types, which are heuristics and not magic.
+fn has_magic(mime: &str) -> bool {
+    if mime.starts_with("text/") {
+        return false;
+    }
+    match container(mime) {
+        Some(XML) => false,
+        Some(_) => true,
+        None => infer::is_mime_supported(mime),
+    }
 }
 
 /// Collapse aliases onto one spelling.
@@ -175,8 +202,6 @@ pub(crate) fn base(mime: &str) -> Option<&'static str> {
 
 /// The generic format a specific one is packaged in.
 pub(crate) fn container(mime: &str) -> Option<&'static str> {
-    const ZIP: &str = "application/zip";
-    const XML: &str = "text/xml";
     match mime {
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -440,16 +465,70 @@ mod tests {
         ));
         assert!(!compatible("application/msword", "application/pdf"));
 
-        // Text is never rejected on a text heuristic.
-        assert!(compatible("text/plain", "text/html"));
-        assert!(compatible("text/csv", "text/x-shellscript"));
-        assert!(compatible("image/svg+xml", "text/xml"));
-        assert!(compatible("application/xml", "text/xml"));
         assert!(!compatible("text/plain", "image/png"));
 
         assert!(compatible("application/octet-stream", "image/png"));
         assert!(compatible("font/ttf", "application/font-sfnt"));
         assert!(compatible("text/rtf", "application/rtf"));
+    }
+
+    /// The text sniffers are heuristics on the first bytes: they
+    /// contradict a declaration only when its real bytes would have
+    /// sniffed as something, so a type with magic of its own.
+    #[test]
+    fn text_heuristics_contradict_only_magic() {
+        // What the heuristics fire on.
+        assert_eq!(
+            sniff(b"<!-- icon -->\n<svg xmlns=\"http://www.w3.org/2000/svg\"/>"),
+            Some("text/html")
+        );
+        assert_eq!(sniff(b"<!DOCTYPE html>\n<html/>"), Some("text/html"));
+        assert_eq!(sniff(b"#!/bin/sh\necho hi\n"), Some("text/x-shellscript"));
+        assert_eq!(sniff(b"<?xml version=\"1.0\"?>\n<svg/>"), Some("text/xml"));
+
+        // Text, and the types that open on text: no magic to contradict.
+        for (declared, sniffed) in [
+            ("text/plain", "text/html"),
+            ("text/csv", "text/x-shellscript"),
+            ("text/html", "text/x-shellscript"),
+            ("image/svg+xml", "text/xml"),
+            ("image/svg+xml", "text/html"),
+            ("application/xml", "text/xml"),
+            ("application/xhtml+xml", "text/html"),
+            ("application/gpx+xml", "text/html"),
+            ("application/vnd.google-earth.kml+xml", "text/html"),
+            ("application/json", "text/html"),
+            ("application/x-sh", "text/x-shellscript"),
+            ("application/x-shellscript", "text/x-shellscript"),
+            ("application/javascript", "text/x-shellscript"),
+            ("application/x-python", "text/x-shellscript"),
+            ("application/octet-stream", "text/html"),
+        ] {
+            assert!(compatible(declared, sniffed), "{declared} as {sniffed}");
+        }
+
+        // A type with magic, `infer`'s or a package's, is another kind of
+        // file when its bytes sniff as text.
+        let docx = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        for (declared, sniffed) in [
+            ("image/png", "text/html"),
+            ("image/jpg", "text/xml"),
+            ("audio/mpeg", "text/x-shellscript"),
+            ("video/mp4", "text/html"),
+            ("font/ttf", "text/x-shellscript"),
+            ("application/pdf", "text/x-shellscript"),
+            ("application/zip", "text/html"),
+            ("application/gzip", "text/html"),
+            ("application/rtf", "text/html"),
+            (docx, "text/html"),
+            ("application/vnd.ms-excel.sheet.macroenabled.12", "text/xml"),
+            ("application/msword", "text/html"),
+            // Packaged in a ZIP, unknown to `infer`.
+            ("application/vnd.oasis.opendocument.graphics", "text/html"),
+            ("application/vnd.google-earth.kmz", "text/xml"),
+        ] {
+            assert!(!compatible(declared, sniffed), "{declared} as {sniffed}");
+        }
     }
 
     #[test]
