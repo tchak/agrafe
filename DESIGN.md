@@ -1690,8 +1690,10 @@ sync-only seek make range requests awkward.
 The crypto code is small (a few hundred lines on RustCrypto `aes-gcm` and
 `hkdf`) and owned by us, in the `agrafe-crypto` crate so it can be reviewed in
 isolation. Key material is wiped on drop. It has tamper and truncation tests,
-and a known-answer test against a ciphertext produced by Tink's Python
-implementation.
+and known-answer tests against ciphertexts produced by Tink's Python
+implementation (`scripts/tink-vectors.py`), among them a plaintext that
+fills its segments exactly, the one place streaming implementations
+disagree.
 
 Server-side encryption on the bucket is deliberately not relied on: the
 requirement is that the provider cannot read the data, which SSE does not give.

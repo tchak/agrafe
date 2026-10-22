@@ -507,33 +507,58 @@ mod tests {
 
     /// Produced by Tink's Python implementation (`tink` 1.x) with key
     /// `[7; 32]`, associated data `aad`, a 128-byte ciphertext segment size,
-    /// HKDF-SHA256 and a 32-byte derived key. Decrypting it proves the header
-    /// layout, key derivation, nonce construction and segment split match
-    /// the reference implementation.
-    const TINK_PLAINTEXT_LEN: usize = 300;
-    const TINK_CIPHERTEXT: &str = "2812348b599d535bbbab20455c71e2e288ce44c2ec3e4a627a40bd5dcfacc32ed0b58d853472a7165ee495a6f76b46b1e61e144b4c13cf82213dcc5f57ba6a56dee5684b57a7021e8e625b1643a207f879c89fc1c5921770eedfd52274dd8f7ad62d7cbf20d7e34a885afeb62b74e9e03913c49e816e2d5a524d1fee8f6b8bab71ba14c2a55c5f2d3327ba7c214dddcf2f7b0b682515b51f1a113a87a0372b66c5cbdb10c49db9e1abd8a5d7fb5a2ea3c26566edf3bd29a22e13c80384b4887a9f124b3382a47644a54e21f01ed2500aada1ec8a32cc4d4907783f31d6ba91a5d9cc30a699aca8f72d81772dc2a66b61941141de6b161e82c03e60a62d424f06bdbb3ea163f7468868d29565eac44ef85175ac8a5e3e50f5194df236fd22d4179b29dc7b7104bf6123a0f04e8a3f998176ebf46de5e00ffab8a9738ee2b6ae5da1ffe0b28a7659ae0c70ad1e4390364b6d93810c3d76feaf20ed2fd8c7629a6545ec62bc4f9ac7c7ed741911a585d4b61fe69daac5fc06b6460e9d8ed3854cda7ad3fab9833c17cb51cd51d1cd54e38370d48a61";
+    /// HKDF-SHA256 and a 32-byte derived key, from plaintexts of these
+    /// lengths: empty, one that fills its segments exactly (72 + 112), where
+    /// an implementation could append an empty last segment and Tink does
+    /// not, and one ending in a partial segment. Decrypting them proves the
+    /// header layout, key derivation, nonce construction and segment split
+    /// match the reference implementation. `scripts/tink-vectors.py`
+    /// regenerates them, and checks the other direction.
+    const TINK_VECTORS: [(usize, &str); 3] = [
+        (
+            0,
+            "2832970a39a376cb7d0972f6a9d585da1abeb866af21fb19935eee5ceab36159e836fa6547eaa3cf5c7c061a84d6651f21f0115056fbd9c2",
+        ),
+        (
+            184,
+            "28f01cfc1d1a24976f2be98238d6a4837282cd9593b4037f69e9774211be9b9a87c10daf380a4a906e163c35c28b775dd63604417f8387bb6f972e84856a53c39ac45894eaeade7efb703a7412d17e6d301469556539d09debbc6f8fa8b0aa7a9c23a8a89d5b366eff6afbaa781ff4d373754ba8774a3b3b82222d9894cead668b3066fedaebe60ce685a3e09272b19622375fa602e9b0debc6120d22d7517d00110354a5596bcad51b63110d9407027d669741dd48ec17f503f4986b278ee5f4df8d298598442d667dca19464405468db96db7e3246ed396a44bb32e04c315e44b0cf9147b916df5331624f4d8cfb8f99d505ad427251c7040d13827943c9bd",
+        ),
+        (
+            300,
+            "2812348b599d535bbbab20455c71e2e288ce44c2ec3e4a627a40bd5dcfacc32ed0b58d853472a7165ee495a6f76b46b1e61e144b4c13cf82213dcc5f57ba6a56dee5684b57a7021e8e625b1643a207f879c89fc1c5921770eedfd52274dd8f7ad62d7cbf20d7e34a885afeb62b74e9e03913c49e816e2d5a524d1fee8f6b8bab71ba14c2a55c5f2d3327ba7c214dddcf2f7b0b682515b51f1a113a87a0372b66c5cbdb10c49db9e1abd8a5d7fb5a2ea3c26566edf3bd29a22e13c80384b4887a9f124b3382a47644a54e21f01ed2500aada1ec8a32cc4d4907783f31d6ba91a5d9cc30a699aca8f72d81772dc2a66b61941141de6b161e82c03e60a62d424f06bdbb3ea163f7468868d29565eac44ef85175ac8a5e3e50f5194df236fd22d4179b29dc7b7104bf6123a0f04e8a3f998176ebf46de5e00ffab8a9738ee2b6ae5da1ffe0b28a7659ae0c70ad1e4390364b6d93810c3d76feaf20ed2fd8c7629a6545ec62bc4f9ac7c7ed741911a585d4b61fe69daac5fc06b6460e9d8ed3854cda7ad3fab9833c17cb51cd51d1cd54e38370d48a61",
+        ),
+    ];
 
-    fn tink_plaintext() -> Vec<u8> {
-        (0..TINK_PLAINTEXT_LEN)
-            .map(|i| (i * 7 % 256) as u8)
-            .collect()
+    fn tink_plaintext(len: usize) -> Vec<u8> {
+        (0..len).map(|i| (i * 7 % 256) as u8).collect()
     }
 
     #[test]
-    fn decrypts_tink_reference_ciphertext() {
-        let ct = hex::decode(TINK_CIPHERTEXT).unwrap();
+    fn decrypts_tink_reference_ciphertexts() {
         let l = layout();
-        assert_eq!(ct.len() as u64, l.ciphertext_len(TINK_PLAINTEXT_LEN as u64));
-        assert_eq!(decrypt(&key(), b"aad", l, &ct).unwrap(), tink_plaintext());
+        for (len, hex) in TINK_VECTORS {
+            let ct = hex::decode(hex).unwrap();
+            assert_eq!(ct.len() as u64, l.ciphertext_len(len as u64), "{len}");
+            assert_eq!(
+                decrypt(&key(), b"aad", l, &ct).unwrap(),
+                tink_plaintext(len),
+                "{len}"
+            );
+        }
     }
 
-    /// Writes a ciphertext with the reference parameters to the path in
+    /// Writes a ciphertext with the reference parameters, of the plaintext
+    /// of `AGRAFE_CRYPTO_VECTOR_LEN` bytes, to the path in
     /// `AGRAFE_CRYPTO_VECTOR_OUT`, for checking that Tink can decrypt it.
     #[test]
     #[ignore]
     fn write_vector_for_tink() {
         let path = std::env::var("AGRAFE_CRYPTO_VECTOR_OUT").unwrap();
-        let ct = encrypt(&key(), b"aad", layout(), &tink_plaintext()).unwrap();
+        let len = std::env::var("AGRAFE_CRYPTO_VECTOR_LEN")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let ct = encrypt(&key(), b"aad", layout(), &tink_plaintext(len)).unwrap();
         std::fs::write(path, ct).unwrap();
     }
 

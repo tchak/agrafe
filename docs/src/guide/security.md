@@ -38,7 +38,7 @@ the requirement is that the storage provider cannot read the data.
 
 The implementation is a few hundred lines on RustCrypto's `aes-gcm` and
 `hkdf`, in its own crate, `agrafe-crypto`, with tamper and truncation tests
-and a known-answer test against Tink's Python implementation.
+and known-answer tests against Tink's Python implementation.
 
 ### Rotating KEKs
 
