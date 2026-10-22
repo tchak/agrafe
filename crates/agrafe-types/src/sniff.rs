@@ -39,11 +39,17 @@ const XML: &str = "text/xml";
 /// An OLE compound file sniffs as the generic storage: without its `std`
 /// feature, which would parse the file's directory in-process, `infer`
 /// calls every one of them a Word document, an Excel workbook, an Outlook
-/// message and a Visio drawing alike.
+/// message and a Visio drawing alike. The Excel and PowerPoint types are
+/// remapped too, so that the feature flipping on through unification
+/// would cost the in-process parse and nothing else.
 pub fn sniff(head: &[u8]) -> Option<&'static str> {
     let inferred = infer::get(head).map(|kind| kind.mime_type());
     match inferred {
-        Some("application/msword") => return Some(OLE),
+        Some(
+            "application/msword" | "application/vnd.ms-excel" | "application/vnd.ms-powerpoint",
+        ) => {
+            return Some(OLE);
+        }
         Some("application/zip") if kml::looks_like_kmz(head) => return Some(KMZ),
         Some("text/xml") | None => {}
         Some(other) => return Some(other),
@@ -683,6 +689,17 @@ mod tests {
     fn any_ole_file_sniffs_as_the_storage() {
         let mut head = vec![0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
         head.resize(SNIFF_LEN, 0);
+        // Without its `std` feature `infer` calls every OLE signature a
+        // Word document; with it, it parses the directory in-process with
+        // `cfb`, a parser on hostile bytes, which fails on this head and
+        // falls through to the MSI matcher. The feature is off in
+        // `Cargo.toml`, and unification from another crate in the
+        // workspace would switch it on silently: this is the alarm.
+        assert_eq!(
+            infer::get(&head).map(|kind| kind.mime_type()),
+            Some("application/msword"),
+            "infer's `std` feature is on: an OLE file is parsed in-process"
+        );
         assert_eq!(sniff(&head), Some(OLE));
         for declared in [
             "application/msword",
