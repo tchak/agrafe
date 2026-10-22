@@ -113,6 +113,10 @@ decides how strict the deployment is; agrafe does not know or care.
   number, never its content, which would be a key in the journal; just
   start again.
 
+  `agrafe audit` builds the same handle as `serve`, so on this rung it
+  reads the FIFO too, with or without `--deep`: run it with the FIFO in
+  place and feed it the KEKs the same way, or it waits silently.
+
 Whichever rung, add `LimitCORE=0` to the unit so a crash does not write
 the KEKs to a core file. None of this keeps the KEKs out of the process's
 memory while it runs: a running agrafe must hold them to wrap and unwrap
