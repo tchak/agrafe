@@ -126,6 +126,26 @@ impl Keks {
         }
     }
 
+    /// Whether `kek_id` is one of the KEKs in config. A row or an envelope
+    /// naming another one was wrapped before that KEK was retired.
+    pub fn knows(&self, kek_id: &str) -> bool {
+        self.keks.contains_key(kek_id)
+    }
+
+    /// The stored data key `wrapped` under `kek_id`, wrapped again under
+    /// the current KEK: the new `kek_id` and the new wrapped key, for the
+    /// row. What retiring a KEK takes, one row at a time.
+    pub fn rewrap(
+        &self,
+        blob_id: Uuid,
+        kek_id: &str,
+        wrapped: &[u8],
+    ) -> Result<(String, Vec<u8>), UnwrapError> {
+        let key = self.unwrap(blob_id, kek_id, wrapped)?;
+        let wrapped = self.keks[&self.current].wrap(&key, wrap_aad(blob_id).as_bytes());
+        Ok((self.current.clone(), wrapped))
+    }
+
     /// Unwrap a stored data key.
     pub fn unwrap(&self, blob_id: Uuid, kek_id: &str, wrapped: &[u8]) -> Result<Key, UnwrapError> {
         let kek = self
@@ -348,6 +368,16 @@ mod tests {
         let env = keks.new_envelope(id);
         assert_eq!(env.kek_id, "a");
         assert_eq!(keks.unwrap(id, "a", &env.wrapped).unwrap(), env.key);
+        assert!(keks.knows("a") && keks.knows("b") && !keks.knows("zz"));
+
+        // Rewrapped under the current KEK of another configuration, the
+        // same data key opens there and the old wrapping is left behind.
+        let rotated = Keks::from_config(&config(Some("b"))).unwrap();
+        let (kek_id, wrapped) = rotated.rewrap(id, "a", &env.wrapped).unwrap();
+        assert_eq!(kek_id, "b");
+        assert_ne!(wrapped, env.wrapped);
+        assert_eq!(rotated.unwrap(id, "b", &wrapped).unwrap(), env.key);
+        assert!(rotated.rewrap(id, "zz", &env.wrapped).is_err());
         assert!(keks.unwrap(Uuid::now_v7(), "a", &env.wrapped).is_err());
         assert!(keks.unwrap(id, "b", &env.wrapped).is_err());
         assert!(keks.unwrap(id, "zz", &env.wrapped).is_err());

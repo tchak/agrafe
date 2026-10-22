@@ -169,19 +169,40 @@ async fn a_bad_envelope_is_the_minters_mistake() {
 }
 
 /// The same database and bucket under another `[encryption]`: `tune`
-/// edits the KEKs, and the routers come back.
+/// edits the KEKs, and the handle and its routers come back.
 fn rotated(
     app: &TestApp,
     tune: impl FnOnce(&mut agrafe::config::EncryptionConfig),
-) -> (Router, Router) {
+) -> (Agrafe, Router, Router) {
     let mut config = app.state.config().clone();
     tune(&mut config.encryption);
     let store = agrafe::storage::build(&config.storage).unwrap();
     let state = Agrafe::with_store(config, app.state.pool().clone(), store).unwrap();
-    (
-        api::private_router(state.clone()),
-        api::public_router(state),
-    )
+    let private = api::private_router(state.clone());
+    let public = api::public_router(state.clone());
+    (state, private, public)
+}
+
+/// The row's data key wrapped again under `state`'s current KEK, as the
+/// rewrap that retires a KEK would do it.
+async fn rewrap(app: &TestApp, state: &Agrafe, id: &str) {
+    let (kek_id, wrapped): (String, Vec<u8>) =
+        sqlx::query_as("SELECT kek_id, wrapped_key FROM blobs WHERE id = $1")
+            .bind(parse_id(id))
+            .fetch_one(app.state.pool())
+            .await
+            .unwrap();
+    let (kek_id, wrapped) = state
+        .keks()
+        .rewrap(parse_id(id), &kek_id, &wrapped)
+        .unwrap();
+    sqlx::query("UPDATE blobs SET kek_id = $2, wrapped_key = $3 WHERE id = $1")
+        .bind(parse_id(id))
+        .bind(kek_id)
+        .bind(wrapped)
+        .execute(app.state.pool())
+        .await
+        .unwrap();
 }
 
 /// A blob uploaded through `private`, rendered by `app`, and its metadata.
@@ -229,7 +250,7 @@ async fn kek_rotation_end_to_end() {
 
     // A new current KEK, the old one kept: new blobs wrap under the new
     // one, and both read, sealed or from the row.
-    let (private, public) = rotated(&app, |e| {
+    let (state, private, public) = rotated(&app, |e| {
         e.keks.insert("kek2".into(), kek2.clone());
         e.current_kek = Some("kek2".into());
     });
@@ -245,27 +266,61 @@ async fn kek_rotation_end_to_end() {
         assert_eq!(status, StatusCode::OK);
     }
 
-    // A process that never learnt the new KEK: the blob it wraps is the
-    // minter's mistake on the sealed path, and a logged failure on the row's.
-    let (status, body) = call(&app.public, req(Method::GET, &public_url(&new, "original"))).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    assert_eq!(body["error"]["code"], "bad_request");
-    let (status, body) = call(&app.public, req(Method::GET, &row_url(&app, id_of(&new)))).await;
-    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    // A process that never learnt the new KEK: an envelope naming a KEK it
+    // does not know is handed to the row, which does not unwrap either, a
+    // logged failure on both paths rather than a 400 the minter cannot act on.
+    for url in [public_url(&new, "original"), row_url(&app, id_of(&new))] {
+        let (status, body) = call(&app.public, req(Method::GET, &url)).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{url}: {body}");
+    }
 
     // The old KEK retired before its blobs were rewrapped: the same, for
     // the old blob.
-    let (_, public) = rotated(&app, |e| {
+    let (_, _, retired) = rotated(&app, |e| {
         e.keks.clear();
         e.keks.insert("kek2".into(), kek2.clone());
         e.current_kek = Some("kek2".into());
     });
-    let (status, _, _) = fetch(&public, get_with(&public_url(&new, "original"), &[])).await;
+    let (status, _, _) = fetch(&retired, get_with(&public_url(&new, "original"), &[])).await;
     assert_eq!(status, StatusCode::OK);
-    let (status, body) = call(&public, req(Method::GET, &public_url(&old, "original"))).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    let (status, body) = call(&public, req(Method::GET, &public_url(&old, "thumbnail"))).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    let (status, _) = call(&public, req(Method::GET, &row_url(&app, id_of(&old)))).await;
-    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    for url in [
+        public_url(&old, "original"),
+        public_url(&old, "thumbnail"),
+        row_url(&app, id_of(&old)),
+    ] {
+        let (status, body) = call(&retired, req(Method::GET, &url)).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{url}: {body}");
+    }
+
+    // Rewrapped under the new KEK, then the old one retired: the envelopes
+    // the backend stored still name the old KEK, and are served from the
+    // row until it refreshes them. Nothing breaks when the old KEK goes.
+    rewrap(&app, &state, id_of(&old)).await;
+    assert_eq!(kek_of(&app, id_of(&old)).await, "kek2");
+    let fresh = get_blob(&app, id_of(&old)).await;
+    assert_ne!(fresh["envelope"], old["envelope"], "the rewrap changed it");
+    for url in [
+        public_url(&old, "original"),
+        public_url(&fresh, "original"),
+        row_url(&app, id_of(&old)),
+    ] {
+        let (status, _, body) = fetch(&retired, get_with(&url, &[])).await;
+        assert_eq!(status, StatusCode::OK, "{url}");
+        assert_eq!(body, fixture("photo.jpg"));
+    }
+    for blob in [&old, &fresh] {
+        let (status, _, _) = fetch(&retired, get_with(&public_url(blob, "thumbnail"), &[])).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    // The stale envelope is only as good as the row: once that is gone,
+    // so is the blob, where the fresh one still serves from the bucket.
+    sqlx::query("DELETE FROM blobs WHERE id = $1")
+        .bind(parse_id(id_of(&old)))
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+    let (status, _) = call(&retired, req(Method::GET, &public_url(&old, "original"))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, _) = fetch(&retired, get_with(&public_url(&fresh, "original"), &[])).await;
+    assert_eq!(status, StatusCode::OK);
 }

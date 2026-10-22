@@ -23,6 +23,7 @@ use agrafe::blob::read::ReadError;
 use agrafe::blob::representation::{self, Resolved};
 use agrafe::blob::urls::MAX_WAIT;
 use agrafe::blob::{BlobHead, Rendered, Representation, RepresentationState};
+use agrafe::encryption::UnwrapError;
 use agrafe::filename::split_extension;
 use agrafe::icons;
 
@@ -178,9 +179,9 @@ async fn refetch(state: &Agrafe, id: Uuid, port: Port) -> ApiResult<BlobHead> {
 /// The rendered representation, with the conditional request handling a
 /// cacheable image deserves. The `ETag` and the length come from the row,
 /// so a `304` and a `HEAD` never read the object; only a `GET` with a body
-/// to send does. On the sealed path a data key that does not unwrap is
-/// the minter's envelope, another blob's or one naming a retired KEK, so
-/// it is `400` rather than the `500` a row that does not unwrap earns.
+/// to send does. On the sealed path a data key that does not unwrap under
+/// a known KEK is another blob's envelope, the minter's mistake, so it is
+/// `400` rather than the `500` a row that does not unwrap earns.
 #[allow(clippy::too_many_arguments)]
 async fn image(
     state: &Agrafe,
@@ -210,9 +211,10 @@ async fn image(
         .load_representation(blob, kind)
         .await
         .map_err(|e| match (origin, &e) {
-            (Origin::Envelope, representation::Error::Read(ReadError::Key(_))) => {
-                ApiError::BadRequest(format!("envelope: {e}"))
-            }
+            (
+                Origin::Envelope,
+                representation::Error::Read(ReadError::Key(UnwrapError::Crypto { .. })),
+            ) => ApiError::BadRequest(format!("envelope: {e}")),
             _ => ApiError::from(e),
         })?;
     let Some(bytes) = loaded else {

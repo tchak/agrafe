@@ -55,7 +55,10 @@ New blobs are wrapped with `current_kek`; each row's `kek_id` picks the KEK
 that unwraps it. A new KEK is therefore a configuration change. Retiring an
 old one means rewrapping the data keys it wraps, a database update with no
 bucket traffic, for which agrafe has no command yet. Keep every KEK that
-still wraps a key.
+still wraps a key. Sealed URLs minted before a rewrap name the old KEK in
+their envelope; once that KEK is gone from the configuration they are
+served from the row instead, so the backend refreshes its stored envelopes
+at its own pace and nothing has to be timed with the retirement.
 
 ### Keeping the KEKs off the host
 

@@ -18,6 +18,7 @@ use agrafe::blob::BlobHead;
 use agrafe::blob::envelope::Envelope;
 use agrafe::blob::read::{ReadError, Reader, Stored};
 use agrafe::blob::urls::disposition_kind;
+use agrafe::encryption::UnwrapError;
 
 use crate::error::{ApiError, ApiResult};
 
@@ -198,9 +199,11 @@ pub async fn serve(
         .await
         .map_err(|e| match (origin, &e) {
             (Origin::Envelope, _) if e.is_not_found() => ApiError::NotFound,
-            // The URL was signed, so the envelope is the minter's: it is
-            // another blob's, or it names a KEK that has since been retired.
-            (Origin::Envelope, ReadError::Key(_)) => ApiError::BadRequest(format!("envelope: {e}")),
+            // The URL was signed, so the envelope is the minter's, and the
+            // KEK is known, so the key is another blob's.
+            (Origin::Envelope, ReadError::Key(UnwrapError::Crypto { .. })) => {
+                ApiError::BadRequest(format!("envelope: {e}"))
+            }
             _ => ApiError::internal(format!("blob {}: opening the original: {e}", blob.id)),
         })?;
     // Open the first segment before the response starts: a wrong key, a

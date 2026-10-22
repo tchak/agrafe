@@ -88,17 +88,24 @@ async fn get_original(
     headers: HeaderMap,
 ) -> ApiResult<Response> {
     // Sealed: the envelope is the row, and nothing is looked up.
-    let blob = match query.e.as_deref().map(decode_envelope).transpose()? {
+    let blob = match sealed_envelope(&state, query.e.as_deref())? {
         Some(envelope) => Original::from_envelope(id, filename, envelope)?,
         None => Original::from_row(find_visible(&state, id).await?, &filename)?,
     };
     original::serve(&state, blob, query, &method, &headers).await
 }
 
-/// An envelope that does not decode is a minter's mistake: the URL was
-/// signed, so it is no forgery.
-fn decode_envelope(e: &str) -> ApiResult<Envelope> {
-    Envelope::decode(e).map_err(|err| ApiError::BadRequest(err.to_string()))
+/// The envelope in `e`, when there is one to serve from. An envelope that
+/// does not decode is a minter's mistake: the URL was signed, so it is no
+/// forgery. One naming a KEK this process does not know was minted before
+/// a rewrap retired that KEK, the one thing that makes a stored envelope
+/// stale, and is `None`: the row, rewrapped, knows better.
+fn sealed_envelope(state: &Agrafe, e: Option<&str>) -> ApiResult<Option<Envelope>> {
+    let Some(e) = e else {
+        return Ok(None);
+    };
+    let envelope = Envelope::decode(e).map_err(|err| ApiError::BadRequest(err.to_string()))?;
+    Ok(state.keks().knows(&envelope.kek_id).then_some(envelope))
 }
 
 /// Look a blob up as the public port sees it: terminal states are `404`.
@@ -141,15 +148,13 @@ async fn serve_representation(
     method: Method,
     headers: HeaderMap,
 ) -> ApiResult<Response> {
-    if let Some(e) = &query.e {
-        let envelope = decode_envelope(e)?;
-        if let Some(response) = representation::serve_sealed(
+    if let Some(envelope) = sealed_envelope(&state, query.e.as_deref())?
+        && let Some(response) = representation::serve_sealed(
             &state, id, &envelope, kind, &filename, &query, &method, &headers,
         )
         .await?
-        {
-            return Ok(response);
-        }
+    {
+        return Ok(response);
     }
     let blob = find_visible(&state, id).await?;
     representation::serve(

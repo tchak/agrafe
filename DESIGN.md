@@ -479,9 +479,13 @@ the row up as before.
   within `signing.ttl.max`.
 - An envelope that does not decode is `400`: the URL was signed, so it is
   the minter's mistake, not a forgery. So is one whose wrapped key does
-  not open for the blob in the path, another blob's envelope or one
-  naming a KEK since retired, rather than the `500` a row that does not
-  unwrap earns. Decoding also refuses what the server never writes, a
+  not open for the blob in the path, another blob's envelope, rather
+  than the `500` a row that does not unwrap earns. One naming a KEK the
+  process does not know is handed to the row instead: a rewrap retiring
+  that KEK is the one thing that makes a stored envelope stale, the row
+  was rewrapped and knows better, and the backend's copies serve on,
+  one lookup each, until it refreshes them; nothing has to be timed
+  with the retirement. Decoding also refuses what the server never writes, a
   wrapped key of the wrong length or a segment size past
   `encryption.chunk_size`'s bound, so the memory a request holds is the
   operator's choice, not the minter's.
