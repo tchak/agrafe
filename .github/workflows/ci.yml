@@ -77,23 +77,29 @@ jobs:
             libreoffice-impress-nogui libreoffice-draw-nogui fonts-dejavu-core
             fonts-liberation
         run: |
-          sudo apt-get update
+          sudo apt-get update -o Acquire::Retries=3
           mkdir -p ~/apt-archives
           echo "packages=$PACKAGES" >> "$GITHUB_OUTPUT"
           echo "uris=$(sudo apt-get install -qq --print-uris --no-install-recommends \
             -o Dir::Cache::Archives="$HOME/apt-archives" $PACKAGES | sha256sum | cut -c1-16)" \
             >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
+        id: apt-cache
         with:
           # Not partial/, which apt creates root-only.
           path: ~/apt-archives/*.deb
           key: apt-${{ runner.os }}-${{ runner.arch }}-${{ steps.apt.outputs.uris }}
           restore-keys: apt-${{ runner.os }}-${{ runner.arch }}-
       - name: Install libvips, LibreOffice and bubblewrap
+        # Warm, seconds; cold, two to three minutes. A mirror that stalls
+        # fails here, by name, rather than eating the job's timeout.
+        timeout-minutes: 10
         run: |
-          # The archive is the runner's, not _apt's: download as root.
+          # The archive is the runner's, not _apt's: download as root. A
+          # stalled connection is dropped after 30 s and retried.
           sudo apt-get install -y --no-install-recommends \
             -o Dir::Cache::Archives="$HOME/apt-archives" -o APT::Sandbox::User=root \
+            -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 \
             ${{ steps.apt.outputs.packages }}
           # Drop the versions the mirror no longer serves before the save.
           sudo apt-get autoclean -o Dir::Cache::Archives="$HOME/apt-archives"
@@ -104,6 +110,13 @@ jobs:
           # that makes it matter.
           ls -l /etc/apparmor.d/bwrap-userns-restrict || true
           sysctl kernel.apparmor_restrict_unprivileged_userns || true
+      # Saved now, not at the end of the job: a run whose build or tests
+      # fail still keeps the download.
+      - uses: actions/cache/save@v4
+        if: steps.apt-cache.outputs.cache-hit != 'true'
+        with:
+          path: ~/apt-archives/*.deb
+          key: ${{ steps.apt-cache.outputs.cache-primary-key }}
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@v2
