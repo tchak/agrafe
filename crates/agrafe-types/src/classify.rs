@@ -19,14 +19,17 @@ pub enum Category {
     Spreadsheet,
     /// PowerPoint and ODP.
     Presentation,
-    /// ZIP, gzip, tar, 7z, RAR, bzip2 and zstd, and KMZ, a ZIP.
+    /// ZIP, gzip, tar, 7z, RAR, bzip2, zstd, xz, lzip, lz4 and compress,
+    /// and the ZIPs that are a KMZ, a JAR or an APK.
     Archive,
     /// Any `audio/*` type.
     Audio,
     /// Any `video/*` type.
     Video,
-    /// Any `text/*` type except CSV and TSV, plus JSON, XML, GeoJSON, GPX
-    /// and KML.
+    /// Any `text/*` type except CSV and TSV, plus JSON, XML, every
+    /// `+json` or `+xml` type (GeoJSON, GPX, KML, XHTML, RSS, JSON-LD) and
+    /// the script and configuration types (JavaScript, YAML, TOML, SQL,
+    /// shell, JSON lines).
     Text,
     /// Everything else, `application/octet-stream` included.
     Other,
@@ -67,7 +70,8 @@ pub const ODT: &str = office::ODT;
 /// application that reads it (`office::format`): every Writer and Draw
 /// format is a document, every Calc one a spreadsheet, every Impress one
 /// a presentation, the macro-enabled, template and legacy variants
-/// included.
+/// included. A `+json` or `+xml` type is text, whatever the registry
+/// put before the suffix.
 pub fn classify(content_type: &str) -> Category {
     let content_type = crate::sniff::canonical(content_type);
     if let Some(format) = office::format(content_type) {
@@ -89,24 +93,39 @@ pub fn classify(content_type: &str) -> Category {
         | "application/vnd.rar"
         | "application/x-bzip2"
         | "application/zstd"
+        | "application/x-xz"
+        | "application/x-lzip"
+        | "application/x-lz4"
+        | "application/x-compress"
         | "application/vnd.android.package-archive"
         | "application/java-archive"
         | crate::kml::KMZ => Some(Category::Archive),
 
-        "application/json" | crate::geojson::GEOJSON | crate::gpx::GPX | crate::kml::KML => {
-            Some(Category::Text)
-        }
+        "application/json"
+        | "application/x-ndjson"
+        | "application/jsonl"
+        | "application/javascript"
+        | "application/x-javascript"
+        | "application/ecmascript"
+        | "application/yaml"
+        | "application/x-yaml"
+        | "application/toml"
+        | "application/sql"
+        | "application/x-sh"
+        | "application/x-shellscript" => Some(Category::Text),
 
         _ => None,
     };
     if let Some(category) = exact {
         return category;
     }
-    match content_type.split_once('/').map(|(t, _)| t) {
-        Some("image") => Category::Image,
-        Some("audio") => Category::Audio,
-        Some("video") => Category::Video,
-        Some("text") => Category::Text,
+    let (major, minor) = content_type.split_once('/').unwrap_or((content_type, ""));
+    match major {
+        "image" => Category::Image,
+        "audio" => Category::Audio,
+        "video" => Category::Video,
+        "text" => Category::Text,
+        "application" if minor.ends_with("+json") || minor.ends_with("+xml") => Category::Text,
         _ => Category::Other,
     }
 }
@@ -197,6 +216,37 @@ mod tests {
         assert_eq!(classify("application/x-bzip"), Category::Archive);
         assert_eq!(classify("application/xml"), Category::Text);
         assert_eq!(classify("image/jpg"), Category::Image);
+    }
+
+    #[test]
+    fn text_shaped_application_types_are_text() {
+        for text in [
+            "application/xhtml+xml",
+            "application/rss+xml",
+            "application/atom+xml",
+            "application/ld+json",
+            "application/x-ndjson",
+            "application/javascript",
+            "application/x-yaml",
+            "application/toml",
+            "application/sql",
+            "application/x-sh",
+        ] {
+            assert_eq!(classify(text), Category::Text, "{text}");
+        }
+        // The suffix rule is for `application/`: an SVG is an image, a KMZ
+        // an archive, and the suffix must be the subtype's end.
+        assert_eq!(classify("image/svg+xml"), Category::Image);
+        assert_eq!(classify("application/epub+zip"), Category::Document);
+        assert_eq!(classify("application/vnd.ms-xpsdocument"), Category::Other);
+        for archive in [
+            "application/x-xz",
+            "application/x-lzip",
+            "application/x-lz4",
+            "application/x-compress",
+        ] {
+            assert_eq!(classify(archive), Category::Archive, "{archive}");
+        }
     }
 
     #[test]

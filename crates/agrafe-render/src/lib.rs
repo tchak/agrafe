@@ -468,6 +468,8 @@ mod tests {
         for text in [
             "text/plain",
             "application/json",
+            "application/xhtml+xml",
+            "application/x-yaml",
             classify::CSV,
             "text/tab-separated-values",
         ] {

@@ -899,7 +899,12 @@ formats (DOC, XLS, PPT), RTF and the macro-enabled, template, slideshow
 and master variants (DOCM, DOTX, XLSM, XLSB, PPSX, POTX, OTT, ODM, …)
 with their base, so an `.xlsm` is not `other` and gets the spreadsheet
 icon and filter. Draw's ODG and OTG are `document`s: pages, with nothing
-closer.
+closer. Every `+json` or `+xml` type is `text` whatever the registry put
+before the suffix (XHTML, RSS, JSON-LD, GeoJSON, GPX, KML), as are JSON
+and the script and configuration types (JavaScript, YAML, TOML, SQL,
+shell, JSON lines), so they get the text sample as a thumbnail; the
+compression formats xz, lzip, lz4 and compress are `archive`s with gzip,
+bzip2 and zstd.
 
 ## Upload pipeline
 
