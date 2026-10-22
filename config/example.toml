@@ -268,6 +268,11 @@ max_source_size = "64 MiB"
 timeout = "60s"
 memory = "1 GiB"
 max_output_size = "256 MiB"
+# Processes and threads the subprocess's uid may have at once, which bounds
+# a fork bomb. The kernel counts every process and thread of the uid, the
+# worker's own included: the default suits a uid of the worker's own, and a
+# worker that shares its uid with much else raises it.
+max_processes = 1024
 # Whether the kernel confines each subprocess beyond its limits, with
 # Landlock (the filesystem it sees is the system libraries and fonts, the
 # file it reads and the directory it writes; no TCP) and seccomp (no

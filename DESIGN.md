@@ -2351,9 +2351,14 @@ runs; it is described after the three.
 only, no secrets; vips also gets `TMPDIR`, `VIPS_CONCURRENCY` and
 `VIPS_WARNING=0`, and a coverage build alone passes `LLVM_PROFILE_FILE`
 through), `setrlimit` bounds on address space and data
-(`media.sandbox.memory`, default 1 GiB), CPU time and output file size
-(`max_output_size`), no core dumps, and a kill at the wall-clock limit
-(`media.sandbox.timeout`, default 60 s). The CPU time limit is the
+(`media.sandbox.memory`, default 1 GiB), CPU time, output file size
+(`max_output_size`) and process count (`max_processes`, default 1024),
+no core dumps, and a kill at the wall-clock limit
+(`media.sandbox.timeout`, default 60 s). The process count is
+`RLIMIT_NPROC`, which the kernel counts per uid, every process and
+thread of it, the worker's own included: it bounds a fork bomb at what
+a uid of the worker's own never reaches, and a worker sharing its uid
+with much else raises it. The CPU time limit is the
 wall-clock limit plus a second, summed over the process's threads, which
 is why every tool is kept narrow (two threads for vips and LibreOffice):
 a process spread over sixteen cores would exhaust it in a tenth of the
@@ -2362,7 +2367,11 @@ time. Its soft limit sends `SIGXCPU` and the hard one, a second later,
 such rather than as a fault of the file. (With the two limits equal the
 kernel checks the hard one first and sends `SIGKILL`, which says
 nothing.) The address space limit is enforced by Linux and ignored by
-macOS, so development machines get only the timeout.
+macOS, so development machines get only the timeout. The child's stderr
+is a pipe, which no rlimit bounds: the worker reads it as it is written
+and keeps the last 4 KiB, so a decoder that prints an error per broken
+object of a hostile file costs the worker 4 KiB, not the flood. A test
+floods it with 32 MiB and checks the worker's high-water mark.
 
 **Landlock**, through the `landlock` crate, maintained by the feature's
 kernel author. The child's filesystem is the *system set*, read and
@@ -2396,9 +2405,14 @@ libseccomp), as a *denylist* answering `EPERM`: `socket`, `socketpair`,
 `umount2`, `pivot_root`, the new mount API (`open_tree`, `move_mount`,
 `fsopen`, `fsconfig`, `fsmount`, `fspick`, `mount_setattr`), `bpf`,
 `keyctl`, `add_key`, `request_key`, `userfaultfd`, `io_uring_setup`,
-`kexec_load`, `kexec_file_load`, `init_module`, `finit_module`, `clone`
-with any namespace flag, and `prlimit64` on any pid but 0 (glibc's
-`setrlimit` and `getrlimit` pass 0). `clone3` carries its flags in a struct
+`kexec_load`, `kexec_file_load`, `init_module`, `finit_module`,
+`setsid`, `setpgid`, `ioprio_set`, `process_madvise`, `migrate_pages`,
+`move_pages`, `pidfd_open`, `clone`
+with any namespace flag, `prlimit64`, `sched_setaffinity`,
+`sched_setscheduler`, `sched_setparam` and `sched_setattr` on any pid
+but 0 (glibc's `setrlimit` and `getrlimit` pass 0, and so does a thread
+pool pinning itself), and `setpriority` on anything but `PRIO_PROCESS`
+0, which is what `nice` passes. `clone3` carries its flags in a struct
 the filter cannot read, so it is refused whole, in a second filter
 answering `ENOSYS`: that is the one errno glibc falls back from to
 `clone`, which the first filter does inspect, so threads keep working and
@@ -2442,11 +2456,18 @@ unchanged. The two filter variants are compiled once each.
 alone would leave LibreOffice running. Every child is made the leader of a
 process group of its own, and a timeout kills the group before the child
 is dropped. The resource limits were already inherited down the tree.
+A group is only as good as its membership: a child that called `setsid`
+or `setpgid` would leave it and outlive the timeout, confined but
+immortal, and with `RLIMIT_NPROC` it could fork until the worker's own
+spawns failed, since they share a uid. So the filter refuses both calls
+(`bwrap` makes its own session before it installs the filter), the
+process count is bounded, and a test times out a `sleep` forked through
+`setsid` and finds it gone.
 Under bubblewrap the group holds `bwrap` alone, since its pid 1 starts
 a session of its own (`--new-session`); there `--die-with-parent` does
 the work, killing pid 1 when `bwrap` dies, and the kernel takes the pid
-namespace down with it. A test times out a forked `sleep` under
-bubblewrap and finds it gone from the host's `/proc`.
+namespace down with it. The same test runs under bubblewrap and finds
+the `sleep` gone from the host's `/proc`.
 
 Why a denylist: an allowlist has to track every syscall glibc, glib and
 libvips make and breaks silently on an upgrade, in the probe if we are
@@ -2458,7 +2479,12 @@ to turn bytes into pixels; and, since the child runs as the worker's uid,
 none of what the same uid may do to the worker: steal its descriptors
 with `pidfd_getfd` (Yama's `ptrace_scope` is 0 on Debian and in a
 container that inherits it, and a container running as root passes the
-check anyway), or set its limits with `prlimit64`. The signal scope above
+check anyway), set its limits with `prlimit64`, renice it, pin it to a
+core or change its scheduling class with `setpriority` and the
+`sched_set*` calls, put its I/O in the idle class with `ioprio_set`, or
+page its memory out with `process_madvise` on a `pidfd_open`. A review
+found the scheduling calls open and a test now reaches for each from
+the child. The signal scope above
 closes `kill`. `EPERM` rather than kill, so a library that
 probes a feature and tolerates failure keeps working, and so the error
 shows up in the stderr tail the job already keeps.
@@ -2629,10 +2655,13 @@ system set fails the deployment instead of every thumbnail.
 
 *Tests* in `agrafe-sandbox` assert what is refused: a read outside the
 granted directories, a write outside the writable one, a `connect` to a
-listening socket on localhost, `unshare`, and that threads still work and
-a spawn stays cheap. They skip with a message where the kernel cannot
-confine, except under `AGRAFE_SANDBOX_REQUIRED=1`, which CI sets so a
-regression is not a green empty suite. The integration suite runs under
+listening socket on localhost, `unshare`, `setsid` and `setpgid`, the
+worker's limits, priority, affinity and I/O class; and what is granted:
+`media.sandbox.readable` reads and does not write, the home is the work
+directory, threads still work and a spawn stays cheap. They skip with a
+message where the kernel cannot confine, except under
+`AGRAFE_SANDBOX_REQUIRED=1`, which CI sets so a regression is not a
+green empty suite. The integration suite runs under
 `auto` on CI, which confines every render it makes. The bubblewrap tests
 are the same refusals through `/usr/bin/bwrap`, plus what the namespaces
 add: the configuration file does not exist, the network is loopback

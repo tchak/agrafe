@@ -13,9 +13,11 @@
 //!   else exists;
 //! - a seccomp denylist, installed next: no sockets (unix sockets alone
 //!   on request, see [`Command::unix_sockets`]), no namespaces, no
-//!   ptrace, no mounts, no reaching another process's descriptors or
-//!   limits, no kernel-facing surface a process that turns bytes into
-//!   pixels has any use for. Refused calls fail with `EPERM`.
+//!   ptrace, no mounts, no session or process group of the child's own,
+//!   no reaching another process's descriptors, limits, scheduling or
+//!   memory, no
+//!   kernel-facing surface a process that turns bytes into pixels has
+//!   any use for. Refused calls fail with `EPERM`.
 //!
 //! The last two are Linux only, on by default where the kernel has them
 //! ([`Isolation::Auto`]), and [`Isolation::Required`] refuses to start
@@ -61,6 +63,13 @@ pub struct Config {
     /// Largest file the process may write (`RLIMIT_FSIZE`).
     #[serde(default = "default_max_output_size")]
     pub max_output_size: ByteSize,
+    /// Processes and threads the process's uid may have at once
+    /// (`RLIMIT_NPROC`), which bounds a fork bomb. The kernel counts
+    /// every process and thread of the uid, the worker's own included,
+    /// so the default suits a uid of the worker's own and a shared one
+    /// raises it.
+    #[serde(default = "default_max_processes")]
+    pub max_processes: u64,
     /// Whether Landlock and seccomp confine the process.
     #[serde(default)]
     pub isolation: Isolation,
@@ -108,6 +117,9 @@ fn default_memory() -> ByteSize {
 fn default_max_output_size() -> ByteSize {
     ByteSize::mib(256)
 }
+fn default_max_processes() -> u64 {
+    1024
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -115,6 +127,7 @@ impl Default for Config {
             timeout: default_timeout(),
             memory: default_memory(),
             max_output_size: default_max_output_size(),
+            max_processes: default_max_processes(),
             isolation: Isolation::default(),
             readable: Vec::new(),
             bubblewrap: None,
@@ -344,7 +357,10 @@ fn is_executable(path: &Path) -> bool {
 /// error. Under bubblewrap Landlock is off, since a Landlock domain
 /// forbids the `mount` `bwrap` needs and the mount namespace covers what
 /// the ruleset covered, and every failure is an error: asked for and
-/// impossible, the sandbox does not run unconfined.
+/// impossible, the sandbox does not run unconfined. A spawn hands back
+/// the layers it planned after the kernel had its say; see
+/// `confine::Plan::layers` for what that does and does not say about
+/// the child.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 struct Layers {
@@ -372,15 +388,6 @@ impl Layers {
             strict: bubblewrap || config.isolation.strict(),
         }
     }
-}
-
-/// What a spawn planned to install; see `confine::Plan::applied` for what
-/// that does and does not say about the child.
-#[derive(Debug, Clone, Copy, Default)]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-struct Applied {
-    landlock: bool,
-    seccomp: bool,
 }
 
 /// Run `command` to completion under `config`, in a `sandbox` span that
@@ -416,9 +423,9 @@ async fn run_with(
     command: Command,
     config: &Config,
     layers: Layers,
-) -> Result<(Outcome, Applied), Error> {
+) -> Result<(Outcome, Layers), Error> {
     let program = command.program.to_string_lossy().into_owned();
-    let (mut inner, applied) =
+    let (mut inner, planned) =
         prepare(&command, config, layers).map_err(|reason| Error::Confine {
             program: program.clone(),
             reason,
@@ -430,43 +437,77 @@ async fn run_with(
         .kill_on_drop(true);
     #[cfg(unix)]
     inner.process_group(0);
-    let child = inner.spawn().map_err(|source| Error::Spawn {
+    let mut child = inner.spawn().map_err(|source| Error::Spawn {
         program: program.clone(),
         source,
     })?;
     let pid = child.id();
-    let outcome = match tokio::time::timeout(config.timeout, child.wait_with_output()).await {
-        Ok(Ok(output)) if output.status.success() => Outcome::Success,
+    // The exit and the end of stderr, read as it comes so that a tool
+    // that floods it costs this process 4 KiB, not the flood.
+    let stderr = child.stderr.take();
+    let waited = async {
+        let (status, stderr) = tokio::join!(child.wait(), stderr_tail(stderr));
+        Ok::<_, std::io::Error>((status?, stderr?))
+    };
+    let outcome = match tokio::time::timeout(config.timeout, waited).await {
+        Ok(Ok((status, _))) if status.success() => Outcome::Success,
         // CPU time ran out before the wall clock did, which a process on
         // several threads does: a timeout all the same, not a fault of the
         // file. A launcher reports its child's death its own way, so this
         // tells a direct tool's; bubblewrap reports it as the shell does,
         // 128 plus the signal.
-        Ok(Ok(output)) if cpu_exhausted(&output.status, layers.bubblewrap) => Outcome::TimedOut,
-        Ok(Ok(output)) => {
-            let stderr = tail(&output.stderr);
+        Ok(Ok((status, _))) if cpu_exhausted(&status, layers.bubblewrap) => Outcome::TimedOut,
+        Ok(Ok((status, stderr))) => {
+            let stderr = tail(&stderr);
             // `bwrap` failed before the program ran: a host matter.
             if layers.bubblewrap
-                && output.status.code() == Some(1)
+                && status.code() == Some(1)
                 && let Some(err) = bubblewrap_failure(program.clone(), &stderr)
             {
                 return Err(err);
             }
             Outcome::Failed {
-                code: output.status.code(),
-                status: output.status.to_string(),
+                code: status.code(),
+                status: status.to_string(),
                 stderr,
             }
         }
-        Ok(Err(source)) => return Err(Error::Wait { program, source }),
-        // Dropping the child on timeout kills it; its process group goes
-        // with it, for a program that is a launcher around another.
+        // The child may still be running: it goes with its group, as at
+        // the timeout.
+        Ok(Err(source)) => {
+            kill_group(pid);
+            return Err(Error::Wait { program, source });
+        }
+        // The child is killed with its process group, for a program that
+        // is a launcher around another, and dropped after.
         Err(_) => {
             kill_group(pid);
             Outcome::TimedOut
         }
     };
-    Ok((outcome, applied))
+    Ok((outcome, planned))
+}
+
+/// The last [`STDERR_KEEP`] bytes of what the child writes on stderr,
+/// read as it is written: the pipe is drained to the end so that the
+/// child never blocks on it, and nothing past the tail is kept.
+async fn stderr_tail(stderr: Option<tokio::process::ChildStderr>) -> std::io::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt as _;
+    let Some(mut stderr) = stderr else {
+        return Ok(Vec::new());
+    };
+    let mut kept = Vec::with_capacity(2 * STDERR_KEEP);
+    let mut chunk = [0u8; STDERR_KEEP];
+    loop {
+        let read = stderr.read(&mut chunk).await?;
+        if read == 0 {
+            return Ok(kept);
+        }
+        kept.extend_from_slice(&chunk[..read]);
+        if kept.len() > STDERR_KEEP {
+            kept.drain(..kept.len() - STDERR_KEEP);
+        }
+    }
 }
 
 /// Kill the process group the child leads, so that a program that forked
@@ -538,6 +579,7 @@ fn apply_limits(command: &mut tokio::process::Command, config: &Config) {
     let memory = config.memory.as_u64();
     let cpu = config.timeout.as_secs().saturating_add(1);
     let output = config.max_output_size.as_u64();
+    let processes = config.max_processes;
     let limit = |value: u64| libc::rlimit {
         rlim_cur: value as libc::rlim_t,
         rlim_max: value as libc::rlim_t,
@@ -558,6 +600,7 @@ fn apply_limits(command: &mut tokio::process::Command, config: &Config) {
             libc::setrlimit(libc::RLIMIT_DATA, &limit(memory));
             libc::setrlimit(libc::RLIMIT_CPU, &cpu);
             libc::setrlimit(libc::RLIMIT_FSIZE, &limit(output));
+            libc::setrlimit(libc::RLIMIT_NPROC, &limit(processes));
             libc::setrlimit(libc::RLIMIT_CORE, &limit(0));
             Ok(())
         });
@@ -575,14 +618,14 @@ fn prepare(
     command: &Command,
     config: &Config,
     layers: Layers,
-) -> Result<(tokio::process::Command, Applied), String> {
+) -> Result<(tokio::process::Command, Layers), String> {
     if layers.bubblewrap {
         return prepare_bubblewrap(command, config, layers);
     }
     let mut inner = plain(command);
     apply_limits(&mut inner, config);
-    let applied = apply_confinement(command, &mut inner, config, layers)?;
-    Ok((inner, applied))
+    let planned = apply_confinement(command, &mut inner, config, layers)?;
+    Ok((inner, planned))
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -590,13 +633,20 @@ fn prepare(
     command: &Command,
     config: &Config,
     layers: Layers,
-) -> Result<(tokio::process::Command, Applied), String> {
+) -> Result<(tokio::process::Command, Layers), String> {
     if layers.strict {
         return Err(linux_only());
     }
     let mut inner = plain(command);
     apply_limits(&mut inner, config);
-    Ok((inner, Applied::default()))
+    Ok((
+        inner,
+        Layers {
+            landlock: false,
+            seccomp: false,
+            ..layers
+        },
+    ))
 }
 
 /// The program itself, with its arguments, environment and working
@@ -624,28 +674,20 @@ fn apply_confinement(
     inner: &mut tokio::process::Command,
     config: &Config,
     layers: Layers,
-) -> Result<Applied, String> {
-    let plan = confine::Plan::new(
-        &command.program,
-        &command.readable,
-        command.writable.as_deref(),
-        command.unix_sockets.as_deref(),
-        &config.readable,
-        layers,
-    )
-    .map_err(|err| err.to_string())?;
-    let applied = plan.applied();
-    if applied.landlock {
+) -> Result<Layers, String> {
+    let mut plan =
+        confine::Plan::new(command, &config.readable, layers).map_err(|err| err.to_string())?;
+    let planned = plan.layers();
+    if planned.landlock {
         home_in_workdir(command, inner);
     }
-    let mut plan = plan;
     // SAFETY: the ruleset and the filter were built here; the child only
     // makes the `landlock_restrict_self`, `prctl` and `seccomp` calls,
     // none of which touches the heap or a lock.
     unsafe {
         inner.pre_exec(move || plan.install());
     }
-    Ok(applied)
+    Ok(planned)
 }
 
 /// `bwrap` around the program, with the system set, the declared paths
@@ -656,7 +698,7 @@ fn prepare_bubblewrap(
     command: &Command,
     config: &Config,
     layers: Layers,
-) -> Result<(tokio::process::Command, Applied), String> {
+) -> Result<(tokio::process::Command, Layers), String> {
     let bwrap = config
         .bubblewrap
         .as_deref()
@@ -698,9 +740,10 @@ fn prepare_bubblewrap(
     }
     Ok((
         inner,
-        Applied {
+        Layers {
             landlock: false,
             seccomp: filters.is_some(),
+            ..layers
         },
     ))
 }
@@ -915,12 +958,12 @@ impl Fixture {
     /// The granted read under `layers`, which must succeed: otherwise the
     /// system set misses something this host needs, or the sandbox is
     /// wrong.
-    async fn check_granted(&self, config: &Config, layers: Layers) -> Result<Applied, ProbeError> {
-        let (outcome, applied) = run_with(self.read_granted(), config, layers)
+    async fn check_granted(&self, config: &Config, layers: Layers) -> Result<Layers, ProbeError> {
+        let (outcome, planned) = run_with(self.read_granted(), config, layers)
             .await
             .map_err(|err| bubblewrap_probe_error(config, err))?;
         match outcome {
-            Outcome::Success => Ok(applied),
+            Outcome::Success => Ok(planned),
             Outcome::Failed { status, stderr, .. } => Err(ProbeError::Granted {
                 program: self.program(),
                 status,
@@ -996,15 +1039,15 @@ async fn probe_confinement(config: &Config) -> Result<Status, ProbeError> {
         strict,
     };
 
-    let applied = fixture.check_granted(config, layers).await?;
-    let landlock = if applied.landlock {
+    let planned = fixture.check_granted(config, layers).await?;
+    let landlock = if planned.landlock {
         fixture.check_refused(config, layers).await?;
         confine::kernel_abi()
     } else {
         None
     };
 
-    let seccomp = applied.seccomp;
+    let seccomp = planned.seccomp;
     let rlimits_only = if landlock.is_none() && !seccomp {
         Some("the kernel has neither landlock nor seccomp".to_string())
     } else {
@@ -1039,11 +1082,11 @@ async fn probe_bubblewrap(
         bubblewrap: true,
         strict: true,
     };
-    let applied = fixture.check_granted(config, layers).await?;
+    let planned = fixture.check_granted(config, layers).await?;
     fixture.check_refused(config, layers).await?;
     Ok(Status {
         landlock: None,
-        seccomp: applied.seccomp,
+        seccomp: planned.seccomp,
         bubblewrap: Some(version),
         rlimits_only: None,
     })
@@ -1230,6 +1273,67 @@ mod tests {
         assert!(
             written <= ByteSize::kib(64).as_u64(),
             "{written} bytes written"
+        );
+    }
+
+    /// The process count is bounded too, per uid, which is how the kernel
+    /// counts it.
+    #[tokio::test]
+    async fn processes_are_bounded() {
+        if Command::new("python3").program().is_relative() {
+            eprintln!("skipped: no python3");
+            return;
+        }
+        let config = Config {
+            max_processes: 777,
+            ..config()
+        };
+        let mut limit = Command::new("python3");
+        limit.args([
+            "-I",
+            "-c",
+            "import resource, sys\n\
+             sys.exit(0 if resource.getrlimit(resource.RLIMIT_NPROC) == (777, 777) else 1)\n",
+        ]);
+        let outcome = run(limit, &config).await.unwrap();
+        assert!(matches!(outcome, Outcome::Success), "{outcome:?}");
+    }
+
+    /// A tool that floods stderr costs this process the tail it keeps,
+    /// not the flood: 32 MiB written, the last 4 KiB kept, and the
+    /// process's high-water mark where it was.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn stderr_is_kept_by_its_tail_alone() {
+        fn high_water_mark() -> u64 {
+            let status = std::fs::read_to_string("/proc/self/status").unwrap();
+            let line = status.lines().find(|l| l.starts_with("VmHWM:")).unwrap();
+            let kib: u64 = line.split_whitespace().nth(1).unwrap().parse().unwrap();
+            kib << 10
+        }
+        let config = Config {
+            timeout: Duration::from_secs(10),
+            ..config()
+        };
+        let before = high_water_mark();
+        let flood = sh("head -c 33554432 /dev/zero | tr '\\0' a >&2; echo end >&2; exit 3");
+        match run(flood, &config).await.unwrap() {
+            Outcome::Failed { code, stderr, .. } => {
+                assert_eq!(code, Some(3));
+                // The tail, less the newline `tail` trims.
+                assert_eq!(stderr.len(), STDERR_KEEP - 1);
+                assert!(
+                    stderr.ends_with("aaaend"),
+                    "{}",
+                    &stderr[stderr.len() - 16..]
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        let grown = high_water_mark().saturating_sub(before);
+        assert!(
+            grown < ByteSize::mib(8).as_u64(),
+            "the high-water mark grew by {grown} bytes"
         );
     }
 
@@ -1527,6 +1631,56 @@ mod tests {
             ));
         }
 
+        /// `media.sandbox.readable`, the operator's paths, are readable
+        /// by every command and read-only, like a declared path.
+        #[tokio::test]
+        async fn the_operator_paths_are_readable_and_read_only() {
+            let Some(config) = confined().await else {
+                return;
+            };
+            let fonts = tempdir();
+            std::fs::write(fonts.path().join("font"), b"glyphs").unwrap();
+            let config = Config {
+                readable: vec![fonts.path().to_path_buf()],
+                ..config
+            };
+            let work = tempdir();
+
+            let mut cat = Command::new("cat");
+            cat.arg(fonts.path().join("font")).writable(work.path());
+            assert!(matches!(run(cat, &config).await.unwrap(), Outcome::Success));
+
+            let mut write = sh("echo x > \"$1\"");
+            write
+                .arg("sh")
+                .arg(fonts.path().join("out"))
+                .writable(work.path());
+            assert!(matches!(
+                run(write, &config).await.unwrap(),
+                Outcome::Failed { .. }
+            ));
+            assert!(!fonts.path().join("out").exists());
+        }
+
+        /// Under confinement the home and the cache are the writable
+        /// directory, so that what a library writes there goes with the
+        /// job instead of failing on a home the child cannot write.
+        #[tokio::test]
+        async fn the_home_is_the_writable_directory() {
+            let Some(config) = confined().await else {
+                return;
+            };
+            let work = tempdir();
+            let mut home = sh(
+                "test \"$HOME\" = \"$1\" && test \"$XDG_CACHE_HOME\" = \"$1\" \
+                               && touch \"$HOME/cache\"",
+            );
+            home.arg("sh").arg(work.path()).writable(work.path());
+            let outcome = run(home, &config).await.unwrap();
+            assert!(matches!(outcome, Outcome::Success), "{outcome:?}");
+            assert!(work.path().join("cache").exists());
+        }
+
         #[tokio::test]
         async fn connects_are_refused() {
             let Some(config) = filtered().await else {
@@ -1715,6 +1869,113 @@ socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             let mut own = sh("prlimit --nofile > /dev/null && ulimit -n 64");
             own.writable(work.path());
             assert!(matches!(run(own, &config).await.unwrap(), Outcome::Success));
+        }
+
+        /// A child cannot leave the process group the timeout kills:
+        /// `setsid` and `setpgid` are refused, so a program that tries to
+        /// fork something past the timeout stays in the group, and the
+        /// timeout finds it. The `sleep` is found by a marker in its
+        /// arguments, as in the bubblewrap test.
+        #[tokio::test]
+        async fn sessions_and_groups_of_their_own_are_refused() {
+            let Some(config) = filtered().await else {
+                return;
+            };
+            let work = tempdir();
+            if has("python3") {
+                let mut calls = Command::new("python3");
+                calls
+                    .args([
+                        "-I",
+                        "-c",
+                        "import os, sys\n\
+                         for call in (os.setsid, lambda: os.setpgid(0, 0)):\n\
+                         \ttry:\n\
+                         \t\tcall()\n\
+                         \t\tsys.exit(10)\n\
+                         \texcept PermissionError:\n\
+                         \t\tpass\n",
+                    ])
+                    .writable(work.path());
+                let outcome = run(calls, &config).await.unwrap();
+                assert!(matches!(outcome, Outcome::Success), "{outcome:?}");
+            }
+            if !has("setsid") {
+                eprintln!("skipped: no setsid");
+                return;
+            }
+            let config = Config {
+                timeout: Duration::from_millis(500),
+                ..config
+            };
+            let marker = format!("30.{:06}", std::process::id() % 1_000_000);
+            let mut escape = sh("(setsid sleep \"$AGRAFE_SANDBOX_MARKER\" || \
+                                 sleep \"$AGRAFE_SANDBOX_MARKER\") & wait");
+            escape
+                .env("AGRAFE_SANDBOX_MARKER", &marker)
+                .writable(work.path());
+            assert!(matches!(
+                run(escape, &config).await.unwrap(),
+                Outcome::TimedOut
+            ));
+            for _ in 0..200 {
+                if !super::bubblewrap::running(&marker) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            panic!("the forked `sleep {marker}` outlived the timeout");
+        }
+
+        /// The worker's priority, affinity and I/O class are out of the
+        /// child's reach, as its limits are, and a pid descriptor on it
+        /// cannot be opened; the child's own, by pid 0, still work.
+        #[tokio::test]
+        async fn the_scheduling_of_other_processes_is_refused() {
+            let Some(config) = filtered().await else {
+                return;
+            };
+            let work = tempdir();
+            for (tool, script) in [
+                ("renice", "renice -n 5 -p $PPID"),
+                ("taskset", "taskset -cp 0 $PPID"),
+                ("ionice", "ionice -c 3 -p $PPID"),
+            ] {
+                if !has(tool) {
+                    eprintln!("skipped: no {tool}");
+                    continue;
+                }
+                let mut other = sh(script);
+                other.writable(work.path());
+                match run(other, &config).await.unwrap() {
+                    Outcome::Failed { stderr, .. } => {
+                        assert!(stderr.contains("not permitted"), "{script}: {stderr}");
+                    }
+                    other => panic!("{script}: {other:?}"),
+                }
+            }
+            if !has("python3") {
+                eprintln!("skipped: no python3");
+                return;
+            }
+            let mut own = Command::new("python3");
+            own.args([
+                "-I",
+                "-c",
+                "import os, sys\n\
+                 os.nice(1)\n\
+                 os.setpriority(os.PRIO_PROCESS, 0, 3)\n\
+                 os.sched_setaffinity(0, os.sched_getaffinity(0))\n\
+                 try:\n\
+                 \tos.pidfd_open(int(sys.argv[1]))\n\
+                 \tsys.exit(10)\n\
+                 except PermissionError:\n\
+                 \tpass\n",
+            ])
+            .arg(std::process::id().to_string())
+            .writable(work.path());
+            let outcome = run(own, &config).await.unwrap();
+            assert!(matches!(outcome, Outcome::Success), "{outcome:?}");
         }
 
         /// Threads still work: glibc's `clone3` is answered `ENOSYS`, not
@@ -1908,6 +2169,47 @@ socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             assert!(work.path().join("sub/out").exists());
         }
 
+        /// The operator's paths are bound read-only, and the home is the
+        /// writable directory, as under Landlock.
+        #[tokio::test]
+        async fn the_operator_paths_and_the_home_are_as_under_landlock() {
+            let Some(config) = wrapped().await else {
+                return;
+            };
+            let fonts = tempdir();
+            std::fs::write(fonts.path().join("font"), b"glyphs").unwrap();
+            let config = Config {
+                readable: vec![fonts.path().to_path_buf()],
+                ..config
+            };
+            let work = tempdir();
+
+            let mut cat = Command::new("cat");
+            cat.arg(fonts.path().join("font")).writable(work.path());
+            assert!(matches!(run(cat, &config).await.unwrap(), Outcome::Success));
+            let mut write = sh("echo x > \"$1\"");
+            write
+                .arg("sh")
+                .arg(fonts.path().join("out"))
+                .writable(work.path());
+            match run(write, &config).await.unwrap() {
+                Outcome::Failed { stderr, .. } => {
+                    assert!(stderr.contains("Read-only file system"), "{stderr}");
+                }
+                other => panic!("{other:?}"),
+            }
+            assert!(!fonts.path().join("out").exists());
+
+            let mut home = sh(
+                "test \"$HOME\" = \"$1\" && test \"$XDG_CACHE_HOME\" = \"$1\" \
+                               && touch \"$HOME/cache\"",
+            );
+            home.arg("sh").arg(work.path()).writable(work.path());
+            let outcome = run(home, &config).await.unwrap();
+            assert!(matches!(outcome, Outcome::Success), "{outcome:?}");
+            assert!(work.path().join("cache").exists());
+        }
+
         /// The network namespace has loopback alone, with nothing
         /// listening: seen without the seccomp filter, which refuses the
         /// socket before the namespace matters, and with it.
@@ -2086,13 +2388,28 @@ except PermissionError:
             );
         }
 
+        /// Whether a process on the host carries `marker` in its
+        /// arguments: how a `sleep` forked inside the sandbox is found
+        /// from outside, since its pid says nothing out here under a pid
+        /// namespace.
+        pub(super) fn running(marker: &str) -> bool {
+            std::fs::read_dir("/proc").unwrap().flatten().any(|entry| {
+                std::fs::read(entry.path().join("cmdline")).is_ok_and(|cmdline| {
+                    cmdline
+                        .split(|byte| *byte == 0)
+                        .any(|arg| arg == marker.as_bytes())
+                })
+            })
+        }
+
         /// A timeout takes the whole namespace down. The group the worker
         /// kills holds `bwrap` alone, since its pid 1 starts a session of
         /// its own, so what ends a `sleep` the program forked is
         /// `--die-with-parent`: pid 1 dies with `bwrap`, and the kernel
-        /// kills the rest. The `sleep` is found from the host by a marker
-        /// in its arguments, since its pid inside the namespace says
-        /// nothing out here.
+        /// kills the rest, a `sleep` that asked for a session of its own
+        /// included. The `sleep` is found from the host by a marker in
+        /// its arguments, since its pid inside the namespace says nothing
+        /// out here.
         #[tokio::test]
         async fn timeouts_take_the_namespace_down() {
             let Some(config) = wrapped().await else {
@@ -2105,7 +2422,8 @@ except PermissionError:
             command
                 .args([
                     "-c",
-                    "sleep \"$AGRAFE_SANDBOX_MARKER\" & echo > \"$1\"; wait",
+                    "(setsid sleep \"$AGRAFE_SANDBOX_MARKER\" || \
+                     sleep \"$AGRAFE_SANDBOX_MARKER\") & echo > \"$1\"; wait",
                     "sh",
                 ])
                 .arg(&started)
@@ -2118,17 +2436,8 @@ except PermissionError:
             assert!(started.exists(), "the sleep was never forked");
             // Only the `sleep` carries the marker in its arguments; the
             // shell and `bwrap` had it in the environment alone.
-            let running = || {
-                std::fs::read_dir("/proc").unwrap().flatten().any(|entry| {
-                    std::fs::read(entry.path().join("cmdline")).is_ok_and(|cmdline| {
-                        cmdline
-                            .split(|byte| *byte == 0)
-                            .any(|arg| arg == marker.as_bytes())
-                    })
-                })
-            };
             for _ in 0..200 {
-                if !running() {
+                if !running(&marker) {
                     return;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
