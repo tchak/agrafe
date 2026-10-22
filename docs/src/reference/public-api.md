@@ -125,7 +125,7 @@ segment; another name answers `404`.
 | `200` | The whole file |
 | `206` | A single satisfiable range |
 | `304` | `If-None-Match` names the `ETag` |
-| `400` | The `e` envelope does not decode, or the signed `disposition` or `filename` is invalid |
+| `400` | The `e` envelope does not decode or is another blob's, or the signed `disposition` or `filename` is invalid |
 | `404` | No such blob, terminal, filename mismatch, or, on a sealed URL, the objects were purged |
 | `409` | The blob is not `ready` yet |
 | `416` | The range starts past the end. No body |

@@ -144,6 +144,6 @@ original answers `409`, the thumbnail the icon with
 | `403 forbidden`, `signature not valid yet` | An expiry further in the future than `signing.window` plus `signing.ttl.max` |
 | `410 gone`, `signature expired` | The expiry has passed |
 | `404 not_found` | Valid signature, but the blob does not exist or is terminal |
-| `400 bad_request` | The envelope in `e` does not decode: the minter's mistake |
+| `400 bad_request` | The envelope in `e` does not decode, or its wrapped key does not open for the blob in the path: the minter's mistake |
 
 See [Errors](../reference/errors.md) for the full list.

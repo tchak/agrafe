@@ -194,13 +194,15 @@ pub async fn serve(
         return Ok(response);
     }
 
-    let mut reader = Reader::open(state, stored, span).await.map_err(|e| {
-        if origin == Origin::Envelope && e.is_not_found() {
-            ApiError::NotFound
-        } else {
-            ApiError::internal(format!("blob {}: opening the original: {e}", blob.id))
-        }
-    })?;
+    let mut reader = Reader::open(state, stored, span)
+        .await
+        .map_err(|e| match (origin, &e) {
+            (Origin::Envelope, _) if e.is_not_found() => ApiError::NotFound,
+            // The URL was signed, so the envelope is the minter's: it is
+            // another blob's, or it names a KEK that has since been retired.
+            (Origin::Envelope, ReadError::Key(_)) => ApiError::BadRequest(format!("envelope: {e}")),
+            _ => ApiError::internal(format!("blob {}: opening the original: {e}", blob.id)),
+        })?;
     // Open the first segment before the response starts: a wrong key, a
     // tampered object or a missing one is then a logged `500`, not a `200`
     // cut short.

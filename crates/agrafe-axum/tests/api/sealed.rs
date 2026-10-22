@@ -1,9 +1,15 @@
 //! Sealed URLs: the envelope in the URL is the row, and the read path
 //! looks nothing up.
 
+use agrafe::Agrafe;
+use agrafe::config::Base64Secret;
 use agrafe::jobs::JobKind;
+use agrafe_axum as api;
+use axum::Router;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use serde_json::json;
 
 use crate::support::*;
@@ -43,6 +49,25 @@ async fn sealed_urls_serve_without_the_row() {
     let (status, headers, _) = fetch(&app.public, get_with(&stale_thumbnail, &[])).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(headers["etag"], etag.as_str());
+
+    // Expired after minting: the sealed answers stand until the purge takes
+    // the objects, while the row-backed routes hide the blob at once.
+    sqlx::query("UPDATE blobs SET expires_at = now() - interval '1 hour' WHERE id = $1")
+        .bind(parse_id(id))
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+    let (status, _, body) = fetch(&app.public, get_with(&original, &[])).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, fixture("photo.jpg"));
+    let (status, _, _) = fetch(&app.public, get_with(&thumbnail, &[])).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = call(
+        &app.public,
+        req(Method::GET, &public_url(&after, "metadata")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "expired");
 
     // With the row gone, every sealed answer stands: nothing looks it up.
     sqlx::query("DELETE FROM blobs WHERE id = $1")
@@ -110,6 +135,26 @@ async fn a_bad_envelope_is_the_minters_mistake() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["error"]["code"], "bad_request");
+    // Another blob's envelope, signed in: its wrapped key is bound to that
+    // blob's id, so it does not open here, and that too is the minter's.
+    let other = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
+    while run_job(&app, JobKind::Render).await {}
+    let other = get_blob(&app, id_of(&other)).await;
+    let envelope = other["envelope"].as_str().unwrap();
+    for kind in ["original", "thumbnail"] {
+        let tail = format!("/{id}/{kind}/photo.jpg?e={envelope}");
+        let token = app
+            .state
+            .signer()
+            .sign(&Method::GET, unix_now() + 3600, &tail);
+        let (status, body) = call(
+            &app.public,
+            req(Method::GET, &format!("/blobs/{token}{tail}")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{kind}: {body}");
+        assert_eq!(body["error"]["code"], "bad_request");
+    }
     // A backend cannot ask the server to sign one in; it is the server's.
     let (status, body) = call(
         &app.private,
@@ -121,4 +166,106 @@ async fn a_bad_envelope_is_the_minters_mistake() {
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+}
+
+/// The same database and bucket under another `[encryption]`: `tune`
+/// edits the KEKs, and the routers come back.
+fn rotated(
+    app: &TestApp,
+    tune: impl FnOnce(&mut agrafe::config::EncryptionConfig),
+) -> (Router, Router) {
+    let mut config = app.state.config().clone();
+    tune(&mut config.encryption);
+    let store = agrafe::storage::build(&config.storage).unwrap();
+    let state = Agrafe::with_store(config, app.state.pool().clone(), store).unwrap();
+    (
+        api::private_router(state.clone()),
+        api::public_router(state),
+    )
+}
+
+/// A blob uploaded through `private`, rendered by `app`, and its metadata.
+async fn ready_through(app: &TestApp, private: &Router, bytes: &[u8]) -> serde_json::Value {
+    let mut blob = blob_for(bytes, "image/jpeg", "raw");
+    blob["filename"] = json!("photo.jpg");
+    blob["skip_virus_scan"] = json!(true);
+    let (status, created) = call(private, json_req(Method::POST, "/blobs", blob)).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let id = id_of(&created).to_string();
+    let (status, body) = call(private, put_raw(&format!("/blobs/{id}"), bytes.to_vec())).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    while run_job(app, JobKind::Render).await {}
+    let (status, blob) = call(private, req(Method::GET, &format!("/blobs/{id}"))).await;
+    assert_eq!(status, StatusCode::OK, "{blob}");
+    blob
+}
+
+async fn kek_of(app: &TestApp, id: &str) -> String {
+    sqlx::query_scalar("SELECT kek_id FROM blobs WHERE id = $1")
+        .bind(parse_id(id))
+        .fetch_one(app.state.pool())
+        .await
+        .unwrap()
+}
+
+/// The row path, a signed URL without an envelope, for a blob whose
+/// minted URLs are all sealed.
+fn row_url(app: &TestApp, id: &str) -> String {
+    let tail = format!("/{id}/original/photo.jpg");
+    let token = app
+        .state
+        .signer()
+        .sign(&Method::GET, unix_now() + 3600, &tail);
+    format!("/blobs/{token}{tail}")
+}
+
+#[tokio::test]
+async fn kek_rotation_end_to_end() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let kek2 = Base64Secret::from(STANDARD.encode([44u8; 32]));
+    let old = ready_through(&app, &app.private, &fixture("photo.jpg")).await;
+    assert_eq!(kek_of(&app, id_of(&old)).await, "kek1");
+
+    // A new current KEK, the old one kept: new blobs wrap under the new
+    // one, and both read, sealed or from the row.
+    let (private, public) = rotated(&app, |e| {
+        e.keks.insert("kek2".into(), kek2.clone());
+        e.current_kek = Some("kek2".into());
+    });
+    let new = ready_through(&app, &private, &fixture("photo.jpg")).await;
+    assert_eq!(kek_of(&app, id_of(&new)).await, "kek2");
+    for blob in [&old, &new] {
+        for url in [public_url(blob, "original"), row_url(&app, id_of(blob))] {
+            let (status, _, body) = fetch(&public, get_with(&url, &[])).await;
+            assert_eq!(status, StatusCode::OK, "{url}");
+            assert_eq!(body, fixture("photo.jpg"));
+        }
+        let (status, _, _) = fetch(&public, get_with(&public_url(blob, "thumbnail"), &[])).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    // A process that never learnt the new KEK: the blob it wraps is the
+    // minter's mistake on the sealed path, and a logged failure on the row's.
+    let (status, body) = call(&app.public, req(Method::GET, &public_url(&new, "original"))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "bad_request");
+    let (status, body) = call(&app.public, req(Method::GET, &row_url(&app, id_of(&new)))).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+
+    // The old KEK retired before its blobs were rewrapped: the same, for
+    // the old blob.
+    let (_, public) = rotated(&app, |e| {
+        e.keks.clear();
+        e.keks.insert("kek2".into(), kek2.clone());
+        e.current_kek = Some("kek2".into());
+    });
+    let (status, _, _) = fetch(&public, get_with(&public_url(&new, "original"), &[])).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = call(&public, req(Method::GET, &public_url(&old, "original"))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, body) = call(&public, req(Method::GET, &public_url(&old, "thumbnail"))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, _) = call(&public, req(Method::GET, &row_url(&app, id_of(&old)))).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
 }

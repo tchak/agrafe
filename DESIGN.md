@@ -478,7 +478,13 @@ the row up as before.
   than the blob. A backend minting its own picks the TTL it stands behind,
   within `signing.ttl.max`.
 - An envelope that does not decode is `400`: the URL was signed, so it is
-  the minter's mistake, not a forgery.
+  the minter's mistake, not a forgery. So is one whose wrapped key does
+  not open for the blob in the path, another blob's envelope or one
+  naming a KEK since retired, rather than the `500` a row that does not
+  unwrap earns. Decoding also refuses what the server never writes, a
+  wrapped key of the wrong length or a segment size past
+  `encryption.chunk_size`'s bound, so the memory a request holds is the
+  operator's choice, not the minter's.
 
 ## Blobs
 

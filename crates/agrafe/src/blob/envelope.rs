@@ -24,6 +24,7 @@
 //! [DESIGN.md, "Sealed URLs"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#sealed-urls
 
 use agrafe_crypto::streaming::{Header, Layout};
+use agrafe_crypto::wrap::WRAPPED_LEN;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use jiff::Timestamp;
@@ -31,6 +32,7 @@ use uuid::Uuid;
 
 use super::{BlobHead, BlobState, Rendered, Representation, RepresentationState, ScanState};
 use crate::classify::Category;
+use crate::encryption::MAX_CHUNK_SIZE;
 
 /// The version [`Envelope::encode`] writes.
 const VERSION: u8 = 1;
@@ -191,8 +193,11 @@ impl Envelope {
     }
 
     /// Read back what [`Envelope::encode`] wrote. Fails on another version,
-    /// a truncated or overlong string, an unknown enum value, or an
-    /// invalid header or segment size.
+    /// a truncated or overlong string, an unknown enum value, a wrapped
+    /// key or a header of the wrong length, or a segment size the
+    /// configuration could not have produced: nothing the server wrote
+    /// is refused, and nothing the read path holds in memory per request
+    /// is left to the minter.
     pub fn decode(encoded: &str) -> Result<Self, EnvelopeError> {
         let bytes = URL_SAFE_NO_PAD.decode(encoded).map_err(|_| EnvelopeError)?;
         let mut r = Reader(&bytes);
@@ -200,9 +205,16 @@ impl Envelope {
             return Err(EnvelopeError);
         }
         let kek_id = r.str()?;
-        let wrapped_key = r.bytes()?.to_vec();
+        let wrapped_key = r.bytes()?;
+        if wrapped_key.len() != WRAPPED_LEN {
+            return Err(EnvelopeError);
+        }
+        let wrapped_key = wrapped_key.to_vec();
         let header = Header::parse(r.bytes()?).map_err(|_| EnvelopeError)?;
         let chunk_size = r.u32()?;
+        if u64::from(chunk_size) > MAX_CHUNK_SIZE {
+            return Err(EnvelopeError);
+        }
         Layout::new(chunk_size as usize).map_err(|_| EnvelopeError)?;
         let size = r.u64()?;
         let checksum: [u8; 32] = r.bytes()?.try_into().map_err(|_| EnvelopeError)?;
@@ -413,6 +425,23 @@ mod tests {
         let mut other = URL_SAFE_NO_PAD.decode(&encoded).unwrap();
         other[0] = VERSION + 1;
         assert!(Envelope::decode(&URL_SAFE_NO_PAD.encode(other)).is_err());
+    }
+
+    /// What a minter with the signing key could still put in a URL: a
+    /// segment the read path would hold in memory whole, past the bound
+    /// the configuration enforces, or a wrapped key no KEK can open.
+    #[test]
+    fn rejects_what_the_server_never_writes() {
+        let mut env = sample();
+        env.chunk_size = MAX_CHUNK_SIZE as u32;
+        assert!(Envelope::decode(&env.encode()).is_ok());
+        env.chunk_size = MAX_CHUNK_SIZE as u32 + 1;
+        assert_eq!(Envelope::decode(&env.encode()), Err(EnvelopeError));
+        let mut env = sample();
+        env.wrapped_key.push(0);
+        assert_eq!(Envelope::decode(&env.encode()), Err(EnvelopeError));
+        env.wrapped_key.truncate(WRAPPED_LEN - 1);
+        assert_eq!(Envelope::decode(&env.encode()), Err(EnvelopeError));
     }
 
     #[test]

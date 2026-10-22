@@ -19,13 +19,14 @@ use uuid::Uuid;
 
 use agrafe::Agrafe;
 use agrafe::blob::envelope::Envelope;
-use agrafe::blob::representation::Resolved;
+use agrafe::blob::read::ReadError;
+use agrafe::blob::representation::{self, Resolved};
 use agrafe::blob::urls::MAX_WAIT;
 use agrafe::blob::{BlobHead, Rendered, Representation, RepresentationState};
 use agrafe::filename::split_extension;
 use agrafe::icons;
 
-use super::original;
+use super::original::{self, Origin};
 use crate::error::{ApiError, ApiResult};
 
 pub const STATE_HEADER: &str = "x-representation-state";
@@ -93,7 +94,17 @@ pub async fn serve(
     let disposition = original::content_disposition(query.disposition.as_deref(), &name)?;
     match served {
         Resolved::Ready(rendered) => {
-            image(state, &blob, kind, rendered, disposition, method, headers).await
+            image(
+                state,
+                &blob,
+                kind,
+                rendered,
+                disposition,
+                method,
+                headers,
+                Origin::Row,
+            )
+            .await
         }
         Resolved::Placeholder(rep_state) => {
             placeholder(kind, &blob, rep_state, disposition, method)
@@ -142,9 +153,18 @@ pub async fn serve_sealed(
     let blob = envelope.head(id, filename);
     let name = webp_name(query.filename.as_deref().unwrap_or(filename));
     let disposition = original::content_disposition(query.disposition.as_deref(), &name)?;
-    image(state, &blob, kind, rendered, disposition, method, headers)
-        .await
-        .map(Some)
+    image(
+        state,
+        &blob,
+        kind,
+        rendered,
+        disposition,
+        method,
+        headers,
+        Origin::Envelope,
+    )
+    .await
+    .map(Some)
 }
 
 async fn refetch(state: &Agrafe, id: Uuid, port: Port) -> ApiResult<BlobHead> {
@@ -158,7 +178,10 @@ async fn refetch(state: &Agrafe, id: Uuid, port: Port) -> ApiResult<BlobHead> {
 /// The rendered representation, with the conditional request handling a
 /// cacheable image deserves. The `ETag` and the length come from the row,
 /// so a `304` and a `HEAD` never read the object; only a `GET` with a body
-/// to send does.
+/// to send does. On the sealed path a data key that does not unwrap is
+/// the minter's envelope, another blob's or one naming a retired KEK, so
+/// it is `400` rather than the `500` a row that does not unwrap earns.
+#[allow(clippy::too_many_arguments)]
 async fn image(
     state: &Agrafe,
     blob: &BlobHead,
@@ -167,6 +190,7 @@ async fn image(
     disposition: HeaderValue,
     method: &Method,
     headers: &HeaderMap,
+    origin: Origin,
 ) -> ApiResult<Response> {
     let etag = original::etag(&rendered.sha256);
     let mut response = Response::new(Body::empty());
@@ -182,7 +206,16 @@ async fn image(
         webp_headers(response.headers_mut(), rendered.size, disposition);
         return Ok(response);
     }
-    let Some(bytes) = state.load_representation(blob, kind).await? else {
+    let loaded = state
+        .load_representation(blob, kind)
+        .await
+        .map_err(|e| match (origin, &e) {
+            (Origin::Envelope, representation::Error::Read(ReadError::Key(_))) => {
+                ApiError::BadRequest(format!("envelope: {e}"))
+            }
+            _ => ApiError::from(e),
+        })?;
+    let Some(bytes) = loaded else {
         return placeholder(
             kind,
             blob,
