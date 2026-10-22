@@ -2351,9 +2351,14 @@ runs; it is described after the three.
 only, no secrets; vips also gets `TMPDIR`, `VIPS_CONCURRENCY` and
 `VIPS_WARNING=0`, and a coverage build alone passes `LLVM_PROFILE_FILE`
 through), `setrlimit` bounds on address space and data
-(`media.sandbox.memory`, default 1 GiB), CPU time and output file size
-(`max_output_size`), no core dumps, and a kill at the wall-clock limit
-(`media.sandbox.timeout`, default 60 s). The CPU time limit is the
+(`media.sandbox.memory`, default 1 GiB), CPU time, output file size
+(`max_output_size`) and process count (`max_processes`, default 1024),
+no core dumps, and a kill at the wall-clock limit
+(`media.sandbox.timeout`, default 60 s). The process count is
+`RLIMIT_NPROC`, which the kernel counts per uid, every process and
+thread of it, the worker's own included: it bounds a fork bomb at what
+a uid of the worker's own never reaches, and a worker sharing its uid
+with much else raises it. The CPU time limit is the
 wall-clock limit plus a second, summed over the process's threads, which
 is why every tool is kept narrow (two threads for vips and LibreOffice):
 a process spread over sixteen cores would exhaust it in a tenth of the
@@ -2400,7 +2405,8 @@ libseccomp), as a *denylist* answering `EPERM`: `socket`, `socketpair`,
 `umount2`, `pivot_root`, the new mount API (`open_tree`, `move_mount`,
 `fsopen`, `fsconfig`, `fsmount`, `fspick`, `mount_setattr`), `bpf`,
 `keyctl`, `add_key`, `request_key`, `userfaultfd`, `io_uring_setup`,
-`kexec_load`, `kexec_file_load`, `init_module`, `finit_module`, `clone`
+`kexec_load`, `kexec_file_load`, `init_module`, `finit_module`,
+`setsid`, `setpgid`, `clone`
 with any namespace flag, and `prlimit64` on any pid but 0 (glibc's
 `setrlimit` and `getrlimit` pass 0). `clone3` carries its flags in a struct
 the filter cannot read, so it is refused whole, in a second filter
@@ -2446,11 +2452,18 @@ unchanged. The two filter variants are compiled once each.
 alone would leave LibreOffice running. Every child is made the leader of a
 process group of its own, and a timeout kills the group before the child
 is dropped. The resource limits were already inherited down the tree.
+A group is only as good as its membership: a child that called `setsid`
+or `setpgid` would leave it and outlive the timeout, confined but
+immortal, and with `RLIMIT_NPROC` it could fork until the worker's own
+spawns failed, since they share a uid. So the filter refuses both calls
+(`bwrap` makes its own session before it installs the filter), the
+process count is bounded, and a test times out a `sleep` forked through
+`setsid` and finds it gone.
 Under bubblewrap the group holds `bwrap` alone, since its pid 1 starts
 a session of its own (`--new-session`); there `--die-with-parent` does
 the work, killing pid 1 when `bwrap` dies, and the kernel takes the pid
-namespace down with it. A test times out a forked `sleep` under
-bubblewrap and finds it gone from the host's `/proc`.
+namespace down with it. The same test runs under bubblewrap and finds
+the `sleep` gone from the host's `/proc`.
 
 Why a denylist: an allowlist has to track every syscall glibc, glib and
 libvips make and breaks silently on an upgrade, in the probe if we are
@@ -2633,10 +2646,11 @@ system set fails the deployment instead of every thumbnail.
 
 *Tests* in `agrafe-sandbox` assert what is refused: a read outside the
 granted directories, a write outside the writable one, a `connect` to a
-listening socket on localhost, `unshare`, and that threads still work and
-a spawn stays cheap. They skip with a message where the kernel cannot
-confine, except under `AGRAFE_SANDBOX_REQUIRED=1`, which CI sets so a
-regression is not a green empty suite. The integration suite runs under
+listening socket on localhost, `unshare`, `setsid` and `setpgid`, and
+that threads still work and a spawn stays cheap. They skip with a
+message where the kernel cannot confine, except under
+`AGRAFE_SANDBOX_REQUIRED=1`, which CI sets so a regression is not a
+green empty suite. The integration suite runs under
 `auto` on CI, which confines every render it makes. The bubblewrap tests
 are the same refusals through `/usr/bin/bwrap`, plus what the namespaces
 add: the configuration file does not exist, the network is loopback

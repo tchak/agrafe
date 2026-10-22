@@ -244,9 +244,13 @@ const ARCH: TargetArch = TargetArch::riscv64;
 /// closes path-based unix sockets (Postgres), which no Landlock ABI
 /// governs; tracing, cross-process memory and descriptor theft
 /// (`pidfd_getfd` reaches the worker's sockets from the same uid when
-/// Yama allows it); namespaces, mounts and the new mount API; and the
-/// kernel-facing surface a decoder has no use for.
+/// Yama allows it); namespaces, mounts and the new mount API; a session
+/// or process group of the child's own, which would take it out of the
+/// group the timeout kills; and the kernel-facing surface a decoder has
+/// no use for.
 const DENIED: &[libc::c_long] = &[
+    libc::SYS_setsid,
+    libc::SYS_setpgid,
     libc::SYS_ptrace,
     libc::SYS_process_vm_readv,
     libc::SYS_process_vm_writev,

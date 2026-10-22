@@ -147,7 +147,8 @@ Blobs created with it cannot be uploaded through the public port.
 Decoders are the most attackable code in the service, so none runs in the
 server process. `vips`, `agrafe-extract`, `agrafe-render-text`,
 `agrafe-render-document` and `agrafe-render-geo` run as subprocesses with
-a clean environment, memory, CPU, output size and wall-clock limits. The
+a clean environment, memory, CPU, output size, process count and
+wall-clock limits. The
 file parsers they use, `lopdf`, `zip`, `quick-xml`, `ab_glyph`, `typst`
 and `geojson`, are not even linked into the server. The one network step of a
 render, fetching the background of a map from a configured WMS, is the
@@ -166,7 +167,9 @@ binary, no user namespaces and nothing to install:
   outside the sandbox, such as the worker itself.
 - **seccomp** refuses, with `EPERM`, every socket call (which also closes
   path-based unix sockets such as Postgres's), namespaces, `ptrace`,
-  mounts, reaching another process's descriptors or limits, and the
+  mounts, a session or process group of its own (which would take it
+  out of the group the timeout kills), reaching another process's
+  descriptors or limits, and the
   kernel-facing calls a decoder has no use for: `bpf`, `keyctl`,
   `userfaultfd`, `io_uring_setup`, module loading. It is a
   denylist, not an allowlist, so a glibc or libvips upgrade does not break

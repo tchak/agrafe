@@ -13,9 +13,10 @@
 //!   else exists;
 //! - a seccomp denylist, installed next: no sockets (unix sockets alone
 //!   on request, see [`Command::unix_sockets`]), no namespaces, no
-//!   ptrace, no mounts, no reaching another process's descriptors or
-//!   limits, no kernel-facing surface a process that turns bytes into
-//!   pixels has any use for. Refused calls fail with `EPERM`.
+//!   ptrace, no mounts, no session or process group of the child's own,
+//!   no reaching another process's descriptors or limits, no
+//!   kernel-facing surface a process that turns bytes into pixels has
+//!   any use for. Refused calls fail with `EPERM`.
 //!
 //! The last two are Linux only, on by default where the kernel has them
 //! ([`Isolation::Auto`]), and [`Isolation::Required`] refuses to start
@@ -61,6 +62,13 @@ pub struct Config {
     /// Largest file the process may write (`RLIMIT_FSIZE`).
     #[serde(default = "default_max_output_size")]
     pub max_output_size: ByteSize,
+    /// Processes and threads the process's uid may have at once
+    /// (`RLIMIT_NPROC`), which bounds a fork bomb. The kernel counts
+    /// every process and thread of the uid, the worker's own included,
+    /// so the default suits a uid of the worker's own and a shared one
+    /// raises it.
+    #[serde(default = "default_max_processes")]
+    pub max_processes: u64,
     /// Whether Landlock and seccomp confine the process.
     #[serde(default)]
     pub isolation: Isolation,
@@ -108,6 +116,9 @@ fn default_memory() -> ByteSize {
 fn default_max_output_size() -> ByteSize {
     ByteSize::mib(256)
 }
+fn default_max_processes() -> u64 {
+    1024
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -115,6 +126,7 @@ impl Default for Config {
             timeout: default_timeout(),
             memory: default_memory(),
             max_output_size: default_max_output_size(),
+            max_processes: default_max_processes(),
             isolation: Isolation::default(),
             readable: Vec::new(),
             bubblewrap: None,
@@ -572,6 +584,7 @@ fn apply_limits(command: &mut tokio::process::Command, config: &Config) {
     let memory = config.memory.as_u64();
     let cpu = config.timeout.as_secs().saturating_add(1);
     let output = config.max_output_size.as_u64();
+    let processes = config.max_processes;
     let limit = |value: u64| libc::rlimit {
         rlim_cur: value as libc::rlim_t,
         rlim_max: value as libc::rlim_t,
@@ -592,6 +605,7 @@ fn apply_limits(command: &mut tokio::process::Command, config: &Config) {
             libc::setrlimit(libc::RLIMIT_DATA, &limit(memory));
             libc::setrlimit(libc::RLIMIT_CPU, &cpu);
             libc::setrlimit(libc::RLIMIT_FSIZE, &limit(output));
+            libc::setrlimit(libc::RLIMIT_NPROC, &limit(processes));
             libc::setrlimit(libc::RLIMIT_CORE, &limit(0));
             Ok(())
         });
@@ -1267,6 +1281,29 @@ mod tests {
         );
     }
 
+    /// The process count is bounded too, per uid, which is how the kernel
+    /// counts it.
+    #[tokio::test]
+    async fn processes_are_bounded() {
+        if Command::new("python3").program().is_relative() {
+            eprintln!("skipped: no python3");
+            return;
+        }
+        let config = Config {
+            max_processes: 777,
+            ..config()
+        };
+        let mut limit = Command::new("python3");
+        limit.args([
+            "-I",
+            "-c",
+            "import resource, sys\n\
+             sys.exit(0 if resource.getrlimit(resource.RLIMIT_NPROC) == (777, 777) else 1)\n",
+        ]);
+        let outcome = run(limit, &config).await.unwrap();
+        assert!(matches!(outcome, Outcome::Success), "{outcome:?}");
+    }
+
     /// A tool that floods stderr costs this process the tail it keeps,
     /// not the flood: 32 MiB written, the last 4 KiB kept, and the
     /// process's high-water mark where it was.
@@ -1789,6 +1826,62 @@ socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             assert!(matches!(run(own, &config).await.unwrap(), Outcome::Success));
         }
 
+        /// A child cannot leave the process group the timeout kills:
+        /// `setsid` and `setpgid` are refused, so a program that tries to
+        /// fork something past the timeout stays in the group, and the
+        /// timeout finds it. The `sleep` is found by a marker in its
+        /// arguments, as in the bubblewrap test.
+        #[tokio::test]
+        async fn sessions_and_groups_of_their_own_are_refused() {
+            let Some(config) = filtered().await else {
+                return;
+            };
+            let work = tempdir();
+            if has("python3") {
+                let mut calls = Command::new("python3");
+                calls
+                    .args([
+                        "-I",
+                        "-c",
+                        "import os, sys\n\
+                         for call in (os.setsid, lambda: os.setpgid(0, 0)):\n\
+                         \ttry:\n\
+                         \t\tcall()\n\
+                         \t\tsys.exit(10)\n\
+                         \texcept PermissionError:\n\
+                         \t\tpass\n",
+                    ])
+                    .writable(work.path());
+                let outcome = run(calls, &config).await.unwrap();
+                assert!(matches!(outcome, Outcome::Success), "{outcome:?}");
+            }
+            if !has("setsid") {
+                eprintln!("skipped: no setsid");
+                return;
+            }
+            let config = Config {
+                timeout: Duration::from_millis(500),
+                ..config
+            };
+            let marker = format!("30.{:06}", std::process::id() % 1_000_000);
+            let mut escape = sh("(setsid sleep \"$AGRAFE_SANDBOX_MARKER\" || \
+                                 sleep \"$AGRAFE_SANDBOX_MARKER\") & wait");
+            escape
+                .env("AGRAFE_SANDBOX_MARKER", &marker)
+                .writable(work.path());
+            assert!(matches!(
+                run(escape, &config).await.unwrap(),
+                Outcome::TimedOut
+            ));
+            for _ in 0..200 {
+                if !super::bubblewrap::running(&marker) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            panic!("the forked `sleep {marker}` outlived the timeout");
+        }
+
         /// Threads still work: glibc's `clone3` is answered `ENOSYS`, not
         /// `EPERM`, so it falls back to `clone`.
         #[tokio::test]
@@ -2158,13 +2251,28 @@ except PermissionError:
             );
         }
 
+        /// Whether a process on the host carries `marker` in its
+        /// arguments: how a `sleep` forked inside the sandbox is found
+        /// from outside, since its pid says nothing out here under a pid
+        /// namespace.
+        pub(super) fn running(marker: &str) -> bool {
+            std::fs::read_dir("/proc").unwrap().flatten().any(|entry| {
+                std::fs::read(entry.path().join("cmdline")).is_ok_and(|cmdline| {
+                    cmdline
+                        .split(|byte| *byte == 0)
+                        .any(|arg| arg == marker.as_bytes())
+                })
+            })
+        }
+
         /// A timeout takes the whole namespace down. The group the worker
         /// kills holds `bwrap` alone, since its pid 1 starts a session of
         /// its own, so what ends a `sleep` the program forked is
         /// `--die-with-parent`: pid 1 dies with `bwrap`, and the kernel
-        /// kills the rest. The `sleep` is found from the host by a marker
-        /// in its arguments, since its pid inside the namespace says
-        /// nothing out here.
+        /// kills the rest, a `sleep` that asked for a session of its own
+        /// included. The `sleep` is found from the host by a marker in
+        /// its arguments, since its pid inside the namespace says nothing
+        /// out here.
         #[tokio::test]
         async fn timeouts_take_the_namespace_down() {
             let Some(config) = wrapped().await else {
@@ -2177,7 +2285,8 @@ except PermissionError:
             command
                 .args([
                     "-c",
-                    "sleep \"$AGRAFE_SANDBOX_MARKER\" & echo > \"$1\"; wait",
+                    "(setsid sleep \"$AGRAFE_SANDBOX_MARKER\" || \
+                     sleep \"$AGRAFE_SANDBOX_MARKER\") & echo > \"$1\"; wait",
                     "sh",
                 ])
                 .arg(&started)
@@ -2190,17 +2299,8 @@ except PermissionError:
             assert!(started.exists(), "the sleep was never forked");
             // Only the `sleep` carries the marker in its arguments; the
             // shell and `bwrap` had it in the environment alone.
-            let running = || {
-                std::fs::read_dir("/proc").unwrap().flatten().any(|entry| {
-                    std::fs::read(entry.path().join("cmdline")).is_ok_and(|cmdline| {
-                        cmdline
-                            .split(|byte| *byte == 0)
-                            .any(|arg| arg == marker.as_bytes())
-                    })
-                })
-            };
             for _ in 0..200 {
-                if !running() {
+                if !running(&marker) {
                     return;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
