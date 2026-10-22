@@ -155,7 +155,7 @@ pub fn canonical(mime: &str) -> &str {
         "font/woff" => "application/font-woff",
         "application/x-font-ttf" => "font/ttf",
         "application/x-font-opentype" => "font/otf",
-        "application/java-archive" | "application/x-java-archive" => "application/java",
+        "application/x-java-archive" => "application/java-archive",
         other => other,
     }
 }
@@ -236,7 +236,7 @@ pub(crate) fn container(mime: &str) -> Option<&'static str> {
         | "application/oxps"
         | "application/vnd.google-earth.kmz"
         | "application/epub+zip"
-        | "application/java"
+        | "application/java-archive"
         | "application/vnd.android.package-archive"
         | "application/x-google-chrome-extension"
         | "image/openraster" => Some(ZIP),
@@ -506,6 +506,16 @@ mod tests {
             "application/vnd.android.package-archive",
             "application/pdf"
         ));
+        // A JAR is a ZIP; `application/java`, which `infer` reports for a
+        // class file, is neither a JAR nor a ZIP.
+        assert_eq!(
+            sniff(b"\xca\xfe\xba\xbe\x00\x00\x00\x41\x00\x10"),
+            Some("application/java")
+        );
+        assert!(compatible("application/java-archive", "application/zip"));
+        assert!(compatible("application/x-java-archive", "application/zip"));
+        assert!(!compatible("application/java-archive", "application/java"));
+        assert!(!compatible("application/zip", "application/java"));
         // `infer` tells a Matroska file from a WebM one by its doctype, so
         // the one is not the other.
         assert!(compatible("video/x-matroska", "video/x-matroska"));

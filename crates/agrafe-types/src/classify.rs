@@ -90,6 +90,7 @@ pub fn classify(content_type: &str) -> Category {
         | "application/x-bzip2"
         | "application/zstd"
         | "application/vnd.android.package-archive"
+        | "application/java-archive"
         | crate::kml::KMZ => Some(Category::Archive),
 
         "application/json" | crate::geojson::GEOJSON | crate::gpx::GPX | crate::kml::KML => {
@@ -207,5 +208,6 @@ mod tests {
             classify("application/vnd.android.package-archive"),
             Category::Archive
         );
+        assert_eq!(classify("application/x-java-archive"), Category::Archive);
     }
 }
