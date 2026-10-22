@@ -25,8 +25,8 @@
 
 use std::ops::Range;
 
+use aes_gcm::aead::AeadInOut;
 use aes_gcm::aead::inout::InOutBuf;
-use aes_gcm::aead::{Aead, AeadInOut};
 use aes_gcm::{Aes256Gcm, Nonce, Tag};
 
 use crate::{Error, KEY_LEN, Key, derive};
@@ -225,8 +225,8 @@ fn nonce(
 pub struct Encryptor {
     cipher: Aes256Gcm,
     header: Header,
-    nonce_prefix: [u8; NONCE_PREFIX_LEN],
     layout: Layout,
+    /// The plaintext of the segment being filled, sealed where it lies.
     buffer: Vec<u8>,
     segment: u32,
 }
@@ -254,7 +254,6 @@ impl Encryptor {
         Self {
             cipher: derive(key, Some(&salt), associated_data),
             header: Header::new(salt, nonce_prefix),
-            nonce_prefix,
             layout,
             buffer: Vec::with_capacity(layout.plaintext_per_segment()),
             segment: 0,
@@ -274,13 +273,17 @@ impl Encryptor {
         }
     }
 
+    /// Seal the buffered plaintext in place and append it, then its tag, to
+    /// `out`: one copy per byte and no allocation per segment.
     fn seal(&mut self, last: bool, out: &mut Vec<u8>) -> Result<(), Error> {
-        let nonce = nonce(&self.nonce_prefix, self.segment, last);
-        let sealed = self
+        let nonce = nonce(&self.header.nonce_prefix(), self.segment, last);
+        let tag = self
             .cipher
-            .encrypt(&nonce, self.buffer.as_slice())
+            .encrypt_inout_detached(&nonce, b"", InOutBuf::from(self.buffer.as_mut_slice()))
             .map_err(|_| Error::Corrupt)?;
-        out.extend_from_slice(&sealed);
+        out.reserve(self.buffer.len() + TAG_LEN);
+        out.extend_from_slice(&self.buffer);
+        out.extend_from_slice(&tag);
         self.buffer.clear();
         if !last {
             self.segment = self.segment.checked_add(1).ok_or(Error::TooManySegments)?;
