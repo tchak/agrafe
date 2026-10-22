@@ -21,7 +21,7 @@ use seccompiler::{
     SeccompRule, TargetArch,
 };
 
-use crate::{Applied, Layers};
+use crate::{Command, Layers};
 
 /// What a decoder legitimately reads, granted read-only, with execute
 /// where it applies: the libraries, the loader's cache, the fonts and
@@ -65,23 +65,25 @@ pub(crate) enum Error {
 pub(crate) struct Plan {
     ruleset: Option<RulesetCreated>,
     filters: Option<Arc<Vec<BpfProgram>>>,
-    strict: bool,
+    layers: Layers,
 }
 
 impl Plan {
-    pub(crate) fn new(
-        program: &Path,
-        readable: &[PathBuf],
-        writable: Option<&Path>,
-        unix_sockets: Option<&Path>,
-        extra: &[PathBuf],
-        layers: Layers,
-    ) -> Result<Self, Error> {
+    /// The plan for `command` under `layers`, with `extra`, the
+    /// operator's readable paths, granted read-only.
+    pub(crate) fn new(command: &Command, extra: &[PathBuf], layers: Layers) -> Result<Self, Error> {
+        let unix_sockets = command.unix_sockets.as_deref();
         let ruleset = if layers.landlock {
             match kernel_abi() {
                 None if layers.strict => return Err(Error::NoLandlock),
                 None => None,
-                Some(_) => match ruleset(program, readable, writable, unix_sockets, extra) {
+                Some(_) => match ruleset(
+                    &command.program,
+                    &command.readable,
+                    command.writable.as_deref(),
+                    unix_sockets,
+                    extra,
+                ) {
                     Ok(ruleset) => Some(ruleset),
                     Err(err) if layers.strict => return Err(Error::Landlock(err)),
                     Err(_) => None,
@@ -102,19 +104,21 @@ impl Plan {
         Ok(Self {
             ruleset,
             filters,
-            strict: layers.strict,
+            layers,
         })
     }
 
-    /// The layers this plan will install, decided in the parent. Whether
-    /// the child managed each is known only by what it then refuses: under
-    /// strict a failure fails the spawn, otherwise the layer is skipped
-    /// without a report, and [`probe`](crate::probe) is what checks, at
-    /// startup, that the refusals are real.
-    pub(crate) fn applied(&self) -> Applied {
-        Applied {
+    /// The layers this plan will install, decided in the parent: the
+    /// ones asked for that the kernel has. Whether the child managed each
+    /// is known only by what it then refuses: under strict a failure
+    /// fails the spawn, otherwise the layer is skipped without a report,
+    /// and [`probe`](crate::probe) is what checks, at startup, that the
+    /// refusals are real.
+    pub(crate) fn layers(&self) -> Layers {
+        Layers {
             landlock: self.ruleset.is_some(),
             seccomp: self.filters.is_some(),
+            ..self.layers
         }
     }
 
@@ -129,17 +133,19 @@ impl Plan {
         if let Some(ruleset) = self.ruleset.take() {
             let enforced = match ruleset.restrict_self() {
                 Ok(status) => status.ruleset != RulesetStatus::NotEnforced,
-                Err(err) if self.strict => return Err(io::Error::from_raw_os_error(errno(&err))),
+                Err(err) if self.layers.strict => {
+                    return Err(io::Error::from_raw_os_error(errno(&err)));
+                }
                 Err(_) => false,
             };
-            if !enforced && self.strict {
+            if !enforced && self.layers.strict {
                 return Err(io::Error::from_raw_os_error(libc::EPERM));
             }
         }
         if let Some(filters) = &self.filters {
             for filter in filters.iter() {
                 if let Err(err) = seccompiler::apply_filter(filter) {
-                    if self.strict {
+                    if self.layers.strict {
                         let errno = match err {
                             seccompiler::Error::Seccomp(source)
                             | seccompiler::Error::Prctl(source) => {
@@ -436,21 +442,14 @@ mod tests {
 
     #[test]
     fn plans_without_layers_apply_nothing() {
-        let plan = Plan::new(
-            Path::new("/bin/true"),
-            &[],
-            None,
-            None,
-            &[],
-            Layers {
-                landlock: false,
-                seccomp: false,
-                bubblewrap: false,
-                strict: true,
-            },
-        )
-        .unwrap();
-        let applied = plan.applied();
-        assert!(!applied.landlock && !applied.seccomp);
+        let layers = Layers {
+            landlock: false,
+            seccomp: false,
+            bubblewrap: false,
+            strict: true,
+        };
+        let plan = Plan::new(&Command::new("/bin/true"), &[], layers).unwrap();
+        let planned = plan.layers();
+        assert!(!planned.landlock && !planned.seccomp && planned.strict);
     }
 }

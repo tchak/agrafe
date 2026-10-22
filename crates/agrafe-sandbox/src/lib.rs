@@ -357,7 +357,10 @@ fn is_executable(path: &Path) -> bool {
 /// error. Under bubblewrap Landlock is off, since a Landlock domain
 /// forbids the `mount` `bwrap` needs and the mount namespace covers what
 /// the ruleset covered, and every failure is an error: asked for and
-/// impossible, the sandbox does not run unconfined.
+/// impossible, the sandbox does not run unconfined. A spawn hands back
+/// the layers it planned after the kernel had its say; see
+/// `confine::Plan::layers` for what that does and does not say about
+/// the child.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 struct Layers {
@@ -385,15 +388,6 @@ impl Layers {
             strict: bubblewrap || config.isolation.strict(),
         }
     }
-}
-
-/// What a spawn planned to install; see `confine::Plan::applied` for what
-/// that does and does not say about the child.
-#[derive(Debug, Clone, Copy, Default)]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-struct Applied {
-    landlock: bool,
-    seccomp: bool,
 }
 
 /// Run `command` to completion under `config`, in a `sandbox` span that
@@ -429,9 +423,9 @@ async fn run_with(
     command: Command,
     config: &Config,
     layers: Layers,
-) -> Result<(Outcome, Applied), Error> {
+) -> Result<(Outcome, Layers), Error> {
     let program = command.program.to_string_lossy().into_owned();
-    let (mut inner, applied) =
+    let (mut inner, planned) =
         prepare(&command, config, layers).map_err(|reason| Error::Confine {
             program: program.clone(),
             reason,
@@ -491,7 +485,7 @@ async fn run_with(
             Outcome::TimedOut
         }
     };
-    Ok((outcome, applied))
+    Ok((outcome, planned))
 }
 
 /// The last [`STDERR_KEEP`] bytes of what the child writes on stderr,
@@ -624,14 +618,14 @@ fn prepare(
     command: &Command,
     config: &Config,
     layers: Layers,
-) -> Result<(tokio::process::Command, Applied), String> {
+) -> Result<(tokio::process::Command, Layers), String> {
     if layers.bubblewrap {
         return prepare_bubblewrap(command, config, layers);
     }
     let mut inner = plain(command);
     apply_limits(&mut inner, config);
-    let applied = apply_confinement(command, &mut inner, config, layers)?;
-    Ok((inner, applied))
+    let planned = apply_confinement(command, &mut inner, config, layers)?;
+    Ok((inner, planned))
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -639,13 +633,20 @@ fn prepare(
     command: &Command,
     config: &Config,
     layers: Layers,
-) -> Result<(tokio::process::Command, Applied), String> {
+) -> Result<(tokio::process::Command, Layers), String> {
     if layers.strict {
         return Err(linux_only());
     }
     let mut inner = plain(command);
     apply_limits(&mut inner, config);
-    Ok((inner, Applied::default()))
+    Ok((
+        inner,
+        Layers {
+            landlock: false,
+            seccomp: false,
+            ..layers
+        },
+    ))
 }
 
 /// The program itself, with its arguments, environment and working
@@ -673,28 +674,20 @@ fn apply_confinement(
     inner: &mut tokio::process::Command,
     config: &Config,
     layers: Layers,
-) -> Result<Applied, String> {
-    let plan = confine::Plan::new(
-        &command.program,
-        &command.readable,
-        command.writable.as_deref(),
-        command.unix_sockets.as_deref(),
-        &config.readable,
-        layers,
-    )
-    .map_err(|err| err.to_string())?;
-    let applied = plan.applied();
-    if applied.landlock {
+) -> Result<Layers, String> {
+    let mut plan =
+        confine::Plan::new(command, &config.readable, layers).map_err(|err| err.to_string())?;
+    let planned = plan.layers();
+    if planned.landlock {
         home_in_workdir(command, inner);
     }
-    let mut plan = plan;
     // SAFETY: the ruleset and the filter were built here; the child only
     // makes the `landlock_restrict_self`, `prctl` and `seccomp` calls,
     // none of which touches the heap or a lock.
     unsafe {
         inner.pre_exec(move || plan.install());
     }
-    Ok(applied)
+    Ok(planned)
 }
 
 /// `bwrap` around the program, with the system set, the declared paths
@@ -705,7 +698,7 @@ fn prepare_bubblewrap(
     command: &Command,
     config: &Config,
     layers: Layers,
-) -> Result<(tokio::process::Command, Applied), String> {
+) -> Result<(tokio::process::Command, Layers), String> {
     let bwrap = config
         .bubblewrap
         .as_deref()
@@ -747,9 +740,10 @@ fn prepare_bubblewrap(
     }
     Ok((
         inner,
-        Applied {
+        Layers {
             landlock: false,
             seccomp: filters.is_some(),
+            ..layers
         },
     ))
 }
@@ -964,12 +958,12 @@ impl Fixture {
     /// The granted read under `layers`, which must succeed: otherwise the
     /// system set misses something this host needs, or the sandbox is
     /// wrong.
-    async fn check_granted(&self, config: &Config, layers: Layers) -> Result<Applied, ProbeError> {
-        let (outcome, applied) = run_with(self.read_granted(), config, layers)
+    async fn check_granted(&self, config: &Config, layers: Layers) -> Result<Layers, ProbeError> {
+        let (outcome, planned) = run_with(self.read_granted(), config, layers)
             .await
             .map_err(|err| bubblewrap_probe_error(config, err))?;
         match outcome {
-            Outcome::Success => Ok(applied),
+            Outcome::Success => Ok(planned),
             Outcome::Failed { status, stderr, .. } => Err(ProbeError::Granted {
                 program: self.program(),
                 status,
@@ -1045,15 +1039,15 @@ async fn probe_confinement(config: &Config) -> Result<Status, ProbeError> {
         strict,
     };
 
-    let applied = fixture.check_granted(config, layers).await?;
-    let landlock = if applied.landlock {
+    let planned = fixture.check_granted(config, layers).await?;
+    let landlock = if planned.landlock {
         fixture.check_refused(config, layers).await?;
         confine::kernel_abi()
     } else {
         None
     };
 
-    let seccomp = applied.seccomp;
+    let seccomp = planned.seccomp;
     let rlimits_only = if landlock.is_none() && !seccomp {
         Some("the kernel has neither landlock nor seccomp".to_string())
     } else {
@@ -1088,11 +1082,11 @@ async fn probe_bubblewrap(
         bubblewrap: true,
         strict: true,
     };
-    let applied = fixture.check_granted(config, layers).await?;
+    let planned = fixture.check_granted(config, layers).await?;
     fixture.check_refused(config, layers).await?;
     Ok(Status {
         landlock: None,
-        seccomp: applied.seccomp,
+        seccomp: planned.seccomp,
         bubblewrap: Some(version),
         rlimits_only: None,
     })
