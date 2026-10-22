@@ -826,8 +826,12 @@ declaration on HTML bytes is a mismatch. Siblings such as DOCX against XLSX
 are rejected. A
 variant the sniffer cannot tell from its base format is checked as that
 format: a macro-enabled or template Office file sniffs as the plain DOCX,
-XLSX or PPTX, an OpenDocument template or master as its document, so an
-XLSM is accepted on XLSX bytes and refused on DOCX ones. The rules live in
+XLSX or PPTX, an OpenDocument template or master as its document, a HEIC
+image as HEIF, a TrueType or OpenType font as the SFNT container, a WOFF2
+font as WOFF, so an XLSM is accepted on XLSX bytes and refused on DOCX
+ones. A variant is not an alias of its base: aliases are spellings of one
+format (`image/jpg`, `application/x-gzip`), and only those are collapsed
+before the allowlist and the category look at a type. The rules live in
 `sniff.rs`.
 
 **Accepted types.** `upload.content_types` is an installation's
@@ -838,7 +842,8 @@ enforce before it creates the blob. It is checked on the declaration of
 a `raw`, `multipart` or `url` blob at creation, and again at upload in
 case the list changed meanwhile. Generated blobs get their type from the
 service's own build and are not checked. An exact entry takes the
-aliases of its type and not its variants, so a list says what it admits.
+aliases of its type and not its variants (listing `image/heif` does not
+admit `image/heic`), so a list says what it admits.
 An allowlist, not a blocklist: a blocklist misses what nobody thought to
 list. The bytes are checked too where the declaration says nothing:
 `application/octet-stream` is compatible with any bytes, so a blob

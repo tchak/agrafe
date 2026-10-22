@@ -89,6 +89,7 @@ pub fn classify(content_type: &str) -> Category {
         | "application/vnd.rar"
         | "application/x-bzip2"
         | "application/zstd"
+        | "application/vnd.android.package-archive"
         | crate::kml::KMZ => Some(Category::Archive),
 
         "application/json" | crate::geojson::GEOJSON | crate::gpx::GPX | crate::kml::KML => {
@@ -195,5 +196,16 @@ mod tests {
         assert_eq!(classify("application/x-bzip"), Category::Archive);
         assert_eq!(classify("application/xml"), Category::Text);
         assert_eq!(classify("image/jpg"), Category::Image);
+    }
+
+    #[test]
+    fn variants_classify_on_their_own_type() {
+        assert_eq!(classify("image/heic"), Category::Image);
+        assert_eq!(classify("video/x-matroska"), Category::Video);
+        assert_eq!(classify("font/woff2"), Category::Other);
+        assert_eq!(
+            classify("application/vnd.android.package-archive"),
+            Category::Archive
+        );
     }
 }

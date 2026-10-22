@@ -144,8 +144,24 @@ mod tests {
 
     #[test]
     fn variants_are_not_their_base() {
-        let list = list(&["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"]);
-        assert!(!list.allows("application/vnd.ms-excel.sheet.macroenabled.12"));
+        let xlsx = list(&["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"]);
+        assert!(!xlsx.allows("application/vnd.ms-excel.sheet.macroenabled.12"));
+        // What the sniffer reports a format as, or packages it in, is not
+        // a spelling of it, in either direction.
+        for (one, other) in [
+            ("image/heif", "image/heic"),
+            ("font/woff", "font/woff2"),
+            ("font/ttf", "font/otf"),
+            ("font/sfnt", "font/ttf"),
+            ("video/webm", "video/x-matroska"),
+            ("application/zip", "application/vnd.android.package-archive"),
+        ] {
+            assert!(!list(&[one]).allows(other), "{one} admits {other}");
+            assert!(!list(&[other]).allows(one), "{other} admits {one}");
+        }
+        // A spelling is.
+        assert!(list(&["application/font-woff"]).allows("font/woff"));
+        assert!(list(&["font/ttf"]).allows("application/x-font-ttf"));
     }
 
     #[test]
@@ -211,6 +227,9 @@ mod tests {
         let xlsm = list(&["application/vnd.ms-excel.sheet.macroenabled.12"]);
         assert!(xlsm.allows_sniffed(OCTET_STREAM, XLSX));
         assert!(!xlsm.allows_sniffed(OCTET_STREAM, DOCX));
+        assert!(list(&["image/heic"]).allows_sniffed(OCTET_STREAM, "image/heif"));
+        assert!(list(&["font/woff2"]).allows_sniffed(OCTET_STREAM, "application/font-woff"));
+        assert!(!list(&["font/woff2"]).allows_sniffed(OCTET_STREAM, "application/font-sfnt"));
         // Every OLE file sniffs as the storage, an MSI installer like a Word
         // 97 document, so a Word 97 entry admits none of them undeclared;
         // the storage itself can be listed.

@@ -121,11 +121,15 @@ fn has_magic(mime: &str) -> bool {
     }
 }
 
-/// Collapse aliases onto one spelling.
+/// Collapse the spellings of one format onto one. Only spellings: a
+/// format the sniffer reports as another (HEIC as HEIF, WOFF2 as WOFF) is
+/// a variant, [`base`]'s, and a format packaged in another (an APK in a
+/// ZIP) is [`container`]'s. The allowlist and the category are on the
+/// canonical spelling, so what is collapsed here is what a list entry
+/// admits.
 pub fn canonical(mime: &str) -> &str {
     match mime {
         "image/jpg" | "image/pjpeg" => "image/jpeg",
-        "image/heic" | "image/heic-sequence" | "image/heif-sequence" => "image/heif",
         "image/x-icon" | "image/icon" => "image/vnd.microsoft.icon",
         "image/x-ms-bmp" => "image/bmp",
         "image/x-tiff" => "image/tiff",
@@ -135,7 +139,6 @@ pub fn canonical(mime: &str) -> &str {
         "audio/flac" => "audio/x-flac",
         "audio/aiff" => "audio/x-aiff",
         "video/x-m4v" => "video/mp4",
-        "video/x-matroska" => "video/webm",
         "video/avi" | "video/msvideo" => "video/x-msvideo",
         "application/x-zip-compressed" => "application/zip",
         "application/x-rar-compressed" | "application/x-rar" => "application/vnd.rar",
@@ -147,14 +150,12 @@ pub fn canonical(mime: &str) -> &str {
         "application/x-msword" => "application/msword",
         "text/rtf" => "application/rtf",
         "application/x-sqlite3" => "application/vnd.sqlite3",
-        "font/ttf"
-        | "font/otf"
-        | "font/sfnt"
-        | "application/x-font-ttf"
-        | "application/x-font-opentype" => "application/font-sfnt",
-        "font/woff" | "font/woff2" => "application/font-woff",
+        // The names `infer` reports fonts under predate RFC 8081.
+        "font/sfnt" => "application/font-sfnt",
+        "font/woff" => "application/font-woff",
+        "application/x-font-ttf" => "font/ttf",
+        "application/x-font-opentype" => "font/otf",
         "application/java-archive" | "application/x-java-archive" => "application/java",
-        "application/vnd.android.package-archive" => "application/zip",
         other => other,
     }
 }
@@ -162,14 +163,20 @@ pub fn canonical(mime: &str) -> &str {
 /// The format the sniffer reports for a variant it cannot tell apart from
 /// it: a macro-enabled or template Office Open XML file sniffs as the
 /// plain document, workbook or presentation, an OpenDocument template or
-/// master as its document. The declared variant is then checked as that
-/// format, so it is compatible with what its base is compatible with and
-/// a sibling of what its base is a sibling of.
-pub(crate) fn base(mime: &str) -> Option<&'static str> {
+/// master as its document, a HEIC image as HEIF, a TrueType or OpenType
+/// font as the SFNT container, a WOFF2 font as WOFF. The declared variant
+/// is then checked as that format, so it is compatible with what its base
+/// is compatible with and a sibling of what its base is a sibling of. A
+/// variant is not an alias: a list that names the base does not admit it,
+/// and the renderer plans it as its base.
+pub fn base(mime: &str) -> Option<&'static str> {
     const DOCX: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
     const XLSX: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
     const PPTX: &str = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
     match mime {
+        "image/heic" | "image/heic-sequence" | "image/heif-sequence" => Some("image/heif"),
+        "font/ttf" | "font/otf" => Some("application/font-sfnt"),
+        "font/woff2" => Some("application/font-woff"),
         "application/vnd.ms-word.document.macroenabled.12"
         | "application/vnd.openxmlformats-officedocument.wordprocessingml.template"
         | "application/vnd.ms-word.template.macroenabled.12" => Some(DOCX),
@@ -230,6 +237,7 @@ pub(crate) fn container(mime: &str) -> Option<&'static str> {
         | "application/vnd.google-earth.kmz"
         | "application/epub+zip"
         | "application/java"
+        | "application/vnd.android.package-archive"
         | "application/x-google-chrome-extension"
         | "image/openraster" => Some(ZIP),
         "application/msword"
@@ -468,8 +476,50 @@ mod tests {
         assert!(!compatible("text/plain", "image/png"));
 
         assert!(compatible("application/octet-stream", "image/png"));
-        assert!(compatible("font/ttf", "application/font-sfnt"));
         assert!(compatible("text/rtf", "application/rtf"));
+    }
+
+    /// What the sniffer reports a format as is not a spelling of it: the
+    /// declared variant is checked as its base, and nothing else is.
+    #[test]
+    fn families_the_sniffer_cannot_tell_apart() {
+        assert!(compatible("image/heic", "image/heif"));
+        assert!(compatible("image/heic-sequence", "image/heif"));
+        assert!(compatible("image/heif", "image/heif"));
+        assert!(!compatible("image/heic", "image/png"));
+        assert!(compatible("font/ttf", "application/font-sfnt"));
+        assert!(compatible("font/otf", "application/font-sfnt"));
+        assert!(compatible(
+            "application/x-font-ttf",
+            "application/font-sfnt"
+        ));
+        assert!(compatible("font/sfnt", "application/font-sfnt"));
+        assert!(compatible("font/woff", "application/font-woff"));
+        assert!(compatible("font/woff2", "application/font-woff"));
+        assert!(!compatible("font/woff2", "application/font-sfnt"));
+        // Packaged in a ZIP, like a DOCX.
+        assert!(compatible(
+            "application/vnd.android.package-archive",
+            "application/zip"
+        ));
+        assert!(!compatible(
+            "application/vnd.android.package-archive",
+            "application/pdf"
+        ));
+        // `infer` tells a Matroska file from a WebM one by its doctype, so
+        // the one is not the other.
+        assert!(compatible("video/x-matroska", "video/x-matroska"));
+        assert!(!compatible("video/webm", "video/x-matroska"));
+        assert!(!compatible("video/x-matroska", "video/webm"));
+        for (variant, base) in [
+            ("image/heic", "image/heif"),
+            ("font/ttf", "application/font-sfnt"),
+            ("font/woff2", "application/font-woff"),
+            ("application/vnd.android.package-archive", "application/zip"),
+            ("video/x-matroska", "video/webm"),
+        ] {
+            assert_ne!(canonical(variant), base, "{variant} is not a spelling");
+        }
     }
 
     /// The text sniffers are heuristics on the first bytes: they
