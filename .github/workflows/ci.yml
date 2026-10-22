@@ -65,13 +65,38 @@ jobs:
       AGRAFE_SANDBOX_REQUIRED: 1
     steps:
       # LibreOffice for the office thumbnail tests, which skip without it;
-      # bubblewrap for the sandbox's bubblewrap tests, likewise.
-      - name: Install libvips, LibreOffice and bubblewrap
+      # bubblewrap for the sandbox's bubblewrap tests, likewise. The runner's
+      # mirror serves the 113 MB of packages at under 1 MB/s, so the .debs
+      # are cached, keyed on the exact URIs apt resolves: an updated package
+      # misses the key, restores the previous set and downloads only itself.
+      - name: Resolve the system packages
+        id: apt
+        env:
+          PACKAGES: >-
+            libvips-tools bubblewrap libreoffice-writer-nogui libreoffice-calc-nogui
+            libreoffice-impress-nogui libreoffice-draw-nogui fonts-dejavu-core
+            fonts-liberation
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libvips-tools bubblewrap \
-            libreoffice-writer-nogui libreoffice-calc-nogui libreoffice-impress-nogui \
-            libreoffice-draw-nogui fonts-dejavu-core fonts-liberation
+          mkdir -p ~/apt-archives
+          echo "packages=$PACKAGES" >> "$GITHUB_OUTPUT"
+          echo "uris=$(sudo apt-get install -qq --print-uris --no-install-recommends \
+            -o Dir::Cache::Archives="$HOME/apt-archives" $PACKAGES | sha256sum | cut -c1-16)" \
+            >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          # Not partial/, which apt creates root-only.
+          path: ~/apt-archives/*.deb
+          key: apt-${{ runner.os }}-${{ runner.arch }}-${{ steps.apt.outputs.uris }}
+          restore-keys: apt-${{ runner.os }}-${{ runner.arch }}-
+      - name: Install libvips, LibreOffice and bubblewrap
+        run: |
+          # The archive is the runner's, not _apt's: download as root.
+          sudo apt-get install -y --no-install-recommends \
+            -o Dir::Cache::Archives="$HOME/apt-archives" -o APT::Sandbox::User=root \
+            ${{ steps.apt.outputs.packages }}
+          # Drop the versions the mirror no longer serves before the save.
+          sudo apt-get autoclean -o Dir::Cache::Archives="$HOME/apt-archives"
           vips --version
           soffice --version
           bwrap --version
