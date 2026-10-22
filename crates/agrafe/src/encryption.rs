@@ -15,6 +15,10 @@ use crate::config::{Base64Secret, ConfigError, EncryptionConfig};
 /// on both the write and the read path, once per in-flight request.
 pub const MAX_CHUNK_SIZE: u64 = 16 * 1024 * 1024;
 
+/// Upper bound on a KEK id in bytes: it names the KEK on every row and
+/// travels in every sealed URL.
+pub const MAX_KEK_ID_LEN: usize = 64;
+
 /// A stored data key that cannot be unwrapped.
 #[derive(Debug, thiserror::Error)]
 pub enum UnwrapError {
@@ -141,6 +145,11 @@ fn parse_kek(id: &str, secret: &Base64Secret) -> Result<Kek, ConfigError> {
     let invalid = ConfigError::Invalid;
     if id.is_empty() {
         return Err(invalid("encryption KEK ids must not be empty".into()));
+    }
+    if id.len() > MAX_KEK_ID_LEN {
+        return Err(invalid(format!(
+            "encryption KEK ids must be at most {MAX_KEK_ID_LEN} bytes"
+        )));
     }
     let bytes = secret
         .decoded()
@@ -353,6 +362,18 @@ mod tests {
             .keks
             .insert("a".into(), Base64Secret::from(STANDARD.encode([1u8; 16])));
         assert!(Keks::from_config(&short).is_err());
+        let mut long = config(Some("a"));
+        long.keks.insert(
+            "k".repeat(MAX_KEK_ID_LEN + 1),
+            Base64Secret::from(STANDARD.encode([3u8; 32])),
+        );
+        assert!(Keks::from_config(&long).is_err());
+        let mut longest = config(Some("a"));
+        longest.keks.insert(
+            "k".repeat(MAX_KEK_ID_LEN),
+            Base64Secret::from(STANDARD.encode([3u8; 32])),
+        );
+        assert!(Keks::from_config(&longest).is_ok());
         let mut tiny = config(Some("a"));
         tiny.chunk_size = ByteSize::b(16);
         assert!(Keks::from_config(&tiny).is_err());
