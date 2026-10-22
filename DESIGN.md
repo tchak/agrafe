@@ -2406,9 +2406,13 @@ libseccomp), as a *denylist* answering `EPERM`: `socket`, `socketpair`,
 `fsopen`, `fsconfig`, `fsmount`, `fspick`, `mount_setattr`), `bpf`,
 `keyctl`, `add_key`, `request_key`, `userfaultfd`, `io_uring_setup`,
 `kexec_load`, `kexec_file_load`, `init_module`, `finit_module`,
-`setsid`, `setpgid`, `clone`
-with any namespace flag, and `prlimit64` on any pid but 0 (glibc's
-`setrlimit` and `getrlimit` pass 0). `clone3` carries its flags in a struct
+`setsid`, `setpgid`, `ioprio_set`, `process_madvise`, `migrate_pages`,
+`move_pages`, `pidfd_open`, `clone`
+with any namespace flag, `prlimit64`, `sched_setaffinity`,
+`sched_setscheduler`, `sched_setparam` and `sched_setattr` on any pid
+but 0 (glibc's `setrlimit` and `getrlimit` pass 0, and so does a thread
+pool pinning itself), and `setpriority` on anything but `PRIO_PROCESS`
+0, which is what `nice` passes. `clone3` carries its flags in a struct
 the filter cannot read, so it is refused whole, in a second filter
 answering `ENOSYS`: that is the one errno glibc falls back from to
 `clone`, which the first filter does inspect, so threads keep working and
@@ -2475,7 +2479,12 @@ to turn bytes into pixels; and, since the child runs as the worker's uid,
 none of what the same uid may do to the worker: steal its descriptors
 with `pidfd_getfd` (Yama's `ptrace_scope` is 0 on Debian and in a
 container that inherits it, and a container running as root passes the
-check anyway), or set its limits with `prlimit64`. The signal scope above
+check anyway), set its limits with `prlimit64`, renice it, pin it to a
+core or change its scheduling class with `setpriority` and the
+`sched_set*` calls, put its I/O in the idle class with `ioprio_set`, or
+page its memory out with `process_madvise` on a `pidfd_open`. A review
+found the scheduling calls open and a test now reaches for each from
+the child. The signal scope above
 closes `kill`. `EPERM` rather than kill, so a library that
 probes a feature and tolerates failure keeps working, and so the error
 shows up in the stderr tail the job already keeps.
@@ -2646,8 +2655,9 @@ system set fails the deployment instead of every thumbnail.
 
 *Tests* in `agrafe-sandbox` assert what is refused: a read outside the
 granted directories, a write outside the writable one, a `connect` to a
-listening socket on localhost, `unshare`, `setsid` and `setpgid`, and
-that threads still work and a spawn stays cheap. They skip with a
+listening socket on localhost, `unshare`, `setsid` and `setpgid`, the
+worker's limits, priority, affinity and I/O class, and that threads
+still work and a spawn stays cheap. They skip with a
 message where the kernel cannot confine, except under
 `AGRAFE_SANDBOX_REQUIRED=1`, which CI sets so a regression is not a
 green empty suite. The integration suite runs under

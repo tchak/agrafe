@@ -246,11 +246,19 @@ const ARCH: TargetArch = TargetArch::riscv64;
 /// (`pidfd_getfd` reaches the worker's sockets from the same uid when
 /// Yama allows it); namespaces, mounts and the new mount API; a session
 /// or process group of the child's own, which would take it out of the
-/// group the timeout kills; and the kernel-facing surface a decoder has
-/// no use for.
+/// group the timeout kills; what reaches another process of the same
+/// uid by a pid or a pid descriptor (`ioprio_set`, `process_madvise`,
+/// which pages the worker's memory out, `migrate_pages`, `move_pages`,
+/// and `pidfd_open` itself, which a decoder has no use for); and the
+/// kernel-facing surface a decoder has no use for either.
 const DENIED: &[libc::c_long] = &[
     libc::SYS_setsid,
     libc::SYS_setpgid,
+    libc::SYS_ioprio_set,
+    libc::SYS_process_madvise,
+    libc::SYS_migrate_pages,
+    libc::SYS_move_pages,
+    libc::SYS_pidfd_open,
     libc::SYS_ptrace,
     libc::SYS_process_vm_readv,
     libc::SYS_process_vm_writev,
@@ -294,6 +302,19 @@ const SOCKETS: &[libc::c_long] = &[
     libc::SYS_accept4,
 ];
 
+/// Calls that take a pid and act on the process itself when it is 0,
+/// refused for any other: the same uid may set another process's limits,
+/// affinity and scheduling, and the worker is one. glibc's `setrlimit`
+/// and `getrlimit` pass 0 to `prlimit64`, and a thread pool that pins or
+/// schedules itself passes 0 too.
+const OWN_PID_ONLY: &[libc::c_long] = &[
+    libc::SYS_prlimit64,
+    libc::SYS_sched_setaffinity,
+    libc::SYS_sched_setscheduler,
+    libc::SYS_sched_setparam,
+    libc::SYS_sched_setattr,
+];
+
 /// The `clone` flags that create a namespace, each refused on its own:
 /// a thread or a plain fork carries none of them.
 const NAMESPACE_FLAGS: &[u64] = &[
@@ -335,6 +356,18 @@ pub(crate) fn filters(unix_sockets: bool) -> Result<Arc<Vec<BpfProgram>>, String
         .clone()
 }
 
+/// A rule that matches, and so refuses, when argument `arg` is not
+/// `value`. The arguments here are C `int`s, read as the kernel reads
+/// them, in their low 32 bits.
+fn unless(arg: u8, value: u64) -> Result<SeccompRule, seccompiler::Error> {
+    Ok(SeccompRule::new(vec![SeccompCondition::new(
+        arg,
+        SeccompCmpArgLen::Dword,
+        SeccompCmpOp::Ne,
+        value,
+    )?])?)
+}
+
 fn compile(unix_sockets: bool) -> Result<Vec<BpfProgram>, seccompiler::Error> {
     let mut denied: BTreeMap<i64, Vec<SeccompRule>> =
         DENIED.iter().map(|&nr| (nr, Vec::new())).collect();
@@ -363,13 +396,16 @@ fn compile(unix_sockets: bool) -> Result<Vec<BpfProgram>, seccompiler::Error> {
         })
         .collect::<Result<Vec<_>, _>>()?;
     denied.insert(libc::SYS_clone, namespaces);
-    let other_pid = SeccompRule::new(vec![SeccompCondition::new(
-        0,
-        SeccompCmpArgLen::Qword,
-        SeccompCmpOp::Ne,
-        0,
-    )?])?;
-    denied.insert(libc::SYS_prlimit64, vec![other_pid]);
+    for nr in OWN_PID_ONLY {
+        denied.insert(*nr, vec![unless(0, 0)?]);
+    }
+    // `setpriority(which, who, prio)`: `PRIO_PROCESS` and `who` 0 is the
+    // process itself, which is what `nice` does; `PRIO_USER` with 0 would
+    // be every process of the uid, the worker included.
+    denied.insert(
+        libc::SYS_setpriority,
+        vec![unless(0, libc::PRIO_PROCESS as u64)?, unless(1, 0)?],
+    );
     let eperm = SeccompFilter::new(
         denied,
         SeccompAction::Allow,

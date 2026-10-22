@@ -169,7 +169,7 @@ binary, no user namespaces and nothing to install:
   path-based unix sockets such as Postgres's), namespaces, `ptrace`,
   mounts, a session or process group of its own (which would take it
   out of the group the timeout kills), reaching another process's
-  descriptors or limits, and the
+  descriptors, limits, scheduling or memory, and the
   kernel-facing calls a decoder has no use for: `bpf`, `keyctl`,
   `userfaultfd`, `io_uring_setup`, module loading. It is a
   denylist, not an allowlist, so a glibc or libvips upgrade does not break

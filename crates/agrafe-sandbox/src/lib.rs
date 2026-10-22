@@ -14,7 +14,8 @@
 //! - a seccomp denylist, installed next: no sockets (unix sockets alone
 //!   on request, see [`Command::unix_sockets`]), no namespaces, no
 //!   ptrace, no mounts, no session or process group of the child's own,
-//!   no reaching another process's descriptors or limits, no
+//!   no reaching another process's descriptors, limits, scheduling or
+//!   memory, no
 //!   kernel-facing surface a process that turns bytes into pixels has
 //!   any use for. Refused calls fail with `EPERM`.
 //!
@@ -1880,6 +1881,57 @@ socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
             panic!("the forked `sleep {marker}` outlived the timeout");
+        }
+
+        /// The worker's priority, affinity and I/O class are out of the
+        /// child's reach, as its limits are, and a pid descriptor on it
+        /// cannot be opened; the child's own, by pid 0, still work.
+        #[tokio::test]
+        async fn the_scheduling_of_other_processes_is_refused() {
+            let Some(config) = filtered().await else {
+                return;
+            };
+            let work = tempdir();
+            for (tool, script) in [
+                ("renice", "renice -n 5 -p $PPID"),
+                ("taskset", "taskset -cp 0 $PPID"),
+                ("ionice", "ionice -c 3 -p $PPID"),
+            ] {
+                if !has(tool) {
+                    eprintln!("skipped: no {tool}");
+                    continue;
+                }
+                let mut other = sh(script);
+                other.writable(work.path());
+                match run(other, &config).await.unwrap() {
+                    Outcome::Failed { stderr, .. } => {
+                        assert!(stderr.contains("not permitted"), "{script}: {stderr}");
+                    }
+                    other => panic!("{script}: {other:?}"),
+                }
+            }
+            if !has("python3") {
+                eprintln!("skipped: no python3");
+                return;
+            }
+            let mut own = Command::new("python3");
+            own.args([
+                "-I",
+                "-c",
+                "import os, sys\n\
+                 os.nice(1)\n\
+                 os.setpriority(os.PRIO_PROCESS, 0, 3)\n\
+                 os.sched_setaffinity(0, os.sched_getaffinity(0))\n\
+                 try:\n\
+                 \tos.pidfd_open(int(sys.argv[1]))\n\
+                 \tsys.exit(10)\n\
+                 except PermissionError:\n\
+                 \tpass\n",
+            ])
+            .arg(std::process::id().to_string())
+            .writable(work.path());
+            let outcome = run(own, &config).await.unwrap();
+            assert!(matches!(outcome, Outcome::Success), "{outcome:?}");
         }
 
         /// Threads still work: glibc's `clone3` is answered `ENOSYS`, not
