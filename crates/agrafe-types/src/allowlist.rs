@@ -84,7 +84,7 @@ fn parse(raw: &str) -> Result<Entry, String> {
     let invalid = || format!("`{raw}` is not a content type (`type/subtype` or `type/*`)");
     let (major, minor) = lower.split_once('/').ok_or_else(invalid)?;
     if !token(major) {
-        return Err(if major == "*" {
+        return Err(if major == "*" && minor == "*" {
             format!("`{raw}`: leave the list empty to accept any content type")
         } else {
             invalid()
@@ -258,6 +258,8 @@ mod tests {
         }
         let err = Allowlist::try_from(vec!["*/*".to_string()]).unwrap_err();
         assert!(err.contains("leave the list empty"), "{err}");
+        let err = Allowlist::try_from(vec!["*/pdf".to_string()]).unwrap_err();
+        assert!(err.contains("is not a content type"), "{err}");
     }
 
     #[test]

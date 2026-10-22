@@ -4,7 +4,7 @@
 
 /// The suffixes of a compression wrapper: `.gz` over `report.csv` leaves
 /// `report.csv.gz`, whose extension is `.csv.gz` and not `.gz`.
-const COMPRESSION_SUFFIXES: &[&str] = &["gz", "bz2", "xz", "zst", "lz", "lzma", "z", "br"];
+const COMPRESSION_SUFFIXES: &[&str] = &["gz", "bz2", "xz", "zst", "lz", "lz4", "lzma", "z", "br"];
 
 /// The longest extension a compression suffix takes with it: `jsonl.gz`
 /// and `fastq.gz` are one extension, `report.gz` is `report` plus `.gz`.
@@ -66,6 +66,7 @@ mod tests {
         assert_eq!(split_extension("a.tar.bz2"), ("a", ".tar.bz2"));
         assert_eq!(split_extension("a.tar.xz"), ("a", ".tar.xz"));
         assert_eq!(split_extension("a.tar.zst"), ("a", ".tar.zst"));
+        assert_eq!(split_extension("a.tar.lz4"), ("a", ".tar.lz4"));
         assert_eq!(split_extension("a.tar.Z"), ("a", ".tar.Z"));
         assert_eq!(split_extension("export.csv.gz"), ("export", ".csv.gz"));
         assert_eq!(split_extension("dump.sql.xz"), ("dump", ".sql.xz"));

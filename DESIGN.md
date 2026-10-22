@@ -823,7 +823,10 @@ HTML, a script declared as JavaScript as a shell script. They contradict a
 and a declaration `infer` has a matcher for or that is packaged in a ZIP or
 an OLE file always, since its real bytes would have sniffed as it: a PNG
 declaration on HTML bytes is a mismatch. Siblings such as DOCX against XLSX
-are rejected. A
+are rejected, and so is the common mislabel of an XLSX declared as
+`application/vnd.ms-excel`, which Excel-centric backends and some browsers
+send for an `.xlsx`: to the sniffer it is another kind of file, and the
+backend declares the type the file has. A
 variant the sniffer cannot tell from its base format is checked as that
 format: a macro-enabled or template Office file sniffs as the plain DOCX,
 XLSX or PPTX, an OpenDocument template or master as its document, a HEIC
