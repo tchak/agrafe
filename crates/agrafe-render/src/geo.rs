@@ -295,7 +295,7 @@ pub enum FetchError {
         /// The configured `max_layer_size`.
         max: ByteSize,
     },
-    /// The bytes do not sniff as PNG, JPEG, WebP, GIF, TIFF or BMP,
+    /// The bytes do not sniff as PNG, JPEG, WebP, GIF or TIFF,
     /// whatever the `Content-Type` said.
     #[error("layer {layer} from {host} answered bytes that are not an image the renderer may load")]
     Unloadable {
@@ -419,7 +419,7 @@ impl Client {
         file.flush().await?;
         if !matches!(
             loader_for(&head),
-            Some("png" | "jpeg" | "webp" | "gif" | "tiff" | "bmp")
+            Some("png" | "jpeg" | "webp" | "gif" | "tiff")
         ) {
             return Err(FetchError::Unloadable { layer: index, host });
         }

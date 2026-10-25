@@ -17,7 +17,7 @@ stripped.
 
 | File | Preview | Thumbnail |
 |---|---|---|
-| JPEG, PNG, GIF, WebP, TIFF, HEIF/AVIF, SVG, BMP, JPEG 2000 | the image | the image |
+| JPEG, PNG, GIF, WebP, TIFF, HEIF/AVIF, SVG, JPEG 2000 | the image | the image |
 | PDF, DOCX or ODT (or a DOCM, DOTX, OTT, ODM, … variant) that wraps a single image | the embedded image | the embedded image |
 | Other PDF | none | the first page |
 | Other office files: Word, Excel and PowerPoint, their Office 97-2003, macro-enabled and template variants, RTF, OpenDocument texts, spreadsheets, presentations and drawings | none | the first page or slide, through [LibreOffice](deployment.md#libreoffice) when `media.office.command` is set; the icon otherwise |

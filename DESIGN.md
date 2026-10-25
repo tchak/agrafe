@@ -1814,8 +1814,10 @@ is the job's work directory, so anything it spills is cleaned up with it.
 Only files with a known source are attempted:
 
 - image types libvips loads natively: JPEG, PNG, GIF, WebP, TIFF, HEIF/AVIF,
-  SVG, BMP, JPEG 2000. Everything else under `image/*` would go through
-  ImageMagick, more attack surface than it is worth, and gets the icon;
+  SVG, JPEG 2000. Everything else under `image/*` would go through
+  ImageMagick, more attack surface than it is worth, and gets the icon.
+  BMP is in that tail: libvips has no loader of its own for it, whatever
+  the format's age suggests;
 - PDF and the Writer packages (DOCX, ODT and their variants), through the
   sources below; a PDF that is not one gets a thumbnail of its first
   page, and no preview, and so does every office format in

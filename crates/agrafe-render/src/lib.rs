@@ -324,8 +324,8 @@ impl Plan {
 }
 
 /// The plan for a content type. Image types are an allowlist of what
-/// libvips loads natively: everything else would go through ImageMagick,
-/// which is more attack surface than it is worth. A PDF or a Writer
+/// libvips loads natively: everything else, BMP included, would go through
+/// ImageMagick, which is more attack surface than it is worth. A PDF or a Writer
 /// package (DOCX, ODT and their variants) that wraps one picture is
 /// rendered from it; otherwise a PDF gets its first page as a thumbnail,
 /// and every office format (`agrafe_types::office`: Word, Excel,
@@ -375,7 +375,7 @@ pub fn plan(content_type: &str) -> Plan {
             fallback: None,
         },
         "image/jpeg" | "image/png" | "image/gif" | "image/webp" | "image/tiff" | "image/heif"
-        | "image/avif" | "image/svg+xml" | "image/bmp" | "image/jp2" => Plan {
+        | "image/avif" | "image/svg+xml" | "image/jp2" => Plan {
             picture: &[Source::Image],
             fallback: None,
         },
@@ -479,6 +479,8 @@ mod tests {
         for other in [
             classify::ZIP,
             "image/vnd.adobe.photoshop",
+            // libvips has no BMP loader: it would go through ImageMagick.
+            "image/bmp",
             "application/octet-stream",
             "application/x-ole-storage",
             "application/vnd.ms-excel.addin.macroenabled.12",

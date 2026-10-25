@@ -275,6 +275,8 @@ pub const LOADER_SNIFF_LEN: usize = 1024;
 /// so the allowlist of renderable types is enforced again here, on the
 /// bytes, for every file that reaches the renderer. PNM is here for the
 /// pages the helpers write, and `.v` for the map `vips composite` writes.
+/// BMP is not: libvips has no loader of its own for it, and would hand it
+/// to ImageMagick.
 pub fn loader_for(head: &[u8]) -> Option<&'static str> {
     match infer::get(head).map(|kind| kind.mime_type()) {
         Some("image/jpeg") => return Some("jpeg"),
@@ -282,7 +284,6 @@ pub fn loader_for(head: &[u8]) -> Option<&'static str> {
         Some("image/gif") => return Some("gif"),
         Some("image/webp") => return Some("webp"),
         Some("image/tiff") => return Some("tiff"),
-        Some("image/bmp") => return Some("bmp"),
         Some("image/heif" | "image/avif") => return Some("heif"),
         Some("image/jp2") => return Some("jp2k"),
         Some("application/pdf") => return Some("pdf"),
@@ -336,6 +337,9 @@ mod tests {
         assert_eq!(loader_for(&[0xff, 0x4f, 0xff, 0x51, 0, 0x2f]), Some("jp2k"));
         // Known to infer, not to the allowlist: a camera raw file.
         assert_eq!(loader_for(b"II*\0\x10\0\0\0CR\x02\0"), None);
+        // Known to infer, loadable by vips, but only through ImageMagick:
+        // a BMP.
+        assert_eq!(loader_for(b"BM:\x01\0\0\0\0\0\0z\0\0\0l\0\0\0"), None);
         // Unknown to infer, loadable by ImageMagick.
         assert_eq!(loader_for(b"/* XPM */\nstatic char *x[] = {"), None);
         assert_eq!(loader_for(b""), None);
