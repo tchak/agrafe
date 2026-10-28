@@ -2,6 +2,7 @@
 //! once nothing may read them, stale uploads reset, dead jobs and
 //! tombstones pruned, and the reaper keeping its own clock.
 
+use agrafe::blob::repo;
 use agrafe::jobs::reap::{self, Report};
 use agrafe::jobs::{self, JobKind};
 use axum::http::{Method, StatusCode};
@@ -575,4 +576,41 @@ async fn an_attached_blob_nothing_reached_is_expired_as_abandoned() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["items"][0]["blob_state"], "expired");
+}
+
+/// The reaper's statements walk their partial indexes even under the
+/// generic plan a pooled connection may settle on, built without the
+/// parameters' values: what the planner must prove to use a partial index
+/// is spelled into the SQL. Sequential scans are off so that, on a table
+/// this small, the planner shows the index it would walk, and falls back
+/// to a scan only when it cannot use one.
+#[tokio::test]
+async fn the_reaper_walks_its_indexes_under_a_generic_plan() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let mut conn = app.state.pool().acquire().await.unwrap();
+    sqlx::query("SET enable_seqscan = off")
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    let plans = repo::explain_reaper(&mut conn).await.unwrap();
+    let want: &[(&str, &[&str])] = &[
+        ("expire", &["blobs_expires_at_idx"]),
+        // On a table this small, the state's own index is as cheap.
+        ("expire_abandoned", &[]),
+        ("awaiting_purge", &["blobs_unpurged_idx"]),
+        (
+            "prune_tombstones",
+            &["blobs_purged_at_idx", "blobs_empty_tombstone_idx"],
+        ),
+        ("reset_stale_uploads", &["blobs_uploading_idx"]),
+    ];
+    assert_eq!(plans.len(), want.len());
+    for ((name, plan), (want_name, indexes)) in plans.iter().zip(want) {
+        assert_eq!(name, want_name);
+        assert!(!plan.contains("Seq Scan"), "{name}: {plan}");
+        for index in *indexes {
+            assert!(plan.contains(index), "{name}: {plan}");
+        }
+    }
 }

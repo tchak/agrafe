@@ -3,7 +3,7 @@
 
 use jiff::Timestamp;
 use jiff_sqlx::ToSqlx;
-use sqlx::{PgConnection, PgExecutor, PgPool, Postgres, QueryBuilder};
+use sqlx::{AssertSqlSafe, PgConnection, PgExecutor, PgPool, Postgres, QueryBuilder};
 use uuid::Uuid;
 
 use super::create::NewBlob;
@@ -812,21 +812,23 @@ pub(crate) async fn soft_delete(
 /// Record as `expired` every non-terminal blob past its `expires_at` at
 /// `now`. The reads already treat them so; this only writes it down.
 pub async fn expire(conn: &mut PgConnection, now: Timestamp) -> sqlx::Result<Vec<Uuid>> {
-    let terminal: Vec<&str> = BlobState::ALL
-        .iter()
-        .filter(|s| s.is_terminal())
-        .map(|s| s.as_str())
-        .collect();
-    sqlx::query_scalar(
-        "UPDATE blobs SET state = $1, failed_at = NULL, last_error = NULL \
-         WHERE expires_at <= $2 AND state <> ALL($3) \
+    sqlx::query_scalar(AssertSqlSafe(expire_sql()))
+        .bind(BlobState::Expired.as_str())
+        .bind(now.to_sqlx())
+        .fetch_all(&mut *conn)
+        .await
+}
+
+/// `expire`'s statement: `$1` the state, `$2` the time. The terminal
+/// states are spelled out so that `blobs_expires_at_idx` applies, see
+/// `state_literals`.
+fn expire_sql() -> String {
+    format!(
+        "UPDATE blobs SET state = $1{CLEAR_FAILURE} \
+         WHERE expires_at <= $2 AND state NOT IN ({}) \
          RETURNING id",
+        state_literals(BlobState::ALL.iter().copied().filter(|s| s.is_terminal()))
     )
-    .bind(BlobState::Expired.as_str())
-    .bind(now.to_sqlx())
-    .bind(terminal)
-    .fetch_all(&mut *conn)
-    .await
 }
 
 /// Expire every `created` blob that was abandoned before `before`: one
@@ -839,19 +841,26 @@ pub(crate) async fn expire_abandoned(
     conn: &mut PgConnection,
     before: Timestamp,
 ) -> sqlx::Result<Vec<Uuid>> {
-    sqlx::query_scalar(
-        "UPDATE blobs SET state = $1, failed_at = NULL, last_error = NULL \
-         WHERE state = $2 AND (\
-             (source_parts > 0 AND source_updated_at <= $3) \
-             OR (source_parts = 0 AND expires_at IS NULL AND updated_at <= $3)\
+    sqlx::query_scalar(AssertSqlSafe(expire_abandoned_sql()))
+        .bind(BlobState::Expired.as_str())
+        .bind(before.to_sqlx())
+        .fetch_all(&mut *conn)
+        .await
+}
+
+/// `expire_abandoned`'s statement: `$1` the state, `$2` the time. The
+/// state is spelled out so that `blobs_stale_source_idx` and
+/// `blobs_abandoned_idx` apply, see `state_literals`.
+fn expire_abandoned_sql() -> String {
+    format!(
+        "UPDATE blobs SET state = $1{CLEAR_FAILURE} \
+         WHERE state = {} AND (\
+             (source_parts > 0 AND source_updated_at <= $2) \
+             OR (source_parts = 0 AND expires_at IS NULL AND updated_at <= $2)\
          ) \
          RETURNING id",
+        state_literals([BlobState::Created])
     )
-    .bind(BlobState::Expired.as_str())
-    .bind(BlobState::Created.as_str())
-    .bind(before.to_sqlx())
-    .fetch_all(&mut *conn)
-    .await
 }
 
 /// Terminal blobs whose objects are still in the bucket and that no purge
@@ -865,20 +874,24 @@ pub(crate) async fn awaiting_purge(
     conn: &mut PgConnection,
     now: Timestamp,
 ) -> sqlx::Result<Vec<Uuid>> {
-    let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
+    sqlx::query_scalar(AssertSqlSafe(awaiting_purge_sql()))
+        .bind(now.to_sqlx())
+        .bind(JobKind::Purge.as_str())
+        .fetch_all(&mut *conn)
+        .await
+}
+
+/// `awaiting_purge`'s statement: `$1` the time, `$2` the purge's kind.
+fn awaiting_purge_sql() -> String {
+    format!(
         "SELECT id FROM blobs \
          WHERE (storage_key IS NOT NULL OR source_parts > 0) AND purged_at IS NULL \
-           AND (state IN (",
-    );
-    qb.push(state_literals([BlobState::Expired, BlobState::Deleted]))
-        .push(") OR (state = ")
-        .push(state_literals([BlobState::Infected]))
-        .push(" AND expires_at <= ")
-        .push_bind(now.to_sqlx())
-        .push(")) AND NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.kind = ")
-        .push_bind(JobKind::Purge.as_str())
-        .push(" AND jobs.blob_id = blobs.id) ORDER BY id");
-    qb.build_query_scalar().fetch_all(&mut *conn).await
+           AND (state IN ({}) OR (state = {} AND expires_at <= $1)) \
+           AND NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.kind = $2 AND jobs.blob_id = blobs.id) \
+         ORDER BY id",
+        state_literals([BlobState::Expired, BlobState::Deleted]),
+        state_literals([BlobState::Infected])
+    )
 }
 
 /// States as a list of SQL literals, `'expired', 'deleted'`, for a predicate
@@ -917,20 +930,27 @@ pub(crate) async fn prune_tombstones(
     before: Timestamp,
     limit: i64,
 ) -> sqlx::Result<u64> {
-    let before = before.to_sqlx();
-    let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
-        "DELETE FROM blobs WHERE id IN (SELECT id FROM blobs WHERE purged_at <= ",
-    );
-    qb.push_bind(before)
-        .push(" OR (state IN (")
-        .push(state_literals([BlobState::Expired, BlobState::Deleted]))
-        .push(") AND purged_at IS NULL AND storage_key IS NULL AND source_parts = 0 AND updated_at <= ")
-        .push_bind(before)
-        .push(") LIMIT ")
-        .push_bind(limit)
-        .push(")");
-    let result = qb.build().execute(&mut *conn).await?;
+    let result = sqlx::query(AssertSqlSafe(prune_tombstones_sql(limit)))
+        .bind(before.to_sqlx())
+        .execute(&mut *conn)
+        .await?;
     Ok(result.rows_affected())
+}
+
+/// `prune_tombstones`'s statement: `$1` the time. The limit is written
+/// in, a constant, so that a generic plan knows it; and the delete takes
+/// an array of ids rather than `IN (subquery)`, which such a plan may
+/// answer with a scan of the whole table joined to the few ids.
+fn prune_tombstones_sql(limit: i64) -> String {
+    format!(
+        "DELETE FROM blobs WHERE id = ANY(ARRAY(\
+             SELECT id FROM blobs WHERE purged_at <= $1 \
+             OR (state IN ({}) AND purged_at IS NULL AND storage_key IS NULL \
+                 AND source_parts = 0 AND updated_at <= $1) \
+             LIMIT {limit}\
+         ))",
+        state_literals([BlobState::Expired, BlobState::Deleted])
+    )
 }
 
 /// Hand every upload without a sign of life since `before` back to
@@ -942,16 +962,68 @@ pub(crate) async fn reset_stale_uploads(
     conn: &mut PgConnection,
     before: Timestamp,
 ) -> sqlx::Result<Vec<Uuid>> {
-    sqlx::query_scalar(
+    sqlx::query_scalar(AssertSqlSafe(reset_stale_uploads_sql()))
+        .bind(BlobState::Created.as_str())
+        .bind(before.to_sqlx())
+        .fetch_all(&mut *conn)
+        .await
+}
+
+/// `reset_stale_uploads`'s statement: `$1` the state, `$2` the time. The
+/// state is spelled out so that `blobs_uploading_idx` applies, see
+/// `state_literals`.
+fn reset_stale_uploads_sql() -> String {
+    format!(
         "UPDATE blobs SET state = $1 \
-         WHERE state = $2 AND upload_heartbeat_at <= $3 \
+         WHERE state = {} AND upload_heartbeat_at <= $2 \
          RETURNING id",
+        state_literals([BlobState::Uploading])
     )
-    .bind(BlobState::Created.as_str())
-    .bind(BlobState::Uploading.as_str())
-    .bind(before.to_sqlx())
-    .fetch_all(&mut *conn)
-    .await
+}
+
+/// The generic plans of the reaper's statements, by name, as `EXPLAIN`
+/// prints them: each prepared and explained under `plan_cache_mode =
+/// force_generic_plan`, which is the plan a pooled connection may settle
+/// on after five runs, its parameters unknown. For a test that pins them
+/// to their indexes.
+#[cfg(any(test, feature = "test-support"))]
+pub async fn explain_reaper(conn: &mut PgConnection) -> sqlx::Result<Vec<(&'static str, String)>> {
+    let statements = [
+        ("expire", expire_sql(), "'expired', now()"),
+        (
+            "expire_abandoned",
+            expire_abandoned_sql(),
+            "'expired', now()",
+        ),
+        ("awaiting_purge", awaiting_purge_sql(), "now(), 'purge'"),
+        ("prune_tombstones", prune_tombstones_sql(10_000), "now()"),
+        (
+            "reset_stale_uploads",
+            reset_stale_uploads_sql(),
+            "'created', now()",
+        ),
+    ];
+    sqlx::query("SET plan_cache_mode = force_generic_plan")
+        .execute(&mut *conn)
+        .await?;
+    let mut plans = Vec::new();
+    for (name, sql, args) in statements {
+        sqlx::raw_sql(AssertSqlSafe(format!("PREPARE reaper AS {sql}")))
+            .execute(&mut *conn)
+            .await?;
+        let lines: Vec<String> =
+            sqlx::query_scalar(AssertSqlSafe(format!("EXPLAIN EXECUTE reaper({args})")))
+                .fetch_all(&mut *conn)
+                .await?;
+        sqlx::raw_sql("DEALLOCATE reaper")
+            .execute(&mut *conn)
+            .await?;
+        plans.push((name, lines.join("\n")));
+    }
+    sqlx::query("RESET plan_cache_mode")
+        .execute(&mut *conn)
+        .await?;
+    Ok(plans)
 }
 
 /// Record the outcome of rendering `kind` for `id`, along with the variant

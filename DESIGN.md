@@ -40,7 +40,12 @@ database or a first deployment holds.
   runs is bounded by an index: a lookup by key, a cursor page, a capped
   walk. `COUNT(*)`, `SELECT DISTINCT`, `OFFSET` pagination and an
   unindexed filter are scans at this size; a new filter or sort comes
-  with its index, and the plan is checked against it.
+  with its index, and the plan is checked against it. A pooled
+  connection may settle on the generic plan of a statement it runs
+  often, built without the parameters' values, so what the planner
+  must prove to use a partial index (a state, a limit) is written into
+  the SQL rather than bound, and the reaper's plans are checked that
+  way.
 - Anything that visits every blob or object (a sweep, an audit, a
   migration of data) is a job that takes days: it works in batches,
   saves its place, resumes after a deploy or an error, and yields to
