@@ -857,3 +857,23 @@ async fn a_failed_last_attempt_still_schedules_the_next_run() {
     let week = 7.0 * 24.0 * 3600.0;
     assert!(due_in > week - 60.0 && due_in <= week, "{due_in}");
 }
+
+/// The audit pages the rows in the bucket's key order through an
+/// expression the database computes, which must be the shard
+/// `blob::key` writes into every key.
+#[tokio::test]
+async fn the_database_computes_the_same_shard_as_the_key_module() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let fixed = ["00", "01", "7f", "80", "ab", "fe", "ff"]
+        .map(|tail| parse_id(&format!("01999e6c-0000-7000-8000-0000000000{tail}")));
+    let minted = std::array::from_fn::<_, 8, _>(|_| uuid::Uuid::now_v7());
+    for id in fixed.into_iter().chain(minted) {
+        let computed: i32 = sqlx::query_scalar("SELECT get_byte(uuid_send($1), 15)")
+            .bind(id)
+            .fetch_one(app.state.pool())
+            .await
+            .unwrap();
+        assert_eq!(computed, i32::from(agrafe::blob::key::shard(id)), "{id}");
+    }
+}

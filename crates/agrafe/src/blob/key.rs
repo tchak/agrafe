@@ -130,6 +130,26 @@ mod tests {
         );
     }
 
+    /// The layout rests on the low byte of a v7 id being random, which is
+    /// how the `uuid` crate fills it (the counter sits above the low 32
+    /// bits); another generator may not. Ids minted back to back must
+    /// spread over every shard, with none taking a disproportionate share.
+    #[test]
+    fn ids_minted_back_to_back_spread_over_every_shard() {
+        const IDS: usize = 10_000;
+        let mut counts = [0usize; 256];
+        for _ in 0..IDS {
+            counts[usize::from(shard(Uuid::now_v7()))] += 1;
+        }
+        let empty = counts.iter().filter(|&&n| n == 0).count();
+        assert_eq!(empty, 0, "{counts:?}");
+        let most = counts.iter().max().copied().unwrap_or(0);
+        assert!(
+            most < 3 * IDS / 256,
+            "one shard took {most} of {IDS}: {counts:?}"
+        );
+    }
+
     #[test]
     fn the_key_order_is_the_shard_then_the_id() {
         let early: Uuid = "01999e6c-0000-7000-8000-0000000000ff".parse().unwrap();
