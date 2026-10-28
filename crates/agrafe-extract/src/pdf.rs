@@ -296,6 +296,18 @@ fn image_bytes(doc: &Document, image: &Stream, max_output: usize) -> Option<Extr
         _ => None,
     };
     if let Some(format) = encoded {
+        // The colour space says how the page paints the samples, which
+        // vips decodes as the stream's own: grey, RGB or CMYK agree, an
+        // indexed, separation, DeviceN or Lab space does not (a separation
+        // JPEG would come out as its negative). A JPEG 2000 stream may go
+        // without one and carry its own.
+        let agrees = match dict.get_deref(b"ColorSpace", doc) {
+            Ok(space) => components(doc, space).is_some(),
+            Err(_) => format == "jp2k",
+        };
+        if !agrees {
+            return None;
+        }
         return super::raster_format(&image.content)
             .filter(|sniffed| *sniffed == format)
             .map(|format| Extracted {
@@ -324,7 +336,11 @@ fn image_bytes(doc: &Document, image: &Stream, max_output: usize) -> Option<Extr
         16 => 65535,
         _ => return None,
     };
-    let channels = channels(doc, dict.get_deref(b"ColorSpace", doc).ok()?)?;
+    let channels = components(doc, dict.get_deref(b"ColorSpace", doc).ok()?)?;
+    if channels == 4 {
+        // CMYK: PNM has no such thing.
+        return None;
+    }
     let expected = width
         .checked_mul(height)?
         .checked_mul(channels)?
@@ -342,12 +358,14 @@ fn image_bytes(doc: &Document, image: &Stream, max_output: usize) -> Option<Extr
     Some(Extracted { bytes, format })
 }
 
-/// Samples per pixel for the colour spaces PNM can carry.
-fn channels(doc: &Document, space: &Object) -> Option<usize> {
+/// Samples per pixel of a grey, RGB or CMYK colour space, the ones whose
+/// samples are the colours; `None` for any other.
+fn components(doc: &Document, space: &Object) -> Option<usize> {
     match space {
         Object::Name(name) => match name.as_slice() {
             b"DeviceRGB" => Some(3),
             b"DeviceGray" => Some(1),
+            b"DeviceCMYK" => Some(4),
             _ => None,
         },
         Object::Array(parts) => {
@@ -358,8 +376,7 @@ fn channels(doc: &Document, space: &Object) -> Option<usize> {
                 b"ICCBased" => {
                     let profile = doc.dereference(parts.get(1)?).ok()?.1.as_stream().ok()?;
                     match profile.dict.get_deref(b"N", doc).ok()?.as_i64().ok()? {
-                        3 => Some(3),
-                        1 => Some(1),
+                        n @ (1 | 3 | 4) => Some(n as usize),
                         _ => None,
                     }
                 }
@@ -492,6 +509,45 @@ mod tests {
         assert_eq!(flate_with(|d| d.set("Width", 0)), None);
     }
 
+    /// A JPEG is handed out in a grey, RGB or CMYK space only: in an indexed
+    /// or separation one, the page paints other colours than its samples.
+    #[test]
+    fn a_jpeg_in_another_colour_space_is_left_to_the_renderer() {
+        let jpeg = include_bytes!("../../../fixtures/image.pdf");
+        let space = |space: Object| image_dict_with(jpeg, |d| d.set("ColorSpace", space));
+        let name = |n: &str| Object::Name(n.as_bytes().to_vec());
+        assert!(space(name("DeviceRGB")).is_some());
+        assert!(space(name("DeviceCMYK")).is_some());
+        let separation = Object::Array(vec![
+            name("Separation"),
+            name("Black"),
+            name("DeviceGray"),
+            Object::Dictionary(lopdf::Dictionary::new()),
+        ]);
+        assert_eq!(space(separation), None);
+        let indexed = Object::Array(vec![
+            name("Indexed"),
+            name("DeviceRGB"),
+            1.into(),
+            Object::string_literal(vec![0u8; 6]),
+        ]);
+        assert_eq!(space(indexed), None);
+        assert_eq!(
+            space(Object::Array(vec![
+                name("Lab"),
+                Object::Dictionary(lopdf::Dictionary::new())
+            ])),
+            None
+        );
+        // A JPEG must say its space; it is optional for JPEG 2000 alone.
+        assert_eq!(
+            image_dict_with(jpeg, |d| {
+                d.remove(b"ColorSpace");
+            }),
+            None
+        );
+    }
+
     /// A mask or a decode array, on raw samples or an encoded stream alike,
     /// makes the page something else than the samples.
     #[test]
@@ -540,7 +596,7 @@ mod tests {
     }
 
     #[test]
-    fn colour_spaces_pnm_carries() {
+    fn colour_spaces_whose_samples_are_the_colours() {
         let mut doc = Document::with_version("1.7");
         let mut icc = |n: i64| {
             let id = doc.add_object(Stream::new(lopdf::dictionary! { "N" => n }, Vec::new()));
@@ -556,18 +612,18 @@ mod tests {
         for (space, want) in [
             (Object::Name(b"DeviceRGB".to_vec()), Some(3)),
             (Object::Name(b"DeviceGray".to_vec()), Some(1)),
-            (Object::Name(b"DeviceCMYK".to_vec()), None),
+            (Object::Name(b"DeviceCMYK".to_vec()), Some(4)),
             (family(b"CalRGB"), Some(3)),
             (family(b"CalGray"), Some(1)),
             (family(b"Lab"), None),
             (family(b"Indexed"), None),
             (icc_rgb, Some(3)),
             (icc_grey, Some(1)),
-            (icc_cmyk, None),
+            (icc_cmyk, Some(4)),
             (Object::Array(vec![]), None),
             (Object::Integer(3), None),
         ] {
-            assert_eq!(channels(&doc, &space), want, "{space:?}");
+            assert_eq!(components(&doc, &space), want, "{space:?}");
         }
     }
 

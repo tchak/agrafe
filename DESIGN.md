@@ -2231,8 +2231,8 @@ on "has preview", never on category. Sources, in order:
    (under `word/media/` or `Pictures/`) that is a raster image, and at
    most `max_text_chars` of non-whitespace text in the body. The embedded
    image is pulled out at full resolution and goes through the image
-   pipeline: JPEG and JPEG 2000 streams as they are, raw 8 or 16 bit grey
-   or RGB samples as PNM. Anything doubtful (form XObjects, rotation,
+   pipeline: JPEG and JPEG 2000 streams as they are, in a grey, RGB or
+   CMYK colour space, raw 8 or 16 bit grey or RGB samples as PNM. Anything doubtful (form XObjects, rotation,
    masks of any kind, a decode array, exotic colour spaces, EMF) is left
    to the next source, whichever the stream's encoding. This
    addresses users who answer "send a screenshot" with a Word file
