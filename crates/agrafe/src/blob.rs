@@ -364,11 +364,6 @@ agrafe_types::str_enum!(Representation {
 });
 
 impl Representation {
-    /// Object key of the representation, under the blob's prefix.
-    pub(crate) fn object_key(self, blob_id: Uuid) -> String {
-        key::representation(blob_id, self)
-    }
-
     /// The `blobs` column holding its state. Code-owned names, safe to
     /// splice into SQL.
     pub(crate) fn state_column(self) -> &'static str {

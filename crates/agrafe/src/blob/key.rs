@@ -36,17 +36,17 @@ pub fn prefix(id: Uuid) -> String {
 /// The original, `<shard>/<blob id>/original`. Blobs are write-once, so
 /// there is one.
 pub fn original(id: Uuid) -> String {
-    format!("{}/original", prefix(id))
+    format!("{:02x}/{id}/original", shard(id))
 }
 
 /// A representation, `<shard>/<blob id>/thumbnail` or `.../preview`.
 pub fn representation(id: Uuid, kind: Representation) -> String {
-    format!("{}/{kind}", prefix(id))
+    format!("{:02x}/{id}/{kind}", shard(id))
 }
 
 /// Source part `n` of a generated blob, `<shard>/<blob id>/source/<n>`.
 pub fn source(id: Uuid, n: u32) -> String {
-    format!("{}/source/{n}", prefix(id))
+    format!("{:02x}/{id}/source/{n}", shard(id))
 }
 
 /// The associated data of the object at `path`: its name within the
@@ -78,12 +78,7 @@ pub fn owner(path: &Path) -> Option<Uuid> {
     let shard_part = parts.next()?;
     let id_part = parts.next()?;
     parts.next()?;
-    let shard_part = shard_part.as_ref();
     let id_part = id_part.as_ref();
-    let hex = |s: &str| s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
-    if shard_part.len() != 2 || !hex(shard_part) {
-        return None;
-    }
     let canonical = id_part.len() == 36
         && id_part
             .bytes()
@@ -92,7 +87,9 @@ pub fn owner(path: &Path) -> Option<Uuid> {
         return None;
     }
     let id: Uuid = id_part.parse().ok()?;
-    (format!("{:02x}", shard(id)) == shard_part).then_some(id)
+    // Formatted, not parsed: the shard is spelt one way, and any other
+    // spelling, uppercase or unpadded, is not agrafe's.
+    (format!("{:02x}", shard(id)) == shard_part.as_ref()).then_some(id)
 }
 
 #[cfg(test)]

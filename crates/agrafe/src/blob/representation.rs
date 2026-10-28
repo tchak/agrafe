@@ -160,7 +160,7 @@ pub async fn store(
         .keks()
         .unwrap(blob_id, &stored.kek_id, &stored.wrapped_key)
         .map_err(ReadError::from)?;
-    let object_key = kind.object_key(blob_id);
+    let object_key = super::key::representation(blob_id, kind);
     let sealed = streaming::encrypt(
         &key,
         super::key::associated_data(&object_key).as_bytes(),
@@ -195,7 +195,7 @@ pub async fn load(
     kind: Representation,
 ) -> Result<Option<Bytes>, Error> {
     let blob_id = stored.blob_id;
-    let object_key = kind.object_key(blob_id);
+    let object_key = super::key::representation(blob_id, kind);
     let get = |source| Error::Get {
         kind,
         blob_id,
