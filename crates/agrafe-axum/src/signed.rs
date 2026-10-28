@@ -65,12 +65,15 @@ fn split_target<'a>(path: &'a str, query: Option<&str>) -> Option<(&'a str, Stri
 }
 
 /// The request path with the token segment replaced, for logs. A token is a
-/// bearer capability, so it must not land in log storage.
+/// bearer capability, so it must not land in log storage: the segment after
+/// `/blobs/` goes whatever follows it, including nothing, as in a link cut
+/// at its last slash, which no route answers but the span still records.
 pub fn redact_token(path: &str) -> String {
-    match split_target(path, None) {
-        Some((_, tail)) => format!("/blobs/<token>{tail}"),
-        None => path.to_string(),
-    }
+    let Some(rest) = path.strip_prefix("/blobs/") else {
+        return path.to_string();
+    };
+    let tail = rest.find('/').map_or("", |at| &rest[at..]);
+    format!("/blobs/<token>{tail}")
 }
 
 #[cfg(test)]
@@ -84,7 +87,11 @@ mod tests {
             "/blobs/<token>/abc/original/a.jpg"
         );
         assert_eq!(redact_token("/healthz"), "/healthz");
-        assert_eq!(redact_token("/blobs/v1.k1.1.sig"), "/blobs/v1.k1.1.sig");
+        // A token with nothing after it is still a token.
+        assert_eq!(redact_token("/blobs/v1.k1.1.sig"), "/blobs/<token>");
+        assert_eq!(redact_token("/blobs/v1.k1.1.sig/"), "/blobs/<token>/");
+        assert_eq!(redact_token("/blobs/"), "/blobs/<token>");
+        assert_eq!(redact_token("/blobs"), "/blobs");
     }
 
     #[test]
