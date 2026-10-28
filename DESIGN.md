@@ -2233,7 +2233,8 @@ on "has preview", never on category. Sources, in order:
    image is pulled out at full resolution and goes through the image
    pipeline: JPEG and JPEG 2000 streams as they are, raw 8 or 16 bit grey
    or RGB samples as PNM. Anything doubtful (form XObjects, rotation,
-   masks, exotic colour spaces, EMF) is left to the next source. This
+   masks of any kind, a decode array, exotic colour spaces, EMF) is left
+   to the next source, whichever the stream's encoding. This
    addresses users who answer "send a screenshot" with a Word file
    containing a screenshot. The parsing runs in the `agrafe-extract`
    helper, its own binary executed in the sandbox, never in a server

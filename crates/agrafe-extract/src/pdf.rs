@@ -275,6 +275,18 @@ fn image_bytes(doc: &Document, image: &Stream, max_output: usize) -> Option<Extr
     {
         return None;
     }
+    // A mask, soft or stencil or colour key, or the alpha a JPEG 2000
+    // stream is told to use as one, shows less of the image than its
+    // samples hold; a decode array remaps them, as an inverted CMYK JPEG
+    // is flagged. Either way the samples are not the picture.
+    let soft_mask_in_data = dict
+        .get(b"SMaskInData")
+        .ok()
+        .and_then(|o| o.as_i64().ok())
+        .is_some_and(|n| n != 0);
+    if dict.has(b"SMask") || dict.has(b"Mask") || soft_mask_in_data || dict.has(b"Decode") {
+        return None;
+    }
     // The filter says what the stream claims to be; the bytes are what vips
     // will load, so they have to agree.
     let filters = image.filters().unwrap_or_default();
@@ -312,9 +324,6 @@ fn image_bytes(doc: &Document, image: &Stream, max_output: usize) -> Option<Extr
         16 => 65535,
         _ => return None,
     };
-    if dict.get(b"Decode").is_ok() {
-        return None;
-    }
     let channels = channels(doc, dict.get_deref(b"ColorSpace", doc).ok()?)?;
     let expected = width
         .checked_mul(height)?
@@ -430,7 +439,12 @@ mod tests {
 
     /// `flate.pdf` with its image dictionary changed by `edit`, extracted.
     fn flate_with(edit: impl FnOnce(&mut lopdf::Dictionary)) -> Option<Extracted> {
-        let mut doc = Document::load_mem(include_bytes!("../../../fixtures/flate.pdf")).unwrap();
+        image_dict_with(include_bytes!("../../../fixtures/flate.pdf"), edit)
+    }
+
+    /// `pdf` with its image dictionary changed by `edit`, extracted.
+    fn image_dict_with(pdf: &[u8], edit: impl FnOnce(&mut lopdf::Dictionary)) -> Option<Extracted> {
+        let mut doc = Document::load_mem(pdf).unwrap();
         let image = doc
             .objects
             .values_mut()
@@ -476,6 +490,53 @@ mod tests {
             None
         );
         assert_eq!(flate_with(|d| d.set("Width", 0)), None);
+    }
+
+    /// A mask or a decode array, on raw samples or an encoded stream alike,
+    /// makes the page something else than the samples.
+    #[test]
+    fn masked_or_remapped_images_are_left_to_the_renderer() {
+        let jpeg = include_bytes!("../../../fixtures/image.pdf");
+        let flate = include_bytes!("../../../fixtures/flate.pdf");
+        assert!(image_dict_with(jpeg, |_| {}).is_some());
+        for pdf in [&jpeg[..], &flate[..]] {
+            let mask = || {
+                let grey = Stream::new(
+                    lopdf::dictionary! {
+                        "Type" => "XObject", "Subtype" => "Image", "Width" => 1, "Height" => 1,
+                        "ColorSpace" => "DeviceGray", "BitsPerComponent" => 8,
+                    },
+                    vec![0],
+                );
+                Object::Stream(grey)
+            };
+            assert_eq!(image_dict_with(pdf, |d| d.set("SMask", mask())), None);
+            assert_eq!(image_dict_with(pdf, |d| d.set("Mask", mask())), None);
+            // A colour key: the samples in these ranges are not painted.
+            assert_eq!(
+                image_dict_with(pdf, |d| d.set(
+                    "Mask",
+                    vec![
+                        0.into(),
+                        10.into(),
+                        0.into(),
+                        10.into(),
+                        0.into(),
+                        10.into()
+                    ]
+                )),
+                None
+            );
+            assert_eq!(
+                image_dict_with(pdf, |d| d.set(
+                    "Decode",
+                    vec![1.into(), 0.into(), 1.into(), 0.into(), 1.into(), 0.into()]
+                )),
+                None
+            );
+            assert_eq!(image_dict_with(pdf, |d| d.set("SMaskInData", 1)), None);
+        }
+        assert!(image_dict_with(jpeg, |d| d.set("SMaskInData", 0)).is_some());
     }
 
     #[test]
