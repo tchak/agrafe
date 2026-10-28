@@ -1001,9 +1001,28 @@ What it costs is the audit's merge order. The stores list keys in byte
 order, which for this layout is the shard, then the id (the hyphenated
 lowercase UUID sorts as the `uuid` column does), and the audit pages the
 rows in that order through an expression index on the same two,
-`blobs_shard_idx`: one more index the size of the primary key, walked once
-a week (see "Audit"). Nothing else finds an object by anything but the
-blob's id, which the shard is a function of. The layout is the one
+`blobs_shard_idx`: one more index, about a sixth larger than the primary
+key for its integer column, walked once a week (see "Audit"). Nothing
+else finds an object by anything but the blob's id, which the shard is a
+function of.
+
+That index is the one structure in the system whose writes scatter. The
+primary key on v7 ids grows at its right edge, so inserts land on a few
+hot pages; the shard index is keyed by a random byte, so every new blob
+dirties a random leaf of an index that at a billion rows is some 70 GB
+and does not sit in cache: a random read and a full-page WAL image per
+insert. The spread that spares the bucket is paid for by the table. It
+is the price of any index on a random id, Postgres takes it routinely,
+and at the write rates one bucket allows it is nowhere near the
+bottleneck, so the index stays. Should inserts ever show it, the audit
+can do without: list the bucket as 256 prefix listings, one per shard,
+each sorted by id, and merge them into one id-ordered stream with a heap,
+paging the rows by the primary key as before. The cost moves to the
+weekly job, about 40 MB for 256 pages of a thousand objects, and the
+progress carries 256 cursors instead of one. Unlike the layout, that is a
+decision open after deployment: dropping an index is cheap.
+
+The layout is the one
 decision a deployment cannot revisit cheaply, since objects are immutable
 and moving a billion of them is a copy of the bucket, so it was
 taken before the first one. A copy is what it would be: the AEAD binds a
