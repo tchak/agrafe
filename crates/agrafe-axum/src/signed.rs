@@ -2,7 +2,7 @@
 
 use std::time::SystemTime;
 
-use axum::extract::{FromRef, FromRequestParts, OriginalUri};
+use axum::extract::{FromRef, FromRequestParts};
 use http::request::Parts;
 
 use crate::error::ApiError;
@@ -23,11 +23,10 @@ where
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let app = Agrafe::from_ref(state);
-        let uri = parts
-            .extensions
-            .get::<OriginalUri>()
-            .map(|o| o.0.clone())
-            .unwrap_or_else(|| parts.uri.clone());
+        // The URI the route matched, with any prefix the host nested the
+        // router under already stripped: the signed tail starts at `/<id>`
+        // whatever that prefix is. `OriginalUri` would keep it.
+        let uri = &parts.uri;
 
         let (token, tail) = split_target(uri.path(), uri.query())
             .ok_or_else(|| ApiError::Forbidden("invalid signature".into()))?;

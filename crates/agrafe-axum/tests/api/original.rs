@@ -434,3 +434,33 @@ async fn the_original_is_bound_to_its_name_not_its_path() {
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
     assert_eq!(body["error"]["code"], "internal");
 }
+
+/// The embedding the guide shows: the public router nested under a prefix,
+/// with `public_base_url` ending in it. The signature covers the tail after
+/// the token, so the prefix does not change what is verified.
+#[tokio::test]
+async fn a_nested_public_router_verifies_its_urls() {
+    let db = TestDatabase::new().await;
+    let clamd = fake_clamd().await;
+    let app = setup_tuned(db, clamd, |c| {
+        c.server.public_base_url = "https://agrafe.test/files".into();
+    })
+    .await;
+    let nested = axum::Router::new().nest("/files", agrafe_axum::public_router(app.state.clone()));
+    let bytes = png_bytes(1500);
+    let blob = ready_blob(&app, &bytes).await;
+
+    let uri = public_url(&blob, "original");
+    assert!(uri.starts_with("/files/blobs/"), "{uri}");
+    let (status, _, body) = fetch(&nested, get_with(&uri, &[])).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, bytes);
+
+    let (status, body) = call(&nested, req(Method::GET, &public_url(&blob, "metadata"))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // A tampered tail is refused as before.
+    let tampered = uri.replace("/original/photo.png", "/original/other.png");
+    let (status, _) = call(&nested, req(Method::GET, &tampered)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
