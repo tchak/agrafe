@@ -100,6 +100,7 @@ pub enum ProbeError {
 
 const PROBE_PNG: &[u8] = include_bytes!("../assets/probe/pixel.png");
 const PROBE_PDF: &[u8] = include_bytes!("../assets/probe/page.pdf");
+const PROBE_IMAGE_PDF: &[u8] = include_bytes!("../assets/probe/image.pdf");
 const PROBE_GEOJSON: &[u8] = include_bytes!("../assets/probe/point.geojson");
 /// Two pages of text: the exported PDF must have one.
 const PROBE_DOCX: &[u8] = include_bytes!("../assets/probe/pages.docx");
@@ -186,14 +187,16 @@ fn canonical(path: &Path) -> std::path::PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-/// Render a text sample, a one-pixel PNG, a one-page PDF and the map of a
-/// one-point GeoJSON through the exact command lines the jobs use. vips
-/// exits non-zero for a bad file and for a missing loader or an unknown
-/// option alike, so without this a libvips built without PDF or SVG
-/// support, or too old for an option, would mark every file `failed`
-/// instead of failing the deployment. The text sample and the map also
-/// catch a `render_text_command` or a `render_geo_command` that is not
-/// the helper. The map is drawn with no background layer: the probe never
+/// Render a text sample, a one-pixel PNG, a one-page PDF, the JPEG pulled
+/// out of a PDF that wraps one and the map of a one-point GeoJSON through
+/// the exact command lines the jobs use. vips exits non-zero for a bad file
+/// and for a missing loader or an unknown option alike, so without this a
+/// libvips built without PDF or SVG support, or too old for an option,
+/// would mark every file `failed` instead of failing the deployment. The
+/// text sample, the wrapped JPEG and the map also catch a
+/// `render_text_command`, an `extract_command` or a `render_geo_command`
+/// that is not the helper: a missing one fails every job, a wrong one
+/// every preview of its kind. The map is drawn with no background layer: the probe never
 /// touches the network. With `media.office.command` set, a document for
 /// each LibreOffice application goes through it as well, see
 /// [`probe_office`].
@@ -224,6 +227,24 @@ async fn probe_tools(config: &Config, tmp_dir: Option<&Path>) -> Result<(), Prob
             what,
         });
     }
+    let wrapped = workdir.path().join("image.pdf");
+    tokio::fs::write(&wrapped, PROBE_IMAGE_PDF).await?;
+    let embedded = workdir.path().join("embedded");
+    let what = match helpers::extract(config, "application/pdf", &wrapped, &embedded).await? {
+        Verdict::Rendered(()) => None,
+        Verdict::Declined => Some("declined a PDF wrapping a JPEG".to_string()),
+        Verdict::Rejected(rejection) => {
+            Some(format!("failed on a PDF wrapping a JPEG: {rejection}"))
+        }
+    };
+    if let Some(what) = what {
+        return Err(ProbeError::Helper {
+            command: config.extract_command.clone(),
+            setting: "extract_command",
+            helper: "agrafe-extract",
+            what,
+        });
+    }
     let pixel = workdir.path().join("pixel.png");
     tokio::fs::write(&pixel, PROBE_PNG).await?;
     let pdf = workdir.path().join("page.pdf");
@@ -232,6 +253,7 @@ async fn probe_tools(config: &Config, tmp_dir: Option<&Path>) -> Result<(), Prob
     for (what, input, kind) in [
         ("a PNG", &pixel, Input::Raster),
         ("a PDF page", &pdf, Input::Page),
+        ("a JPEG", &embedded, Input::Raster),
         ("a text page", &page, Input::Raster),
     ] {
         let vips = config.vips_command.clone();

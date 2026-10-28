@@ -243,8 +243,9 @@ Only failures of agrafe's own, such as the object store or the database,
 fail the job and retry it.
 
 Before the workers start, agrafe checks that the sandbox refuses a read it
-did not grant, then renders a text sample, a one-pixel PNG, a one-page PDF
-and the map of a one-point GeoJSON, without a background layer, through
+did not grant, then renders a text sample, a one-pixel PNG, a one-page PDF,
+the JPEG `agrafe-extract` pulls out of a PDF wrapping one and the map of a
+one-point GeoJSON, without a background layer, through
 the exact command lines the jobs use, and, with `media.office.command`
 set, converts a two-page DOCX and an XLSX through LibreOffice and checks
 that the DOCX came out as one page. The process refuses to start if any

@@ -1994,9 +1994,12 @@ one-pixel PNG and a one-page PDF through the exact command lines the jobs
 use (`agrafe_render::probe`, files in `crates/agrafe-render/assets/probe`),
 and the process refuses to start if any of them fails, and so the map of a
 one-point GeoJSON with no background layer, through the helper and `vips
-composite`, which catches a libvips without SVG support. The probe also
-catches a `media.render_text_command` or `media.render_geo_command` that is
-not the helper, and it never touches the network. With
+composite`, which catches a libvips without SVG support, and the JPEG
+`agrafe-extract` pulls out of a PDF that wraps one. The probe also catches
+a `media.render_text_command`, `media.extract_command` or
+`media.render_geo_command` that is not the helper (a missing extractor
+fails every render job of a PDF, DOCX or ODT, a wrong one declines every
+embedded image), and it never touches the network. With
 `media.office.command` set, it converts one file per LibreOffice
 application through the exact command lines and renders the results: a
 two-page DOCX, a one-sheet XLSX, a two-slide PPTX, a two-page ODG and an

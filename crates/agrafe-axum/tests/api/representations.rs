@@ -838,6 +838,41 @@ async fn the_startup_probe_checks_vips_and_the_helper() {
         err.to_string().contains("declined a one-point GeoJSON"),
         "{err}"
     );
+
+    // And the extractor, on a PDF wrapping a JPEG: one that is missing
+    // fails every render job, one that declines every preview of a scan.
+    let wrong_extract = agrafe_render::Config {
+        extract_command: "/usr/bin/false".into(),
+        ..media.render.clone()
+    };
+    let err = probe(&wrong_extract).await.unwrap_err();
+    assert!(
+        err.to_string().contains("failed on a PDF wrapping a JPEG"),
+        "{err}"
+    );
+    assert!(
+        err.to_string()
+            .contains("is media.extract_command the agrafe-extract helper?"),
+        "{err}"
+    );
+    let idle_extract = agrafe_render::Config {
+        extract_command: "/usr/bin/true".into(),
+        ..media.render.clone()
+    };
+    let err = probe(&idle_extract).await.unwrap_err();
+    assert!(
+        err.to_string().contains("declined a PDF wrapping a JPEG"),
+        "{err}"
+    );
+    let missing_extract = agrafe_render::Config {
+        extract_command: "/nonexistent/agrafe-extract".into(),
+        ..media.render.clone()
+    };
+    let err = probe(&missing_extract).await.unwrap_err();
+    assert!(
+        err.to_string().contains("/nonexistent/agrafe-extract"),
+        "{err}"
+    );
 }
 
 #[tokio::test]

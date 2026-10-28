@@ -513,6 +513,8 @@ def main():
     probe_files = {
         "pixel.png": png(1, 1),
         "page.pdf": empty_pdf(20, 10),
+        # A JPEG covering a one-page PDF, for agrafe-extract to pull out.
+        "image.pdf": image_pdf(jpeg(16, 8), 16, 8, 16, 8, "16 0 0 8 0 0"),
         "point.geojson": geojson(feature({"type": "Point", "coordinates": PARIS})),
         # Through LibreOffice when one is configured, one file per
         # application: the DOCX, the PPTX and the ODG have two pages so
