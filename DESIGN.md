@@ -2222,7 +2222,8 @@ on "has preview", never on category. Sources, in order:
 2. **Embedded image extraction** (`preview_source = embedded_image`): a
    one-page PDF whose single image XObject covers at least
    `media.embedded_image.min_coverage` of the page box (the part of the
-   image inside it), drawn upright, with at most `max_text_chars` of text
+   image inside it), drawn upright on a page the viewer does not turn
+   (no `Rotate`), with at most `max_text_chars` of text
    and nothing else painted: no path filled or stroked, shading, inline
    image, clip, optional content, or annotation other than a link, any of
    which could cover what the image shows, a black rectangle over a scan

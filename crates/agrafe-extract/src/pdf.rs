@@ -26,7 +26,7 @@ pub fn extract(bytes: &[u8], thresholds: &Thresholds, max_output: usize) -> Opti
     }
     let page_id = *pages.values().next()?;
     let page = page_box(&doc, page_id)?;
-    if !annotations_paint_nothing(&doc, page_id)? {
+    if !upright(&doc, page_id)? || !annotations_paint_nothing(&doc, page_id)? {
         return None;
     }
     let (name, image) = single_image(&doc, page_id)?;
@@ -65,6 +65,24 @@ fn page_box(doc: &Document, page_id: ObjectId) -> Option<Rect> {
             .get_deref(b"Parent", doc)
             .and_then(Object::as_dict)
             .ok()?;
+    }
+    None
+}
+
+/// Whether the page is shown as it is drawn: its `Rotate`, from the page or
+/// an ancestor, a multiple of 360 or absent. A scan app writes a landscape
+/// page as an upright image on a page the viewer turns, which extracted as
+/// is would be sideways. `None` when the value is not an integer.
+fn upright(doc: &Document, page_id: ObjectId) -> Option<bool> {
+    let mut dict = doc.get_dictionary(page_id).ok()?;
+    for _ in 0..MAX_DEPTH {
+        if let Ok(rotate) = dict.get_deref(b"Rotate", doc) {
+            return Some(rotate.as_i64().ok()?.rem_euclid(360) == 0);
+        }
+        let Ok(parent) = dict.get_deref(b"Parent", doc).and_then(Object::as_dict) else {
+            return Some(true);
+        };
+        dict = parent;
     }
     None
 }
@@ -635,6 +653,31 @@ mod tests {
         let mut bytes = Vec::new();
         doc.save_to(&mut bytes).unwrap();
         assert_eq!(extract(&bytes, &thresholds(), LIMIT), None);
+    }
+
+    #[test]
+    fn a_rotated_page_is_not_extracted() {
+        let rotated = |rotate: i64, on_parent: bool| {
+            image_with("q 60 0 0 30 0 0 cm /Im0 Do Q", |doc, page| {
+                let dict = doc.get_dictionary_mut(page).unwrap();
+                if on_parent {
+                    let parent = dict.get(b"Parent").unwrap().as_reference().unwrap();
+                    doc.get_dictionary_mut(parent)
+                        .unwrap()
+                        .set("Rotate", rotate);
+                } else {
+                    dict.set("Rotate", rotate);
+                }
+            })
+        };
+        for rotate in [90, 180, 270, -90] {
+            assert_eq!(rotated(rotate, false), None, "{rotate}");
+        }
+        // Inherited from the page tree.
+        assert_eq!(rotated(90, true), None);
+        // A full turn is no turn.
+        assert!(rotated(0, false).is_some());
+        assert!(rotated(360, true).is_some());
     }
 
     #[test]
