@@ -471,7 +471,7 @@ async fn sweep(
         state,
         options,
         listed_at: now,
-        last: None,
+        last: after.as_ref().and_then(key::owner),
         after: after.clone(),
         cursor: progress.cursor,
         checkpoint,
@@ -688,7 +688,9 @@ struct Sweep<'a> {
     /// recorded it yet. Neither is evidence, and both are left for the
     /// next run.
     listed_at: Timestamp,
-    /// The last prefix listed, which the next must follow in key order.
+    /// The last prefix listed, which the next must follow in key order;
+    /// on a resumed attempt, the owner of the key the listing resumes
+    /// after, so the first prefix listed is held to the order too.
     last: Option<Uuid>,
     /// The last key checked and the last row passed, what a resumed
     /// attempt starts after.
