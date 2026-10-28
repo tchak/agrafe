@@ -809,10 +809,15 @@ pub(crate) async fn soft_delete(
     })
 }
 
-/// Record as `expired` every non-terminal blob past its `expires_at` at
-/// `now`. The reads already treat them so; this only writes it down.
-pub async fn expire(conn: &mut PgConnection, now: Timestamp) -> sqlx::Result<Vec<Uuid>> {
-    sqlx::query_scalar(AssertSqlSafe(expire_sql()))
+/// Record as `expired` the non-terminal blobs past their `expires_at` at
+/// `now`, at most `limit` of them, the longest due first. The reads
+/// already treat them so; this only writes it down.
+pub async fn expire(
+    conn: &mut PgConnection,
+    now: Timestamp,
+    limit: i64,
+) -> sqlx::Result<Vec<Uuid>> {
+    sqlx::query_scalar(AssertSqlSafe(expire_sql(limit)))
         .bind(BlobState::Expired.as_str())
         .bind(now.to_sqlx())
         .fetch_all(&mut *conn)
@@ -822,12 +827,24 @@ pub async fn expire(conn: &mut PgConnection, now: Timestamp) -> sqlx::Result<Vec
 /// `expire`'s statement: `$1` the state, `$2` the time. The terminal
 /// states are spelled out so that `blobs_expires_at_idx` applies, see
 /// `state_literals`.
-fn expire_sql() -> String {
+///
+/// The reaper's statements take a batch the same way: the ids, picked by
+/// the statement's index in its order and limited, in an array the update
+/// then looks up by primary key, its condition repeated. An update that
+/// waits on a row lock, such as an attach's, evaluates its own condition
+/// again on the row as it then is, which a subquery's would not; and the
+/// array keeps the planner from joining the whole table to the batch.
+fn expire_sql(limit: i64) -> String {
+    let due = format!(
+        "expires_at <= $2 AND state NOT IN ({})",
+        state_literals(BlobState::ALL.iter().copied().filter(|s| s.is_terminal()))
+    );
     format!(
         "UPDATE blobs SET state = $1{CLEAR_FAILURE} \
-         WHERE expires_at <= $2 AND state NOT IN ({}) \
-         RETURNING id",
-        state_literals(BlobState::ALL.iter().copied().filter(|s| s.is_terminal()))
+         WHERE id = ANY(ARRAY(\
+             SELECT id FROM blobs WHERE {due} ORDER BY expires_at LIMIT {limit}\
+         )) AND {due} \
+         RETURNING id"
     )
 }
 
@@ -840,8 +857,9 @@ fn expire_sql() -> String {
 pub(crate) async fn expire_abandoned(
     conn: &mut PgConnection,
     before: Timestamp,
+    limit: i64,
 ) -> sqlx::Result<Vec<Uuid>> {
-    sqlx::query_scalar(AssertSqlSafe(expire_abandoned_sql()))
+    sqlx::query_scalar(AssertSqlSafe(expire_abandoned_sql(limit)))
         .bind(BlobState::Expired.as_str())
         .bind(before.to_sqlx())
         .fetch_all(&mut *conn)
@@ -850,16 +868,22 @@ pub(crate) async fn expire_abandoned(
 
 /// `expire_abandoned`'s statement: `$1` the state, `$2` the time. The
 /// state is spelled out so that `blobs_stale_source_idx` and
-/// `blobs_abandoned_idx` apply, see `state_literals`.
-fn expire_abandoned_sql() -> String {
+/// `blobs_abandoned_idx` apply, see `state_literals`. Each kind takes up
+/// to `limit` from its own index, as `expire_sql` says.
+fn expire_abandoned_sql(limit: i64) -> String {
+    let created = state_literals([BlobState::Created]);
+    let sources = format!("state = {created} AND source_parts > 0 AND source_updated_at <= $2");
+    let attached = format!(
+        "state = {created} AND source_parts = 0 AND expires_at IS NULL AND updated_at <= $2"
+    );
     format!(
         "UPDATE blobs SET state = $1{CLEAR_FAILURE} \
-         WHERE state = {} AND (\
-             (source_parts > 0 AND source_updated_at <= $2) \
-             OR (source_parts = 0 AND expires_at IS NULL AND updated_at <= $2)\
-         ) \
-         RETURNING id",
-        state_literals([BlobState::Created])
+         WHERE id = ANY(ARRAY(\
+             (SELECT id FROM blobs WHERE {sources} ORDER BY source_updated_at LIMIT {limit}) \
+             UNION ALL \
+             (SELECT id FROM blobs WHERE {attached} ORDER BY updated_at LIMIT {limit})\
+         )) AND (({sources}) OR ({attached})) \
+         RETURNING id"
     )
 }
 
@@ -873,8 +897,9 @@ fn expire_abandoned_sql() -> String {
 pub(crate) async fn awaiting_purge(
     conn: &mut PgConnection,
     now: Timestamp,
+    limit: i64,
 ) -> sqlx::Result<Vec<Uuid>> {
-    sqlx::query_scalar(AssertSqlSafe(awaiting_purge_sql()))
+    sqlx::query_scalar(AssertSqlSafe(awaiting_purge_sql(limit)))
         .bind(now.to_sqlx())
         .bind(JobKind::Purge.as_str())
         .fetch_all(&mut *conn)
@@ -882,14 +907,16 @@ pub(crate) async fn awaiting_purge(
 }
 
 /// `awaiting_purge`'s statement: `$1` the time, `$2` the purge's kind.
-fn awaiting_purge_sql() -> String {
+/// The three states are one list, the index's own, so that one walk of
+/// `blobs_unpurged_idx` in id order serves the limit.
+fn awaiting_purge_sql(limit: i64) -> String {
     format!(
         "SELECT id FROM blobs \
          WHERE (storage_key IS NOT NULL OR source_parts > 0) AND purged_at IS NULL \
-           AND (state IN ({}) OR (state = {} AND expires_at <= $1)) \
+           AND state IN ({}) AND (state <> {} OR expires_at <= $1) \
            AND NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.kind = $2 AND jobs.blob_id = blobs.id) \
-         ORDER BY id",
-        state_literals([BlobState::Expired, BlobState::Deleted]),
+         ORDER BY id LIMIT {limit}",
+        state_literals([BlobState::Infected, BlobState::Expired, BlobState::Deleted]),
         state_literals([BlobState::Infected])
     )
 }
@@ -940,16 +967,23 @@ pub(crate) async fn prune_tombstones(
 /// `prune_tombstones`'s statement: `$1` the time. The limit is written
 /// in, a constant, so that a generic plan knows it; and the delete takes
 /// an array of ids rather than `IN (subquery)`, which such a plan may
-/// answer with a scan of the whole table joined to the few ids.
+/// answer with a scan of the whole table joined to the few ids. Each kind
+/// of tombstone is walked on its own index, as `expire_sql` says.
 fn prune_tombstones_sql(limit: i64) -> String {
+    let purged = "purged_at <= $1";
+    let empty = format!(
+        "state IN ({}) AND purged_at IS NULL AND storage_key IS NULL \
+         AND source_parts = 0 AND updated_at <= $1",
+        state_literals([BlobState::Expired, BlobState::Deleted])
+    );
     format!(
         "DELETE FROM blobs WHERE id = ANY(ARRAY(\
-             SELECT id FROM blobs WHERE purged_at <= $1 \
-             OR (state IN ({}) AND purged_at IS NULL AND storage_key IS NULL \
-                 AND source_parts = 0 AND updated_at <= $1) \
-             LIMIT {limit}\
-         ))",
-        state_literals([BlobState::Expired, BlobState::Deleted])
+             SELECT id FROM (\
+                 (SELECT id FROM blobs WHERE {purged} ORDER BY purged_at LIMIT {limit}) \
+                 UNION ALL \
+                 (SELECT id FROM blobs WHERE {empty} ORDER BY updated_at LIMIT {limit})\
+             ) AS tombstones LIMIT {limit}\
+         )) AND (({purged}) OR ({empty}))"
     )
 }
 
@@ -961,8 +995,9 @@ fn prune_tombstones_sql(limit: i64) -> String {
 pub(crate) async fn reset_stale_uploads(
     conn: &mut PgConnection,
     before: Timestamp,
+    limit: i64,
 ) -> sqlx::Result<Vec<Uuid>> {
-    sqlx::query_scalar(AssertSqlSafe(reset_stale_uploads_sql()))
+    sqlx::query_scalar(AssertSqlSafe(reset_stale_uploads_sql(limit)))
         .bind(BlobState::Created.as_str())
         .bind(before.to_sqlx())
         .fetch_all(&mut *conn)
@@ -971,13 +1006,19 @@ pub(crate) async fn reset_stale_uploads(
 
 /// `reset_stale_uploads`'s statement: `$1` the state, `$2` the time. The
 /// state is spelled out so that `blobs_uploading_idx` applies, see
-/// `state_literals`.
-fn reset_stale_uploads_sql() -> String {
+/// `state_literals`; the batch is taken as `expire_sql` says, so an
+/// upload that touched its row meanwhile is left alone.
+fn reset_stale_uploads_sql(limit: i64) -> String {
+    let stale = format!(
+        "state = {} AND upload_heartbeat_at <= $2",
+        state_literals([BlobState::Uploading])
+    );
     format!(
         "UPDATE blobs SET state = $1 \
-         WHERE state = {} AND upload_heartbeat_at <= $2 \
-         RETURNING id",
-        state_literals([BlobState::Uploading])
+         WHERE id = ANY(ARRAY(\
+             SELECT id FROM blobs WHERE {stale} ORDER BY upload_heartbeat_at LIMIT {limit}\
+         )) AND {stale} \
+         RETURNING id"
     )
 }
 
@@ -988,18 +1029,23 @@ fn reset_stale_uploads_sql() -> String {
 /// to their indexes.
 #[cfg(any(test, feature = "test-support"))]
 pub async fn explain_reaper(conn: &mut PgConnection) -> sqlx::Result<Vec<(&'static str, String)>> {
+    const LIMIT: i64 = 10_000;
     let statements = [
-        ("expire", expire_sql(), "'expired', now()"),
+        ("expire", expire_sql(LIMIT), "'expired', now()"),
         (
             "expire_abandoned",
-            expire_abandoned_sql(),
+            expire_abandoned_sql(LIMIT),
             "'expired', now()",
         ),
-        ("awaiting_purge", awaiting_purge_sql(), "now(), 'purge'"),
-        ("prune_tombstones", prune_tombstones_sql(10_000), "now()"),
+        (
+            "awaiting_purge",
+            awaiting_purge_sql(LIMIT),
+            "now(), 'purge'",
+        ),
+        ("prune_tombstones", prune_tombstones_sql(LIMIT), "now()"),
         (
             "reset_stale_uploads",
-            reset_stale_uploads_sql(),
+            reset_stale_uploads_sql(LIMIT),
             "'created', now()",
         ),
     ];

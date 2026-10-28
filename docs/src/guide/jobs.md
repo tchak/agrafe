@@ -113,7 +113,7 @@ when the blob already has a pending job of that kind.
 The `reap` job runs every `jobs.reap_interval`, one minute by default. Each
 run, in one transaction:
 
-1. records `expired` on every non-terminal blob past its `expires_at`;
+1. records `expired` on the non-terminal blobs past their `expires_at`;
 2. expires abandoned blobs: unfinished sources, and attached `created` blobs
    untouched for `upload.abandoned_after`;
 3. prunes dead jobs older than `jobs.keep_failed`;
@@ -122,6 +122,12 @@ run, in one transaction:
 5. hands uploads stale for `upload.stale_after` back to `created`;
 6. prunes tombstones purged more than `blobs.keep_purged` ago, with their
    attachments and jobs.
+
+Each step takes at most ten thousand rows. A run that filled a batch starts
+the next one at once instead of waiting for the interval, so a backlog (a
+day on which many blobs expire, a reaper that was down) drains in short
+transactions, one after the other; the log line `reaped` says `backlog=true`
+while it does.
 
 Expiry itself never waits for the reaper: reads compare `expires_at` with
 the clock. One reap is pending at a time across the deployment, and an

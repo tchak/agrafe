@@ -4,11 +4,14 @@
 //! the reaper for blobs that expired or whose purge went missing.
 
 use futures::TryStreamExt as _;
+use jiff::Timestamp;
+use jiff_sqlx::ToSqlx;
 use object_store::ObjectStoreExt as _;
 use object_store::path::Path as ObjectPath;
+use sqlx::PgExecutor;
 use uuid::Uuid;
 
-use super::{Job, JobError};
+use super::{Job, JobError, JobKind, Priority};
 use crate::app::Agrafe;
 use crate::blob::{BlobState, key, repo};
 use crate::storage::Store;
@@ -37,6 +40,38 @@ pub async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
     repo::mark_purged(state.pool(), id).await?;
     tracing::info!(objects, "blob purged");
     Ok(())
+}
+
+/// Enqueue a purge at `run_at` for each of `blob_ids` that still holds
+/// objects, in one statement: the reaper's batches. A blob with a purge
+/// already pending is left with it. Returns how many were enqueued.
+pub(crate) async fn enqueue_each(
+    exec: impl PgExecutor<'_>,
+    blob_ids: &[Uuid],
+    run_at: Timestamp,
+) -> sqlx::Result<u64> {
+    if blob_ids.is_empty() {
+        return Ok(0);
+    }
+    let result = sqlx::query(
+        "WITH inserted AS (\
+             INSERT INTO jobs (kind, blob_id, priority, run_at, traceparent) \
+             SELECT $1, b.id, $3, $4, $6 FROM blobs b \
+             WHERE b.id = ANY($2) AND b.purged_at IS NULL \
+               AND (b.storage_key IS NOT NULL OR b.source_parts > 0) \
+             ON CONFLICT DO NOTHING RETURNING kind\
+         ) \
+         SELECT pg_notify($5, kind) FROM inserted",
+    )
+    .bind(JobKind::Purge.as_str())
+    .bind(blob_ids)
+    .bind(Priority::Normal.rank())
+    .bind(run_at.to_sqlx())
+    .bind(super::CHANNEL)
+    .bind(super::current_traceparent())
+    .execute(exec)
+    .await?;
+    Ok(result.rows_affected())
 }
 
 /// Delete every object under the blob's prefix (`key::prefix`). Returns

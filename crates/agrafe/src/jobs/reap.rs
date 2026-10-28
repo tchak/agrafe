@@ -8,13 +8,20 @@
 //! and the error goes to the log. The runner enqueues the first one when
 //! it starts; the unique index drops the duplicate when several processes
 //! start, or when one restarts while a row is pending.
+//!
+//! Each step takes at most `BATCH` rows, so one reap is a bounded
+//! transaction however many blobs fell due at once (a bulk import's
+//! expiry, an outage). A run that filled a batch brings its successor
+//! forward to now, and the backlog drains run after run, each committed.
 
 use jiff::Timestamp;
 use sqlx::PgExecutor;
 use uuid::Uuid;
 
+use jiff_sqlx::ToSqlx;
+
 use super::notify::{self, Event};
-use super::{Job, JobError, JobKind, Priority};
+use super::{Job, JobError, JobKind, Priority, purge};
 use crate::app::Agrafe;
 use crate::blob::repo;
 use crate::trace::TraceContext;
@@ -36,9 +43,32 @@ pub(crate) async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
             reset = report.reset,
             pruned = report.pruned,
             tombstones = report.tombstones,
+            backlog = report.backlog,
             "reaped"
         );
+        if report.backlog {
+            hasten(state.pool(), Timestamp::now()).await?;
+        }
     }
+    Ok(())
+}
+
+/// Bring the pending reap forward to `now`, for a run that left a backlog.
+async fn hasten(exec: impl PgExecutor<'_>, now: Timestamp) -> sqlx::Result<()> {
+    sqlx::query(
+        "WITH hastened AS (\
+             UPDATE jobs SET run_at = $2 \
+             WHERE kind = $1 AND blob_id IS NULL AND locked_at IS NULL \
+               AND failed_at IS NULL AND run_at > $2 \
+             RETURNING kind\
+         ) \
+         SELECT pg_notify($3, kind) FROM hastened",
+    )
+    .bind(JobKind::Reap.as_str())
+    .bind(now.to_sqlx())
+    .bind(super::CHANNEL)
+    .execute(exec)
+    .await?;
     Ok(())
 }
 
@@ -72,7 +102,7 @@ pub struct Report {
     /// attached blob whose file never came.
     pub abandoned: usize,
     /// Purges enqueued.
-    pub purges: usize,
+    pub purges: u64,
     /// Stale uploads handed back to `created`.
     pub reset: usize,
     /// Dead jobs removed.
@@ -81,16 +111,19 @@ pub struct Report {
     pub tombstones: u64,
     /// Another reap was running: this one did nothing.
     pub skipped: bool,
+    /// A step filled its batch: there is more to do, and the next reap
+    /// runs now.
+    pub backlog: bool,
 }
+
+/// Rows each step of a reap takes at most: expired, abandoned (each of
+/// its two kinds), purges scheduled, uploads reset, dead jobs and
+/// tombstones pruned. Ten thousand keeps a reap's transaction to seconds,
+/// and a backlog drains at that rate per run, back to back.
+pub const BATCH: i64 = 10_000;
 
 /// One pass, in one transaction, as of `now`; or nothing, when another
 /// reap holds the lock.
-/// Tombstones pruned per reap. The prune runs in the reap's transaction,
-/// cascading to attachments and jobs, so a backlog (the first run on an
-/// old table, or after an outage) drains at this rate rather than in one
-/// transaction: ten thousand a minute is over fourteen million a day.
-pub(crate) const TOMBSTONE_BATCH: i64 = 10_000;
-
 pub async fn reap(state: &Agrafe, now: Timestamp) -> Result<Report, JobError> {
     let config = state.config();
     let mut tx = state.pool().begin().await?;
@@ -102,7 +135,8 @@ pub async fn reap(state: &Agrafe, now: Timestamp) -> Result<Report, JobError> {
         });
     }
 
-    let expired = repo::expire(&mut tx, now).await?;
+    let full = |n: usize| n >= BATCH as usize;
+    let expired = repo::expire(&mut tx, now, BATCH).await?;
 
     // An export whose backend stopped sending parts, or an attached blob
     // whose file never came; the purge below takes any parts with the
@@ -110,12 +144,14 @@ pub async fn reap(state: &Agrafe, now: Timestamp) -> Result<Report, JobError> {
     let abandoned_before = now
         .checked_sub(config.upload.abandoned_after)
         .unwrap_or(Timestamp::MIN);
-    let abandoned = repo::expire_abandoned(&mut tx, abandoned_before).await?;
+    let abandoned = repo::expire_abandoned(&mut tx, abandoned_before, BATCH).await?;
+    let expiring = full(expired.len()) || full(abandoned.len());
+    let mut backlog = expiring;
 
     // The backend learns of each expiry from here, so `expired` lags the
     // moment by at most one interval.
+    let ids: Vec<Uuid> = expired.iter().chain(&abandoned).copied().collect();
     if config.webhook.wants(Event::Expired) {
-        let ids: Vec<Uuid> = expired.iter().chain(&abandoned).copied().collect();
         notify::enqueue_each(&mut *tx, &ids, Event::Expired, now).await?;
     }
 
@@ -124,38 +160,35 @@ pub async fn reap(state: &Agrafe, now: Timestamp) -> Result<Report, JobError> {
     let dead_before = now
         .checked_sub(config.jobs.keep_failed)
         .unwrap_or(Timestamp::MIN);
-    let pruned = super::prune_failed(&mut *tx, dead_before).await?;
+    let pruned = super::prune_failed(&mut *tx, dead_before, BATCH).await?;
+    backlog |= pruned >= BATCH as u64;
 
-    // Everything terminal still holding bytes and not already on its way
-    // out: the blobs just expired, infected ones past their expiry, and
-    // any whose purge was lost.
+    // The blobs just expired that hold bytes are purged; then, once no
+    // expiry is left waiting, everything else terminal still holding bytes
+    // and not already on its way out: infected blobs past their expiry,
+    // and any whose purge was lost. That walk passes over every blob whose
+    // purge is pending, so it waits for the backlog rather than repeat at
+    // each of its runs.
     let purge_at = config.upload.purge_at(now);
-    let mut purges = 0;
-    for id in repo::awaiting_purge(&mut tx, now).await? {
-        if super::enqueue(
-            &mut *tx,
-            JobKind::Purge,
-            Some(id),
-            Priority::Normal,
-            serde_json::json!({}),
-            purge_at,
-        )
-        .await?
-        {
-            purges += 1;
-        }
+    let mut purges = purge::enqueue_each(&mut *tx, &ids, purge_at).await?;
+    if !expiring {
+        let lost = repo::awaiting_purge(&mut tx, now, BATCH).await?;
+        backlog |= full(lost.len());
+        purges += purge::enqueue_each(&mut *tx, &lost, purge_at).await?;
     }
 
     let stale_before = now
         .checked_sub(config.upload.stale_after)
         .unwrap_or(Timestamp::MIN);
-    let reset = repo::reset_stale_uploads(&mut tx, stale_before).await?;
+    let reset = repo::reset_stale_uploads(&mut tx, stale_before, BATCH).await?;
+    backlog |= full(reset.len());
 
     // Tombstones that have answered `GET /blobs/:id` long enough.
     let tombstone_before = now
         .checked_sub(config.blobs.keep_purged)
         .unwrap_or(Timestamp::MIN);
-    let tombstones = repo::prune_tombstones(&mut tx, tombstone_before, TOMBSTONE_BATCH).await?;
+    let tombstones = repo::prune_tombstones(&mut tx, tombstone_before, BATCH).await?;
+    backlog |= tombstones >= BATCH as u64;
 
     tx.commit().await?;
     Ok(Report {
@@ -166,5 +199,6 @@ pub async fn reap(state: &Agrafe, now: Timestamp) -> Result<Report, JobError> {
         pruned,
         tombstones,
         skipped: false,
+        backlog,
     })
 }

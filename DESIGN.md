@@ -656,8 +656,9 @@ either way. The reaper prunes tombstones `blobs.keep_purged` (default ninety
 days) after `purged_at`, long enough for the question to have been asked;
 the attachments and jobs that reference the row go with it, and the id is
 then unknown like any other. Each reap prunes at most ten thousand, so a
-backlog drains over successive runs instead of one transaction holding
-every row and its cascades. A terminal row that never had anything to
+backlog drains over successive runs, brought forward one after the other
+(see "Jobs"), instead of one transaction holding every row and its
+cascades. A terminal row that never had anything to
 purge, a blob created and never uploaded, has no `purged_at` and is pruned
 the same time after it went terminal (its `updated_at`). Why a bound: every
 blob carries an expiry until it is attached, so every direct upload a user
@@ -2885,18 +2886,31 @@ its stored source, see "Generated blobs"), `purge`
 housekeeping, `notify` (deliver one event of a blob to the webhook,
 see "Webhooks"), and `audit`, the weekly sweep of the bucket against the
 `blobs` table, see "Audit". One reap, in one transaction, in this order: record
-`expired` on every non-terminal blob past its `expires_at`; expire the
+`expired` on the non-terminal blobs past their `expires_at`; expire the
 abandoned `created` blobs, holding source parts untouched for
 `upload.abandoned_after` or attached and untouched altogether for as long
 (see "Attachments"); prune
 dead jobs that failed more than `jobs.keep_failed` (default seven days) ago,
 long enough to have been looked at; enqueue a purge, `upload.purge_delay`
-out, for every terminal blob still holding objects that no purge job is
-going to take care of (the ones just expired or abandoned, infected ones
-past their expiry, and any whose purge was lost, a pruned dead one
-included); hand `uploading` rows older than `upload.stale_after` back to
-`created`; prune tombstones purged more than `blobs.keep_purged` ago, their
-attachments and jobs with them. Expiry itself never waits for the reaper, see "State machine".
+out, for the blobs just expired or abandoned that hold objects, then for
+every other terminal blob still holding objects that no purge job is
+going to take care of (infected ones past their expiry, and any whose
+purge was lost, a pruned dead one included); hand `uploading` rows older
+than `upload.stale_after` back to `created`; prune tombstones purged more
+than `blobs.keep_purged` ago, their attachments and jobs with them.
+Expiry itself never waits for the reaper, see "State machine".
+
+Each step takes at most ten thousand rows, picked on its index in the
+order it walks, so one reap is a transaction of seconds however much
+fell due at once: a bulk import's blobs all expiring on one day, a mass
+detach, a reaper down for a week. A run that filled a batch brings the
+pending reap forward to now, and the backlog drains run after run, each
+committed, ten thousand of each kind at a time. The safety net of purges
+walks every terminal blob still holding objects, whose purges are
+mostly pending, so it waits for the expiries to drain rather than walk
+again at each of those runs. A batch is picked without locks and the
+update evaluates its condition again on each row it then holds, so an
+attach that holds the row first still wins over the expiry.
 
 The reaper keeps its own clock: each run enqueues the next, `jobs.reap_interval`
 (default one minute) later, before doing its work, so a failing run is

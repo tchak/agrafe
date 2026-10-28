@@ -658,16 +658,23 @@ pub async fn touch(exec: impl PgExecutor<'_>, id: i64, worker: &str) -> sqlx::Re
     Ok(result.rows_affected() == 1)
 }
 
-/// Remove the dead jobs that failed before `before`: they have been around
-/// long enough to have been looked at.
+/// Remove the dead jobs that failed before `before`, at most `limit` of
+/// them, the oldest first: they have been around long enough to have been
+/// looked at.
 pub(crate) async fn prune_failed(
     exec: impl PgExecutor<'_>,
     before: Timestamp,
+    limit: i64,
 ) -> sqlx::Result<u64> {
-    let result = sqlx::query("DELETE FROM jobs WHERE failed_at IS NOT NULL AND failed_at <= $1")
-        .bind(before.to_sqlx())
-        .execute(exec)
-        .await?;
+    let result = sqlx::query(
+        "DELETE FROM jobs WHERE id = ANY(ARRAY(\
+             SELECT id FROM jobs WHERE failed_at <= $1 ORDER BY failed_at LIMIT $2\
+         )) AND failed_at <= $1",
+    )
+    .bind(before.to_sqlx())
+    .bind(limit)
+    .execute(exec)
+    .await?;
     Ok(result.rows_affected())
 }
 

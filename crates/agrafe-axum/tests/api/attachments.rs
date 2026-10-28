@@ -4,6 +4,7 @@
 //! orders an attach against an expiry.
 
 use agrafe::blob::repo;
+use agrafe::jobs::reap;
 use axum::http::{Method, StatusCode};
 use jiff::{SignedDuration, Timestamp};
 use serde_json::{Value, json};
@@ -558,9 +559,13 @@ async fn attach_waits_for_the_expiry_lock_and_sees_its_outcome() {
     assert!(!attaching.is_finished(), "the attach waits on the row lock");
 
     // The reaper, as of a moment past the blob's expiry.
-    let expired = repo::expire(&mut tx, Timestamp::now() + SignedDuration::from_secs(10))
-        .await
-        .unwrap();
+    let expired = repo::expire(
+        &mut tx,
+        Timestamp::now() + SignedDuration::from_secs(10),
+        reap::BATCH,
+    )
+    .await
+    .unwrap();
     assert_eq!(expired, vec![id]);
     tx.commit().await.unwrap();
 

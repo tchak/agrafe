@@ -313,6 +313,59 @@ async fn the_reap_job_keeps_one_row_pending() {
     assert!(!reap::schedule(pool, Timestamp::now()).await.unwrap());
 }
 
+/// A reap takes a batch of each kind of work, and one that filled a batch
+/// brings the next forward rather than leave the rest for an interval.
+#[tokio::test]
+async fn the_reaper_drains_a_backlog_in_batches() {
+    let db = TestDatabase::new().await;
+    let clamd = fake_clamd().await;
+    let app = setup_tuned(db, clamd, |c| {
+        c.jobs.reap_interval = Duration::from_secs(300)
+    })
+    .await;
+    let pool = app.state.pool();
+    sqlx::query(
+        "INSERT INTO blobs (id, state, filename, content_type, category, input_type, expires_at) \
+         SELECT gen_random_uuid(), 'created', 'a.png', 'image/png', 'image', 'raw', \
+                now() - interval '1 second' \
+         FROM generate_series(1, $1)",
+    )
+    .bind(reap::BATCH + 1)
+    .execute(pool)
+    .await
+    .unwrap();
+    let count = |state: &'static str| async move {
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM blobs WHERE state = $1")
+            .bind(state)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    };
+    let reap_due_in = || async {
+        sqlx::query_scalar::<_, f64>(
+            "SELECT EXTRACT(EPOCH FROM run_at - now())::float8 FROM jobs WHERE kind = 'reap'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    };
+
+    assert!(reap::schedule(pool, Timestamp::now()).await.unwrap());
+    assert!(run_job(&app, JobKind::Reap).await);
+    assert_eq!(count("expired").await, reap::BATCH);
+    assert_eq!(count("created").await, 1);
+    let due = reap_due_in().await;
+    assert!(due <= 0.0, "the next reap runs now: {due}");
+
+    assert!(run_job(&app, JobKind::Reap).await);
+    assert_eq!(count("created").await, 0);
+    let due = reap_due_in().await;
+    assert!(
+        (290.0..=300.0).contains(&due),
+        "back to the interval: {due}"
+    );
+}
+
 /// An upload slower than `stale_after` is not stale: the pipeline touches
 /// the row while it runs, and the reaper leaves it alone.
 #[tokio::test]
@@ -581,23 +634,25 @@ async fn an_attached_blob_nothing_reached_is_expired_as_abandoned() {
 /// The reaper's statements walk their partial indexes even under the
 /// generic plan a pooled connection may settle on, built without the
 /// parameters' values: what the planner must prove to use a partial index
-/// is spelled into the SQL. Sequential scans are off so that, on a table
-/// this small, the planner shows the index it would walk, and falls back
-/// to a scan only when it cannot use one.
+/// is spelled into the SQL. Each batch is read off its index in order,
+/// with no sort, so the limit stops the walk. Sequential and bitmap scans
+/// are off so that, on a table this small, the planner shows the index it
+/// would walk, and falls back to a scan only when it cannot use one.
 #[tokio::test]
 async fn the_reaper_walks_its_indexes_under_a_generic_plan() {
     let db = TestDatabase::new().await;
     let app = setup(db).await;
     let mut conn = app.state.pool().acquire().await.unwrap();
-    sqlx::query("SET enable_seqscan = off")
-        .execute(&mut *conn)
-        .await
-        .unwrap();
+    for off in ["SET enable_seqscan = off", "SET enable_bitmapscan = off"] {
+        sqlx::query(off).execute(&mut *conn).await.unwrap();
+    }
     let plans = repo::explain_reaper(&mut conn).await.unwrap();
     let want: &[(&str, &[&str])] = &[
         ("expire", &["blobs_expires_at_idx"]),
-        // On a table this small, the state's own index is as cheap.
-        ("expire_abandoned", &[]),
+        (
+            "expire_abandoned",
+            &["blobs_stale_source_idx", "blobs_abandoned_idx"],
+        ),
         ("awaiting_purge", &["blobs_unpurged_idx"]),
         (
             "prune_tombstones",
@@ -609,6 +664,7 @@ async fn the_reaper_walks_its_indexes_under_a_generic_plan() {
     for ((name, plan), (want_name, indexes)) in plans.iter().zip(want) {
         assert_eq!(name, want_name);
         assert!(!plan.contains("Seq Scan"), "{name}: {plan}");
+        assert!(!plan.contains("Sort"), "{name}: {plan}");
         for index in *indexes {
             assert!(plan.contains(index), "{name}: {plan}");
         }
