@@ -4,6 +4,8 @@
 //! `rows`, `archive` and `document`, whole or one part at a time. A `url`
 //! blob takes no `PUT` at all: its bytes are fetched by a job.
 
+mod framing;
+
 use axum::RequestExt;
 use axum::extract::multipart::Multipart;
 use axum::extract::{FromRequest, Request};
@@ -56,6 +58,10 @@ pub async fn upload(state: &Agrafe, blob: Blob, req: Request) -> ApiResult<Blob>
             Ok(state.upload(blob, body).await?)
         }
         InputType::Multipart => {
+            // The parser buffers what precedes the file; the meter keeps
+            // that within the framing overhead rather than the body limit.
+            let meter = framing::Meter::default();
+            let req = req.map(|body| meter.wrap(body));
             let mut multipart = Multipart::from_request(req, &())
                 .await
                 .map_err(|e| ApiError::from_rejection(e.status(), e.body_text()))?;
@@ -70,7 +76,9 @@ pub async fn upload(state: &Agrafe, blob: Blob, req: Request) -> ApiResult<Blob>
                     }
                 }
             };
-            let body = field.map_err(|e| BoxError::from(multipart_error(e)));
+            let body = field
+                .inspect_ok(move |bytes| meter.deliver(bytes.len()))
+                .map_err(|e| BoxError::from(multipart_error(e)));
             Ok(state.upload(blob, body).await?)
         }
         InputType::Rows | InputType::Archive | InputType::Document => {
@@ -113,5 +121,8 @@ fn body_error(e: axum::Error) -> BoxError {
 }
 
 fn multipart_error(e: axum::extract::multipart::MultipartError) -> ApiError {
+    if framing::exceeded(&e) {
+        return ApiError::PayloadTooLarge(framing::FramingTooLarge.to_string());
+    }
     ApiError::from_rejection(e.status(), e.body_text())
 }

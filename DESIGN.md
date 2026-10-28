@@ -931,10 +931,22 @@ Bytes flow once through a chain of consumers:
 1. Size counter, rejects on exceeding the declared size, itself capped at
    `upload.max_size` when declared, or `upload.max_size` itself for a
    `url` blob that declared none. The HTTP body limit on the upload routes
-   is `max_size` plus slack for multipart framing, a backstop that the
-   counter normally reaches first. A `raw` body whose `Content-Length`
+   is `max_size` plus 1 MiB of slack for multipart framing, a backstop that
+   the counter normally reaches first. A `raw` body whose `Content-Length`
    disagrees with the declared size is refused before it is read, and so
-   is a fetched response's.
+   is a fetched response's. The counter sees only the file, so a
+   multipart body's framing is held to the slack on its own, as it is
+   read: the bytes fed to the parser may run ahead of the file bytes it
+   hands out by at most 1 MiB, or the body is a `413`. Why: until the
+   `file` part yields, the parser buffers everything it reads and
+   rescans the buffer on each read, so a body that never reaches a
+   boundary, or a part header that never ends, would otherwise grow the
+   buffer to the body limit (5 GiB by default) in quadratic time, for a
+   blob declaring a file of any size. Parts before the file count as
+   framing, and are therefore limited to about 1 MiB together. The parser
+   drains every ready chunk before parsing, so the body is fed to it
+   64 KiB at a time, yielding between pieces; otherwise a fast client's
+   file would be buffered whole and refused.
 2. SHA-256 and MD5 hashers, each compared against its declared checksum
    at the end when there is one, and written to the row otherwise (see
    "Creation").

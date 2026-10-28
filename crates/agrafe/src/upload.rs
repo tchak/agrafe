@@ -50,8 +50,10 @@ pub(crate) const PART_CONCURRENCY: usize = 4;
 /// Body chunks buffered between the request handler and the pipeline task.
 pub(crate) const CHANNEL_DEPTH: usize = 8;
 
-/// Slack allowed on top of `upload.max_size` for multipart framing.
-const MULTIPART_OVERHEAD: u64 = 1024 * 1024;
+/// Slack allowed on top of `upload.max_size` for multipart framing: the
+/// boundaries, the part headers and any part before the file. The HTTP
+/// layer holds a multipart body to it as it reads, not only in total.
+pub const MULTIPART_OVERHEAD: u64 = 1024 * 1024;
 
 /// Request body limit for the upload routes.
 pub fn body_limit(config: &UploadConfig) -> usize {

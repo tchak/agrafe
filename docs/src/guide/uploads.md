@@ -64,7 +64,9 @@ curl -s -X PUT "localhost:8080/blobs/$ID" --data-binary @scan.jpg
 ```
 
 A `multipart` blob takes a `multipart/form-data` body with one part named
-`file`. The part's own filename is ignored; the blob's is used.
+`file`. The part's own filename is ignored; the blob's is used. Other
+parts are skipped, but everything before the file's bytes, the other
+parts included, may come to at most 1 MiB: past it the body answers `413`.
 
 ```sh
 curl -s -X PUT "localhost:8080/blobs/$ID" -F file=@scan.jpg

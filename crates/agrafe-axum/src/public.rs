@@ -22,7 +22,8 @@ use crate::error::{ApiError, ApiResult};
 
 /// `body_limit` caps the request body of the upload route. It is a backstop:
 /// the pipeline stops at the declared size, which is at most
-/// `upload.max_size`; the limit only matters for multipart framing around it.
+/// `upload.max_size`, and the multipart framing around it at
+/// `MULTIPART_OVERHEAD` (see `body::framing`).
 pub fn routes(body_limit: usize) -> Router<Agrafe> {
     Router::new()
         .route(

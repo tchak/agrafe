@@ -251,8 +251,9 @@ async fn multipart_rejections() {
     let (status, body) = call(&app.public, put_raw(&upload, bytes.clone())).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 
-    // The route body limit is `upload.max_size` plus 1 MiB of slack; a body
-    // that blows through it on the way to the `file` part is a 413.
+    // Framing is allowed 1 MiB of slack, and a part before the file counts
+    // as framing: a body that blows through it on the way to the `file`
+    // part is a 413.
     let junk = vec![b'x'; 1024 * 1024 + 32 * 1024];
     let (status, body) = call(
         &app.public,
@@ -261,6 +262,90 @@ async fn multipart_rejections() {
     .await;
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{body}");
     assert_eq!(body["error"]["code"], "payload_too_large");
+    assert_eq!(get_blob(&app, id).await["state"], "created");
+}
+
+/// A multipart `PUT` of `body` as it is, cut into pieces of `piece` bytes
+/// the way a client streams it.
+fn put_multipart_raw(uri: &str, body: Vec<u8>, piece: usize) -> Request<Body> {
+    let pieces: Vec<Result<bytes::Bytes, std::io::Error>> = body
+        .chunks(piece)
+        .map(|p| Ok(bytes::Bytes::copy_from_slice(p)))
+        .collect();
+    Request::builder()
+        .method(Method::PUT)
+        .uri(uri)
+        .header(
+            header::CONTENT_TYPE,
+            "multipart/form-data; boundary=agrafe-test-boundary",
+        )
+        .body(Body::from_stream(futures::stream::iter(pieces)))
+        .unwrap()
+}
+
+/// The parser buffers what comes before the file, so what is not the file
+/// is held to the 1 MiB of framing slack as it is read, whatever the
+/// route's body limit, here 8 MiB and 1. A file far larger than the slack
+/// still passes, whole in one chunk or streamed.
+#[tokio::test]
+async fn multipart_framing_is_held_to_the_overhead() {
+    let db = TestDatabase::new().await;
+    let clamd = fake_clamd().await;
+    let app = setup_tuned(db, clamd, |c| {
+        c.upload.max_size = bytesize::ByteSize::mib(8);
+    })
+    .await;
+    let mib = 1024 * 1024;
+
+    let bytes = png_bytes(2 * mib);
+    let created = create(&app, blob_for(&bytes, "image/png", "multipart")).await;
+    let (status, body) = call(
+        &app.public,
+        put_multipart(
+            &public_url(&created, "upload"),
+            &[("comment", b"hi"), ("file", &bytes)],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(stored_plaintext(&app, id_of(&created)).await, bytes);
+
+    let created = create(&app, blob_for(&bytes, "image/png", "multipart")).await;
+    let mut streamed = b"--agrafe-test-boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"x.png\"\r\n\r\n".to_vec();
+    streamed.extend_from_slice(&bytes);
+    streamed.extend_from_slice(b"\r\n--agrafe-test-boundary--\r\n");
+    let (status, body) = call(
+        &app.public,
+        put_multipart_raw(&public_url(&created, "upload"), streamed, 16 * 1024),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(stored_plaintext(&app, id_of(&created)).await, bytes);
+
+    // Bodies whose framing never ends, for a blob declaring a tiny file.
+    let small = png_bytes(100);
+    let created = create(&app, blob_for(&small, "image/png", "multipart")).await;
+    let id = id_of(&created);
+    let upload = public_url(&created, "upload");
+    let preamble = vec![b'x'; 3 * mib];
+    let mut headers =
+        b"--agrafe-test-boundary\r\nContent-Disposition: form-data; name=\"file\"\r\n".to_vec();
+    headers.extend(std::iter::repeat_n(b'x', 3 * mib));
+    for (what, body) in [("preamble", preamble), ("part headers", headers)] {
+        let (status, body) = call(&app.public, put_multipart_raw(&upload, body, 16 * 1024)).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{what}: {body}");
+        assert_eq!(body["error"]["code"], "payload_too_large", "{what}");
+        assert_eq!(get_blob(&app, id).await["state"], "created", "{what}");
+    }
+
+    // Another part before the file counts against the slack too.
+    let comment = vec![b'x'; 2 * mib];
+    let (status, body) = call(
+        &app.public,
+        put_multipart(&upload, &[("comment", &comment), ("file", &small)]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{body}");
     assert_eq!(get_blob(&app, id).await["state"], "created");
 }
 

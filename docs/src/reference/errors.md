@@ -116,6 +116,7 @@ From `PUT /blobs/:id` on either port, and `PUT /blobs/:id/parts/:n`:
 | `409` | `conflict` | `the source has no parts` | A finish with nothing to build |
 | `413` | `payload_too_large` | `request body exceeds the upload size limit` | |
 | `413` | `payload_too_large` | `part exceeds the maximum of N bytes` | |
+| `413` | `payload_too_large` | ``multipart body has more than 1048576 bytes outside the `file` part`` | The boundaries, part headers and parts before the file |
 | `422` | `unprocessable` | `Content-Length N does not match the declared size M` | Refused before reading |
 | `422` | `unprocessable` | `body size does not match the declared size` | |
 | `422` | `unprocessable` | `body exceeds the maximum of N bytes` | A `url` blob with no declared size |
