@@ -145,3 +145,87 @@ async fn a_periodic_job_schedules_its_successor_outside_its_trace() {
     assert!(run_job(&app, JobKind::Reap).await);
     assert_eq!(traceparents(pool).await, [None], "the successor, rootless");
 }
+
+/// Every field value of every span opened while it is the default
+/// subscriber, as `Debug` prints it.
+#[derive(Clone, Default)]
+struct Fields(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+impl Fields {
+    fn all(&self) -> Vec<String> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+impl tracing::field::Visit for Fields {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        self.0
+            .lock()
+            .unwrap()
+            .push(format!("{}={value:?}", field.name()));
+    }
+}
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Fields {
+    fn on_new_span(
+        &self,
+        attrs: &tracing::span::Attributes<'_>,
+        _: &tracing::span::Id,
+        _: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        attrs.record(&mut self.clone());
+    }
+
+    fn on_record(
+        &self,
+        _: &tracing::span::Id,
+        values: &tracing::span::Record<'_>,
+        _: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        values.record(&mut self.clone());
+    }
+}
+
+/// No public request span records a token, whatever the path: a URL that
+/// is served, one refused, one cut short at the token, with or without its
+/// slash, and the router nested under a prefix.
+#[tokio::test]
+async fn public_request_spans_never_record_the_token() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let blob = ready_blob(&app, &png_bytes(1500)).await;
+    let original = public_url(&blob, "original");
+    let token = original
+        .strip_prefix("/blobs/")
+        .and_then(|rest| rest.split('/').next())
+        .unwrap()
+        .to_string();
+    let nested = axum::Router::new().nest("/files", agrafe_axum::public_router(app.state.clone()));
+
+    let fields = Fields::default();
+    let _default =
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(fields.clone()));
+    let (status, _) = call(&app.public, req(Method::GET, &original)).await;
+    assert_eq!(status, StatusCode::OK);
+    let tampered = original.replace("/original/", "/thumbnail/");
+    let (status, _) = call(&app.public, req(Method::GET, &tampered)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    for cut in [format!("/blobs/{token}"), format!("/blobs/{token}/")] {
+        let (status, _) = call(&app.public, req(Method::GET, &cut)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{cut}");
+    }
+    let (status, _) = call(&nested, req(Method::GET, &format!("/files{original}"))).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let fields = fields.all();
+    // The request spans' paths; the store's spans record object keys.
+    let paths: Vec<&String> = fields.iter().filter(|f| f.starts_with("path=/")).collect();
+    assert_eq!(paths.len(), 5, "{fields:?}");
+    assert!(
+        paths.iter().all(|p| p.contains("/blobs/<token>")),
+        "{paths:?}"
+    );
+    assert!(fields.iter().all(|f| !f.contains(&token)), "{fields:?}");
+}

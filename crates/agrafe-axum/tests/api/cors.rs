@@ -172,3 +172,29 @@ async fn the_private_port_sends_none() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(allowed_origin(&headers), None);
 }
+
+/// The same exchange with the public router nested under a prefix, as the
+/// embedding guide shows: the preflight and the signed upload under it.
+#[tokio::test]
+async fn a_nested_public_router_answers_the_preflight_and_the_upload() {
+    let db = TestDatabase::new().await;
+    let app = setup_tuned(db, fake_clamd().await, |c| {
+        c.server.cors.allowed_origins = vec![APP.to_string()];
+        c.server.public_base_url = "https://agrafe.test/files".into();
+    })
+    .await;
+    let nested = axum::Router::new().nest("/files", agrafe_axum::public_router(app.state.clone()));
+    let bytes = png_bytes(500);
+    let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
+    let upload = public_url(&created, "upload");
+    assert!(upload.starts_with("/files/blobs/"), "{upload}");
+
+    let (status, headers, _) = fetch(&nested, preflight(&upload, APP, "PUT")).await;
+    assert!(status.is_success(), "{status}");
+    assert_eq!(allowed_origin(&headers), Some(APP));
+
+    let (status, headers, _) = fetch(&nested, from(APP, put_raw(&upload, bytes))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(allowed_origin(&headers), Some(APP));
+    assert_eq!(get_blob(&app, id_of(&created)).await["state"], "ready");
+}
