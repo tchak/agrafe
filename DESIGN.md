@@ -2204,8 +2204,12 @@ on "has preview", never on category. Sources, in order:
 1. **Images**: decode and transcode. `preview_source = image`.
 2. **Embedded image extraction** (`preview_source = embedded_image`): a
    one-page PDF whose single image XObject covers at least
-   `media.embedded_image.min_coverage` of the page, drawn upright, with at
-   most `max_text_chars` of text; or a DOCX/ODT with exactly one media file
+   `media.embedded_image.min_coverage` of the page box (the part of the
+   image inside it), drawn upright, with at most `max_text_chars` of text
+   and nothing else painted: no path filled or stroked, shading, inline
+   image, clip, optional content, or annotation other than a link, any of
+   which could cover what the image shows, a black rectangle over a scan
+   to begin with; or a DOCX/ODT with exactly one media file
    (under `word/media/` or `Pictures/`) that is a raster image, and at
    most `max_text_chars` of non-whitespace text in the body. The embedded
    image is pulled out at full resolution and goes through the image

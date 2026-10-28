@@ -1,6 +1,7 @@
 //! A one-page PDF whose single image XObject covers most of the page, drawn
-//! upright, with little text: the image is handed out as is when it is a
-//! JPEG or JPEG 2000 stream, or as a PPM/PGM when it is raw samples.
+//! upright, with little text and nothing else painted over or around it:
+//! the image is handed out as is when it is a JPEG or JPEG 2000 stream, or
+//! as a PPM/PGM when it is raw samples.
 
 use lopdf::content::{Content, Operation};
 use lopdf::{Document, LoadOptions, Object, ObjectId, Stream};
@@ -24,13 +25,17 @@ pub fn extract(bytes: &[u8], thresholds: &Thresholds, max_output: usize) -> Opti
         return None;
     }
     let page_id = *pages.values().next()?;
-    let (page_width, page_height) = page_size(&doc, page_id)?;
+    let page = page_box(&doc, page_id)?;
+    if !annotations_paint_nothing(&doc, page_id)? {
+        return None;
+    }
     let (name, image) = single_image(&doc, page_id)?;
 
     let content = doc.get_page_content_with_limit(page_id, max_output).ok()?;
     let ops = Content::decode(&content).ok()?;
-    let placed = Placement::find(&ops.operations, &name, thresholds.max_text_chars)?;
-    if placed.width * placed.height < thresholds.min_coverage * page_width * page_height {
+    let placed = placement(&ops.operations, &name, thresholds.max_text_chars)?;
+    // What shows is the part of the image inside the page box.
+    if placed.intersect(page).area() < thresholds.min_coverage * page.area() {
         return None;
     }
     image_bytes(&doc, image, max_output)
@@ -38,7 +43,7 @@ pub fn extract(bytes: &[u8], thresholds: &Thresholds, max_output: usize) -> Opti
 
 /// The page box, from the page or an ancestor. `CropBox` is what is shown;
 /// `MediaBox` otherwise.
-fn page_size(doc: &Document, page_id: ObjectId) -> Option<(f32, f32)> {
+fn page_box(doc: &Document, page_id: ObjectId) -> Option<Rect> {
     let mut dict = doc.get_dictionary(page_id).ok()?;
     for _ in 0..MAX_DEPTH {
         for key in [&b"CropBox"[..], b"MediaBox"] {
@@ -47,8 +52,13 @@ fn page_size(doc: &Document, page_id: ObjectId) -> Option<(f32, f32)> {
                 if v.len() != 4 {
                     return None;
                 }
-                let (w, h) = ((v[2] - v[0]).abs(), (v[3] - v[1]).abs());
-                return (w > 0.0 && h > 0.0).then_some((w, h));
+                let page = Rect {
+                    x0: v[0].min(v[2]),
+                    y0: v[1].min(v[3]),
+                    x1: v[0].max(v[2]),
+                    y1: v[1].max(v[3]),
+                };
+                return (page.area() > 0.0).then_some(page);
             }
         }
         dict = dict
@@ -57,6 +67,24 @@ fn page_size(doc: &Document, page_id: ObjectId) -> Option<(f32, f32)> {
             .ok()?;
     }
     None
+}
+
+/// Whether the page's annotations draw nothing over it: none, or links
+/// and pop-ups only. A filled square annotation is as good a cover as a
+/// rectangle in the content stream. `None` when they cannot be read.
+fn annotations_paint_nothing(doc: &Document, page_id: ObjectId) -> Option<bool> {
+    let page = doc.get_dictionary(page_id).ok()?;
+    let Ok(annots) = page.get_deref(b"Annots", doc) else {
+        return Some(true);
+    };
+    for annot in annots.as_array().ok()? {
+        let annot = doc.dereference(annot).ok()?.1.as_dict().ok()?;
+        match annot.get(b"Subtype").and_then(Object::as_name).ok()? {
+            b"Link" | b"Popup" => {}
+            _ => return Some(false),
+        }
+    }
+    Some(true)
 }
 
 /// The page's one image XObject, by resource name. A form XObject could
@@ -79,7 +107,10 @@ fn single_image(doc: &Document, page_id: ObjectId) -> Option<(Vec<u8>, &Stream)>
         for (name, value) in xobjects.iter() {
             let stream = doc.dereference(value).ok()?.1.as_stream().ok()?;
             match stream.dict.get(b"Subtype").and_then(Object::as_name).ok()? {
-                b"Image" if image.is_none() => image = Some((name.clone(), stream)),
+                // An image in an optional content group may be hidden.
+                b"Image" if image.is_none() && !stream.dict.has(b"OC") => {
+                    image = Some((name.clone(), stream));
+                }
                 _ => return None,
             }
         }
@@ -114,62 +145,96 @@ impl Matrix {
     }
 }
 
-/// Where the image lands on the page, in page units.
-#[derive(Debug, Clone, Copy)]
-struct Placement {
-    width: f32,
-    height: f32,
+/// An upright rectangle in page units, `x0 <= x1` and `y0 <= y1`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Rect {
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
 }
 
-impl Placement {
-    /// Walk the content stream: track the CTM through `q`/`Q`/`cm`, count
-    /// text, and record the box the named image is drawn into. `None` when
-    /// the image is not drawn upright, or there is too much text.
-    fn find(ops: &[Operation], image: &[u8], max_text_chars: u32) -> Option<Self> {
-        let mut ctm = Matrix::IDENTITY;
-        let mut stack = Vec::new();
-        let mut placed: Option<Placement> = None;
-        let mut text_chars = 0u64;
-        for op in ops {
-            match op.operator.as_str() {
-                "q" => stack.push(ctm),
-                "Q" => ctm = stack.pop().unwrap_or(Matrix::IDENTITY),
-                "cm" => ctm = Matrix::from_operands(&op.operands)?.then(ctm),
-                "Do" => {
-                    if op.operands.first().and_then(|o| o.as_name().ok()) != Some(image) {
-                        continue;
-                    }
-                    // The image maps the unit square through the CTM. Only
-                    // an unrotated, unflipped placement looks like the
-                    // extracted image.
-                    let [a, b, c, d, _, _] = ctm.0;
-                    if b.abs() > 0.01 || c.abs() > 0.01 || a <= 0.0 || d <= 0.0 {
-                        return None;
-                    }
-                    let this = Placement {
-                        width: a,
-                        height: d,
-                    };
-                    placed = Some(match placed {
-                        Some(p) if p.width * p.height >= a * d => p,
-                        _ => this,
-                    });
+impl Rect {
+    fn area(self) -> f32 {
+        (self.x1 - self.x0).max(0.0) * (self.y1 - self.y0).max(0.0)
+    }
+
+    /// The part of `self` inside `other`, empty when they do not meet.
+    fn intersect(self, other: Self) -> Self {
+        Self {
+            x0: self.x0.max(other.x0),
+            y0: self.y0.max(other.y0),
+            x1: self.x1.min(other.x1),
+            y1: self.y1.min(other.y1),
+        }
+    }
+}
+
+/// Operators that paint something other than the image or text: path
+/// painting, shadings and inline images (which lopdf hands over as one
+/// `BI`), and clipping, which may hide most of the image. Any of them
+/// makes the page something else than its image, a black rectangle drawn
+/// over a scan to begin with.
+const PAINTING: &[&str] = &[
+    "f", "F", "f*", "B", "B*", "b", "b*", "S", "s", "sh", "BI", "W", "W*",
+];
+
+/// Where the image lands on the page. Walk the content stream: track the
+/// CTM through `q`/`Q`/`cm`, count text, and record the box the named
+/// image is drawn into. `None` when the image is not drawn upright, there
+/// is too much text, or anything else is painted, clipped or marked
+/// optional.
+fn placement(ops: &[Operation], image: &[u8], max_text_chars: u32) -> Option<Rect> {
+    let mut ctm = Matrix::IDENTITY;
+    let mut stack = Vec::new();
+    let mut placed: Option<Rect> = None;
+    let mut text_chars = 0u64;
+    for op in ops {
+        match op.operator.as_str() {
+            "q" => stack.push(ctm),
+            "Q" => ctm = stack.pop().unwrap_or(Matrix::IDENTITY),
+            "cm" => ctm = Matrix::from_operands(&op.operands)?.then(ctm),
+            "Do" => {
+                if op.operands.first().and_then(|o| o.as_name().ok()) != Some(image) {
+                    continue;
                 }
-                "Tj" | "'" => text_chars += op.operands.last().map_or(0, string_len),
-                "\"" => text_chars += op.operands.get(2).map_or(0, string_len),
-                "TJ" => {
-                    if let Some(Object::Array(parts)) = op.operands.first() {
-                        text_chars += parts.iter().map(string_len).sum::<u64>();
-                    }
+                // The image maps the unit square through the CTM. Only
+                // an unrotated, unflipped placement looks like the
+                // extracted image.
+                let [a, b, c, d, e, f] = ctm.0;
+                if b.abs() > 0.01 || c.abs() > 0.01 || a <= 0.0 || d <= 0.0 {
+                    return None;
                 }
-                _ => {}
+                let this = Rect {
+                    x0: e,
+                    y0: f,
+                    x1: e + a,
+                    y1: f + d,
+                };
+                placed = Some(match placed {
+                    Some(p) if p.area() >= this.area() => p,
+                    _ => this,
+                });
             }
-            if text_chars > u64::from(max_text_chars) {
+            // Content marked optional may be shown or hidden.
+            "BDC" if op.operands.first().and_then(|o| o.as_name().ok()) == Some(b"OC") => {
                 return None;
             }
+            painting if PAINTING.contains(&painting) => return None,
+            "Tj" | "'" => text_chars += op.operands.last().map_or(0, string_len),
+            "\"" => text_chars += op.operands.get(2).map_or(0, string_len),
+            "TJ" => {
+                if let Some(Object::Array(parts)) = op.operands.first() {
+                    text_chars += parts.iter().map(string_len).sum::<u64>();
+                }
+            }
+            _ => {}
         }
-        placed
+        if text_chars > u64::from(max_text_chars) {
+            return None;
+        }
     }
+    placed
 }
 
 /// Bytes of a string operand: one per character in simple fonts, two in
@@ -281,6 +346,7 @@ fn channels(doc: &Document, space: &Object) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lopdf::dictionary;
 
     const LIMIT: usize = 16 * 1024 * 1024;
 
@@ -462,6 +528,113 @@ mod tests {
         assert_eq!(extract(pdf, &thresholds(), LIMIT), None);
         let pdf = include_bytes!("../../../fixtures/rotated.pdf");
         assert_eq!(extract(pdf, &thresholds(), LIMIT), None);
+    }
+
+    /// `image.pdf`, a 60x30 page with the image drawn over all of it,
+    /// with its page changed by `edit` and its content stream replaced by
+    /// `content`, extracted.
+    fn image_with(content: &str, edit: impl FnOnce(&mut Document, ObjectId)) -> Option<Extracted> {
+        let mut doc = Document::load_mem(include_bytes!("../../../fixtures/image.pdf")).unwrap();
+        let page = *doc.get_pages().values().next().unwrap();
+        doc.change_page_content(page, content.as_bytes().to_vec())
+            .unwrap();
+        edit(&mut doc, page);
+        let mut bytes = Vec::new();
+        doc.save_to(&mut bytes).unwrap();
+        extract(&bytes, &thresholds(), LIMIT)
+    }
+
+    #[test]
+    fn the_page_must_be_its_image_and_nothing_else() {
+        let image = |content: &str| image_with(content, |_, _| {});
+        assert!(image("q 60 0 0 30 0 0 cm /Im0 Do Q").is_some());
+        // A link draws nothing.
+        let link = image_with("q 60 0 0 30 0 0 cm /Im0 Do Q", |doc, page| {
+            let link = doc.add_object(dictionary! {
+                "Type" => "Annot",
+                "Subtype" => "Link",
+                "Rect" => vec![0.into(), 0.into(), 10.into(), 10.into()],
+            });
+            doc.get_dictionary_mut(page)
+                .unwrap()
+                .set("Annots", vec![link.into()]);
+        });
+        assert!(link.is_some());
+
+        // A black rectangle over the scan, the redaction the preview would
+        // undo; a frame stroked around it; a shading.
+        assert_eq!(
+            image("q 60 0 0 30 0 0 cm /Im0 Do Q 0 g 0 0 60 30 re f"),
+            None
+        );
+        assert_eq!(image("0 0 60 30 re S q 60 0 0 30 0 0 cm /Im0 Do Q"), None);
+        assert_eq!(image("q 60 0 0 30 0 0 cm /Im0 Do Q /Sh0 sh"), None);
+        // An inline image over the whole page.
+        assert_eq!(
+            image(
+                "q 60 0 0 30 0 0 cm /Im0 Do Q \
+                 q 60 0 0 30 0 0 cm BI /W 1 /H 1 /CS /G /BPC 8 ID \x00 EI Q"
+            ),
+            None
+        );
+        // A clip that shows one unit of the image.
+        assert_eq!(image("q 0 0 1 1 re W n 60 0 0 30 0 0 cm /Im0 Do Q"), None);
+        // Content in an optional content group.
+        assert_eq!(image("/OC /L0 BDC q 60 0 0 30 0 0 cm /Im0 Do Q EMC"), None);
+        // A filled square annotation over the page.
+        let square = image_with("q 60 0 0 30 0 0 cm /Im0 Do Q", |doc, page| {
+            let square = doc.add_object(dictionary! {
+                "Type" => "Annot",
+                "Subtype" => "Square",
+                "Rect" => vec![0.into(), 0.into(), 60.into(), 30.into()],
+                "IC" => vec![0.into(), 0.into(), 0.into()],
+            });
+            doc.get_dictionary_mut(page)
+                .unwrap()
+                .set("Annots", vec![square.into()]);
+        });
+        assert_eq!(square, None);
+    }
+
+    #[test]
+    fn coverage_counts_the_image_inside_the_page() {
+        let image = |content: &str| image_with(content, |_, _| {});
+        // Off the page altogether, then three quarters off it.
+        assert_eq!(image("q 60 0 0 30 1000 1000 cm /Im0 Do Q"), None);
+        assert_eq!(image("q 60 0 0 30 45 0 cm /Im0 Do Q"), None);
+        // A tenth off, within the 0.7 coverage.
+        assert!(image("q 60 0 0 30 6 0 cm /Im0 Do Q").is_some());
+        // A page box away from the origin, the image drawn over it.
+        let shifted = image_with("q 60 0 0 30 100 200 cm /Im0 Do Q", |doc, page| {
+            doc.get_dictionary_mut(page).unwrap().set(
+                "MediaBox",
+                vec![160.into(), 230.into(), 100.into(), 200.into()],
+            );
+        });
+        assert!(shifted.is_some());
+    }
+
+    #[test]
+    fn an_optional_image_is_not_extracted() {
+        let mut doc = Document::load_mem(include_bytes!("../../../fixtures/image.pdf")).unwrap();
+        let group = doc.add_object(lopdf::dictionary! { "Type" => "OCG", "Name" => "Layer" });
+        let image = doc
+            .objects
+            .values_mut()
+            .find_map(|object| match object {
+                Object::Stream(stream)
+                    if stream.dict.get(b"Subtype").and_then(Object::as_name).ok()
+                        == Some(b"Image") =>
+                {
+                    Some(stream)
+                }
+                _ => None,
+            })
+            .unwrap();
+        image.dict.set("OC", group);
+        let mut bytes = Vec::new();
+        doc.save_to(&mut bytes).unwrap();
+        assert_eq!(extract(&bytes, &thresholds(), LIMIT), None);
     }
 
     #[test]

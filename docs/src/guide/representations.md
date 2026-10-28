@@ -27,7 +27,8 @@ stripped.
 
 A document "wraps a single image" when it is what users produce when asked
 for a screenshot and they send a Word file: a one-page PDF whose single image
-covers at least `media.embedded_image.min_coverage` (70%) of the page, or a
+covers at least `media.embedded_image.min_coverage` (70%) of the page, with
+nothing else drawn over or around it (a shape, a clip, an annotation), or a
 DOCX or ODT with exactly one raster image, and in both cases at most
 `media.embedded_image.max_text_chars` (50) characters of text. The image is
 pulled out at full resolution and rendered as an image.
