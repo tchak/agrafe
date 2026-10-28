@@ -4,7 +4,9 @@
 //! as a PPM/PGM when it is raw samples.
 
 use lopdf::content::{Content, Operation};
-use lopdf::{Document, LoadOptions, Object, ObjectId, Stream};
+use std::collections::HashSet;
+
+use lopdf::{Dictionary, Document, LoadOptions, Object, ObjectId, Stream};
 
 use super::{Extracted, Thresholds};
 
@@ -30,10 +32,15 @@ pub fn extract(bytes: &[u8], thresholds: &Thresholds, max_output: usize) -> Opti
         return None;
     }
     let (name, image) = single_image(&doc, page_id)?;
+    let resources = resources(&doc, page_id)?;
+    if !fonts_draw_glyphs(&doc, &resources)? {
+        return None;
+    }
+    let states = plain_states(&doc, &resources)?;
 
     let content = doc.get_page_content_with_limit(page_id, max_output).ok()?;
     let ops = Content::decode(&content).ok()?;
-    let placed = placement(&ops.operations, &name, thresholds.max_text_chars)?;
+    let placed = placement(&ops.operations, &name, &states, thresholds.max_text_chars)?;
     // What shows is the part of the image inside the page box.
     if placed.intersect(page).area() < thresholds.min_coverage * page.area() {
         return None;
@@ -105,17 +112,81 @@ fn annotations_paint_nothing(doc: &Document, page_id: ObjectId) -> Option<bool> 
     Some(true)
 }
 
+/// The page's resource dictionaries, its own and the inherited ones.
+fn resources(doc: &Document, page_id: ObjectId) -> Option<Vec<&Dictionary>> {
+    let (own, inherited) = doc.get_page_resources(page_id).ok()?;
+    Some(
+        own.into_iter()
+            .chain(
+                inherited
+                    .iter()
+                    .filter_map(|id| doc.get_dictionary(*id).ok()),
+            )
+            .collect(),
+    )
+}
+
+/// Whether the page's fonts are all ones whose glyphs are glyphs: a Type 3
+/// font's are drawings of any size and colour, so one character could
+/// cover the page whatever mode it is shown in. `None` when they cannot be
+/// read.
+fn fonts_draw_glyphs(doc: &Document, resources: &[&Dictionary]) -> Option<bool> {
+    for resources in resources {
+        let Ok(fonts) = resources.get_deref(b"Font", doc).and_then(Object::as_dict) else {
+            continue;
+        };
+        for (_, font) in fonts.iter() {
+            let font = doc.dereference(font).ok()?.1.as_dict().ok()?;
+            if font.get(b"Subtype").and_then(Object::as_name).ok() == Some(b"Type3") {
+                return Some(false);
+            }
+        }
+    }
+    Some(true)
+}
+
+/// The names of the page's graphics states (`gs`) that change nothing of
+/// how the image shows: line, dash and flatness settings, full opacity and
+/// the normal blend mode. A soft mask, transparency, another blend mode, a
+/// transfer function or a halftone could hide or invert it, and a font set
+/// there could show text; a page that selects any other state declines.
+/// `None` when they cannot be read.
+fn plain_states(doc: &Document, resources: &[&Dictionary]) -> Option<HashSet<Vec<u8>>> {
+    const HARMLESS: &[&[u8]] = &[
+        b"Type", b"LW", b"LC", b"LJ", b"ML", b"D", b"RI", b"FL", b"SM", b"SA", b"OP", b"op",
+        b"OPM", b"AIS", b"TK",
+    ];
+    let mut plain = HashSet::new();
+    for resources in resources {
+        let Ok(states) = resources
+            .get_deref(b"ExtGState", doc)
+            .and_then(Object::as_dict)
+        else {
+            continue;
+        };
+        for (name, state) in states.iter() {
+            let state = doc.dereference(state).ok()?.1.as_dict().ok()?;
+            let harmless = state.iter().all(|(key, value)| match key.as_slice() {
+                b"CA" | b"ca" => value.as_float().is_ok_and(|alpha| alpha >= 1.0),
+                b"BM" => value
+                    .as_name()
+                    .is_ok_and(|mode| matches!(mode, b"Normal" | b"Compatible")),
+                b"SMask" => value.as_name().is_ok_and(|mask| mask == b"None"),
+                key => HARMLESS.contains(&key),
+            });
+            if harmless {
+                plain.insert(name.clone());
+            }
+        }
+    }
+    Some(plain)
+}
+
 /// The page's one image XObject, by resource name. A form XObject could
 /// draw anything, including more images, so its presence disqualifies.
 fn single_image(doc: &Document, page_id: ObjectId) -> Option<(Vec<u8>, &Stream)> {
-    let (own, inherited) = doc.get_page_resources(page_id).ok()?;
     let mut image = None;
-    let resources = own.into_iter().chain(
-        inherited
-            .iter()
-            .filter_map(|id| doc.get_dictionary(*id).ok()),
-    );
-    for resources in resources {
+    for resources in resources(doc, page_id)? {
         let Ok(xobjects) = resources
             .get_deref(b"XObject", doc)
             .and_then(Object::as_dict)
@@ -197,21 +268,54 @@ const PAINTING: &[&str] = &[
     "f", "F", "f*", "B", "B*", "b", "b*", "S", "s", "sh", "BI", "W", "W*",
 ];
 
+/// The text rendering mode that paints nothing and clips nothing: how a
+/// scan's OCR layer is written, searchable and unseen.
+const INVISIBLE: i64 = 3;
+
 /// Where the image lands on the page. Walk the content stream: track the
-/// CTM through `q`/`Q`/`cm`, count text, and record the box the named
-/// image is drawn into. `None` when the image is not drawn upright, there
-/// is too much text, or anything else is painted, clipped or marked
-/// optional.
-fn placement(ops: &[Operation], image: &[u8], max_text_chars: u32) -> Option<Rect> {
+/// CTM and the text rendering mode through `q`/`Q`/`cm`/`Tr`, count text,
+/// and record the box the named image is drawn into. `None` when the image
+/// is not drawn upright, there is too much text, or anything else is
+/// painted, clipped or marked optional, visible text included: a glyph is
+/// a shape like any other, and a run of full blocks is how many redact by
+/// typing. Only invisible text is allowed, up to `max_text_chars`; `plain`
+/// are the graphics states the page may select (see `plain_states`).
+fn placement(
+    ops: &[Operation],
+    image: &[u8],
+    plain: &HashSet<Vec<u8>>,
+    max_text_chars: u32,
+) -> Option<Rect> {
     let mut ctm = Matrix::IDENTITY;
+    let mut mode = 0;
     let mut stack = Vec::new();
     let mut placed: Option<Rect> = None;
     let mut text_chars = 0u64;
     for op in ops {
+        let shown = match op.operator.as_str() {
+            "Tj" | "'" => op.operands.last().map_or(0, string_len),
+            "\"" => op.operands.get(2).map_or(0, string_len),
+            "TJ" => match op.operands.first() {
+                Some(Object::Array(parts)) => parts.iter().map(string_len).sum::<u64>(),
+                _ => 0,
+            },
+            _ => 0,
+        };
+        if shown > 0 && mode != INVISIBLE {
+            return None;
+        }
+        text_chars += shown;
         match op.operator.as_str() {
-            "q" => stack.push(ctm),
-            "Q" => ctm = stack.pop().unwrap_or(Matrix::IDENTITY),
+            "q" => stack.push((ctm, mode)),
+            "Q" => (ctm, mode) = stack.pop().unwrap_or((Matrix::IDENTITY, 0)),
             "cm" => ctm = Matrix::from_operands(&op.operands)?.then(ctm),
+            "Tr" => mode = op.operands.first()?.as_i64().ok()?,
+            "gs" => {
+                let name = op.operands.first()?.as_name().ok()?;
+                if !plain.contains(name) {
+                    return None;
+                }
+            }
             "Do" => {
                 if op.operands.first().and_then(|o| o.as_name().ok()) != Some(image) {
                     continue;
@@ -239,13 +343,6 @@ fn placement(ops: &[Operation], image: &[u8], max_text_chars: u32) -> Option<Rec
                 return None;
             }
             painting if PAINTING.contains(&painting) => return None,
-            "Tj" | "'" => text_chars += op.operands.last().map_or(0, string_len),
-            "\"" => text_chars += op.operands.get(2).map_or(0, string_len),
-            "TJ" => {
-                if let Some(Object::Array(parts)) = op.operands.first() {
-                    text_chars += parts.iter().map(string_len).sum::<u64>();
-                }
-            }
             _ => {}
         }
         if text_chars > u64::from(max_text_chars) {
@@ -444,14 +541,110 @@ mod tests {
     fn text_pages_are_not_images() {
         let pdf = include_bytes!("../../../fixtures/text.pdf");
         assert_eq!(extract(pdf, &thresholds(), LIMIT), None);
+        // Visible text is painting, however little of it there is.
         let pdf = include_bytes!("../../../fixtures/mixed.pdf");
-        assert_eq!(extract(pdf, &thresholds(), LIMIT), None);
-        // The same image with a generous text allowance passes.
         let lenient = Thresholds {
             max_text_chars: 10_000,
             ..thresholds()
         };
-        assert!(extract(pdf, &lenient, LIMIT).is_some());
+        assert_eq!(extract(pdf, &lenient, LIMIT), None);
+    }
+
+    /// Text over the image passes only drawn invisible, as an OCR layer is,
+    /// and up to `max_text_chars`; shown, or used as a clip, it declines.
+    #[test]
+    fn only_invisible_text_passes() {
+        let image = |content: &str| image_with(content, |_, _| {});
+        let draw = "q 60 0 0 30 0 0 cm /Im0 Do Q";
+        assert!(image(&format!("{draw} BT 3 Tr /F1 6 Tf (scan) Tj ET")).is_some());
+        let long = "x".repeat(51);
+        assert_eq!(
+            image(&format!("{draw} BT 3 Tr /F1 6 Tf ({long}) Tj ET")),
+            None
+        );
+        // A run of full blocks in any font covers what it is drawn over.
+        assert_eq!(image(&format!("{draw} BT /F1 600 Tf (\\333) Tj ET")), None);
+        for mode in [0, 1, 2, 4, 5, 6, 7] {
+            assert_eq!(
+                image(&format!("{draw} BT {mode} Tr /F1 6 Tf (a) Tj ET")),
+                None,
+                "{mode}"
+            );
+        }
+        assert_eq!(
+            image(&format!(
+                "{draw} BT 3 Tr /F1 6 Tf [(a) 10 (b)] TJ 0 Tr (c) ' ET"
+            )),
+            None
+        );
+        // The mode is graphics state: restored by `Q`.
+        assert_eq!(
+            image(&format!("{draw} q 3 Tr Q BT /F1 6 Tf (a) Tj ET")),
+            None
+        );
+        assert!(image(&format!("{draw} 3 Tr q 0 Tr Q BT /F1 6 Tf (a) Tj ET")).is_some());
+    }
+
+    /// A Type 3 font's glyphs are drawings, which no mode keeps from
+    /// covering the page.
+    #[test]
+    fn a_type3_font_is_not_extracted() {
+        let with_font = |subtype: &str| {
+            image_with(
+                "q 60 0 0 30 0 0 cm /Im0 Do Q BT 3 Tr /F1 6 Tf (a) Tj ET",
+                |doc, page| {
+                    let font =
+                        doc.add_object(dictionary! { "Type" => "Font", "Subtype" => subtype });
+                    let resources = doc
+                        .get_dictionary_mut(page)
+                        .unwrap()
+                        .get_mut(b"Resources")
+                        .unwrap()
+                        .as_dict_mut()
+                        .unwrap();
+                    resources.set("Font", dictionary! { "F1" => font });
+                },
+            )
+        };
+        assert!(with_font("Type1").is_some());
+        assert_eq!(with_font("Type3"), None);
+    }
+
+    /// A graphics state may set line widths and the like; one that masks,
+    /// fades, blends or remaps declines, as does one the page does not have.
+    #[test]
+    fn only_plain_graphics_states_pass() {
+        let with_state = |state: Dictionary| {
+            image_with("/GS0 gs q 60 0 0 30 0 0 cm /Im0 Do Q", |doc, page| {
+                let resources = doc
+                    .get_dictionary_mut(page)
+                    .unwrap()
+                    .get_mut(b"Resources")
+                    .unwrap()
+                    .as_dict_mut()
+                    .unwrap();
+                resources.set("ExtGState", dictionary! { "GS0" => state });
+            })
+        };
+        assert!(with_state(dictionary! { "Type" => "ExtGState", "LW" => 2 }).is_some());
+        assert!(
+            with_state(dictionary! { "ca" => 1, "CA" => 1.0, "BM" => "Normal", "SMask" => "None" })
+                .is_some()
+        );
+        for state in [
+            dictionary! { "ca" => 0 },
+            dictionary! { "CA" => 0.5 },
+            dictionary! { "BM" => "Difference" },
+            dictionary! { "SMask" => dictionary! { "S" => "Luminosity" } },
+            dictionary! { "TR" => "Identity" },
+            dictionary! { "Font" => vec![0.into(), 600.into()] },
+        ] {
+            assert_eq!(with_state(state.clone()), None, "{state:?}");
+        }
+        assert_eq!(
+            image_with("/GS9 gs q 60 0 0 30 0 0 cm /Im0 Do Q", |_, _| {}),
+            None
+        );
     }
 
     /// `flate.pdf` with its image dictionary changed by `edit`, extracted.

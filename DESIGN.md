@@ -2226,11 +2226,13 @@ on "has preview", never on category. Sources, in order:
    one-page PDF whose single image XObject covers at least
    `media.embedded_image.min_coverage` of the page box (the part of the
    image inside it), drawn upright on a page the viewer does not turn
-   (no `Rotate`), with at most `max_text_chars` of text
-   and nothing else painted: no path filled or stroked, shading, inline
-   image, clip, optional content, or annotation other than a link, any of
-   which could cover what the image shows, a black rectangle over a scan
-   to begin with; or a DOCX/ODT with exactly one media file
+   (no `Rotate`), with at most `max_text_chars` of text, all of it drawn
+   invisible (rendering mode 3, a scan's OCR layer), and nothing else
+   painted: no path filled or stroked, shading, inline image, clip,
+   optional content, visible text, Type 3 font, graphics state that masks,
+   fades, blends or remaps, or annotation other than a link, any of which
+   could cover what the image shows, a black rectangle or a run of full
+   blocks over a scan to begin with; or a DOCX/ODT with exactly one media file
    (under `word/media/` or `Pictures/`) that is a raster image, and at
    most `max_text_chars` of non-whitespace text in the body. The embedded
    image is pulled out at full resolution and goes through the image

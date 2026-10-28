@@ -218,7 +218,7 @@ above `max_inline_scans` plus `jobs.concurrency.scan`.
 | Key | Default | Description |
 |---|---|---|
 | `min_coverage` | `0.7` | Fraction of the page a single image must cover for a PDF to count as a wrapped image |
-| `max_text_chars` | `50` | Most characters of text a wrapped image's document may have |
+| `max_text_chars` | `50` | Most characters of text a wrapped image's document may have; in a PDF, invisible text only (an OCR layer), any visible text declines |
 
 ### `[media.office]`
 

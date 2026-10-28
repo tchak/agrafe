@@ -314,6 +314,7 @@ quality = 85
 [media.embedded_image]
 # A one-page document whose single image covers at least this fraction of the
 # page, with at most `max_text_chars` of text, is treated as a wrapped image.
+# In a PDF that text must be invisible, an OCR layer; visible text declines.
 min_coverage = 0.7
 max_text_chars = 50
 
