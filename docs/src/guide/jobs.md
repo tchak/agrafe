@@ -106,7 +106,9 @@ curl -s -X DELETE "localhost:8080/jobs/$JOB_ID"       # discard
 ```
 
 Both answer `409` for a job that is not dead, and a retry answers `409`
-when the blob already has a pending job of that kind.
+when the blob already has a pending job of that kind. Discarding a dead
+`purge` schedules a new one for its blob, due at once: the objects still
+have to go.
 
 ## The reaper
 
@@ -116,9 +118,10 @@ run, in one transaction:
 1. records `expired` on the non-terminal blobs past their `expires_at`;
 2. expires abandoned blobs: unfinished sources, and attached `created` blobs
    untouched for `upload.abandoned_after`;
-3. prunes dead jobs older than `jobs.keep_failed`;
-4. schedules a purge, `upload.purge_delay` out, for every terminal blob that
-   still holds objects;
+3. schedules a purge, `upload.purge_delay` out, for the blobs it just
+   expired and the infected blobs past their expiry that still hold objects;
+4. prunes dead jobs older than `jobs.keep_failed`, scheduling a dead purge's
+   blob anew;
 5. hands uploads stale for `upload.stale_after` back to `created`;
 6. prunes tombstones purged more than `blobs.keep_purged` ago, with their
    attachments and jobs.

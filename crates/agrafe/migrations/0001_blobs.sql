@@ -162,13 +162,13 @@ CREATE INDEX blobs_stale_source_idx ON blobs (source_updated_at)
     WHERE state = 'created' AND source_parts > 0;
 CREATE INDEX blobs_abandoned_idx ON blobs (updated_at)
     WHERE state = 'created' AND source_parts = 0 AND expires_at IS NULL;
--- Reaper: terminal blobs whose objects may still be in the bucket, the
+-- Reaper: infected blobs whose objects may still be in the bucket, the
 -- original, the source parts a generated blob held, or what an upload that
--- never finished left (see `Blob::holds_objects`).
-CREATE INDEX blobs_unpurged_idx     ON blobs (id)
-    WHERE (storage_key IS NOT NULL OR source_parts > 0 OR upload_started_at IS NOT NULL)
-      AND purged_at IS NULL
-      AND state IN ('infected', 'expired', 'deleted');
+-- never finished left (see `Blob::holds_objects`), purged once past their
+-- expiry. Every other purge is scheduled where its blob goes terminal.
+CREATE INDEX blobs_infected_unpurged_idx ON blobs (expires_at)
+    WHERE state = 'infected' AND purged_at IS NULL
+      AND (storage_key IS NOT NULL OR source_parts > 0 OR upload_started_at IS NOT NULL);
 -- Audit: the rows in the bucket's key order, `<shard>/<id>/<name>` with the
 -- shard the low byte of the id (see `blob::key`), to merge with the listing.
 CREATE INDEX blobs_shard_idx ON blobs ((get_byte(uuid_send(id), 15)), id);

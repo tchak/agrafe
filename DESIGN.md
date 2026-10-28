@@ -2910,13 +2910,12 @@ see "Webhooks"), and `audit`, the weekly sweep of the bucket against the
 `expired` on the non-terminal blobs past their `expires_at`; expire the
 abandoned `created` blobs, holding source parts untouched for
 `upload.abandoned_after` or attached and untouched altogether for as long
-(see "Attachments"); prune
-dead jobs that failed more than `jobs.keep_failed` (default seven days) ago,
-long enough to have been looked at; enqueue a purge, `upload.purge_delay`
-out, for the blobs just expired or abandoned that hold objects, then for
-every other terminal blob still holding objects that no purge job is
-going to take care of (infected ones past their expiry, and any whose
-purge was lost, a pruned dead one included); hand `uploading` rows older
+(see "Attachments"); enqueue a purge, `upload.purge_delay` out, for the
+blobs just expired or abandoned that hold objects, and for the infected
+ones past their expiry that no purge job is going to take care of; prune
+dead jobs that failed more than `jobs.keep_failed` (default seven days)
+ago, long enough to have been looked at, and enqueue a purge, due now,
+for the blob of each dead purge among them; hand `uploading` rows older
 than `upload.stale_after` back to `created`; prune tombstones purged more
 than `blobs.keep_purged` ago, their attachments and jobs with them.
 Expiry itself never waits for the reaper, see "State machine".
@@ -2926,10 +2925,13 @@ order it walks, so one reap is a transaction of seconds however much
 fell due at once: a bulk import's blobs all expiring on one day, a mass
 detach, a reaper down for a week. A run that filled a batch brings the
 pending reap forward to now, and the backlog drains run after run, each
-committed, ten thousand of each kind at a time. The safety net of purges
-walks every terminal blob still holding objects, whose purges are
-mostly pending, so it waits for the expiries to drain rather than walk
-again at each of those runs. A batch is picked without locks and the
+committed, ten thousand of each kind at a time. No step walks the blobs
+whose purges are pending, which after a mass expiry are millions for as
+long as the purges take: every purge is enqueued where its blob goes
+terminal (a delete, an expiry), and again where a dead one is removed
+(pruned here, or discarded with `DELETE /jobs/:id`), so the one walk left
+is of the infected blobs past their expiry, on an index of their own,
+which passes the few whose purge is pending or dead. A batch is picked without locks and the
 update evaluates its condition again on each row it then holds, so an
 attach that holds the row first still wins over the expiry.
 
@@ -3245,7 +3247,9 @@ that knows. A `worker` process has no API; it binds
 `GET /jobs` lists jobs newest first, cursor paginated on the id, filtered by
 `kind`, `state`, `priority` and `blob_id`. `GET /jobs/:id` shows one with its
 `last_error`. `POST /jobs/:id/retry` resets a dead job's attempts, makes it
-due and notifies the workers; `DELETE /jobs/:id` removes one. Both answer
+due and notifies the workers; `DELETE /jobs/:id` removes one, and a dead
+purge's blob gets a new purge, due now, since nothing else would take its
+objects. Both answer
 `409` for a job that is not dead: a pending job is the only thing that will
 finish its blob, and a running one is a worker's. A retry whose blob already
 has a pending job of that kind is `409` too; the newer job does the work.

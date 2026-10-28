@@ -42,13 +42,16 @@ pub async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
     Ok(())
 }
 
-/// Enqueue a purge at `run_at` for each of `blob_ids` that still holds
-/// objects, in one statement: the reaper's batches. A blob with a purge
-/// already pending is left with it. Returns how many were enqueued.
+/// Enqueue a purge at `run_at` for each of `blob_ids` that needs one as of
+/// `now`, in one statement: an `expired` or `deleted` blob, or an
+/// `infected` one past its expiry, that still holds objects
+/// (`Blob::holds_objects`). A blob with a purge already pending is left
+/// with it. Returns how many were enqueued.
 pub(crate) async fn enqueue_each(
     exec: impl PgExecutor<'_>,
     blob_ids: &[Uuid],
     run_at: Timestamp,
+    now: Timestamp,
 ) -> sqlx::Result<u64> {
     if blob_ids.is_empty() {
         return Ok(0);
@@ -60,6 +63,8 @@ pub(crate) async fn enqueue_each(
              WHERE b.id = ANY($2) AND b.purged_at IS NULL \
                AND (b.storage_key IS NOT NULL OR b.source_parts > 0 \
                     OR b.upload_started_at IS NOT NULL) \
+               AND (b.state IN ('expired', 'deleted') \
+                    OR (b.state = 'infected' AND b.expires_at <= $7)) \
              ON CONFLICT DO NOTHING RETURNING kind\
          ) \
          SELECT pg_notify($5, kind) FROM inserted",
@@ -70,6 +75,7 @@ pub(crate) async fn enqueue_each(
     .bind(run_at.to_sqlx())
     .bind(super::CHANNEL)
     .bind(super::current_traceparent())
+    .bind(now.to_sqlx())
     .execute(exec)
     .await?;
     Ok(result.rows_affected())

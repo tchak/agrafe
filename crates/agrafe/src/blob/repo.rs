@@ -961,37 +961,38 @@ fn expire_abandoned_sql(limit: i64) -> String {
     )
 }
 
-/// Terminal blobs whose objects are still in the bucket and that no purge
-/// job, pending, running or dead, is going to take care of: `expired` and
-/// `deleted` ones, and `infected` ones once past their `expires_at`, since
-/// an infected file is kept for forensics but not forever. Objects means
-/// the original, the source parts a generated blob held, or what an
-/// unfinished upload left, see `Blob::holds_objects`. The states are spelled into the SQL so that
-/// `blobs_unpurged_idx` applies, see `state_literals`.
-pub(crate) async fn awaiting_purge(
+/// `infected` blobs past their `expires_at` at `now` whose objects are
+/// still in the bucket and that no purge job, pending, running or dead,
+/// is going to take care of, the longest due first: an infected file is
+/// kept for forensics but not forever, and nothing else marks the moment
+/// it goes. Every other purge is scheduled where its blob goes terminal,
+/// and again where a dead one is removed, so this walk passes only the
+/// infected blobs whose purge is pending or dead, which are few. Objects
+/// means the original, the source parts a generated blob held, or what an
+/// unfinished upload left, see `Blob::holds_objects`. The state is spelled
+/// into the SQL so that `blobs_infected_unpurged_idx` applies, see
+/// `state_literals`.
+pub(crate) async fn infected_due_for_purge(
     conn: &mut PgConnection,
     now: Timestamp,
     limit: i64,
 ) -> sqlx::Result<Vec<Uuid>> {
-    sqlx::query_scalar(AssertSqlSafe(awaiting_purge_sql(limit)))
+    sqlx::query_scalar(AssertSqlSafe(infected_due_for_purge_sql(limit)))
         .bind(now.to_sqlx())
         .bind(JobKind::Purge.as_str())
         .fetch_all(&mut *conn)
         .await
 }
 
-/// `awaiting_purge`'s statement: `$1` the time, `$2` the purge's kind.
-/// The three states are one list, the index's own, so that one walk of
-/// `blobs_unpurged_idx` in id order serves the limit.
-fn awaiting_purge_sql(limit: i64) -> String {
+/// `infected_due_for_purge`'s statement: `$1` the time, `$2` the purge's
+/// kind.
+fn infected_due_for_purge_sql(limit: i64) -> String {
     format!(
         "SELECT id FROM blobs \
-         WHERE (storage_key IS NOT NULL OR source_parts > 0 OR upload_started_at IS NOT NULL) \
-           AND purged_at IS NULL \
-           AND state IN ({}) AND (state <> {} OR expires_at <= $1) \
+         WHERE state = {} AND purged_at IS NULL AND expires_at <= $1 \
+           AND (storage_key IS NOT NULL OR source_parts > 0 OR upload_started_at IS NOT NULL) \
            AND NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.kind = $2 AND jobs.blob_id = blobs.id) \
-         ORDER BY id LIMIT {limit}",
-        state_literals([BlobState::Infected, BlobState::Expired, BlobState::Deleted]),
+         ORDER BY expires_at LIMIT {limit}",
         state_literals([BlobState::Infected])
     )
 }
@@ -1113,8 +1114,8 @@ pub async fn explain_reaper(conn: &mut PgConnection) -> sqlx::Result<Vec<(&'stat
             "'expired', now()",
         ),
         (
-            "awaiting_purge",
-            awaiting_purge_sql(LIMIT),
+            "infected_due_for_purge",
+            infected_due_for_purge_sql(LIMIT),
             "now(), 'purge'",
         ),
         ("prune_tombstones", prune_tombstones_sql(LIMIT), "now()"),

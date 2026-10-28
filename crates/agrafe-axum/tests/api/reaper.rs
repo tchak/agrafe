@@ -399,6 +399,43 @@ async fn an_unfinished_uploads_object_goes_with_the_purge() {
     assert!(stored_objects(&app).await.is_empty());
 }
 
+/// An operator discarding a dead purge does not leave the blob's objects
+/// to nobody: the purge is scheduled again, due now, as the reaper does
+/// when it prunes one.
+#[tokio::test]
+async fn discarding_a_dead_purge_schedules_it_again() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let blob = ready_blob(&app, &png_bytes(100)).await;
+    let id = id_of(&blob);
+    while run_job(&app, JobKind::Render).await {}
+    assert_eq!(delete(&app, id).await, StatusCode::NO_CONTENT);
+    let job: i64 = sqlx::query_scalar(
+        "UPDATE jobs SET locked_at = now(), locked_by = 'w', failed_at = now(), last_error = 'boom' \
+         WHERE blob_id = $1 AND kind = 'purge' RETURNING id",
+    )
+    .bind(parse_id(id))
+    .fetch_one(app.state.pool())
+    .await
+    .unwrap();
+
+    let (status, body) = call(&app.private, req(Method::DELETE, &format!("/jobs/{job}"))).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    let (again, due_in, failed): (i64, f64, bool) = sqlx::query_as(
+        "SELECT id, EXTRACT(EPOCH FROM run_at - now())::float8, failed_at IS NOT NULL \
+         FROM jobs WHERE blob_id = $1 AND kind = 'purge'",
+    )
+    .bind(parse_id(id))
+    .fetch_one(app.state.pool())
+    .await
+    .unwrap();
+    assert_ne!(again, job);
+    assert!(!failed);
+    assert!(due_in <= 0.0, "{due_in}");
+    assert_eq!(purge_all(&app).await, 1);
+    assert!(stored_objects(&app).await.is_empty());
+}
+
 /// An upload slower than `stale_after` is not stale: the pipeline touches
 /// the row while it runs, and the reaper leaves it alone.
 #[tokio::test]
@@ -686,7 +723,7 @@ async fn the_reaper_walks_its_indexes_under_a_generic_plan() {
             "expire_abandoned",
             &["blobs_stale_source_idx", "blobs_abandoned_idx"],
         ),
-        ("awaiting_purge", &["blobs_unpurged_idx"]),
+        ("infected_due_for_purge", &["blobs_infected_unpurged_idx"]),
         (
             "prune_tombstones",
             &["blobs_purged_at_idx", "blobs_empty_tombstone_idx"],

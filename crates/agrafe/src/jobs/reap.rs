@@ -145,8 +145,7 @@ pub async fn reap(state: &Agrafe, now: Timestamp) -> Result<Report, JobError> {
         .checked_sub(config.upload.abandoned_after)
         .unwrap_or(Timestamp::MIN);
     let abandoned = repo::expire_abandoned(&mut tx, abandoned_before, BATCH).await?;
-    let expiring = full(expired.len()) || full(abandoned.len());
-    let mut backlog = expiring;
+    let mut backlog = full(expired.len()) || full(abandoned.len());
 
     // The backend learns of each expiry from here, so `expired` lags the
     // moment by at most one interval.
@@ -155,27 +154,23 @@ pub async fn reap(state: &Agrafe, now: Timestamp) -> Result<Report, JobError> {
         notify::enqueue_each(&mut *tx, &ids, Event::Expired, now).await?;
     }
 
-    // Dead jobs go first, so a purge that died is scheduled again below,
-    // in the same pass, once it has been around long enough.
+    // The blobs just expired that hold bytes are purged, after the grace
+    // period, and the infected ones past their expiry.
+    let purge_at = config.upload.purge_at(now);
+    let infected = repo::infected_due_for_purge(&mut tx, now, BATCH).await?;
+    backlog |= full(infected.len());
+    let mut purges = purge::enqueue_each(&mut *tx, &ids, purge_at, now).await?;
+    purges += purge::enqueue_each(&mut *tx, &infected, purge_at, now).await?;
+
+    // A dead purge pruned leaves its blob's objects to nobody: it is
+    // scheduled again, due now, its grace long past.
     let dead_before = now
         .checked_sub(config.jobs.keep_failed)
         .unwrap_or(Timestamp::MIN);
     let pruned = super::prune_failed(&mut *tx, dead_before, BATCH).await?;
-    backlog |= pruned >= BATCH as u64;
-
-    // The blobs just expired that hold bytes are purged; then, once no
-    // expiry is left waiting, everything else terminal still holding bytes
-    // and not already on its way out: infected blobs past their expiry,
-    // and any whose purge was lost. That walk passes over every blob whose
-    // purge is pending, so it waits for the backlog rather than repeat at
-    // each of its runs.
-    let purge_at = config.upload.purge_at(now);
-    let mut purges = purge::enqueue_each(&mut *tx, &ids, purge_at).await?;
-    if !expiring {
-        let lost = repo::awaiting_purge(&mut tx, now, BATCH).await?;
-        backlog |= full(lost.len());
-        purges += purge::enqueue_each(&mut *tx, &lost, purge_at).await?;
-    }
+    backlog |= pruned.count >= BATCH as u64;
+    purges += purge::enqueue_each(&mut *tx, &pruned.purges, now, now).await?;
+    let pruned = pruned.count;
 
     let stale_before = now
         .checked_sub(config.upload.stale_after)

@@ -546,14 +546,27 @@ async fn clear_failure(exec: impl PgExecutor<'_>, blob_id: Uuid) -> sqlx::Result
 }
 
 /// Remove a dead job. A live one is left alone: a pending job is the only
-/// thing that will finish its blob.
+/// thing that will finish its blob. A dead purge is scheduled again in the
+/// same transaction, due now: its blob's objects are still to go, and
+/// nothing else would take them.
 pub(crate) async fn discard(conn: &mut PgConnection, id: i64) -> sqlx::Result<Action> {
+    use sqlx::Connection as _;
+
+    let mut tx = conn.begin().await?;
     let deleted = sqlx::query_as::<_, Job>(
         "DELETE FROM jobs WHERE id = $1 AND failed_at IS NOT NULL RETURNING *",
     )
     .bind(id)
-    .fetch_optional(&mut *conn)
+    .fetch_optional(&mut *tx)
     .await?;
+    if let Some(job) = &deleted
+        && job.kind == JobKind::Purge
+        && let Some(blob_id) = job.blob_id
+    {
+        let now = Timestamp::now();
+        purge::enqueue_each(&mut *tx, &[blob_id], now, now).await?;
+    }
+    tx.commit().await?;
     Ok(match deleted {
         Some(job) => Action::Done(job),
         None => match find(&mut *conn, id).await? {
@@ -658,6 +671,15 @@ pub async fn touch(exec: impl PgExecutor<'_>, id: i64, worker: &str) -> sqlx::Re
     Ok(result.rows_affected() == 1)
 }
 
+/// What `prune_failed` removed.
+pub(crate) struct Pruned {
+    /// Dead jobs removed.
+    pub count: u64,
+    /// The blobs of the dead purges among them, whose objects nothing is
+    /// going to remove now: the caller schedules them again.
+    pub purges: Vec<Uuid>,
+}
+
 /// Remove the dead jobs that failed before `before`, at most `limit` of
 /// them, the oldest first: they have been around long enough to have been
 /// looked at.
@@ -665,17 +687,25 @@ pub(crate) async fn prune_failed(
     exec: impl PgExecutor<'_>,
     before: Timestamp,
     limit: i64,
-) -> sqlx::Result<u64> {
-    let result = sqlx::query(
+) -> sqlx::Result<Pruned> {
+    let removed: Vec<(String, Option<Uuid>)> = sqlx::query_as(
         "DELETE FROM jobs WHERE id = ANY(ARRAY(\
              SELECT id FROM jobs WHERE failed_at <= $1 ORDER BY failed_at LIMIT $2\
-         )) AND failed_at <= $1",
+         )) AND failed_at <= $1 \
+         RETURNING kind, blob_id",
     )
     .bind(before.to_sqlx())
     .bind(limit)
-    .execute(exec)
+    .fetch_all(exec)
     .await?;
-    Ok(result.rows_affected())
+    Ok(Pruned {
+        count: removed.len() as u64,
+        purges: removed
+            .into_iter()
+            .filter(|(kind, _)| kind == JobKind::Purge.as_str())
+            .filter_map(|(_, blob_id)| blob_id)
+            .collect(),
+    })
 }
 
 /// The installation's half of an advisory lock key, as SQL. Advisory
