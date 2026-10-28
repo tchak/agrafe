@@ -676,11 +676,13 @@ impl Blob {
         self.state_at(now) == BlobState::Created
     }
 
-    /// Whether something of the blob is in the bucket: the original, or the
-    /// source parts a generated blob holds while it is still `created`. A
-    /// delete or an expiry of such a blob needs a purge.
+    /// Whether something of the blob may be in the bucket: the original,
+    /// the source parts a generated blob holds while it is still `created`,
+    /// or what an upload left that began and never finished, its object
+    /// written but its completion lost (`upload::unfinished`). A delete or
+    /// an expiry of such a blob needs a purge.
     pub(crate) fn holds_objects(&self) -> bool {
-        self.storage_key.is_some() || self.source_parts > 0
+        self.storage_key.is_some() || self.source_parts > 0 || self.upload_started_at.is_some()
     }
 
     /// The row as the read routes see it, for a handler that holds the

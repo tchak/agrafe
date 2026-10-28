@@ -686,3 +686,25 @@ pub fn webp_size(bytes: &[u8]) -> (u32, u32) {
         other => panic!("unknown WebP chunk {other:?}"),
     }
 }
+
+/// Make every `UPDATE` of a blob row for which `condition` (over `OLD` and
+/// `NEW`) holds fail, as a database that went away at that statement would.
+pub async fn fail_blob_updates(app: &TestApp, condition: &str) {
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "CREATE FUNCTION fail_blob_update() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN RAISE EXCEPTION 'the database went away'; END $$; \
+         CREATE TRIGGER fail_blob_update BEFORE UPDATE ON blobs FOR EACH ROW \
+         WHEN ({condition}) EXECUTE FUNCTION fail_blob_update();"
+    )))
+    .execute(app.state.pool())
+    .await
+    .unwrap();
+}
+
+/// Undo [`fail_blob_updates`].
+pub async fn restore_blob_updates(app: &TestApp) {
+    sqlx::raw_sql("DROP TRIGGER fail_blob_update ON blobs; DROP FUNCTION fail_blob_update();")
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+}

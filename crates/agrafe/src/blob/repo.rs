@@ -965,8 +965,8 @@ fn expire_abandoned_sql(limit: i64) -> String {
 /// job, pending, running or dead, is going to take care of: `expired` and
 /// `deleted` ones, and `infected` ones once past their `expires_at`, since
 /// an infected file is kept for forensics but not forever. Objects means
-/// the original or the source parts a generated blob held, see
-/// `Blob::holds_objects`. The states are spelled into the SQL so that
+/// the original, the source parts a generated blob held, or what an
+/// unfinished upload left, see `Blob::holds_objects`. The states are spelled into the SQL so that
 /// `blobs_unpurged_idx` applies, see `state_literals`.
 pub(crate) async fn awaiting_purge(
     conn: &mut PgConnection,
@@ -986,7 +986,8 @@ pub(crate) async fn awaiting_purge(
 fn awaiting_purge_sql(limit: i64) -> String {
     format!(
         "SELECT id FROM blobs \
-         WHERE (storage_key IS NOT NULL OR source_parts > 0) AND purged_at IS NULL \
+         WHERE (storage_key IS NOT NULL OR source_parts > 0 OR upload_started_at IS NOT NULL) \
+           AND purged_at IS NULL \
            AND state IN ({}) AND (state <> {} OR expires_at <= $1) \
            AND NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.kind = $2 AND jobs.blob_id = blobs.id) \
          ORDER BY id LIMIT {limit}",
@@ -1019,7 +1020,7 @@ pub(crate) async fn mark_purged(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Re
 
 /// Remove the tombstones: terminal rows whose objects were purged before
 /// `before`, or that went terminal before `before` with nothing to purge
-/// (a blob created and never uploaded). Their attachments and jobs go with
+/// (a blob created and never uploaded to). Their attachments and jobs go with
 /// them, and the id is then unknown like any other. An `infected` blob is
 /// only ever pruned through its purge, which needs its expiry. At most
 /// `limit` rows go per call, so a backlog drains over successive reaps
@@ -1047,7 +1048,7 @@ fn prune_tombstones_sql(limit: i64) -> String {
     let purged = "purged_at <= $1";
     let empty = format!(
         "state IN ({}) AND purged_at IS NULL AND storage_key IS NULL \
-         AND source_parts = 0 AND updated_at <= $1",
+         AND source_parts = 0 AND upload_started_at IS NULL AND updated_at <= $1",
         state_literals([BlobState::Expired, BlobState::Deleted])
     );
     format!(

@@ -58,7 +58,8 @@ pub(crate) async fn enqueue_each(
              INSERT INTO jobs (kind, blob_id, priority, run_at, traceparent) \
              SELECT $1, b.id, $3, $4, $6 FROM blobs b \
              WHERE b.id = ANY($2) AND b.purged_at IS NULL \
-               AND (b.storage_key IS NOT NULL OR b.source_parts > 0) \
+               AND (b.storage_key IS NOT NULL OR b.source_parts > 0 \
+                    OR b.upload_started_at IS NOT NULL) \
              ON CONFLICT DO NOTHING RETURNING kind\
          ) \
          SELECT pg_notify($5, kind) FROM inserted",

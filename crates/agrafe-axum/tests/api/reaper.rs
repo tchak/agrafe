@@ -366,6 +366,39 @@ async fn the_reaper_drains_a_backlog_in_batches() {
     );
 }
 
+/// An upload whose completion failed, and whose hand back failed too,
+/// leaves its object and its row `uploading`. The reaper resets the row,
+/// and the expiry purges the object: an upload had begun on the blob.
+#[tokio::test]
+async fn an_unfinished_uploads_object_goes_with_the_purge() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let bytes = png_bytes(5000);
+    let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
+    let id = id_of(&created);
+    // The touches go through; the completion and the hand back, which
+    // move the row out of `uploading`, fail.
+    fail_blob_updates(&app, "OLD.state = 'uploading' AND NEW.state <> 'uploading'").await;
+    let (status, body) = put_private(&app, id, bytes).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert_eq!(get_blob(&app, id).await["state"], "uploading");
+    assert_eq!(stored_objects(&app).await.len(), 1);
+    restore_blob_updates(&app).await;
+
+    sqlx::query("UPDATE blobs SET upload_heartbeat_at = now() - interval '1 day' WHERE id = $1")
+        .bind(parse_id(id))
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+    assert_eq!(reap_now(&app).await.reset, 1);
+    assert_eq!(get_blob(&app, id).await["state"], "created");
+    set_expired(&app, id).await;
+    let report = reap_now(&app).await;
+    assert_eq!((report.expired, report.purges), (1, 1));
+    assert_eq!(purge_all(&app).await, 1);
+    assert!(stored_objects(&app).await.is_empty());
+}
+
 /// An upload slower than `stale_after` is not stale: the pipeline touches
 /// the row while it runs, and the reaper leaves it alone.
 #[tokio::test]

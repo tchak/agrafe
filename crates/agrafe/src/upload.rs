@@ -369,15 +369,22 @@ where
         scan: checked.scan,
         content_type: checked.content_type.map(str::to_string),
     };
-    match repo::complete_upload(
+    let completion = repo::complete_upload(
         state.pool(),
         &state.config().webhook,
         &blob,
         started,
         &completed,
     )
-    .await?
-    {
+    .await;
+    let completion = match completion {
+        Ok(completion) => completion,
+        Err(db) => {
+            unfinished(&state, blob.id, started, &storage_key).await;
+            return Err(db.into());
+        }
+    };
+    match completion {
         Transition::Done(blob) => match completed.scan {
             ScanOutcome::Infected(name) => {
                 tracing::warn!(blob = %blob.id, signature = name, "inline scan found a virus");
@@ -406,6 +413,33 @@ pub(crate) async fn hand_back(state: &Agrafe, blob_id: Uuid, started: Timestamp)
                 tracing::error!(blob = %blob_id, error = ?db, "could not reset blob after failed upload");
             }
         }
+        Err(db) => {
+            tracing::error!(blob = %blob_id, error = ?db, "could not reset blob after failed upload");
+        }
+    }
+}
+
+/// The completion of an upload whose object is at `storage_key` failed,
+/// and whether it committed is unknown: the reply may have been lost after
+/// the commit. Handing the row back settles it. Taken back, the row was
+/// still this upload's, so the completion did not commit and the object is
+/// nobody's: it goes, as it does when the row is gone. Otherwise the completion committed, or the row is
+/// another upload's by now, and the object stays. Should the hand back fail
+/// too, the object stays for the purge: a blob an upload began on is
+/// purged at its delete or expiry (`Blob::holds_objects`).
+pub(crate) async fn unfinished(
+    state: &Agrafe,
+    blob_id: Uuid,
+    started: Timestamp,
+    storage_key: &str,
+) {
+    let aborted = match state.pool().acquire().await {
+        Ok(mut conn) => repo::abort_upload(&mut conn, blob_id, started).await,
+        Err(db) => Err(db),
+    };
+    match aborted {
+        Ok(Transition::Done(_) | Transition::Missing) => delete_quietly(state, storage_key).await,
+        Ok(Transition::Conflict(_)) => {}
         Err(db) => {
             tracing::error!(blob = %blob_id, error = ?db, "could not reset blob after failed upload");
         }

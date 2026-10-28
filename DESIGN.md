@@ -624,10 +624,11 @@ from any state other than `created`. The upload's checksum and size are the
 ones the blob was created with.
 
 A failed or stale upload leaves `uploading` for `created`: nothing of it was
-stored, so there is nothing to keep (the parts a generated blob already
+recorded, so there is nothing to keep (the parts a generated blob already
 holds are not its, see "Generated blobs"; they are what makes a `created`
 blob hold objects, and a delete or an expiry of one gets a purge like any
-other). Both the abort path and the reaper apply this one
+other; so does a blob an upload began on, for an object one may have left,
+see "Object keys"). Both the abort path and the reaper apply this one
 rule. Stale means abandoned, not slow: the pipeline touches
 `upload_heartbeat_at` every third of `upload.stale_after` (default ten
 minutes) while it runs, so an upload of any length keeps its row as long as
@@ -659,7 +660,7 @@ then unknown like any other. Each reap prunes at most ten thousand, so a
 backlog drains over successive runs, brought forward one after the other
 (see "Jobs"), instead of one transaction holding every row and its
 cascades. A terminal row that never had anything to
-purge, a blob created and never uploaded, has no `purged_at` and is pruned
+purge, a blob created and never uploaded to, has no `purged_at` and is pruned
 the same time after it went terminal (its `updated_at`). Why a bound: every
 blob carries an expiry until it is attached, so every direct upload a user
 walked away from ends as a terminal row, and a table that only grows pays
@@ -1008,7 +1009,15 @@ id (`5b/0190b5a2-1c3d-7e4f-8a9b-0c1d2e3f4a5b/original`). Every key is
 built, and parsed by the audit, in `blob::key`, so the layout has one
 definition. Blobs are write-once, so the original's key is written exactly
 once; a failed upload aborts its multipart upload and leaves no object
-behind. Everything under `<shard>/<blob id>/` is the blob's, and that
+behind. One that fails after its object is complete, at the statement
+that records it, hands the row back: taken back, the row proves the
+statement did not commit, and the object is deleted; not taken back (the
+statement committed and only its reply was lost, or another upload holds
+the row by now), the object stays. Should the hand back fail too, or the
+process die between the object and the statement, the object is left
+under a row that says nothing of it; so any blob an upload began on
+(`upload_started_at` set) counts as holding objects, and its delete or
+expiry purges its prefix. Everything under `<shard>/<blob id>/` is the blob's, and that
 prefix is what a purge deletes.
 
 The shard is for the stores that split a bucket into key ranges as it

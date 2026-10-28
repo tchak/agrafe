@@ -472,11 +472,36 @@ async fn delete_during_upload() {
     assert_eq!(get_blob(&app, id).await["state"], "deleted");
     let objects = stored_objects(&app).await;
     assert!(objects.is_empty(), "{objects:?}");
-    let jobs: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs")
-        .fetch_one(app.state.pool())
+    // An upload had begun, so the delete schedules a purge of whatever it
+    // might have left.
+    let jobs: Vec<String> = sqlx::query_scalar("SELECT kind FROM jobs")
+        .fetch_all(app.state.pool())
         .await
         .unwrap();
-    assert_eq!(jobs, 0);
+    assert_eq!(jobs, ["purge"]);
+}
+
+/// The completion of an upload fails after its object was written: the
+/// row, still the upload's, is handed back, which proves the completion
+/// did not commit, and the object goes with it.
+#[tokio::test]
+async fn a_failed_completion_leaves_no_object() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let bytes = png_bytes(5000);
+    let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
+    let id = id_of(&created);
+    fail_blob_updates(
+        &app,
+        "OLD.state = 'uploading' AND NEW.storage_key IS NOT NULL",
+    )
+    .await;
+
+    let (status, body) = put_private(&app, id, bytes).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert_eq!(get_blob(&app, id).await["state"], "created");
+    let objects = stored_objects(&app).await;
+    assert!(objects.is_empty(), "{objects:?}");
 }
 
 /// The app with `upload.content_types` set to `types`.

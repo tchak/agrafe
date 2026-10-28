@@ -205,8 +205,18 @@ async fn store_part(
         }
     };
 
-    let mut conn = state.pool().acquire().await?;
-    match repo::complete_part(&mut conn, blob.id, started, n, &accepted).await? {
+    let completion = match state.pool().acquire().await {
+        Ok(mut conn) => repo::complete_part(&mut conn, blob.id, started, n, &accepted).await,
+        Err(db) => Err(db),
+    };
+    let completion = match completion {
+        Ok(completion) => completion,
+        Err(db) => {
+            upload::unfinished(&state, blob.id, started, &storage_key).await;
+            return Err(db.into());
+        }
+    };
+    match completion {
         Transition::Done(blob) => Ok(blob),
         Transition::Conflict(current) => {
             upload::disown(&state, &current, &storage_key).await;
