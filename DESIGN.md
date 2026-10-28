@@ -2456,7 +2456,11 @@ is why every tool is kept narrow (two threads for vips and LibreOffice):
 a process spread over sixteen cores would exhaust it in a tenth of the
 time. Its soft limit sends `SIGXCPU` and the hard one, a second later,
 `SIGKILL`; a tool that died of `SIGXCPU` timed out, and is reported as
-such rather than as a fault of the file. (With the two limits equal the
+such rather than as a fault of the file. LibreOffice is the exception:
+the process that spends the CPU is `soffice.bin`, two launchers down,
+which catches `SIGXCPU` and aborts, and `oosplash` exits 134 for it, the
+code of any crash; the limit there is a plain rejection of the file.
+(With the two limits equal the
 kernel checks the hard one first and sends `SIGKILL`, which says
 nothing.) The address space limit is enforced by Linux and ignored by
 macOS, so development machines get only the timeout. The child's stderr
@@ -2536,8 +2540,10 @@ remove files: the default work directory is the system temporary
 directory, which is `/tmp` itself. A LibreOffice removes its pipe on
 exit, not when killed at the timeout, and the pipe's name hashes the
 profile path, unique to the run, so every kill would leave one more
-socket file in `/tmp` for good, at an uploader's pleasure: after a kill,
-the driver sweeps the pipe directory of the `OSL_PIPE_<uid>_` sockets
+socket file in `/tmp` for good, at an uploader's pleasure: after any
+conversion that did not succeed, since a `soffice.bin` killed by a signal
+or its CPU limit reaches the driver as the launcher's exit code, the
+driver sweeps the pipe directory of the `OSL_PIPE_<uid>_` sockets
 nothing listens on, told from another job's live one by connecting (a
 listener accepts, a dead socket refuses), which needs no knowledge of the
 hash. Nothing else asks for sockets, and the default filter is
@@ -2649,8 +2655,8 @@ host matter, so the job is retried rather than the blob marked failed;
 is without bubblewrap. `bwrap`, the init of its pid namespace, reports a
 child the kernel killed as an exit of 128 plus the signal, so the CPU
 limit's `SIGXCPU` is read back from 152 and still a timeout; the office
-driver's pipe sweep, keyed on a death by signal, does not fire, and need
-not, since the pipe was in the sandbox's own `/tmp`. Asked for and
+driver's pipe sweep finds nothing, since the pipe was in the sandbox's
+own `/tmp`. Asked for and
 impossible, the sandbox is an error in every mode short of `off`:
 `isolation = "required"` with `bubblewrap` set means "`bwrap` must
 start", not "Landlock must install", and `auto` never falls back to

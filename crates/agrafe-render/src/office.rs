@@ -298,11 +298,11 @@ pub async fn convert(
         .arg(&input);
     let outcome = sandbox::run(command, &config.office.sandbox(&config.sandbox)).await?;
     // A LibreOffice killed, at the timeout or by a signal, left its pipe
-    // behind.
-    if matches!(
-        outcome,
-        sandbox::Outcome::TimedOut | sandbox::Outcome::Failed { code: None, .. }
-    ) {
+    // behind. The direct child is the `soffice` script, so a `soffice.bin`
+    // that died of a signal reaches us as an exit code: `oosplash` exits
+    // 128 plus the signal, and the CPU limit's `SIGXCPU` is caught and
+    // turned into an `abort`, 134. Any failure may have left one.
+    if !matches!(outcome, sandbox::Outcome::Success) {
         let dir = pipe_dir();
         match tokio::task::spawn_blocking(move || sweep_stale_pipes(Path::new(dir))).await {
             Ok(Ok(0)) => {}
@@ -623,6 +623,47 @@ mod tests {
         assert!(pipe("file").exists());
         assert!(dir.path().join("other").exists());
         drop(live);
+    }
+
+    /// A conversion that fails with an exit code, as `oosplash` reports a
+    /// `soffice.bin` killed by a signal or its CPU limit, sweeps too.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_conversion_sweeps_the_stale_pipes() {
+        use std::os::unix::net::UnixListener;
+
+        // SAFETY: `getuid` reads nothing and cannot fail.
+        let uid = unsafe { libc::getuid() };
+        let stale = Path::new(pipe_dir()).join(format!(
+            "OSL_PIPE_{uid}_SingleOfficeIPC_agrafe-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        drop(UnixListener::bind(&stale).unwrap());
+        let root = tempfile::tempdir().unwrap();
+        let original = root.path().join("original");
+        std::fs::write(&original, b"PK").unwrap();
+        let config = Config {
+            office: Office {
+                command: Some("false".into()),
+                ..Office::default()
+            },
+            ..Config::default()
+        };
+        let verdict = convert(&config, agrafe_types::office::DOCX, &original, root.path())
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                verdict,
+                Verdict::Rejected(Rejection::Failed { code: Some(1), .. })
+            ),
+            "{verdict:?}"
+        );
+        assert!(!stale.exists());
     }
 
     #[tokio::test]
