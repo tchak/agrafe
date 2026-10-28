@@ -21,13 +21,14 @@
 //! counted in the report and left for the next run; only the listing and
 //! the rows failing ends an attempt.
 //!
-//! The listing and the table are merged in id order, one pass over each:
-//! the cloud backends list their keys sorted, and the hyphenated lowercase
-//! UUID at the head of every key sorts as the `uuid` column does, so the
-//! objects of a blob come as one group and the rows between two groups
-//! are the ones the listing has nothing for. The local backend's directory
-//! walk is sorted in memory, it is for development. Nothing is held for
-//! the length of the bucket, in memory or in the database.
+//! The listing and the table are merged in key order, one pass over each:
+//! the cloud backends list their keys sorted, and a key is the blob's shard
+//! then its hyphenated lowercase id (`blob::key`), which the rows are paged
+//! in through an expression index on the same two, so the objects of a
+//! blob come as one group and the rows between two groups are the ones the
+//! listing has nothing for. The local backend's directory walk is sorted in
+//! memory, it is for development. Nothing is held for the length of the
+//! bucket, in memory or in the database.
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
@@ -49,7 +50,7 @@ use uuid::Uuid;
 use super::{Job, JobError, JobKind, Priority};
 use crate::app::Agrafe;
 use crate::blob::read::{Columns, ReadError, Reader, Stored};
-use crate::blob::{self, BlobState, Representation, RepresentationState, repo};
+use crate::blob::{self, BlobState, Representation, RepresentationState, key, repo};
 use crate::config::StorageConfig;
 use crate::trace::TraceContext;
 
@@ -61,9 +62,9 @@ pub enum AuditError {
     /// command line.
     #[error("another audit is running")]
     Running,
-    /// The store listed this blob's objects after those of a greater id,
+    /// The store listed this blob's objects after those of a greater key,
     /// which no supported backend does; the audit merges the listing with
-    /// the table in id order.
+    /// the table in key order (`blob::key::order`).
     #[error("the store lists blob {0} out of order; the audit needs the listing sorted by key")]
     Unsorted(Uuid),
     /// Listing the bucket failed.
@@ -126,7 +127,7 @@ pub enum Finding {
     /// with the span of such prefixes, and deleted only under
     /// `--delete-unknown`.
     Unknown,
-    /// A key outside the layout, `<blob id>/<name>`. Reported, never
+    /// A key outside the layout, `<shard>/<blob id>/<name>`. Reported, never
     /// deleted: it is not agrafe's.
     Foreign,
 }
@@ -310,7 +311,8 @@ impl Agrafe {
 pub struct Progress {
     /// The last key listed and checked; the listing resumes after it.
     pub after: Option<String>,
-    /// The last row the listing passed; the rows resume after it.
+    /// The last row the listing passed; the rows resume after it, in key
+    /// order (its shard is computed from it).
     pub cursor: Uuid,
     /// The tally so far.
     pub report: Report,
@@ -482,7 +484,7 @@ async fn sweep(
     let mut current: Option<Group> = None;
     while let Some(object) = listing.try_next().await? {
         sweep.report.objects += 1;
-        let Some(id) = prefix_of(&object) else {
+        let Some(id) = key::owner(&object.location) else {
             sweep.foreign(&object);
             continue;
         };
@@ -546,23 +548,6 @@ fn listing(
     .boxed()
 }
 
-/// The blob an object belongs to: the first segment of its key, when it is
-/// a UUID as agrafe writes them, hyphenated and lowercase, and there is a
-/// name after it. Any other spelling the parser would take is foreign:
-/// `check` matches names under the canonical prefix, and the merge relies
-/// on the key order being the id order.
-fn prefix_of(object: &ObjectMeta) -> Option<Uuid> {
-    let mut parts = object.location.parts();
-    let first = parts.next()?;
-    parts.next()?;
-    let first = first.as_ref();
-    let canonical = first.len() == 36
-        && first
-            .bytes()
-            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f' | b'-'));
-    canonical.then(|| first.parse().ok()).flatten()
-}
-
 /// The columns an audit reads of a row, `Row` in the same order. A macro
 /// rather than a constant so the queries stay literal strings.
 macro_rules! columns {
@@ -620,7 +605,8 @@ impl Row {
     }
 }
 
-/// The rows that require objects, in id order, a page at a time: not
+/// The rows that require objects, in key order (the shard, then the id, see
+/// `blob::key::order`; `blobs_shard_idx`), a page at a time: not
 /// terminal, not purged, not expired at the start of the sweep, and
 /// naming an original, source parts or a `ready` representation. The
 /// rows that require nothing, tombstones among them, are looked up by
@@ -650,12 +636,13 @@ impl<'c> Rows<'c> {
                 "SELECT ",
                 columns!(),
                 " FROM blobs \
-                 WHERE id > $1 AND purged_at IS NULL \
-                   AND state <> ALL($2) AND (expires_at IS NULL OR expires_at > $3) \
+                 WHERE (get_byte(uuid_send(id), 15), id) > ($1, $2) AND purged_at IS NULL \
+                   AND state <> ALL($3) AND (expires_at IS NULL OR expires_at > $4) \
                    AND (storage_key IS NOT NULL OR source_parts > 0 \
-                        OR thumbnail_state = $4 OR preview_state = $4) \
-                 ORDER BY id LIMIT $5"
+                        OR thumbnail_state = $5 OR preview_state = $5) \
+                 ORDER BY get_byte(uuid_send(id), 15), id LIMIT $6"
             ))
+            .bind(i32::from(key::shard(self.cursor)))
             .bind(self.cursor)
             .bind(
                 [BlobState::Infected, BlobState::Expired, BlobState::Deleted]
@@ -701,7 +688,7 @@ struct Sweep<'a> {
     /// recorded it yet. Neither is evidence, and both are left for the
     /// next run.
     listed_at: Timestamp,
-    /// The last prefix listed, which the next must follow.
+    /// The last prefix listed, which the next must follow in key order.
     last: Option<Uuid>,
     /// The last key checked and the last row passed, what a resumed
     /// attempt starts after.
@@ -720,12 +707,19 @@ impl Sweep<'_> {
     /// have nothing listed, its own row has its objects, and no row at
     /// all makes its objects orphans.
     async fn merge(&mut self, rows: &mut Rows<'_>, group: Group) -> Result<(), AuditError> {
-        if self.last.is_some_and(|last| group.id <= last) {
+        if self
+            .last
+            .is_some_and(|last| key::order(group.id) <= key::order(last))
+        {
             return Err(AuditError::Unsorted(group.id));
         }
         self.last = Some(group.id);
         self.listed_at = group.listed_at;
-        while rows.peek().await?.is_some_and(|row| row.id < group.id) {
+        while rows
+            .peek()
+            .await?
+            .is_some_and(|row| key::order(row.id) < key::order(group.id))
+        {
             let row = rows.next().await?.expect("peeked");
             self.check(&row, &[]).await;
         }
@@ -814,7 +808,7 @@ impl Sweep<'_> {
             self.report.unsettled += 1;
         }
 
-        let prefix = format!("{}/", row.id);
+        let prefix = format!("{}/", key::prefix(row.id));
         let mut seen: HashMap<&str, &ObjectMeta> = objects
             .iter()
             .filter_map(|o| Some((o.location.as_ref().strip_prefix(prefix.as_str())?, o)))
@@ -1189,34 +1183,5 @@ mod tests {
             last: v4,
         };
         assert_eq!(span.to_string(), format!("1 prefixes, ids {v4} to {v4}"));
-    }
-
-    #[test]
-    fn a_prefix_is_a_uuid_with_a_name_after_it() {
-        let meta = |key: &str| ObjectMeta {
-            location: object_store::path::Path::from(key),
-            last_modified: Default::default(),
-            size: 0,
-            e_tag: None,
-            version: None,
-        };
-        let id = Uuid::now_v7();
-        assert_eq!(prefix_of(&meta(&format!("{id}/original"))), Some(id));
-        assert_eq!(prefix_of(&meta(&format!("{id}/source/3"))), Some(id));
-        assert_eq!(prefix_of(&meta(&id.to_string())), None, "no name");
-        assert_eq!(prefix_of(&meta("junk/original")), None);
-        assert_eq!(
-            prefix_of(&meta(&format!("{}/original", id.as_simple()))),
-            None,
-            "not the spelling agrafe writes"
-        );
-        assert_eq!(
-            prefix_of(&meta(&format!(
-                "{}/original",
-                id.to_string().to_uppercase()
-            ))),
-            None
-        );
-        assert_eq!(prefix_of(&meta("README")), None);
     }
 }

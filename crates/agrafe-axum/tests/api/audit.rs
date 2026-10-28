@@ -264,8 +264,8 @@ async fn a_missing_representation_is_rendered_again() {
     let id = id_of(&photo);
     render_all(&app).await;
     assert_eq!(jobs_for(&app, id).await, Vec::<String>::new());
-    delete_object(&app, &format!("{id}/thumbnail")).await;
-    put_object(&app, &format!("{id}/preview"), vec![0; 10]).await;
+    delete_object(&app, &object_key(id, "thumbnail")).await;
+    put_object(&app, &object_key(id, "preview"), vec![0; 10]).await;
 
     let report = audit_now(&app).await;
     assert_eq!(
@@ -306,7 +306,7 @@ async fn rows_between_listed_prefixes_are_checked() {
     }
     // A prefix with no row between two that have one.
     let unknown = uuid::Uuid::now_v7();
-    put_object(&app, &format!("{unknown}/original"), vec![1]).await;
+    put_object(&app, &agrafe::blob::key::original(unknown), vec![1]).await;
 
     let report = audit_now(&app).await;
     assert_eq!(
@@ -354,15 +354,15 @@ async fn plant_orphans(app: &TestApp) -> Planted {
         "purged"
     );
     let orphans = vec![
-        format!("{id}/junk"),
-        format!("{id}/source/1"),
-        format!("{}/original", id_of(&tombstone)),
+        object_key(&id, "junk"),
+        object_key(&id, "source/1"),
+        object_key(id_of(&tombstone), "original"),
     ];
     for key in &orphans {
         put_object(app, key, vec![1, 2, 3]).await;
     }
     let unknown = uuid::Uuid::now_v7();
-    put_object(app, &format!("{unknown}/original"), vec![1, 2, 3]).await;
+    put_object(app, &agrafe::blob::key::original(unknown), vec![1, 2, 3]).await;
     put_object(app, "README", vec![1, 2, 3]).await;
     put_object(app, &uuid::Uuid::now_v7().to_string(), vec![1, 2, 3]).await;
     Planted {
@@ -450,11 +450,11 @@ async fn fix_deletes_the_orphans_older_than_stale_after() {
         assert!(!left.contains(key), "{key} in {left:?}");
     }
     assert!(
-        left.contains(&format!("{}/original", planted.id)),
+        left.contains(&object_key(&planted.id, "original")),
         "{left:?}"
     );
     assert!(
-        left.contains(&format!("{}/original", planted.unknown)),
+        left.contains(&agrafe::blob::key::original(planted.unknown)),
         "a prefix no row has is not --fix's to delete: {left:?}"
     );
     assert!(
@@ -497,7 +497,7 @@ async fn delete_unknown_deletes_the_prefixes_no_row_has() {
     assert_eq!(report.deleted, 1);
     let left = object_keys(&app).await;
     assert!(
-        !left.contains(&format!("{}/original", planted.unknown)),
+        !left.contains(&agrafe::blob::key::original(planted.unknown)),
         "{left:?}"
     );
     for key in &planted.orphans {
@@ -544,7 +544,7 @@ async fn a_source_part_the_build_still_needs_is_checked() {
     assert_eq!(counts(&report), vec![], "{report}");
     assert_eq!(report.objects, 1);
 
-    delete_object(&app, &format!("{id}/source/1")).await;
+    delete_object(&app, &object_key(id, "source/1")).await;
     let report = audit_now(&app).await;
     assert_eq!(
         counts(&report),
@@ -558,7 +558,7 @@ async fn a_source_part_the_build_still_needs_is_checked() {
     );
 
     // Truncated to a length no stream has.
-    put_object(&app, &format!("{id}/source/1"), vec![0; 5]).await;
+    put_object(&app, &object_key(id, "source/1"), vec![0; 5]).await;
     let report = audit_now(&app).await;
     assert_eq!(
         counts(&report),
@@ -607,14 +607,16 @@ async fn the_job_resumes_from_its_progress() {
     for _ in 0..3 {
         ids.push(id_of(&ready_blob(&app, &png_bytes(100)).await).to_string());
     }
+    // The sweep runs in key order, the shard then the id, not in time order.
+    ids.sort_by_key(|id| agrafe::blob::key::order(parse_id(id)));
     for id in &ids {
         delete_object(&app, &storage_key(&app, id).await).await;
     }
     // Planted as the one before the cursor: it is never listed again.
-    put_object(&app, &format!("{}/junk", ids[0]), vec![1]).await;
+    put_object(&app, &object_key(&ids[0], "junk"), vec![1]).await;
 
     let done = audit::Progress {
-        after: Some(format!("{}/junk", ids[0])),
+        after: Some(object_key(&ids[0], "junk")),
         cursor: ids[1].parse().unwrap(),
         report: {
             let mut report = Report::default();
@@ -802,7 +804,7 @@ async fn a_failed_last_attempt_still_schedules_the_next_run() {
         panic!("the tests store locally");
     };
     // A prefix the listing cannot enter.
-    let prefix = std::path::Path::new(&local.path).join(id_of(&blob));
+    let prefix = std::path::Path::new(&local.path).join(object_key(id_of(&blob), ""));
     std::fs::set_permissions(&prefix, std::fs::Permissions::from_mode(0o000)).unwrap();
     let restore = || std::fs::set_permissions(&prefix, std::fs::Permissions::from_mode(0o755));
 

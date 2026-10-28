@@ -95,8 +95,8 @@ async fn migrate_then_audit_exits_by_what_it_found() {
 
     // An object under a prefix no row has is a mismatch: a non-zero exit,
     // the tally still printed.
-    let prefix = storage.join("0190b5a2-1c3d-7e4f-8a9b-0c1d2e3f4a5b");
-    std::fs::create_dir(&prefix).unwrap();
+    let prefix = storage.join("5b/0190b5a2-1c3d-7e4f-8a9b-0c1d2e3f4a5b");
+    std::fs::create_dir_all(&prefix).unwrap();
     std::fs::write(prefix.join("original"), b"lost").unwrap();
     let out = agrafe(&config, &["audit"]);
     assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));

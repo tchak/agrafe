@@ -130,11 +130,6 @@ impl Agrafe {
     }
 }
 
-/// Object key of a blob's original. Blobs are write-once, so there is one.
-pub(crate) fn object_key(blob_id: Uuid) -> String {
-    format!("{blob_id}/original")
-}
-
 /// Why an upload was refused or failed. The first group is the caller's
 /// or the file's fault, the last the service's.
 #[derive(Debug, thiserror::Error)]
@@ -334,7 +329,7 @@ where
     let started = blob
         .upload_started_at
         .expect("begin_upload sets upload_started_at");
-    let storage_key = object_key(blob.id);
+    let storage_key = crate::blob::key::original(blob.id);
     let envelope = state.keks().new_envelope(blob.id);
     let layout = state.keks().layout();
     let scanner = inline_scanner(&state, &blob, &declared).await;

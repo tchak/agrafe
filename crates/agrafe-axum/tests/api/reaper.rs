@@ -72,7 +72,10 @@ async fn purge_removes_every_object_of_a_deleted_blob() {
     let left = stored_objects(&app).await;
     assert_eq!(left.len(), 1);
     assert!(
-        left[0].location.as_ref().starts_with(id_of(&other)),
+        left[0]
+            .location
+            .as_ref()
+            .starts_with(&object_key(id_of(&other), "")),
         "{left:?}"
     );
     let body = get_blob(&app, id).await;
@@ -238,7 +241,7 @@ async fn dead_jobs_are_pruned_and_a_lost_purge_is_scheduled_again() {
     let id = id_of(&blob);
     sqlx::query("UPDATE blobs SET state = 'ready', storage_key = $2 WHERE id = $1")
         .bind(parse_id(id))
-        .bind(format!("{id}/original"))
+        .bind(object_key(id, "original"))
         .execute(app.state.pool())
         .await
         .unwrap();

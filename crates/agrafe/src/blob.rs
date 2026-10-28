@@ -3,6 +3,9 @@
 pub(crate) mod cache;
 pub mod create;
 pub mod envelope;
+// Public for the integration tests, not part of the API.
+#[doc(hidden)]
+pub mod key;
 pub mod metadata;
 pub mod read;
 // Public for the integration tests, not part of the API.
@@ -363,7 +366,7 @@ agrafe_types::str_enum!(Representation {
 impl Representation {
     /// Object key of the representation, under the blob's prefix.
     pub(crate) fn object_key(self, blob_id: Uuid) -> String {
-        format!("{blob_id}/{self}")
+        key::representation(blob_id, self)
     }
 
     /// The `blobs` column holding its state. Code-owned names, safe to
@@ -522,7 +525,7 @@ pub struct Blob {
     /// What clamd found, when the blob is `infected`.
     pub scan_signature: Option<String>,
 
-    /// Object key of the original, `<id>/original`.
+    /// Object key of the original, see [`key::original`].
     pub storage_key: Option<String>,
 
     /// Source parts accepted so far, for a generated blob; the next one
@@ -717,13 +720,6 @@ impl Blob {
             preview_size: self.preview_size,
             uploaded_at: self.uploaded_at,
         }
-    }
-
-    /// Object key of source part `n` of a generated blob.
-    // Public for the integration tests, not part of the API.
-    #[doc(hidden)]
-    pub fn source_key(id: Uuid, n: u32) -> String {
-        format!("{id}/source/{n}")
     }
 
     /// The sheets of a `rows` blob, in workbook order: at least one.

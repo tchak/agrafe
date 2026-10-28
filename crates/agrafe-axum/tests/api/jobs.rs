@@ -678,7 +678,7 @@ async fn a_panicking_handler_fails_the_attempt() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(jobs_for(&app, id).await, ["render"]);
 
-    app.gate.panic(At::Get, &format!("{id}/original"));
+    app.gate.panic(At::Get, &object_key(id, "original"));
     assert!(run_job(&app, agrafe::jobs::JobKind::Render).await);
     let (attempts, dead, error): (i32, bool, String) = sqlx::query_as(
         "SELECT attempts, failed_at IS NOT NULL, last_error FROM jobs WHERE blob_id = $1",

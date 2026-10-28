@@ -96,7 +96,7 @@ impl ReadError {
 pub struct Stored {
     /// The blob, which the wrapped key is bound to.
     pub blob_id: Uuid,
-    /// Object key of the original, `<id>/original`; also the stream's
+    /// Object key of the original, `key::original`; also the stream's
     /// associated data.
     pub storage_key: String,
     /// The key-encryption key that unwraps `wrapped_key`.
@@ -150,7 +150,7 @@ impl Stored {
             })?;
         Ok(Self {
             blob_id,
-            storage_key: crate::upload::object_key(blob_id),
+            storage_key: super::key::original(blob_id),
             kek_id: envelope.kek_id.clone(),
             wrapped_key: envelope.wrapped_key.clone(),
             header: envelope.header.clone(),
@@ -304,7 +304,7 @@ impl Reader {
             .ok_or_else(|| missing("valid chunk size"))?;
         let key = state.keks().unwrap(blob.id, kek_id, wrapped)?;
 
-        let storage_key = Blob::source_key(blob.id, n);
+        let storage_key = super::key::source(blob.id, n);
         let path = ObjectPath::from(storage_key.as_str());
         // One request: the object's length comes with the response.
         let got = state.store().get(&path).await?;

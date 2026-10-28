@@ -46,8 +46,9 @@ The first release.
   signed webhook, Prometheus metrics, request-to-job tracing, the jobs
   API, the HTML dashboard and the reaper.
 - **Storage** on the local disk, S3-compatible stores, Azure Blob Storage
-  and Google Cloud Storage; one TOML file, overridable from the
-  environment.
+  and Google Cloud Storage, objects keyed `<shard>/<blob id>/<name>` with
+  a random two-digit shard so stores that split a bucket by key range
+  spread the writes; one TOML file, overridable from the environment.
 - **Embedding**: the service as a library (`agrafe`) with a Rust private
   API, and its HTTP interfaces as axum routers (`agrafe-axum`,
   `agrafe-dashboard`).

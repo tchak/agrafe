@@ -59,7 +59,7 @@ async fn stored(app: &TestApp, key: &str) -> bool {
 /// complete it waits forever, and `finishes` fails on it. The object must
 /// never be finished, not merely deleted afterwards.
 fn never_completed(app: &TestApp, id: &str) {
-    app.gate.hold(At::Complete, &format!("{id}/original"));
+    app.gate.hold(At::Complete, &object_key(id, "original"));
 }
 
 async fn finishes<T>(task: JoinHandle<T>) -> T {
@@ -86,7 +86,7 @@ async fn upload_changed_at_completion(
     bytes: Vec<u8>,
     change: impl AsyncFnOnce(),
 ) -> (StatusCode, Value) {
-    let hold = app.gate.hold(At::Complete, &format!("{id}/original"));
+    let hold = app.gate.hold(At::Complete, &object_key(id, "original"));
     let put = spawn_put(app, format!("/blobs/{id}"), bytes);
     hold.reached().await;
     change().await;
@@ -123,7 +123,7 @@ async fn upload_taken_over_as_it_completes_leaves_the_object_to_its_successor() 
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert_eq!(get_blob(&app, &id).await["state"], "uploading");
     assert!(
-        stored(&app, &format!("{id}/original")).await,
+        stored(&app, &object_key(&id, "original")).await,
         "the key is the successor's too"
     );
 }
@@ -233,7 +233,7 @@ async fn part_whose_row_changes_as_it_completes_is_disowned() {
         ("removed", StatusCode::NOT_FOUND),
     ] {
         let id = rows(&app).await;
-        let hold = app.gate.hold(At::Complete, &format!("{id}/source/1"));
+        let hold = app.gate.hold(At::Complete, &object_key(&id, "source/1"));
         let put = spawn_put(&app, format!("/blobs/{id}/parts/1"), PART.to_vec());
         hold.reached().await;
         match change {
@@ -273,7 +273,7 @@ async fn build_of_a_blob_deleted_mid_build_writes_nothing() {
     let db = TestDatabase::new().await;
     let app = setup(db).await;
     let id = uploaded_rows(&app).await;
-    let hold = app.gate.hold(At::Get, &format!("{id}/source/1"));
+    let hold = app.gate.hold(At::Get, &object_key(&id, "source/1"));
     let job = spawn_job(&app, JobKind::Rows);
     hold.reached().await;
     assert_eq!(delete(&app, &id).await, StatusCode::NO_CONTENT);
@@ -282,7 +282,7 @@ async fn build_of_a_blob_deleted_mid_build_writes_nothing() {
     assert!(finishes(job).await);
 
     assert_eq!(get_blob(&app, &id).await["state"], "deleted");
-    assert!(!stored(&app, &format!("{id}/original")).await);
+    assert!(!stored(&app, &object_key(&id, "original")).await);
 }
 
 /// The row changes as the built object is about to become visible: an
@@ -293,7 +293,7 @@ async fn build_whose_row_changes_as_it_completes() {
     let app = setup(db).await;
     for (change, kept) in [("deleted", false), ("removed", false), ("built", true)] {
         let id = uploaded_rows(&app).await;
-        let original = format!("{id}/original");
+        let original = object_key(&id, "original");
         let hold = app.gate.hold(At::Complete, &original);
         let job = spawn_job(&app, JobKind::Rows);
         hold.reached().await;

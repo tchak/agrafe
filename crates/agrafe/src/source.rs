@@ -4,7 +4,7 @@
 //!
 //! A part goes through the same pipeline as a file (`upload`), with a
 //! `Tap` that parses it line by line instead of checking a checksum, to
-//! `<blob id>/source/<n>`. The blob is `uploading` while the part is in
+//! `<shard>/<blob id>/source/<n>`. The blob is `uploading` while the part is in
 //! flight and back in `created` after, with the part counted on the row.
 //! A failing part leaves nothing of itself, like any failed upload.
 //!
@@ -173,7 +173,7 @@ async fn store_part(
     let started = blob
         .upload_started_at
         .expect("begin_part sets upload_started_at");
-    let storage_key = Blob::source_key(blob.id, n);
+    let storage_key = crate::blob::key::source(blob.id, n);
     let tap = match blob.input_type {
         InputType::Archive => SourceTap::Archive(archive::Accept::new(state.clone(), &blob)),
         InputType::Rows => SourceTap::Rows(rows::Accept::new(&state, &mut blob)?),

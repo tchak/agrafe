@@ -137,7 +137,7 @@ after the workers start and each one scheduling the next when it is done.
 It is for the mismatches nothing else sees: a
 bucket or a database restored from backup, a lifecycle rule, a bad purge.
 It merges the bucket listing, one request per thousand objects, with the
-blobs table, one query per thousand rows, both in id order; nothing is
+blobs table, one query per thousand rows, both in key order; nothing is
 held for the length of the bucket. The listing's sizes are enough to
 catch a truncated object; nothing is decrypted.
 
@@ -145,13 +145,13 @@ What it finds, one `warn` line per finding and a tally in the metrics:
 
 | Finding | What it is | What the job does |
 |---|---|---|
-| `missing_original` | A blob that is not expired, deleted or infected has no `<id>/original` | Stamps `failed_at` and `last_error` on the blob, so it shows in `GET /blobs?failed=true` |
+| `missing_original` | A blob that is not expired, deleted or infected has no `original` object | Stamps `failed_at` and `last_error` on the blob, so it shows in `GET /blobs?failed=true` |
 | `damaged_original` | The original has a length its size does not produce (or, under `--deep`, does not decrypt to its checksum) | The same stamp |
 | `missing_representation` | A thumbnail or preview the row says is `ready` is missing or the wrong length | Sets it back to `pending` and enqueues the render |
 | `missing_source` | A source part a generated blob still needs is missing or truncated | Reports; the build fails on it itself |
 | `orphan` | An object under a known blob that its row does not account for: a purged blob's leftovers, an original under a row that never recorded it, a representation the row says is not there | Reports |
 | `unknown` | An object under a prefix no row has: a purge's leftover whose tombstone is gone, or a blob whose row was lost, which is what a database restored from an older backup leaves | Reports, with how many such prefixes and when their blobs were created |
-| `foreign` | A key that is not `<blob id>/<name>` | Reports |
+| `foreign` | A key that is not `<shard>/<blob id>/<name>` | Reports |
 
 What the listing does not show, the audit does not see: a multipart
 upload a crashed process left open on S3 or GCS is parts, not an object,

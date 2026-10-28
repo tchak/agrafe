@@ -81,7 +81,7 @@ fn unzip(bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
 
 /// The source objects of a blob in the store.
 async fn source_objects(app: &TestApp, id: &str) -> Vec<String> {
-    let prefix = format!("{id}/source/");
+    let prefix = object_key(id, "source/");
     let mut keys: Vec<String> = stored_objects(app)
         .await
         .into_iter()
@@ -134,7 +134,7 @@ async fn archive_is_built_from_a_manifest_in_parts() {
     assert!(after_one > fixture("text.pdf").len() as u64 + fixture("photo.jpg").len() as u64);
     assert_eq!(
         source_objects(&app, id).await,
-        vec![format!("{id}/source/1")]
+        vec![object_key(id, "source/1")]
     );
 
     let (status, body) = put_part(
@@ -192,7 +192,7 @@ async fn archive_is_built_from_a_manifest_in_parts() {
     assert_eq!(built["checksum_md5"], STANDARD.encode(Md5::digest(&bytes)));
     assert_eq!(
         storage_key(&app, id).await,
-        format!("{id}/original"),
+        object_key(id, "original"),
         "the source parts stay under the prefix until the purge"
     );
     let entries = unzip(&bytes);
@@ -366,7 +366,7 @@ async fn manifest_rejections() {
         assert_eq!(got["source_rows"], 1, "{name}");
         assert_eq!(
             source_objects(&app, id).await,
-            vec![format!("{id}/source/1")],
+            vec![object_key(id, "source/1")],
             "{name}"
         );
     }
@@ -604,11 +604,11 @@ async fn delete_before_the_build_writes_nothing() {
         .await
         .into_iter()
         .map(|o| o.location.to_string())
-        .filter(|k| k.starts_with(id))
+        .filter(|k| k.starts_with(&object_key(id, "")))
         .collect();
     assert_eq!(
         objects,
-        vec![format!("{id}/source/1")],
+        vec![object_key(id, "source/1")],
         "parts wait for the purge"
     );
     assert_eq!(jobs_for(&app, id).await, vec!["purge"]);

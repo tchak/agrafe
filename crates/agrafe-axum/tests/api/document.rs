@@ -177,7 +177,7 @@ async fn document_is_built_from_a_workspace_in_parts() {
     assert_eq!(built["checksum"], STANDARD.encode(Sha256::digest(&bytes)));
     assert_eq!(
         storage_key(&app, id).await,
-        format!("{id}/original"),
+        object_key(id, "original"),
         "the source parts stay under the prefix until the purge"
     );
 
@@ -653,9 +653,9 @@ async fn delete_before_the_build_writes_nothing() {
         .await
         .into_iter()
         .map(|o| o.location.to_string())
-        .filter(|k| k.starts_with(id))
+        .filter(|k| k.starts_with(&object_key(id, "")))
         .collect();
-    assert_eq!(objects, vec![format!("{id}/source/1")]);
+    assert_eq!(objects, vec![object_key(id, "source/1")]);
     assert_eq!(jobs_for(&app, id).await, vec!["purge"]);
 }
 

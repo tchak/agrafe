@@ -347,9 +347,18 @@ Google Cloud Storage needs the same `AbortIncompleteMultipartUpload`
 lifecycle rule. Azure needs none: it discards uncommitted blocks after
 seven days.
 
-Objects are keyed by blob: `<id>/original`, `<id>/preview`,
-`<id>/thumbnail`, and `<id>/source/<n>` for the parts of a generated blob.
-A purge deletes everything under `<id>/`.
+Objects are keyed `<shard>/<id>/<name>`: `original`, `preview`,
+`thumbnail`, and `source/<n>` for the parts of a generated blob, with the
+shard the last two hex digits of the blob id, as in
+`5b/0190b5a2-1c3d-7e4f-8a9b-0c1d2e3f4a5b/original`. A purge deletes
+everything under `<shard>/<id>/`.
+
+The shard is for stores that split a bucket into key ranges as it grows,
+OpenIO behind OVHcloud's S3 among them: blob ids are ordered by time, and
+keys that began with them would all land in the newest range, which such
+stores throttle while they split it. The two random digits spread new
+keys over 256 ranges. Nothing in the layout needs configuring, and a
+bucket holds any number of blobs.
 
 ## ClamAV
 

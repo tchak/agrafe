@@ -989,7 +989,7 @@ async fn damaged_source_parts_fail_the_build() {
         let id = id_of(&created);
         let (status, _) = put_private(&app, id, lines(&SAMPLE)).await;
         assert_eq!(status, StatusCode::OK);
-        let key = ObjectPath::from(agrafe::blob::Blob::source_key(parse_id(id), 1));
+        let key = ObjectPath::from(agrafe::blob::key::source(parse_id(id), 1));
         let mut stored = app
             .state
             .store()
@@ -1015,7 +1015,7 @@ async fn damaged_source_parts_fail_the_build() {
         assert_eq!((attempts, dead), (1, true), "{error}");
         assert!(error.contains(want), "{error}");
         assert_eq!(get_blob(&app, id).await["state"], "uploaded");
-        let original = format!("{id}/original");
+        let original = object_key(id, "original");
         assert!(
             !stored_objects(&app)
                 .await

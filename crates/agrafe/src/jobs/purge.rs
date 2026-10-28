@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use super::{Job, JobError};
 use crate::app::Agrafe;
-use crate::blob::{BlobState, repo};
+use crate::blob::{BlobState, key, repo};
 use crate::storage::Store;
 
 /// Why a purge could not run. A blob that is still readable is never
@@ -39,10 +39,11 @@ pub async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
     Ok(())
 }
 
-/// Delete every object under `<id>/`. Returns how many there were. An
-/// object gone between the listing and its delete counts as deleted.
+/// Delete every object under the blob's prefix (`key::prefix`). Returns
+/// how many there were. An object gone between the listing and its delete
+/// counts as deleted.
 pub async fn delete_prefix(store: &Store, id: Uuid) -> Result<usize, object_store::Error> {
-    let prefix = ObjectPath::from(id.to_string());
+    let prefix = ObjectPath::from(key::prefix(id));
     let objects: Vec<_> = store.list(Some(&prefix)).try_collect().await?;
     for object in &objects {
         match store.delete(&object.location).await {

@@ -1,6 +1,6 @@
 //! What the build jobs share: the generated file streamed into the
 //! bucket as it is produced, through the same encryptor and multipart
-//! upload as an uploaded file, to `<blob id>/original`, and the row moved
+//! upload as an uploaded file, to the original's key, and the row moved
 //! to `ready` once it is there. Nothing is held whole in memory, and only
 //! a `document` build, which hands its workspace to a compiler, touches
 //! local disk. See [DESIGN.md, "Build"].
@@ -192,7 +192,7 @@ pub(crate) async fn run<A: Assemble>(state: &Agrafe, job: &Job) -> Result<(), Jo
     Ok(())
 }
 
-/// Assemble the file into `<id>/original`. `None` when the blob was no
+/// Assemble the file into the original's key. `None` when the blob was no
 /// longer `uploaded` at the end: the object is not finished and nothing
 /// is written.
 async fn build<A: Assemble>(state: &Agrafe, blob: &Blob) -> Result<Option<Built>, BuildError> {
@@ -212,7 +212,7 @@ async fn build<A: Assemble>(state: &Agrafe, blob: &Blob) -> Result<Option<Built>
         .ok_or_else(|| missing("valid chunk size"))?;
     let key = state.keks().unwrap(blob.id, kek_id, wrapped)?;
 
-    let storage_key = upload::object_key(blob.id);
+    let storage_key = crate::blob::key::original(blob.id);
     let mut sink = Sink::open(state, &storage_key, &key, layout).await?;
     let counts = match A::assemble(state, blob, &mut sink).await {
         Ok(counts) => counts,

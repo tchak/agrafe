@@ -153,15 +153,15 @@ async fn image_gets_a_thumbnail_and_a_preview() {
     assert_eq!(
         keys,
         [
-            format!("{id}/original"),
-            format!("{id}/preview"),
-            format!("{id}/thumbnail")
+            object_key(id, "original"),
+            object_key(id, "preview"),
+            object_key(id, "thumbnail")
         ]
     );
     let stored = app
         .state
         .store()
-        .get(&object_store::path::Path::from(format!("{id}/thumbnail")))
+        .get(&object_store::path::Path::from(object_key(id, "thumbnail")))
         .await
         .unwrap()
         .bytes()
@@ -937,7 +937,7 @@ async fn conditional_and_head_requests_are_answered_from_the_row() {
     // that needs the bytes is the one that finds it missing.
     app.state
         .store()
-        .delete(&object_store::path::Path::from(format!("{id}/thumbnail")))
+        .delete(&object_store::path::Path::from(object_key(id, "thumbnail")))
         .await
         .unwrap();
     let (status, headers, body) = fetch(
@@ -979,7 +979,7 @@ async fn representations_regenerate_when_missing_or_stale() {
     // The object vanished from the store: back to pending, queued again.
     app.state
         .store()
-        .delete(&object_store::path::Path::from(format!("{id}/thumbnail")))
+        .delete(&object_store::path::Path::from(object_key(id, "thumbnail")))
         .await
         .unwrap();
     icon(&app, &thumbnail, "pending").await;
@@ -1059,7 +1059,7 @@ async fn a_corrupt_representation_is_an_internal_error() {
     app.state
         .store()
         .put(
-            &object_store::path::Path::from(format!("{id}/thumbnail")),
+            &object_store::path::Path::from(object_key(id, "thumbnail")),
             vec![0u8; 512].into(),
         )
         .await
@@ -1137,12 +1137,12 @@ async fn representations_disabled_at_creation_are_never_rendered() {
         .await
         .into_iter()
         .map(|o| o.location.to_string())
-        .filter(|key| key.starts_with(id))
+        .filter(|key| key.starts_with(&object_key(id, "")))
         .collect();
     objects.sort();
     assert_eq!(
         objects,
-        [format!("{id}/original"), format!("{id}/thumbnail")]
+        [object_key(id, "original"), object_key(id, "thumbnail")]
     );
 }
 
@@ -1159,7 +1159,7 @@ async fn thumbnails_regenerate_from_the_stored_preview() {
     for object in ["thumbnail", "original"] {
         app.state
             .store()
-            .delete(&object_store::path::Path::from(format!("{id}/{object}")))
+            .delete(&object_store::path::Path::from(object_key(id, object)))
             .await
             .unwrap();
     }
@@ -1186,8 +1186,8 @@ async fn thumbnails_regenerate_from_the_preview_verdict() {
     for object in ["thumbnail", "preview"] {
         app.state
             .store()
-            .delete(&object_store::path::Path::from(format!(
-                "{photo_id}/{object}"
+            .delete(&object_store::path::Path::from(object_key(
+                photo_id, object,
             )))
             .await
             .unwrap();

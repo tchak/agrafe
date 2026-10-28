@@ -298,7 +298,7 @@ async fn upload_url_is_dead_after_one_success() {
     assert_eq!(stored_plaintext(&app, id).await, bytes);
     assert_eq!(
         storage_key(&app, id).await,
-        format!("{id}/original"),
+        object_key(id, "original"),
         "one object per blob, no version in the key"
     );
 }

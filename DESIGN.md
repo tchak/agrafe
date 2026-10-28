@@ -558,7 +558,7 @@ say-so.
 A blob receives bytes exactly once. `PUT` is accepted from `created` only; a
 failed upload goes back to `created`, a successful one never does. There is no
 re-upload, no per-blob switch, and no object version: the original lives at
-`<blob id>/original`. A backend that needs different bytes creates a new blob,
+one key (see "Object keys"). A backend that needs different bytes creates a new blob,
 attaches it and detaches the old one, which then expires on its own: the way
 Active Storage treats blobs as immutable and attachments as the thing that
 changes.
@@ -638,8 +638,8 @@ A soft delete is refused for an attached blob (see "Attachments"); for any
 other it schedules a purge of the objects `upload.purge_delay` (default one
 hour) later, long enough for a download that started before the delete to
 finish. Expiry gets the same grace period from the moment the reaper records
-it. The purge deletes everything under the blob's `<id>/` prefix and stamps
-`purged_at` on the row, which private metadata reports. An infected blob is
+it. The purge deletes everything under the blob's prefix (see "Object
+keys") and stamps `purged_at` on the row, which private metadata reports. An infected blob is
 terminal and never becomes `expired`, but its objects are not kept forever
 either: once it is past `expires_at` the reaper purges them and leaves the
 state alone.
@@ -967,10 +967,46 @@ itself failed: the parts are in the bucket, the handle to them is gone,
 and only the rule reclaims them. Azure needs no rule: it discards
 uncommitted blocks after seven days.
 
-Objects are keyed `<blob id>/original`. Blobs are write-once, so the key is
-written exactly once; a failed upload aborts its multipart upload and leaves
-no object behind. Representations and the parts of a generated blob live
-under the same `<blob id>/` prefix, which is what a purge deletes.
+### Object keys
+
+Objects are keyed `<shard>/<blob id>/<name>`: `original` for the file,
+`thumbnail` and `preview` for the representations, `source/<n>` for the
+parts of a generated blob, with the shard the last two hex digits of the
+id (`5b/0190b5a2-1c3d-7e4f-8a9b-0c1d2e3f4a5b/original`). Every key is
+built, and parsed by the audit, in `blob::key`, so the layout has one
+definition. Blobs are write-once, so the original's key is written exactly
+once; a failed upload aborts its multipart upload and leaves no object
+behind. Everything under `<shard>/<blob id>/` is the blob's, and that
+prefix is what a purge deletes.
+
+The shard is for the stores that split a bucket into key ranges as it
+grows. OpenIO, which is what OVHcloud's S3 offer runs on, keeps a bucket's
+listing in one database until it holds a critical number of objects, then
+splits it in two at the median key, and splits each half again as it
+fills; S3 partitioned the same way before 2018. Ids are UUID v7, ordered
+by time, so a key that began with the id would be the newest key in the
+bucket every time: every write would land in the last range, which would
+split again and again while the others sat idle. That is the worst case
+OVHcloud's performance guide describes, with the `503 SlowDown` throttling
+that comes with each split, against a default of 300 writes a second per
+bucket; its advice is a prefix of high cardinality to the left, and a date
+prefix would be the same problem spelt out. The low byte of the id is
+random for every id (the `uuid` crate fills the low 32 bits of a v7 at
+random, the 42 above them are a counter) and spreads new keys over 256
+ranges, so the splits divide incoming objects evenly. A hash of the id
+would do the same with a computation the database cannot repeat cheaply;
+the low byte it can, `get_byte(uuid_send(id), 15)`.
+
+What it costs is the audit's merge order. The stores list keys in byte
+order, which for this layout is the shard, then the id (the hyphenated
+lowercase UUID sorts as the `uuid` column does), and the audit pages the
+rows in that order through an expression index on the same two,
+`blobs_shard_idx`: one more index the size of the primary key, walked once
+a week (see "Audit"). Nothing else finds an object by anything but the
+blob's id, which the shard is a function of. The layout is the one
+decision a deployment cannot revisit cheaply, since objects are immutable
+and moving a billion of them is a copy of the bucket, so it was
+taken before the first one.
 
 ## Generated blobs
 
@@ -1025,7 +1061,7 @@ a part that is not the next one answers `409`, so a retry of one that
 landed is harmless.
 
 Each part streams through the upload pipeline like any body: encrypted,
-stored as `<blob id>/source/<n>`, bounded by `upload.max_size`, the row in
+stored as `<shard>/<blob id>/source/<n>`, bounded by `upload.max_size`, the row in
 `uploading` with the heartbeat while it is in flight and back in `created`
 after, where it waits for the next part or the finish. The first part
 fixes the blob's data key and segment layout on the row; every part and
@@ -1073,7 +1109,7 @@ the workspace a `document` build hands to its compiler (see
 "Documents"). The
 bytes go through the same encryptor and multipart upload as an uploaded
 file, with 32 MiB parts (S3 allows 10 000 parts per upload; the default
-5 MiB would cap an archive at 50 GB), to `<blob id>/original`, written
+5 MiB would cap an archive at 50 GB), to the original's key, written
 once: a failed attempt aborts its multipart upload and the next starts over
 from the source.
 
@@ -1910,8 +1946,8 @@ not be there afterwards (see "Thumbnail" on macros). Five conversions
 instead of two at worker start, about a second on Linux with a fresh
 profile.
 
-Representations live at `<blob id>/thumbnail` and `<blob id>/preview`,
-encrypted with the blob's own data key: the streaming AEAD derives a fresh
+Representations live at `<shard>/<blob id>/thumbnail` and
+`<shard>/<blob id>/preview`, encrypted with the blob's own data key: the streaming AEAD derives a fresh
 subkey per stream from a random salt, so one key safely covers the three
 objects, and the object key is the associated data as for the original.
 They are small and served whole, with a strong `ETag` of the content and
@@ -2960,7 +2996,7 @@ the listing and the rows failing do, and the runner retries from the
 last save.
 
 Three things can be wrong, at different costs. A row says present and the
-bucket says missing: a non-terminal blob without its `<id>/original`, or
+bucket says missing: a non-terminal blob without its original, or
 a representation `ready` without its WebP. The bucket has objects no row
 accounts for: an original under a row that never recorded it (a `PUT`
 whose row update failed), a part or a representation the row says is not
@@ -2968,21 +3004,22 @@ there, a purged blob's leftovers, which are orphans, and a prefix with no
 row at all, which is a finding of its own, `unknown`, see below. And an
 object present but wrong: truncated or corrupted ciphertext.
 
-The sweep merges the bucket listing with the `blobs` table in id order,
+The sweep merges the bucket listing with the `blobs` table in key order,
 one pass over each and nothing held for the length of the bucket, in
 memory or in the database. S3, GCS and Azure list their keys sorted, and
-the hyphenated lowercase UUID at the head of every key sorts as the
-`uuid` column does (both bytewise), so the objects of a blob come as one
-group and the rows between two groups are the ones the listing has
-nothing for; a key whose first segment is any other spelling of a UUID is
-foreign, not a prefix. The listing is one request per thousand objects,
-the rows one query per thousand, paged by id over the rows that require
-objects (an original, source parts, a `ready` representation; not
-terminal, not purged), and a listed prefix with no such row is looked up
-by id, since a tombstone's leftovers and a `created` blob's stray object
-are orphans, and a prefix with no row at all is not one. A
-backend that listed a prefix out of order would be refused
-(`AuditError::Unsorted`), not misread. The local backend walks its
+a key is the blob's shard then its hyphenated lowercase id (see "Object
+keys"), which sorts as `(get_byte(uuid_send(id), 15), id)` does in the
+database, so the objects of a blob come as one group and the rows between
+two groups are the ones the listing has nothing for; a key whose id is
+any other spelling of a UUID, or sits under a shard that is not its own,
+is foreign, not a prefix. The listing is one request per thousand
+objects, the rows one query per thousand, paged in the same order through
+the expression index `blobs_shard_idx` over the rows that require objects
+(an original, source parts, a `ready` representation; not terminal, not
+purged), and a listed prefix with no such row is looked up by id, since a
+tombstone's leftovers and a `created` blob's stray object are orphans, and
+a prefix with no row at all is not one. A backend that listed a prefix out
+of order would be refused (`AuditError::Unsorted`), not misread. The local backend walks its
 directory in filesystem order and its listing, development-sized, is
 sorted in memory. The listing carries sizes,
 so truncation is caught without a read: the expected ciphertext length
@@ -3017,9 +3054,9 @@ and the row are read at different moments, and a row that changed in
 between may name an object written after the listing looked, an upload
 finishing as the audit went by, or a new size for one it listed, a
 render replacing it: what the listing shows of it is not evidence. Such
-a row is counted as unsettled and left for the next run, which with ids
-ordered by time (UUID v7) is also what makes the rows created after the
-listing ended safe, since they are unsettled by construction. What the
+a row is counted as unsettled and left for the next run, which is also
+what makes the rows created while the listing ran safe, wherever their
+shard puts them in its order, since they are unsettled by construction. What the
 row does not account for is judged by the object's own age: one written
 within `upload.stale_after` of the listing passing it is what an upload
 or a render in flight looks like, its row not yet updated, and is left
@@ -3034,8 +3071,9 @@ purge since, so a row that moved on meanwhile is not written.
   touched; a thousand per request through `delete_stream`, which S3
   takes as one `DeleteObjects`, since a bucket restored from backup
   leaves orphans by the million. A terminal blob awaiting its purge is skipped altogether, its
-  prefix is the purge's. A key outside the layout, not `<blob id>/<name>`,
-  is reported as foreign and never deleted: it is not agrafe's.
+  prefix is the purge's. A key outside the layout, not
+  `<shard>/<blob id>/<name>`, is reported as foreign and never deleted: it
+  is not agrafe's.
 - Unknown prefix, one no row has: report, with the number of such
   prefixes and the span of their ids, which being UUID v7 is the span of
   the blobs' creation times. It is not an orphan, because nothing says
@@ -3322,6 +3360,7 @@ two agrafe installations in two schemas of one database never contend.
 | Generated PDF documents | `typst` and `typst-pdf` with the embedded fonts of `typst-assets`, in the sandboxed `agrafe-render-document` helper |
 | Maps | `geojson`, `quick-xml` and `serde_json` in the sandboxed `agrafe-render-geo` helper, the WMS of `[media.map.layers]` through `reqwest`, `vips composite` with rsvg in the sandbox |
 | Ids | UUID v7 |
+| Object keys | `<shard>/<blob id>/<name>`, the shard the low byte of the id (see "Object keys") |
 | Time | `jiff`. `Timestamp` throughout the model; `jiff-sqlx` wrappers only at the SQL boundary |
 
 ## Releases

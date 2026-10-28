@@ -160,6 +160,9 @@ CREATE INDEX blobs_abandoned_idx ON blobs (updated_at)
 CREATE INDEX blobs_unpurged_idx     ON blobs (id)
     WHERE (storage_key IS NOT NULL OR source_parts > 0) AND purged_at IS NULL
       AND state IN ('infected', 'expired', 'deleted');
+-- Audit: the rows in the bucket's key order, `<shard>/<id>/<name>` with the
+-- shard the low byte of the id (see `blob::key`), to merge with the listing.
+CREATE INDEX blobs_shard_idx ON blobs ((get_byte(uuid_send(id), 15)), id);
 -- Reaper: tombstones to prune, `blobs.keep_purged` after the purge, or
 -- after the row went terminal when there was nothing to purge.
 CREATE INDEX blobs_purged_at_idx ON blobs (purged_at)

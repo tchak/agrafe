@@ -134,7 +134,7 @@ impl Envelope {
             size: Some(self.size as i64),
             expires_at: None,
             scan_state: self.scan_state,
-            storage_key: Some(format!("{id}/original")),
+            storage_key: Some(super::key::original(id)),
             kek_id: Some(self.kek_id.clone()),
             wrapped_key: Some(self.wrapped_key.clone()),
             encryption_header: Some(self.header.as_bytes().to_vec()),
@@ -391,7 +391,7 @@ mod tests {
         assert_eq!(Envelope::from_head(&head, Timestamp::now()), Some(env));
         assert_eq!(
             head.storage_key.as_deref(),
-            Some(format!("{id}/original").as_str())
+            Some(crate::blob::key::original(id).as_str())
         );
     }
 

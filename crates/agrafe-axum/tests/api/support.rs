@@ -493,6 +493,15 @@ pub async fn storage_key(app: &TestApp, id: &str) -> String {
         .expect("storage_key")
 }
 
+/// The object key of `name` under the blob's prefix: `original`,
+/// `thumbnail`, `preview`, `source/<n>`, or anything a test plants there.
+pub fn object_key(id: impl AsRef<str>, name: &str) -> String {
+    format!(
+        "{}/{name}",
+        agrafe::blob::key::prefix(parse_id(id.as_ref()))
+    )
+}
+
 /// Read and decrypt the stored original straight from the object store.
 pub async fn stored_plaintext(app: &TestApp, id: &str) -> Vec<u8> {
     use agrafe::blob::repo;
