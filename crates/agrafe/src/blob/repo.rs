@@ -125,7 +125,23 @@ pub struct Page {
 /// Newest first, keyset paginated on the UUID v7 id.
 pub(crate) async fn list(exec: impl PgExecutor<'_>, params: &ListParams) -> sqlx::Result<Page> {
     let limit = params.limit;
-    let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("SELECT * FROM blobs WHERE true");
+    let mut qb = list_query("SELECT * FROM blobs WHERE true", params);
+    let mut items: Vec<Blob> = qb.build_query_as().fetch_all(exec).await?;
+    let next_cursor = if items.len() > limit {
+        items.truncate(limit);
+        items.last().map(|b| b.id)
+    } else {
+        None
+    };
+    Ok(Page { items, next_cursor })
+}
+
+/// The listing's query after `head`, which selects from `blobs` and ends
+/// on a condition. A filter on a partial index is spelled as a literal: a
+/// bound value would leave a cached generic plan unable to prove the
+/// index's predicate.
+fn list_query(head: &str, params: &ListParams) -> QueryBuilder<Postgres> {
+    let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(head);
     if let Some(ct) = &params.content_type {
         qb.push(" AND content_type = ").push_bind(ct);
     }
@@ -139,8 +155,15 @@ pub(crate) async fn list(exec: impl PgExecutor<'_>, params: &ListParams) -> sqlx
         qb.push(" AND scan_state = ").push_bind(scan_state.as_str());
     }
     if let Some(attached) = params.attached {
-        qb.push(if attached { " AND " } else { " AND NOT " })
-            .push("EXISTS (SELECT 1 FROM attachments WHERE attachments.blob_id = blobs.id)");
+        // Attach clears `expires_at` and the last detach sets it again, so
+        // a blob is attached exactly when it has none, terminal or not
+        // (DESIGN.md, "Attachments"). The row answers on its own index;
+        // asking `attachments` would be an anti-join no index serves.
+        qb.push(if attached {
+            " AND expires_at IS NULL"
+        } else {
+            " AND expires_at IS NOT NULL"
+        });
     }
     if let Some(failed) = params.failed {
         qb.push(if failed {
@@ -153,16 +176,21 @@ pub(crate) async fn list(exec: impl PgExecutor<'_>, params: &ListParams) -> sqlx
         qb.push(" AND id < ").push_bind(cursor);
     }
     qb.push(" ORDER BY id DESC LIMIT ")
-        .push_bind(limit as i64 + 1);
+        .push_bind(params.limit as i64 + 1);
+    qb
+}
 
-    let mut items: Vec<Blob> = qb.build_query_as().fetch_all(exec).await?;
-    let next_cursor = if items.len() > limit {
-        items.truncate(limit);
-        items.last().map(|b| b.id)
-    } else {
-        None
-    };
-    Ok(Page { items, next_cursor })
+/// The plan of the listing's query for `params`, as `EXPLAIN` prints it,
+/// for tests that pin the listing's filters to their indexes.
+#[cfg(any(test, feature = "test-support"))]
+pub async fn explain_list(exec: impl PgExecutor<'_>, params: &ListParams) -> sqlx::Result<String> {
+    let mut qb = list_query("EXPLAIN SELECT * FROM blobs WHERE true", params);
+    let lines: Vec<(String,)> = qb.build_query_as().fetch_all(exec).await?;
+    Ok(lines
+        .into_iter()
+        .map(|(l,)| l)
+        .collect::<Vec<_>>()
+        .join("\n"))
 }
 
 /// Outcome of a conditional state change.

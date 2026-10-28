@@ -470,6 +470,38 @@ async fn listing_filters_and_pages() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
+/// `attached` is answered by the blob row on an index of its own, never
+/// by asking `attachments`: an anti-join there walks every attached blob
+/// to fill a page of unattached ones. Sequential and bitmap scans are off
+/// so that the planner, on a table this small, shows the index it would
+/// walk in the cursor's order, with no sort.
+#[tokio::test]
+async fn the_attached_filter_walks_an_index_of_blobs() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let mut conn = app.state.pool().acquire().await.unwrap();
+    for off in ["SET enable_seqscan = off", "SET enable_bitmapscan = off"] {
+        sqlx::query(off).execute(&mut *conn).await.unwrap();
+    }
+    for (attached, index) in [
+        (true, "blobs_attached_idx"),
+        (false, "blobs_unattached_idx"),
+    ] {
+        for cursor in [None, Some(uuid::Uuid::now_v7())] {
+            let params = repo::ListParams {
+                attached: Some(attached),
+                cursor,
+                limit: repo::DEFAULT_LIMIT,
+                ..Default::default()
+            };
+            let plan = repo::explain_list(&mut *conn, &params).await.unwrap();
+            assert!(plan.contains(index), "attached={attached}: {plan}");
+            assert!(!plan.contains("attachments"), "attached={attached}: {plan}");
+            assert!(!plan.contains("Sort"), "attached={attached}: {plan}");
+        }
+    }
+}
+
 #[tokio::test]
 async fn the_public_port_never_sees_attachments() {
     let db = TestDatabase::new().await;

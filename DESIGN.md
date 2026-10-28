@@ -701,9 +701,12 @@ lives. The first attachment clears
 `expires_at`; detaching the last one sets it to the default again, counted
 from that moment. There is no way to create a blob without an expiry: a blob
 is either expiring or attached, and permanence is spelled "attached". The
-invariant, for a non-terminal blob: `expires_at IS NULL` ⇔ attached. (An
-unattached infected blob is therefore purged within the default expiry; the
-forensic window for one the backend holds on to lasts until it lets go.)
+invariant: `expires_at IS NULL` ⇔ attached. Attach and the last detach are
+the only writes to `expires_at`, and no state transition makes one, so it
+holds for a terminal blob too: an abandoned one the reaper expired keeps
+its attachments and no expiry, a detach re-arms it. (An unattached
+infected blob is therefore purged within the default expiry; the forensic
+window for one the backend holds on to lasts until it lets go.)
 
 **Attach.** `POST /blobs/:id/attachments` with the three fields. Idempotent:
 a triple already attached returns the existing attachment. Refused for a
@@ -800,9 +803,20 @@ about its own data, and nothing a browser is told.
 `GET /blobs` is cursor paginated on the blob id, which is a UUID v7 so ids
 sort by creation time. Filters: `content_type`, `category`, `state`,
 `scan_state`, `attached` (`true` or `false`: whether any attachment exists,
-which for a non-terminal blob is whether `expires_at` is null, see
-"Attachments"), `failed` (`true` or `false`: whether the job that was to
-finish the blob died, see "Jobs"). Response carries `next_cursor` or null.
+which is whether `expires_at` is null, see "Attachments"), `failed` (`true`
+or `false`: whether the job that was to finish the blob died, see "Jobs").
+Response carries `next_cursor` or null.
+
+`attached` is asked of the blob row, not of `attachments`. An `EXISTS`
+there is an anti-join no index serves: to fill a page of unattached blobs
+it probes every attached one newer than the first match, and when old
+blobs are all attached that is the whole table. On the row, the two
+answers are two partial indexes on `id`, `WHERE expires_at IS NULL` and
+`WHERE expires_at IS NOT NULL`, each walked backwards from the cursor.
+Every row is in exactly one, so the pair costs one more index over the
+table, appended at its right edge like the primary key; an attach or a
+detach moves the row between them, a write it already pays for in
+`blobs_expires_at_idx`. A test pins both plans.
 
 The three listings, `/blobs`, `/attachments` and `/jobs`, take a `limit`,
 default 50, at most 200. A limit out of that range, an unknown filter value

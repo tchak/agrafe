@@ -141,6 +141,13 @@ CREATE INDEX blobs_state_idx        ON blobs (state, id);
 CREATE INDEX blobs_scan_state_idx   ON blobs (scan_state, id);
 CREATE INDEX blobs_category_idx     ON blobs (category, id);
 CREATE INDEX blobs_content_type_idx ON blobs (content_type, id);
+-- `GET /blobs?attached=`: a blob is attached exactly when it has no
+-- expiry (see DESIGN.md, "Attachments"). Every row is in one of the two,
+-- so together they cost one more index over the table.
+CREATE INDEX blobs_attached_idx     ON blobs (id)
+    WHERE expires_at IS NULL;
+CREATE INDEX blobs_unattached_idx   ON blobs (id)
+    WHERE expires_at IS NOT NULL;
 -- Blobs whose job died, for `GET /blobs?failed=true`.
 CREATE INDEX blobs_failed_idx       ON blobs (id)
     WHERE failed_at IS NOT NULL;
