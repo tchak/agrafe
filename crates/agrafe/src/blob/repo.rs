@@ -18,6 +18,52 @@ use crate::config::WebhookConfig;
 use crate::encryption::Envelope;
 use crate::jobs::notify::{self, Event};
 use crate::jobs::{self, JobKind, Priority};
+use crate::source::rows::Sheet;
+
+/// The columns `Blob` reads, as SQL: every one of the table but
+/// `source_columns`, a `rows` blob's declaration, up to 16 MiB of JSON that
+/// only the part's accept and the build read, through `sheets`. A listing
+/// page of such blobs would otherwise fetch and decode two hundred of
+/// them. A macro, so that the queries stay literals.
+macro_rules! blob_columns {
+    () => {
+        "id, state, filename, content_type, category, input_type, \
+         checksum_sha256, checksum_md5, size, skip_virus_scan, url, expires_at, priority, \
+         scan_state, scanned_at, scan_signature, storage_key, \
+         source_parts, source_rows, source_size, source_updated_at, source_sheet, \
+         source_sheet_rows, archive_entries, archive_errors, source_main, workspace_size, \
+         kek_id, wrapped_key, encryption_header, chunk_size, \
+         thumbnail_state, preview_state, preview_source, \
+         thumbnail_variant_version, preview_variant_version, \
+         thumbnail_sha256, thumbnail_size, preview_sha256, preview_size, \
+         created_at, updated_at, upload_started_at, upload_heartbeat_at, uploaded_at, \
+         deleted_at, purged_at, failed_at, last_error"
+    };
+}
+pub(crate) use blob_columns;
+
+/// [`blob_columns!`], for the test that holds it to the table.
+// Public for the integration tests, not part of the API.
+#[doc(hidden)]
+pub const BLOB_COLUMNS: &str = blob_columns!();
+
+/// The sheets of a `rows` blob in workbook order, each with its columns in
+/// order, as declared at creation; `None` for a blob without them or that
+/// does not exist.
+pub(crate) async fn sheets(
+    exec: impl PgExecutor<'_>,
+    id: Uuid,
+) -> sqlx::Result<Option<Vec<Sheet>>> {
+    let sheets: Option<Option<sqlx::types::Json<Vec<Sheet>>>> =
+        sqlx::query_scalar("SELECT source_columns FROM blobs WHERE id = $1")
+            .bind(id)
+            .fetch_optional(exec)
+            .await?;
+    Ok(sheets
+        .flatten()
+        .map(|sheets| sheets.0)
+        .filter(|sheets| !sheets.is_empty()))
+}
 
 pub(crate) async fn insert(exec: impl PgExecutor<'_>, new: &NewBlob) -> sqlx::Result<Blob> {
     let scan_state = if new.skip_virus_scan {
@@ -32,7 +78,7 @@ pub(crate) async fn insert(exec: impl PgExecutor<'_>, new: &NewBlob) -> sqlx::Re
             RepresentationState::Disabled
         }
     };
-    sqlx::query_as::<_, Blob>(
+    sqlx::query_as::<_, Blob>(concat!(
         r#"
         INSERT INTO blobs (
             id, state, filename, content_type, category, input_type,
@@ -40,9 +86,9 @@ pub(crate) async fn insert(exec: impl PgExecutor<'_>, new: &NewBlob) -> sqlx::Re
             source_columns, thumbnail_state, preview_state, checksum_md5, url, source_main
         )
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
-        RETURNING *
-        "#,
-    )
+        RETURNING "#,
+        blob_columns!()
+    ))
     .bind(new.id)
     .bind(BlobState::Created.as_str())
     .bind(&new.filename)
@@ -66,10 +112,14 @@ pub(crate) async fn insert(exec: impl PgExecutor<'_>, new: &NewBlob) -> sqlx::Re
 }
 
 pub async fn find(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Result<Option<Blob>> {
-    sqlx::query_as::<_, Blob>("SELECT * FROM blobs WHERE id = $1")
-        .bind(id)
-        .fetch_optional(exec)
-        .await
+    sqlx::query_as::<_, Blob>(concat!(
+        "SELECT ",
+        blob_columns!(),
+        " FROM blobs WHERE id = $1"
+    ))
+    .bind(id)
+    .fetch_optional(exec)
+    .await
 }
 
 /// The one query on the read path: the columns of a [`BlobHead`], listed
@@ -93,10 +143,14 @@ pub(crate) async fn find_head(
 
 /// The blobs among `ids` that exist, in no particular order.
 pub(crate) async fn find_many(exec: impl PgExecutor<'_>, ids: &[Uuid]) -> sqlx::Result<Vec<Blob>> {
-    sqlx::query_as::<_, Blob>("SELECT * FROM blobs WHERE id = ANY($1)")
-        .bind(ids)
-        .fetch_all(exec)
-        .await
+    sqlx::query_as::<_, Blob>(concat!(
+        "SELECT ",
+        blob_columns!(),
+        " FROM blobs WHERE id = ANY($1)"
+    ))
+    .bind(ids)
+    .fetch_all(exec)
+    .await
 }
 
 #[derive(Debug, Default, Clone)]
@@ -125,7 +179,10 @@ pub struct Page {
 /// Newest first, keyset paginated on the UUID v7 id.
 pub(crate) async fn list(exec: impl PgExecutor<'_>, params: &ListParams) -> sqlx::Result<Page> {
     let limit = params.limit;
-    let mut qb = list_query("SELECT * FROM blobs WHERE true", params);
+    let mut qb = list_query(
+        concat!("SELECT ", blob_columns!(), " FROM blobs WHERE true"),
+        params,
+    );
     let mut items: Vec<Blob> = qb.build_query_as().fetch_all(exec).await?;
     let next_cursor = if items.len() > limit {
         items.truncate(limit);
@@ -184,7 +241,10 @@ fn list_query(head: &str, params: &ListParams) -> QueryBuilder<Postgres> {
 /// for tests that pin the listing's filters to their indexes.
 #[cfg(any(test, feature = "test-support"))]
 pub async fn explain_list(exec: impl PgExecutor<'_>, params: &ListParams) -> sqlx::Result<String> {
-    let mut qb = list_query("EXPLAIN SELECT * FROM blobs WHERE true", params);
+    let mut qb = list_query(
+        concat!("EXPLAIN SELECT ", blob_columns!(), " FROM blobs WHERE true"),
+        params,
+    );
     let lines: Vec<(String,)> = qb.build_query_as().fetch_all(exec).await?;
     Ok(lines
         .into_iter()
@@ -235,7 +295,7 @@ pub async fn transition(
         .push_bind(id)
         .push(" AND state = ANY(")
         .push_bind(from)
-        .push(") RETURNING *");
+        .push(concat!(") RETURNING ", blob_columns!()));
     let updated: Option<Blob> = qb.build_query_as().fetch_optional(&mut *conn).await?;
     match updated {
         Some(blob) => Ok(Transition::Done(blob)),
@@ -265,12 +325,13 @@ pub(crate) async fn begin_part(
     envelope: &Envelope,
     chunk_size: i32,
 ) -> sqlx::Result<Transition> {
-    let updated = sqlx::query_as::<_, Blob>(
+    let updated = sqlx::query_as::<_, Blob>(concat!(
         "UPDATE blobs SET state = $2, upload_started_at = now(), upload_heartbeat_at = now(), \
              kek_id = COALESCE(kek_id, $5), wrapped_key = COALESCE(wrapped_key, $6), \
              chunk_size = COALESCE(chunk_size, $7) \
-         WHERE id = $1 AND state = $3 AND source_parts = $4 RETURNING *",
-    )
+         WHERE id = $1 AND state = $3 AND source_parts = $4 RETURNING ",
+        blob_columns!()
+    ))
     .bind(blob.id)
     .bind(BlobState::Uploading.as_str())
     .bind(BlobState::Created.as_str())
@@ -298,10 +359,11 @@ pub async fn abort_upload(
     id: Uuid,
     started: Timestamp,
 ) -> sqlx::Result<Transition> {
-    let updated = sqlx::query_as::<_, Blob>(
+    let updated = sqlx::query_as::<_, Blob>(concat!(
         "UPDATE blobs SET state = $2 \
-         WHERE id = $1 AND state = $3 AND upload_started_at = $4 RETURNING *",
-    )
+         WHERE id = $1 AND state = $3 AND upload_started_at = $4 RETURNING ",
+        blob_columns!()
+    ))
     .bind(id)
     .bind(BlobState::Created.as_str())
     .bind(BlobState::Uploading.as_str())
@@ -369,7 +431,7 @@ pub(crate) async fn complete_upload(
 ) -> sqlx::Result<Transition> {
     let (state, scan_state) = done.scan.states();
     let mut tx = pool.begin().await?;
-    let updated = sqlx::query_as::<_, Blob>(
+    let updated = sqlx::query_as::<_, Blob>(concat!(
         r#"
         UPDATE blobs
         SET state = $2, storage_key = $3,
@@ -385,9 +447,9 @@ pub(crate) async fn complete_upload(
             -- retry only ever reads it while the blob is created.
             url = NULL
         WHERE id = $1 AND state = $12 AND upload_started_at = $14
-        RETURNING *
-        "#,
-    )
+        RETURNING "#,
+        blob_columns!()
+    ))
     .bind(blob.id)
     .bind(state.as_str())
     .bind(&done.storage_key)
@@ -455,7 +517,7 @@ pub(crate) async fn complete_part(
     n: u32,
     accepted: &PartAccepted,
 ) -> sqlx::Result<Transition> {
-    let updated = sqlx::query_as::<_, Blob>(
+    let updated = sqlx::query_as::<_, Blob>(concat!(
         "UPDATE blobs \
          SET state = $2, source_parts = $4, source_rows = source_rows + $5, \
              source_size = source_size + $6, \
@@ -464,8 +526,9 @@ pub(crate) async fn complete_part(
              source_sheet_rows = COALESCE($10, source_sheet_rows), \
              workspace_size = workspace_size + $11, \
              source_updated_at = now() \
-         WHERE id = $1 AND state = $3 AND upload_started_at = $8 RETURNING *",
-    )
+         WHERE id = $1 AND state = $3 AND upload_started_at = $8 RETURNING ",
+        blob_columns!()
+    ))
     .bind(id)
     .bind(BlobState::Created.as_str())
     .bind(BlobState::Uploading.as_str())
@@ -497,11 +560,12 @@ pub(crate) async fn finish_source(
     id: Uuid,
 ) -> sqlx::Result<Transition> {
     let mut tx = pool.begin().await?;
-    let updated = sqlx::query_as::<_, Blob>(
+    let updated = sqlx::query_as::<_, Blob>(concat!(
         "UPDATE blobs SET state = $2, uploaded_at = now() \
          WHERE id = $1 AND state = $3 AND source_parts > 0 AND input_type = ANY($4) \
-         RETURNING *",
-    )
+         RETURNING ",
+        blob_columns!()
+    ))
     .bind(id)
     .bind(BlobState::Uploaded.as_str())
     .bind(BlobState::Created.as_str())
@@ -548,12 +612,13 @@ pub(crate) async fn complete_build(
     built: &Built,
 ) -> sqlx::Result<Transition> {
     let mut tx = pool.begin().await?;
-    let updated = sqlx::query_as::<_, Blob>(
+    let updated = sqlx::query_as::<_, Blob>(concat!(
         "UPDATE blobs \
          SET state = $2, storage_key = $4, encryption_header = $5, checksum_sha256 = $6, \
              size = $7, archive_entries = $8, archive_errors = $9, checksum_md5 = $10 \
-         WHERE id = $1 AND state = $3 RETURNING *",
-    )
+         WHERE id = $1 AND state = $3 RETURNING ",
+        blob_columns!()
+    ))
     .bind(id)
     .bind(BlobState::Ready.as_str())
     .bind(BlobState::Uploaded.as_str())
@@ -591,10 +656,11 @@ pub(crate) async fn finish_scan(
         Verdict::Infected(name) => (BlobState::Infected, ScanState::Infected, Some(name)),
     };
     let mut tx = pool.begin().await?;
-    let updated = sqlx::query_as::<_, Blob>(
+    let updated = sqlx::query_as::<_, Blob>(concat!(
         "UPDATE blobs SET state = $2, scan_state = $3, scanned_at = now(), scan_signature = $5 \
-         WHERE id = $1 AND state = $4 RETURNING *",
-    )
+         WHERE id = $1 AND state = $4 RETURNING ",
+        blob_columns!()
+    ))
     .bind(id)
     .bind(state.as_str())
     .bind(scan_state.as_str())
@@ -700,10 +766,14 @@ pub(crate) enum Retry {
 /// the reading of its state and the enqueue.
 pub(crate) async fn retry(pool: &PgPool, id: Uuid, now: Timestamp) -> sqlx::Result<Retry> {
     let mut tx = pool.begin().await?;
-    let blob = sqlx::query_as::<_, Blob>("SELECT * FROM blobs WHERE id = $1 FOR UPDATE")
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await?;
+    let blob = sqlx::query_as::<_, Blob>(concat!(
+        "SELECT ",
+        blob_columns!(),
+        " FROM blobs WHERE id = $1 FOR UPDATE"
+    ))
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?;
     let Some(blob) = blob else {
         return Ok(Retry::Missing);
     };
@@ -740,10 +810,14 @@ pub(crate) async fn retry(pool: &PgPool, id: Uuid, now: Timestamp) -> sqlx::Resu
         return Ok(Retry::Pending);
     }
     // The enqueue cleared the failure on the row; read it back as it is.
-    let blob = sqlx::query_as::<_, Blob>("SELECT * FROM blobs WHERE id = $1")
-        .bind(id)
-        .fetch_one(&mut *tx)
-        .await?;
+    let blob = sqlx::query_as::<_, Blob>(concat!(
+        "SELECT ",
+        blob_columns!(),
+        " FROM blobs WHERE id = $1"
+    ))
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await?;
     tx.commit().await?;
     Ok(Retry::Enqueued(blob, inserted))
 }

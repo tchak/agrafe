@@ -21,7 +21,6 @@ use uuid::Uuid;
 use crate::app::Agrafe;
 use crate::classify::Category;
 use crate::jobs::Priority;
-use crate::source::rows::Sheet;
 pub use repo::{DEFAULT_LIMIT, ListParams, MAX_LIMIT, Page};
 
 /// Why a blob could not be deleted.
@@ -541,9 +540,6 @@ pub struct Blob {
     /// Lines accepted into that sheet so far; `source_rows` stays the
     /// total. Zero for anything else.
     pub source_sheet_rows: i64,
-    /// The sheets of a `rows` blob in workbook order, each with its columns
-    /// in order: declared at creation, read by accept and build.
-    pub source_columns: Option<sqlx::types::Json<Vec<Sheet>>>,
     /// Members the archive build wrote; `None` until it ran.
     pub archive_entries: Option<i64>,
     /// Members the archive build skipped because they were gone by then,
@@ -716,14 +712,6 @@ impl Blob {
             uploaded_at: self.uploaded_at,
         }
     }
-
-    /// The sheets of a `rows` blob, in workbook order: at least one.
-    pub(crate) fn sheets(&self) -> Option<&[Sheet]> {
-        self.source_columns
-            .as_ref()
-            .map(|sheets| sheets.0.as_slice())
-            .filter(|sheets| !sheets.is_empty())
-    }
 }
 
 /// The public upload rule: only a `raw` or `multipart` blob that will be
@@ -747,9 +735,9 @@ pub(crate) fn state_at(
 
 /// What serving a blob needs of its row: identity, state, the envelope and
 /// the representation states. `Blob` carries the upload, scan and source
-/// bookkeeping besides, including a `rows` blob's column declaration, which
-/// is up to megabytes of JSON a download has no use for. The read routes
-/// fetch this and nothing more; see `repo::find_head`.
+/// bookkeeping besides, which a download has no use for. The read routes
+/// fetch this and nothing more; see `repo::find_head`. Neither carries a
+/// `rows` blob's column declaration, see `repo::sheets`.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct BlobHead {
     /// See [`Blob::id`].

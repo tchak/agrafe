@@ -1212,7 +1212,9 @@ Excel has no limit and LibreOffice allows ten thousand, but the declaration
 is read back on every part and nothing legitimate needs more. One of the two
 is required for a `rows` blob and both are refused on any other input type.
 Either is stored on the row as `source_columns`, a list of sheets, from which
-accept and build read it.
+accept and build read it, with a query of their own: every other read of the
+row names its columns and leaves this one out, so that a listing page of
+`rows` blobs does not fetch and decode up to 16 MiB of JSON for each.
 
 A column is an object with a `name` (the header text, any non-empty string
 without control or bidirectional formatting characters, the filename's rule,

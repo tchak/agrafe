@@ -19,7 +19,7 @@ mod xml;
 use super::build::{self, Assemble, BuildError, Counts, Sink};
 use super::{Job, JobError};
 use crate::app::Agrafe;
-use crate::blob::{Blob, InputType};
+use crate::blob::{Blob, InputType, repo};
 use crate::classify;
 use crate::source::Source;
 use crate::source::rows::{Cell, Line, Sheet, parse_source_line, switch_target};
@@ -39,10 +39,13 @@ impl Assemble for Rows {
     const INPUT: InputType = InputType::Rows;
 
     async fn assemble(state: &Agrafe, blob: &Blob, sink: &mut Sink) -> Result<Counts, BuildError> {
-        let sheets = blob.sheets().ok_or(BuildError::Incomplete {
-            blob_id: blob.id,
-            what: "columns",
-        })?;
+        let sheets = repo::sheets(state.pool(), blob.id)
+            .await?
+            .ok_or(BuildError::Incomplete {
+                blob_id: blob.id,
+                what: "columns",
+            })?;
+        let sheets = sheets.as_slice();
         let mut rows = SourceRows::new(Source::new(state, blob), sheets);
         match blob.content_type.as_str() {
             // A CSV declares one sheet; creation refuses more.

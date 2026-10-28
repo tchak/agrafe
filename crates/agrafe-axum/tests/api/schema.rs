@@ -103,3 +103,27 @@ async fn check_constraints_match_the_enums() {
         .collect();
     assert_eq!(actual, expected);
 }
+
+/// `Blob` reads every column of `blobs` but the column declaration, by
+/// name: a column added to the table and forgotten in the list would never
+/// reach the struct, and one dropped would fail every read.
+#[tokio::test]
+async fn blob_columns_are_the_table_but_the_declaration() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let table: BTreeSet<String> = sqlx::query_scalar(
+        "SELECT column_name::text FROM information_schema.columns \
+         WHERE table_schema = current_schema() AND table_name = 'blobs'",
+    )
+    .fetch_all(app.state.pool())
+    .await
+    .unwrap()
+    .into_iter()
+    .collect();
+    let mut read: BTreeSet<String> = agrafe::blob::repo::BLOB_COLUMNS
+        .split(',')
+        .map(|c| c.trim().to_string())
+        .collect();
+    assert!(read.insert("source_columns".into()));
+    assert_eq!(read, table);
+}

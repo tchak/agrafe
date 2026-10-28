@@ -19,6 +19,7 @@ use sqlx::{PgConnection, PgExecutor, Postgres, QueryBuilder};
 use uuid::Uuid;
 
 use crate::app::Agrafe;
+use crate::blob::repo::blob_columns;
 use crate::blob::{Blob, BlobState};
 use crate::text::is_bidi_control;
 
@@ -326,10 +327,14 @@ fn validate_field(field: &str, value: &str) -> Result<(), String> {
 /// expiry update and a delete wait on it, so what is read here holds
 /// until the commit.
 async fn lock_blob(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<Blob>> {
-    sqlx::query_as::<_, Blob>("SELECT * FROM blobs WHERE id = $1 FOR UPDATE")
-        .bind(id)
-        .fetch_optional(conn)
-        .await
+    sqlx::query_as::<_, Blob>(concat!(
+        "SELECT ",
+        blob_columns!(),
+        " FROM blobs WHERE id = $1 FOR UPDATE"
+    ))
+    .bind(id)
+    .fetch_optional(conn)
+    .await
 }
 
 /// Insert, or find the attachment the unique index already holds.
