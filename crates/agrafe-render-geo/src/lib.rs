@@ -33,6 +33,15 @@ const HALF_WORLD: f64 = std::f64::consts::PI * EARTH_RADIUS;
 const MAX_LATITUDE: f64 = 85.051_128_78;
 /// How far a drawn vertex may stray from the exact line, in pixels.
 const SIMPLIFY_TOLERANCE: f64 = 0.5;
+
+/// Points of a line simplified at a time, the ends of each kept. Douglas–
+/// Peucker is quadratic at worst, on a zigzag that keeps every point, and
+/// the drawing budget counts what it keeps, not what it reads: whole, a
+/// line of a few hundred thousand points ran past the sandbox's timeout.
+/// In pieces the worst case is linear in the line, a few hundred distances
+/// a point, for a vertex kept every few hundred that a whole pass might
+/// have dropped.
+const SIMPLIFY_CHUNK: usize = 256;
 /// What the casing adds around a stroke, in pixels.
 const CASING: f64 = 3.0;
 /// The ring around a point's disc, in pixels.
@@ -453,49 +462,60 @@ fn extent_of<'a>(shapes: impl Iterator<Item = &'a Shape>, spec: &Spec) -> Extent
 }
 
 /// Douglas–Peucker: the points of `line` that keep it within
-/// `SIMPLIFY_TOLERANCE` of the original.
+/// `SIMPLIFY_TOLERANCE` of the original, a `SIMPLIFY_CHUNK` at a time. The
+/// splits wait on a stack of their own rather than the call stack, whose
+/// depth would otherwise follow the line.
 fn simplify(line: &[P]) -> Vec<P> {
-    fn recurse(line: &[P], keep: &mut Vec<bool>, offset: usize) {
-        let (first, last) = (line[0], line[line.len() - 1]);
-        let (dx, dy) = (last.x - first.x, last.y - first.y);
-        let length = (dx * dx + dy * dy).sqrt();
-        let distance = |p: &P| {
-            if length == 0.0 {
-                ((p.x - first.x).powi(2) + (p.y - first.y).powi(2)).sqrt()
-            } else {
-                ((p.x - first.x) * dy - (p.y - first.y) * dx).abs() / length
+    if line.len() < 3 {
+        return line.to_vec();
+    }
+    let mut keep = vec![false; line.len()];
+    keep[0] = true;
+    let mut pending = Vec::new();
+    let mut start = 0;
+    while start < line.len() - 1 {
+        let end = (start + SIMPLIFY_CHUNK).min(line.len() - 1);
+        keep[end] = true;
+        pending.push((start, end));
+        while let Some((first, last)) = pending.pop() {
+            if let Some(index) = farthest(line, first, last) {
+                keep[index] = true;
+                pending.push((first, index));
+                pending.push((index, last));
             }
-        };
-        let (index, farthest) = line
-            .iter()
-            .enumerate()
-            .skip(1)
-            .take(line.len().saturating_sub(2))
-            .map(|(i, p)| (i, distance(p)))
-            .fold((0, 0.0), |best, candidate| {
+        }
+        start = end;
+    }
+    line.iter()
+        .zip(keep)
+        .filter_map(|(p, keep)| keep.then_some(*p))
+        .collect()
+}
+
+/// The point strictly between `first` and `last` farthest from the segment
+/// joining them, when it is farther than `SIMPLIFY_TOLERANCE`.
+fn farthest(line: &[P], first: usize, last: usize) -> Option<usize> {
+    let (a, b) = (line[first], line[last]);
+    let (dx, dy) = (b.x - a.x, b.y - a.y);
+    let length = (dx * dx + dy * dy).sqrt();
+    let distance = |p: &P| {
+        if length == 0.0 {
+            ((p.x - a.x).powi(2) + (p.y - a.y).powi(2)).sqrt()
+        } else {
+            ((p.x - a.x) * dy - (p.y - a.y) * dx).abs() / length
+        }
+    };
+    let (index, farthest) =
+        (first + 1..last)
+            .map(|i| (i, distance(&line[i])))
+            .fold((first, 0.0), |best, candidate| {
                 if candidate.1 > best.1 {
                     candidate
                 } else {
                     best
                 }
             });
-        if farthest > SIMPLIFY_TOLERANCE {
-            keep[offset + index] = true;
-            recurse(&line[..=index], keep, offset);
-            recurse(&line[index..], keep, offset + index);
-        }
-    }
-    if line.len() < 3 {
-        return line.to_vec();
-    }
-    let mut keep = vec![false; line.len()];
-    keep[0] = true;
-    keep[line.len() - 1] = true;
-    recurse(line, &mut keep, 0);
-    line.iter()
-        .zip(keep)
-        .filter_map(|(p, keep)| keep.then_some(*p))
-        .collect()
+    (farthest > SIMPLIFY_TOLERANCE).then_some(index)
 }
 
 /// The SVG: a flat background when no layer applies, each shape in its
@@ -1041,6 +1061,23 @@ mod tests {
         assert_eq!(style_of(&props), Style::default());
     }
 
+    /// A zigzag keeps most of its points, the worst case of Douglas–Peucker: whole,
+    /// a quadratic pass and a call per point on the stack, which overflowed
+    /// a debug build's at twenty thousand. In chunks it is linear.
+    #[test]
+    fn a_long_zigzag_simplifies_in_linear_time() {
+        let zigzag: Vec<P> = (0..400_000)
+            .map(|i| P {
+                x: f64::from(i) * 0.01,
+                y: if i % 2 == 0 { 0.0 } else { 3.0 },
+            })
+            .collect();
+        let started = std::time::Instant::now();
+        assert!(simplify(&zigzag).len() > zigzag.len() / 2);
+        let took = started.elapsed();
+        assert!(took < std::time::Duration::from_secs(20), "{took:?}");
+    }
+
     #[test]
     fn simplifies_to_the_pixel_and_stops_at_the_budget() {
         let straight: Vec<P> = (0..100)
@@ -1058,6 +1095,17 @@ mod tests {
             .collect();
         assert_eq!(simplify(&zigzag).len(), 100);
         assert_eq!(simplify(&zigzag[..2]).len(), 2);
+        // Longer than a chunk, straight: the chunks' ends stay.
+        let long: Vec<P> = (0..1000)
+            .map(|i| P {
+                x: f64::from(i),
+                y: 0.0,
+            })
+            .collect();
+        assert_eq!(
+            simplify(&long).len(),
+            1 + 1000_usize.div_ceil(SIMPLIFY_CHUNK)
+        );
 
         // Two lines of four and two vertices, a budget for the first only.
         let tight = Spec {

@@ -2358,7 +2358,10 @@ on "has preview", never on category. Sources, in order:
    parcel still gets a readable map, then widened to the aspect ratio of
    the box: the image is the whole box, never letterboxed. The map is
    drawn at the preview box or `max_size`, whichever is smaller. Rings and
-   lines are simplified with Douglas–Peucker at half a pixel, and the
+   lines are simplified with Douglas–Peucker at half a pixel, 256 points
+   at a time, the ends of each kept: whole, it is quadratic on a zigzag
+   that keeps every point, which a file of a few hundred thousand made
+   run past the timeout, and in pieces it is linear. The
    drawing stops at `max_vertices` or `max_shapes`, whichever comes
    first, so a 60 MiB file cannot produce a 60 MiB SVG or make rsvg
    crawl; the sandbox timeout bounds the rest. Both budgets, because
