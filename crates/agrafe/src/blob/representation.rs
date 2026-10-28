@@ -161,12 +161,17 @@ pub async fn store(
         .unwrap(blob_id, &stored.kek_id, &stored.wrapped_key)
         .map_err(ReadError::from)?;
     let object_key = kind.object_key(blob_id);
-    let sealed = streaming::encrypt(&key, object_key.as_bytes(), stored.layout, plaintext)
-        .map_err(|source| Error::Seal {
-            kind,
-            blob_id,
-            source,
-        })?;
+    let sealed = streaming::encrypt(
+        &key,
+        super::key::associated_data(&object_key).as_bytes(),
+        stored.layout,
+        plaintext,
+    )
+    .map_err(|source| Error::Seal {
+        kind,
+        blob_id,
+        source,
+    })?;
     state
         .store()
         .put(&ObjectPath::from(object_key), sealed.into())
@@ -214,12 +219,17 @@ pub async fn load(
     let mut buffer = sealed
         .try_into_mut()
         .unwrap_or_else(|shared| BytesMut::from(&shared[..]));
-    let len = streaming::decrypt_in_place(&key, object_key.as_bytes(), stored.layout, &mut buffer)
-        .map_err(|source| Error::Corrupt {
-            kind,
-            blob_id,
-            source,
-        })?;
+    let len = streaming::decrypt_in_place(
+        &key,
+        super::key::associated_data(&object_key).as_bytes(),
+        stored.layout,
+        &mut buffer,
+    )
+    .map_err(|source| Error::Corrupt {
+        kind,
+        blob_id,
+        source,
+    })?;
     buffer.truncate(len);
     Ok(Some(buffer.freeze()))
 }

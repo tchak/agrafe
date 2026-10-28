@@ -49,6 +49,16 @@ pub fn source(id: Uuid, n: u32) -> String {
     format!("{}/source/{n}", prefix(id))
 }
 
+/// The associated data of the object at `path`: its name within the
+/// blob, `<blob id>/<name>`, which is the path without its shard. The
+/// AEAD binds a ciphertext to it, so one copied under another blob or
+/// another name does not decrypt; the shard is a function of the id and
+/// adds nothing to the binding, and leaving it out keeps a copy of the
+/// bucket to another layout a copy, not a re-encryption.
+pub fn associated_data(path: &str) -> &str {
+    path.split_once('/').map_or(path, |(_, name)| name)
+}
+
 /// Where a blob sorts among the bucket's keys: the stores list keys in
 /// byte order, which for this layout is the shard, then the id, since
 /// the hyphenated lowercase UUID sorts as the `uuid` column does. The
@@ -105,6 +115,22 @@ mod tests {
     }
 
     #[test]
+    fn the_associated_data_is_the_key_without_its_shard() {
+        let id: Uuid = "01999e6c-0000-7000-8000-0000000000ab".parse().unwrap();
+        assert_eq!(associated_data(&original(id)), format!("{id}/original"));
+        assert_eq!(
+            associated_data(&representation(id, Representation::Preview)),
+            format!("{id}/preview")
+        );
+        assert_eq!(associated_data(&source(id, 3)), format!("{id}/source/3"));
+        assert_eq!(
+            associated_data("README"),
+            "README",
+            "a key with no shard is itself"
+        );
+    }
+
+    #[test]
     fn the_key_order_is_the_shard_then_the_id() {
         let early: Uuid = "01999e6c-0000-7000-8000-0000000000ff".parse().unwrap();
         let late: Uuid = "01999e6d-0000-7000-8000-000000000000".parse().unwrap();
@@ -118,7 +144,9 @@ mod tests {
 
     #[test]
     fn an_owner_is_a_shard_and_a_uuid_with_a_name_after_them() {
-        let id = Uuid::now_v7();
+        // A fixed id with letters in its shard and its body: the spelling
+        // checks below uppercase them, which a random id may have none of.
+        let id: Uuid = "01999e6c-0000-7000-8000-0000000000ab".parse().unwrap();
         let p = |key: String| Path::from(key);
         assert_eq!(owner(&p(original(id))), Some(id));
         assert_eq!(owner(&p(source(id, 3))), Some(id));

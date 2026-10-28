@@ -527,7 +527,11 @@ where
     let path = ObjectPath::from(storage_key);
     let upload = state.store().put_multipart(&path).await?;
     let mut writer = WriteMultipart::new(upload);
-    let encryptor = Encryptor::new(key, storage_key.as_bytes(), layout);
+    let encryptor = Encryptor::new(
+        key,
+        crate::blob::key::associated_data(storage_key).as_bytes(),
+        layout,
+    );
     let header = encryptor.header().as_bytes().to_vec();
     // The row is touched while the bytes flow, so the reaper only resets
     // an upload whose process died, never a slow one; and an upload whose

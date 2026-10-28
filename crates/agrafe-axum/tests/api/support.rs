@@ -540,7 +540,13 @@ pub async fn stored_plaintext(app: &TestApp, id: &str) -> Vec<u8> {
             blob.wrapped_key.as_deref().unwrap(),
         )
         .unwrap();
-    streaming::decrypt(&data_key, key.as_bytes(), layout, &bytes).unwrap()
+    streaming::decrypt(
+        &data_key,
+        agrafe::blob::key::associated_data(key).as_bytes(),
+        layout,
+        &bytes,
+    )
+    .unwrap()
 }
 
 /// A raw response: status, headers and body bytes.

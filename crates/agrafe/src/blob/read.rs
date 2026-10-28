@@ -96,8 +96,8 @@ impl ReadError {
 pub struct Stored {
     /// The blob, which the wrapped key is bound to.
     pub blob_id: Uuid,
-    /// Object key of the original, `key::original`; also the stream's
-    /// associated data.
+    /// Object key of the original, `key::original`; the stream's
+    /// associated data is `key::associated_data` of it.
     pub storage_key: String,
     /// The key-encryption key that unwraps `wrapped_key`.
     pub kek_id: String,
@@ -240,7 +240,7 @@ impl Reader {
             .unwrap(stored.blob_id, &stored.kek_id, &stored.wrapped_key)?;
         let decryptor = Decryptor::new(
             &key,
-            stored.storage_key.as_bytes(),
+            super::key::associated_data(&stored.storage_key).as_bytes(),
             &stored.header,
             stored.layout,
         );
@@ -326,7 +326,12 @@ impl Reader {
                 blob_id: blob.id,
                 source,
             })?;
-        let decryptor = Decryptor::new(&key, storage_key.as_bytes(), &header, layout);
+        let decryptor = Decryptor::new(
+            &key,
+            super::key::associated_data(&storage_key).as_bytes(),
+            &header,
+            layout,
+        );
         Ok(Self {
             source,
             buffer,

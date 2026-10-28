@@ -374,3 +374,63 @@ async fn original_rejects_a_bad_disposition() {
     let (status, _) = call(&app.private, req(Method::GET, &uri)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
+
+/// The ciphertext is bound to the object's name within its blob, not to
+/// the path it sits at: moved to another layout it still reads, and under
+/// another blob's name it does not.
+#[tokio::test]
+async fn the_original_is_bound_to_its_name_not_its_path() {
+    use object_store::ObjectStoreExt;
+    use object_store::path::Path as ObjectPath;
+
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let bytes = png_bytes(3500);
+    let blob = ready_blob(&app, &bytes).await;
+    let id = id_of(&blob);
+    let stored = app
+        .state
+        .store()
+        .get(&ObjectPath::from(storage_key(&app, id).await))
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+
+    // Another layout, the same name: the row points at the copy, which
+    // decrypts as it is.
+    let moved = format!("elsewhere/{id}/original");
+    app.state
+        .store()
+        .put(&ObjectPath::from(moved.as_str()), stored.clone().into())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE blobs SET storage_key = $2 WHERE id = $1")
+        .bind(parse_id(id))
+        .bind(&moved)
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+    let uri = format!("/blobs/{id}/original/photo.png");
+    let (status, _, body) = fetch(&app.private, req(Method::GET, &uri)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, bytes);
+
+    // Another blob's name, under its own key: the same bytes, the same
+    // length, and the AEAD refuses them.
+    let other = ready_blob(&app, &png_bytes(3500)).await;
+    let other_id = id_of(&other);
+    app.state
+        .store()
+        .put(
+            &ObjectPath::from(storage_key(&app, other_id).await),
+            stored.into(),
+        )
+        .await
+        .unwrap();
+    let uri = format!("/blobs/{other_id}/original/photo.png");
+    let (status, body) = call(&app.private, req(Method::GET, &uri)).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert_eq!(body["error"]["code"], "internal");
+}

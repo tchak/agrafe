@@ -1006,7 +1006,10 @@ a week (see "Audit"). Nothing else finds an object by anything but the
 blob's id, which the shard is a function of. The layout is the one
 decision a deployment cannot revisit cheaply, since objects are immutable
 and moving a billion of them is a copy of the bucket, so it was
-taken before the first one.
+taken before the first one. A copy is what it would be: the AEAD binds a
+ciphertext to the object's name within the blob, `<blob id>/<name>`, not
+to the shard in front of it (see "Encryption at rest"), so a bucket laid out
+anew decrypts as it is.
 
 ## Generated blobs
 
@@ -1723,8 +1726,13 @@ sync-only seek make range requests awkward.
   prompt. The file's text, the parsed secrets and their decoded bytes are
   wiped once the `Kek`s are built; the buffers the TOML parser passes
   through on the way are not agrafe's to wipe.
-- The stream's associated data is the object key, so a ciphertext copied to
-  another key does not decrypt.
+- The stream's associated data is the object's name within its blob,
+  `<blob id>/<name>`: the object key without its shard (`blob::key::
+  associated_data`). A ciphertext copied under another blob or another
+  name does not decrypt. The shard is left out because it is a function
+  of the id and binds nothing more, and because with it in, a copy of the
+  bucket to another layout would be a re-encryption of every object
+  instead of a copy (see "Object keys").
 - Payload follows **Tink's AES-GCM-HKDF-STREAMING** wire format. It is a
   published spec with reference implementations in Go and Java, so our
   implementation can be validated against cross-language test vectors.
@@ -1949,7 +1957,8 @@ profile.
 Representations live at `<shard>/<blob id>/thumbnail` and
 `<shard>/<blob id>/preview`, encrypted with the blob's own data key: the streaming AEAD derives a fresh
 subkey per stream from a random salt, so one key safely covers the three
-objects, and the object key is the associated data as for the original.
+objects, and the associated data is the object's name within the blob,
+as for the original.
 They are small and served whole, with a strong `ETag` of the content and
 `Cache-Control: private, max-age=86400`: not `immutable`, since a version
 bump changes them under the same URL. The row records the SHA-256 and the

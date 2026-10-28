@@ -268,7 +268,11 @@ impl Sink {
             .put_multipart(&ObjectPath::from(storage_key))
             .await?;
         let mut writer = WriteMultipart::new_with_chunk_size(upload, BUILD_PART_SIZE);
-        let encryptor = Encryptor::new(key, storage_key.as_bytes(), layout);
+        let encryptor = Encryptor::new(
+            key,
+            crate::blob::key::associated_data(storage_key).as_bytes(),
+            layout,
+        );
         let header = encryptor.header().as_bytes().to_vec();
         writer.write(&header);
         Ok(Self {
