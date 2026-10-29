@@ -708,6 +708,51 @@ async fn the_job_resumes_from_its_progress() {
     );
 }
 
+/// The prefix of the saved key gained an object since the save, a
+/// render's that sorts after the original: the resumed listing starts
+/// inside that prefix, and its new object is the next run's, not a
+/// group out of order.
+#[tokio::test]
+async fn a_resumed_prefix_that_gained_an_object_is_passed() {
+    let db = TestDatabase::new().await;
+    let app = settled_setup(db).await;
+    let mut ids = Vec::new();
+    for _ in 0..2 {
+        ids.push(id_of(&ready_blob(&app, &png_bytes(100)).await).to_string());
+    }
+    ids.sort_by_key(|id| agrafe::blob::key::order(parse_id(id)));
+    // Saved after the first blob's original; its preview came later.
+    put_object(&app, &object_key(&ids[0], "preview"), vec![1]).await;
+    let done = audit::Progress {
+        after: Some(storage_key(&app, &ids[0]).await),
+        cursor: ids[0].parse().unwrap(),
+        report: Report::default(),
+    };
+    sqlx::query("INSERT INTO jobs (kind, payload, run_at) VALUES ('audit', $1, now())")
+        .bind(serde_json::to_value(&done).unwrap())
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+    assert!(run_job(&app, JobKind::Audit).await);
+
+    let (dead, pending): (i64, i64) = sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE failed_at IS NOT NULL), \
+                count(*) FILTER (WHERE last_error IS NULL AND run_at > now()) \
+         FROM jobs WHERE kind = 'audit'",
+    )
+    .fetch_one(app.state.pool())
+    .await
+    .unwrap();
+    assert_eq!((dead, pending), (0, 1), "done, and the next one scheduled");
+    let (_, body) = call(&app.private, req(Method::GET, "/metrics")).await;
+    let text = body.as_str().unwrap();
+    assert!(text.contains("agrafe_audit_blobs 1"), "{text}");
+    assert!(
+        text.contains("agrafe_audit_findings{kind=\"orphan\"} 0"),
+        "{text}"
+    );
+}
+
 #[tokio::test]
 async fn the_job_schedules_the_next_run_and_yields_to_a_running_one() {
     let db = TestDatabase::new().await;

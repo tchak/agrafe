@@ -510,11 +510,19 @@ async fn sweep(
     };
     let mut rows = Rows::new(conn, now, progress.cursor);
 
+    // The prefix the saved key is in was checked before the save. An
+    // object it gained since, a render's, lists after that key: it is
+    // the next run's, not a group out of order.
+    let resumed = sweep.last;
     let mut listing = listing(state, after);
     let mut current: Option<Group> = None;
     while let Some(object) = listing.try_next().await? {
+        let owner = key::owner(&object.location);
+        if owner.is_some() && owner == resumed && current.is_none() {
+            continue;
+        }
         sweep.report.objects += 1;
-        let Some(id) = key::owner(&object.location) else {
+        let Some(id) = owner else {
             sweep.foreign(&object);
             continue;
         };
