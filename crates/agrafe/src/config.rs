@@ -143,6 +143,15 @@ impl Config {
                 "media.variant_version must be at least 1".into(),
             ));
         }
+        if let Some(dir) = self.media.tmp_dir.as_ref().filter(|dir| !dir.is_absolute()) {
+            // The sandbox is handed the directory as it is, and LibreOffice
+            // resolves a relative one against its own working directory,
+            // which is that directory again.
+            return Err(ConfigError::Invalid(format!(
+                "media.tmp_dir must be an absolute path, not {}",
+                dir.display()
+            )));
+        }
         self.server.cors.validate()?;
         self.database.validate()?;
         self.webhook.validate()?;
@@ -1664,6 +1673,25 @@ mod tests {
             jail.set_env("AGRAFE_SERVER__INTERFACES", "[]");
             let err = load(&example()).unwrap_err().to_string();
             assert!(err.contains("at least one interface"), "{err}");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn media_tmp_dir_must_be_absolute() {
+        Jail::expect_with(|jail| {
+            jail.set_env("AGRAFE_MEDIA__TMP_DIR", "work");
+            let err = load(&example()).unwrap_err().to_string();
+            assert!(
+                err.contains("media.tmp_dir must be an absolute path"),
+                "{err}"
+            );
+            jail.set_env("AGRAFE_MEDIA__TMP_DIR", "/var/tmp/agrafe");
+            let config = load(&example())?;
+            assert_eq!(
+                config.media.tmp_dir.as_deref(),
+                Some(Path::new("/var/tmp/agrafe"))
+            );
             Ok(())
         });
     }

@@ -266,7 +266,7 @@ vips_command = "vips"
 # will do, and every sandbox timeout it would burn is spared.
 max_source_size = "64 MiB"
 # Where originals are unpacked while rendering, and where vips spills its
-# intermediates; the system temporary directory by default.
+# intermediates, an absolute path; the system temporary directory by default.
 # tmp_dir = "/var/tmp/agrafe"
 
 [media.sandbox]
