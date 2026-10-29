@@ -1059,3 +1059,39 @@ async fn long_source_streams() {
         assert_eq!(count, n, "{filename}");
     }
 }
+
+/// A part that fails before its body streams, here because the row's
+/// columns cannot be read, hands the row back: it is `created` again at
+/// once, so a retry of the part is taken, not `409` until the reaper.
+#[tokio::test]
+async fn a_part_failing_before_its_body_hands_the_row_back() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let created = create(&app, rows_blob("export.csv", "text/csv")).await;
+    let id = id_of(&created);
+    let pool = app.state.pool();
+    let columns: Value = sqlx::query_scalar("SELECT source_columns FROM blobs WHERE id = $1")
+        .bind(parse_id(id))
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE blobs SET source_columns = NULL WHERE id = $1")
+        .bind(parse_id(id))
+        .execute(pool)
+        .await
+        .unwrap();
+    let (status, body) = put_part(&app, id, 1, lines(&SAMPLE)).await;
+    assert!(!status.is_success(), "{status}: {body}");
+    let blob = get_blob(&app, id).await;
+    assert_eq!(blob["state"], "created", "handed back: {blob}");
+    assert_eq!(blob["source_parts"], 0);
+
+    sqlx::query("UPDATE blobs SET source_columns = $2 WHERE id = $1")
+        .bind(parse_id(id))
+        .bind(&columns)
+        .execute(pool)
+        .await
+        .unwrap();
+    let (status, body) = put_part(&app, id, 1, lines(&SAMPLE)).await;
+    assert_eq!(status, StatusCode::OK, "the retry is taken: {body}");
+}

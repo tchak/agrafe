@@ -159,6 +159,21 @@ fn finish_refusal(blob: &Blob, now: Timestamp) -> Result<(), UploadError> {
     Ok(())
 }
 
+/// What checks a part of `blob` as it streams, by its input type.
+async fn tap(state: &Agrafe, blob: &Blob) -> Result<SourceTap, UploadError> {
+    Ok(match blob.input_type {
+        InputType::Archive => SourceTap::Archive(archive::Accept::new(state.clone(), blob)),
+        InputType::Rows => {
+            let sheets = crate::blob::repo::sheets(state.pool(), blob.id).await?;
+            SourceTap::Rows(rows::Accept::new(state, blob, sheets)?)
+        }
+        InputType::Document => SourceTap::Document(document::Accept::new(state.clone(), blob)),
+        InputType::Raw | InputType::Multipart | InputType::Url => {
+            unreachable!("prepare_part admits generated blobs only")
+        }
+    })
+}
+
 /// Encrypt and store part `n`, then count it on the row or hand the row
 /// back. `blob` is the row as `begin_part` returned it; its
 /// `upload_started_at` is this upload's claim on it, as for a file.
@@ -174,15 +189,13 @@ async fn store_part(
         .upload_started_at
         .expect("begin_part sets upload_started_at");
     let storage_key = crate::blob::key::source(blob.id, n);
-    let tap = match blob.input_type {
-        InputType::Archive => SourceTap::Archive(archive::Accept::new(state.clone(), &blob)),
-        InputType::Rows => {
-            let sheets = crate::blob::repo::sheets(state.pool(), blob.id).await?;
-            SourceTap::Rows(rows::Accept::new(&state, &blob, sheets)?)
-        }
-        InputType::Document => SourceTap::Document(document::Accept::new(state.clone(), &blob)),
-        InputType::Raw | InputType::Multipart | InputType::Url => {
-            unreachable!("prepare_part admits generated blobs only")
+    // The row is `uploading` from here: a failure before the body streams,
+    // the rows tap's lookup of its sheets, hands it back as one after.
+    let tap = match tap(&state, &blob).await {
+        Ok(tap) => tap,
+        Err(err) => {
+            upload::hand_back(&state, blob.id, started).await;
+            return Err(err);
         }
     };
 
