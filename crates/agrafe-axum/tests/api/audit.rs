@@ -256,6 +256,26 @@ async fn the_deep_check_reads_the_originals_back() {
     );
 }
 
+/// A KEK this process does not have says nothing of the original: the
+/// deep check counts an error to act on, and stamps nothing.
+#[tokio::test]
+async fn the_deep_check_does_not_blame_a_missing_kek_on_the_original() {
+    let db = TestDatabase::new().await;
+    let app = settled_setup(db).await;
+    let blob = ready_blob(&app, &png_bytes(3000)).await;
+    let id = id_of(&blob);
+    sqlx::query("UPDATE blobs SET kek_id = 'retired' WHERE id = $1")
+        .bind(parse_id(id))
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+
+    let report = audit_with(&app, DEEP).await;
+    assert_eq!(counts(&report), vec![], "{report}");
+    assert_eq!(report.errors, 1, "{report}");
+    assert_eq!(get_blob(&app, id).await["failed_at"], json!(null));
+}
+
 #[tokio::test]
 async fn a_missing_representation_is_rendered_again() {
     let db = TestDatabase::new().await;

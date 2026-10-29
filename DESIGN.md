@@ -3151,7 +3151,9 @@ length must be one a stream of that layout produces. The deep check,
 with `checksum_sha256`, every one or one in N (`--sample N`, picked by
 the random low bits of the id so the sample is the same from one run to
 the next and a run can be repeated to confirm), which is reading the
-bucket and is never the job's.
+bucket and is never the job's. A data key wrapped under a KEK the process
+does not have is an error to act on, not a damaged original: it says
+nothing of the bytes.
 
 What it does with a finding, each one a `warn` line in the log:
 

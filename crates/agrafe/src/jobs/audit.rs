@@ -52,6 +52,7 @@ use crate::app::Agrafe;
 use crate::blob::read::{Columns, ReadError, Reader, Stored};
 use crate::blob::{self, BlobState, Representation, RepresentationState, key, repo};
 use crate::config::StorageConfig;
+use crate::encryption::UnwrapError;
 
 /// Why an audit could not run to the end. A mismatch it finds is a
 /// finding, not an error.
@@ -1017,6 +1018,17 @@ impl Sweep<'_> {
                 false
             }
             Err(ReadError::Store(err)) if !matches!(err, object_store::Error::NotFound { .. }) => {
+                self.failed(row.id, "reading the original back", &err);
+                true
+            }
+            // This process cannot read it, which says nothing of the
+            // bytes: a KEK left out of its configuration, retired too
+            // early, or a row a read cannot use. An error to act on, not
+            // a verdict on the original.
+            Err(
+                err @ (ReadError::Key(UnwrapError::UnknownKek { .. })
+                | ReadError::Incomplete { .. }),
+            ) => {
                 self.failed(row.id, "reading the original back", &err);
                 true
             }
