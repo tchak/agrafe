@@ -104,10 +104,14 @@ async fn healthz() -> &'static str {
 }
 
 async fn metrics(State(state): State<Agrafe>) -> ApiResult<Response> {
-    let counts = state.job_counts().await?;
+    let counts = state
+        .job_counts()
+        .await
+        .inspect_err(|err| tracing::warn!(error = %err, "the queue census failed"))
+        .ok();
     let body = state
         .metrics()
-        .render(&counts)
+        .render(counts.as_deref())
         .map_err(ApiError::internal)?;
     Ok((
         [(

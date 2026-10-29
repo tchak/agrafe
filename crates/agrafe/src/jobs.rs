@@ -76,9 +76,16 @@ impl Agrafe {
 
     /// The queue census: how many jobs of each kind and priority are in
     /// each state, and how long the oldest due one has waited. What
-    /// `/metrics` and the dashboard both show.
+    /// `/metrics` and the dashboard both show. Within `CENSUS_TIMEOUT`,
+    /// waiting for a connection included, or an error: a scrape must
+    /// answer within its window, database or not.
     pub async fn job_counts(&self) -> sqlx::Result<Vec<Count>> {
-        counts(self.pool(), self.config().jobs.lease_timeout).await
+        tokio::time::timeout(
+            CENSUS_TIMEOUT,
+            counts(self.pool(), self.config().jobs.lease_timeout),
+        )
+        .await
+        .unwrap_or(Err(sqlx::Error::PoolTimedOut))
     }
 }
 
@@ -391,20 +398,70 @@ pub struct Count {
     pub oldest_due_seconds: Option<f64>,
 }
 
+/// How long the census may take, the wait for a connection included.
+pub const CENSUS_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Count the jobs by kind, priority and state. Combinations with nothing
 /// in them have no row.
-pub(crate) async fn counts(exec: impl PgExecutor<'_>, lease: Duration) -> sqlx::Result<Vec<Count>> {
+///
+/// The counts are a scan of the table, which holds the backlog: millions
+/// of rows after a mass expiry, half a second per five million. It runs
+/// under `CENSUS_TIMEOUT` as a statement timeout, so a backlog the scan
+/// cannot count in time fails the census rather than piling scans up
+/// scrape after scrape. The age of the oldest due job, what an alert
+/// reads, is not taken from the scan: one probe per kind and priority
+/// reads the head of `jobs_claimable_idx`, however long the queue.
+pub(crate) async fn counts(pool: &sqlx::PgPool, lease: Duration) -> sqlx::Result<Vec<Count>> {
+    let mut tx = pool.begin().await?;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "SET LOCAL statement_timeout = {}",
+        CENSUS_TIMEOUT.as_millis()
+    )))
+    .execute(&mut *tx)
+    .await?;
     let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
-        "SELECT kind, priority, state, count(*) AS count, \
-                CASE WHEN state = 'due' \
-                     THEN EXTRACT(EPOCH FROM now() - min(run_at))::float8 \
-                END AS oldest_due_seconds \
-         FROM (SELECT kind, priority, run_at, ",
+        "SELECT kind, priority, state, count(*) AS count, NULL::float8 AS oldest_due_seconds \
+         FROM (SELECT kind, priority, ",
     );
     push_state(&mut qb, lease);
     qb.push(" AS state FROM jobs) s GROUP BY kind, priority, state");
-    qb.build_query_as().fetch_all(exec).await
+    let mut counts: Vec<Count> = qb.build_query_as().fetch_all(&mut *tx).await?;
+    let oldest: Vec<(String, i16, f64)> = sqlx::query_as(OLDEST_DUE_SQL)
+        .bind(JobKind::ALL.iter().map(|k| k.as_str()).collect::<Vec<_>>())
+        .bind(Priority::ALL.iter().map(|p| p.rank()).collect::<Vec<_>>())
+        .bind(lease.as_secs_f64())
+        .fetch_all(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    for count in &mut counts {
+        if count.state == JobState::Due {
+            count.oldest_due_seconds = oldest
+                .iter()
+                .find(|(kind, rank, _)| {
+                    *kind == count.kind.as_str() && *rank == count.priority.rank()
+                })
+                .map(|(_, _, seconds)| *seconds);
+        }
+    }
+    Ok(counts)
 }
+
+/// The oldest due job of each kind and priority, `$1` the kinds, `$2`
+/// the priorities, `$3` the lease in seconds: the first row of each
+/// (kind, priority) on `jobs_claimable_idx` that is due and not held, past
+/// the few running ones at the head of the queue.
+const OLDEST_DUE_SQL: &str = "SELECT k.kind, p.priority, \
+            EXTRACT(EPOCH FROM now() - j.run_at)::float8 AS seconds \
+     FROM unnest($1::text[]) AS k (kind) \
+     CROSS JOIN unnest($2::int2[]) AS p (priority) \
+     CROSS JOIN LATERAL (\
+         SELECT run_at FROM jobs \
+         WHERE kind = k.kind AND priority = p.priority AND failed_at IS NULL \
+           AND run_at <= now() \
+           AND (locked_at IS NULL OR locked_at < now() - make_interval(secs => $3)) \
+         ORDER BY run_at, id \
+         LIMIT 1\
+     ) AS j";
 
 /// The page size when the request gives none.
 pub const DEFAULT_LIMIT: usize = 50;
@@ -697,6 +754,11 @@ pub async fn explain_queue(conn: &mut PgConnection) -> sqlx::Result<Vec<(&'stati
     let statements = [
         ("claim", CLAIM_SQL, "'w', 'purge', 600"),
         ("exhausted", EXHAUSTED_SQL, "600, 10000"),
+        (
+            "oldest_due",
+            OLDEST_DUE_SQL,
+            "'{scan,purge}', '{1,0,-1}', 600",
+        ),
     ];
     sqlx::query("SET plan_cache_mode = force_generic_plan")
         .execute(&mut *conn)

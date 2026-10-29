@@ -615,6 +615,7 @@ async fn metrics_report_queue_depth_and_runs() {
         text.contains("agrafe_job_runs_total{kind=\"scan\",outcome=\"ok\"} 0"),
         "{text}"
     );
+    assert!(text.contains("agrafe_jobs_census_ok 1"), "{text}");
 
     // Too big for an inline scan: the scan is a due job.
     let bytes = png_bytes(5000);
@@ -651,6 +652,28 @@ async fn metrics_report_queue_depth_and_runs() {
     );
     assert!(
         text.contains("agrafe_job_duration_seconds_count{kind=\"scan\"} 1"),
+        "{text}"
+    );
+}
+
+/// With no connection to be had, `/metrics` still answers within the
+/// census's timeout, with what the process knows of itself and the census
+/// flagged as missing.
+#[tokio::test]
+async fn metrics_answer_without_the_database() {
+    use axum::http::Method;
+
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    app.state.pool().close().await;
+    let started = std::time::Instant::now();
+    let (status, body) = call(&app.private, req(Method::GET, "/metrics")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(started.elapsed() < Duration::from_secs(10));
+    let text = body.as_str().unwrap();
+    assert!(text.contains("agrafe_jobs_census_ok 0"), "{text}");
+    assert!(
+        text.contains("agrafe_job_runs_total{kind=\"scan\",outcome=\"ok\"} 0"),
         "{text}"
     );
 }
@@ -1048,6 +1071,7 @@ async fn the_claim_walks_its_index_under_a_generic_plan() {
     let want = [
         ("claim", "jobs_claimable_idx"),
         ("exhausted", "jobs_exhausted_idx"),
+        ("oldest_due", "jobs_claimable_idx"),
     ];
     assert_eq!(plans.len(), want.len());
     for ((name, plan), (want_name, index)) in plans.iter().zip(want) {

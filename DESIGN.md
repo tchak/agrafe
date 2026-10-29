@@ -3260,7 +3260,14 @@ current) and `dead`; and `agrafe_jobs_oldest_due_seconds{kind,priority}`,
 the wait of the oldest due job, which is the number to alert on: it grows
 when a kind's workers cannot keep up, or, for one priority alone, when the
 higher ones starve it. A lapsed lease counts as unclaimed, as the claim query sees
-it. Per process: `agrafe_job_runs_total{kind,outcome}` with `ok`, `retry`,
+it. The age is read off the head of `jobs_claimable_idx`, one probe per
+kind and priority, so it costs the same however long the queue; the
+counts are a scan of the backlog, half a second per five million rows,
+and run under a five-second statement timeout. A census that fails,
+too slow or the database out of reach (the wait for a connection
+counts), leaves the queue gauges at the last one's values with
+`agrafe_jobs_census_ok` at 0, and `/metrics` still answers with what the
+process knows of itself. Per process: `agrafe_job_runs_total{kind,outcome}` with `ok`, `retry`,
 `dead` and `superseded`, `agrafe_job_duration_seconds{kind}`,
 `agrafe_workers{kind}` and `agrafe_webhook_deliveries_total{event,result}`
 with `delivered` or `failed`, see "Webhooks". The last audit this process

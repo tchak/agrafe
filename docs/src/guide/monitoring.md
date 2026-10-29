@@ -27,6 +27,7 @@ deduplicate them in queries, rather than summing across processes.
 |---|---|---|
 | `agrafe_jobs` | `kind`, `state`, `priority` | Jobs in the queue. `state` is `due` (runnable now), `scheduled` (waiting for `run_at`: a retry backing off, a purge waiting for its delay), `running` (lease current) or `dead` |
 | `agrafe_jobs_oldest_due_seconds` | `kind`, `priority` | How long the oldest due job has been waiting |
+| `agrafe_jobs_census_ok` | | 1 when the two above come from this scrape, 0 when the census failed (the database out of reach, or a backlog too long to count in five seconds) and they are the last scrape's |
 
 A job whose lease lapsed counts as due, as the claim query sees it.
 

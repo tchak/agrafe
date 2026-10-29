@@ -58,6 +58,7 @@ pub struct Metrics {
     workers: IntGaugeVec,
     jobs: IntGaugeVec,
     oldest_due: GaugeVec,
+    census_ok: IntGauge,
     head_cache: IntCounterVec,
     webhook_deliveries: IntCounterVec,
     audit_findings: IntGaugeVec,
@@ -115,6 +116,11 @@ impl Metrics {
             &["kind", "priority"],
         )
         .expect("valid metric");
+        let census_ok = IntGauge::new(
+            "agrafe_jobs_census_ok",
+            "1 when the queue gauges come from this scrape's census, 0 when it failed and they are the last one's",
+        )
+        .expect("valid metric");
         let head_cache = IntCounterVec::new(
             Opts::new(
                 "agrafe_blob_head_cache_total",
@@ -159,12 +165,13 @@ impl Metrics {
             "When the last audit this process ran finished, as a Unix time; zero until one has",
         )
         .expect("valid metric");
-        let collectors: [Box<dyn prometheus::core::Collector>; 12] = [
+        let collectors: [Box<dyn prometheus::core::Collector>; 13] = [
             Box::new(job_runs.clone()),
             Box::new(job_duration.clone()),
             Box::new(workers.clone()),
             Box::new(jobs.clone()),
             Box::new(oldest_due.clone()),
+            Box::new(census_ok.clone()),
             Box::new(head_cache.clone()),
             Box::new(webhook_deliveries.clone()),
             Box::new(audit_findings.clone()),
@@ -206,6 +213,7 @@ impl Metrics {
             workers,
             jobs,
             oldest_due,
+            census_ok,
             head_cache,
             webhook_deliveries,
             audit_findings,
@@ -264,8 +272,21 @@ impl Metrics {
     }
 
     /// Refresh the queue gauges from `counts`, the census the caller just
-    /// took, and render everything in the Prometheus text format.
-    pub fn render(&self, counts: &[Count]) -> Result<String, MetricsError> {
+    /// took, and render everything in the Prometheus text format. With no
+    /// census, the database unreachable or the count too slow, the queue
+    /// gauges keep the last one's values and `agrafe_jobs_census_ok` says
+    /// so: what the process knows of itself is still worth the scrape.
+    pub fn render(&self, counts: Option<&[Count]>) -> Result<String, MetricsError> {
+        self.census_ok.set(i64::from(counts.is_some()));
+        if let Some(counts) = counts {
+            self.set_census(counts);
+        }
+        let mut out = Vec::new();
+        TextEncoder::new().encode(&self.registry.gather(), &mut out)?;
+        Ok(String::from_utf8_lossy(&out).into_owned())
+    }
+
+    fn set_census(&self, counts: &[Count]) {
         for kind in JobKind::ALL {
             for priority in Priority::ALL {
                 for state in JobState::ALL {
@@ -289,8 +310,5 @@ impl Metrics {
                     .set(seconds);
             }
         }
-        let mut out = Vec::new();
-        TextEncoder::new().encode(&self.registry.gather(), &mut out)?;
-        Ok(String::from_utf8_lossy(&out).into_owned())
     }
 }
