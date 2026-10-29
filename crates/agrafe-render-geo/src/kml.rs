@@ -979,6 +979,20 @@ mod tests {
         assert_eq!(document_of_kmz(&zipped(&[])), None);
         assert_eq!(document_of_kmz(doc), None);
         assert_eq!(document_of_kmz(b""), None);
+        // As many entries as allowed, the document last, is read; one more
+        // and the archive is not looked through.
+        let names: Vec<String> = (1..MAX_ENTRIES).map(|i| format!("files/{i}.png")).collect();
+        let mut entries: Vec<(&str, &[u8])> = names
+            .iter()
+            .map(|name| (name.as_str(), b"\x89PNG" as &[u8]))
+            .collect();
+        entries.push(("doc.kml", doc));
+        assert_eq!(
+            document_of_kmz(&zipped(&entries)).as_deref(),
+            Some(doc as &[u8])
+        );
+        entries.insert(0, ("one-more.png", b"\x89PNG"));
+        assert_eq!(document_of_kmz(&zipped(&entries)), None);
         // A document over the cap is not read.
         let kmz = zipped(&[("doc.kml", doc)]);
         assert_eq!(document_of_kmz_within(&kmz, doc.len() as u64 - 1), None);

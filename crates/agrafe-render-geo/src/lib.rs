@@ -1080,6 +1080,29 @@ mod tests {
         assert!(took < std::time::Duration::from_secs(20), "{took:?}");
     }
 
+    /// The same worst case through the whole of a render: a GeoJSON line
+    /// of nearly the vertex budget that simplification cannot shorten is
+    /// parsed, projected and drawn in bounded time.
+    #[test]
+    fn a_zigzag_of_the_whole_budget_is_drawn() {
+        let n = spec().max_vertices - 1;
+        let coordinates: Vec<String> = (0..n)
+            .map(|i| {
+                let lat = if i % 2 == 0 { 45.0 } else { 45.01 };
+                format!("[{}, {lat}]", 4.0 + i as f64 * 1e-6)
+            })
+            .collect();
+        let doc = format!(
+            r#"{{"type": "LineString", "coordinates": [{}]}}"#,
+            coordinates.join(",")
+        );
+        let started = std::time::Instant::now();
+        let map = render(doc.as_bytes(), &spec()).expect("rendered");
+        let took = started.elapsed();
+        assert_eq!(map.svg.matches("<path").count(), 2, "a casing and a stroke");
+        assert!(took < std::time::Duration::from_secs(20), "{took:?}");
+    }
+
     #[test]
     fn simplifies_to_the_pixel_and_stops_at_the_budget() {
         let straight: Vec<P> = (0..100)

@@ -384,6 +384,54 @@ async fn redirects_stay_on_the_layer_host() {
     assert!(elsewhere.requests().is_empty(), "the other host was asked");
 }
 
+/// An extent that parses but fails the checks, a box of another size or
+/// layers the rules do not give, is the helper's doing too: the map is
+/// rejected, and the provider is never asked.
+#[tokio::test]
+async fn an_extent_that_fails_the_checks_rejects_the_map() {
+    use std::os::unix::fs::PermissionsExt;
+    let wms = Wms::start(Answer::Png).await;
+    for (name, extent) in [
+        (
+            "size",
+            r#"{"minx":0,"miny":0,"maxx":400,"maxy":400,"width":4000,"height":400,"layers":[0]}"#,
+        ),
+        (
+            "layers",
+            r#"{"minx":0,"miny":0,"maxx":400,"maxy":400,"width":400,"height":400,"layers":[]}"#,
+        ),
+    ] {
+        let db = TestDatabase::new().await;
+        let helper =
+            std::env::temp_dir().join(format!("agrafe-bad-extent-{}", uuid::Uuid::now_v7()));
+        // --input $2 --spec $4 --svg $6 --extent $8
+        std::fs::write(
+            &helper,
+            format!("#!/bin/sh\nprintf '<svg/>' > \"$6\"\nprintf '%s' '{extent}' > \"$8\"\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let clamd = fake_clamd().await;
+        let app = setup_tuned(db, clamd, |c| {
+            c.media.render.render_geo_command = helper.to_string_lossy().into_owned();
+            c.media.render.map.layers = vec![wms.layer()];
+        })
+        .await;
+        let point = map_blob(&app, "point.geojson", "application/geo+json").await;
+        let id = id_of(&point);
+        render_all(&app).await;
+        let blob = get_blob(&app, id).await;
+        assert_eq!(blob["preview_state"], "failed", "{name}");
+        assert_eq!(
+            jobs_for(&app, id).await,
+            Vec::<String>::new(),
+            "{name}: not retried"
+        );
+        std::fs::remove_file(&helper).unwrap();
+    }
+    assert!(wms.requests().is_empty(), "{:?}", wms.requests());
+}
+
 #[tokio::test]
 async fn a_service_exception_fails_the_attempt() {
     let db = TestDatabase::new().await;
