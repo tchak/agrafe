@@ -3,8 +3,10 @@
 //! are invisible formatting that neither a filename nor a rendered sample
 //! may carry.
 
-/// Bytes of a text file the helper is handed; more would not fit on its
-/// page.
+/// Bytes of a text file the helper is handed, and the most it reads of its
+/// input; more would not fit on its page. The sample is the file's first
+/// bytes as they are, with no marker for a cut: the helper draws its first
+/// lines only, so neither side adds one.
 pub const SAMPLE_LEN: u64 = 8 * 1024;
 
 /// Bidirectional formatting characters. `char::is_control` covers only the
