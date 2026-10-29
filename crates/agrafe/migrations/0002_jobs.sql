@@ -43,6 +43,9 @@ CREATE INDEX jobs_exhausted_idx ON jobs (locked_at)
     WHERE failed_at IS NULL AND attempts >= max_attempts;
 -- The reaper prunes dead jobs, the oldest first.
 CREATE INDEX jobs_dead_idx ON jobs (failed_at) WHERE failed_at IS NOT NULL;
+-- `GET /jobs?kind=` and `?priority=`, newest first: one range in id order
+-- per (kind, priority), each read only as far as the page.
+CREATE INDEX jobs_kind_idx ON jobs (kind, priority, id);
 -- The reaper asks whether a purge job of any state exists for a blob, and
 -- `GET /jobs?blob_id=` lists by blob.
 CREATE INDEX jobs_blob_idx ON jobs (blob_id, kind) WHERE blob_id IS NOT NULL;

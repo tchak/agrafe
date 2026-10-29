@@ -501,27 +501,10 @@ pub(crate) async fn list(
     lease: Duration,
 ) -> sqlx::Result<Page> {
     let limit = params.limit;
-    let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("SELECT * FROM jobs WHERE true");
-    if let Some(kind) = params.kind {
-        qb.push(" AND kind = ").push_bind(kind.as_str());
-    }
-    if let Some(state) = params.state {
-        qb.push(" AND ");
-        push_state(&mut qb, lease);
-        qb.push(" = ").push_bind(state.as_str());
-    }
-    if let Some(priority) = params.priority {
-        qb.push(" AND priority = ").push_bind(priority.rank());
-    }
-    if let Some(blob_id) = params.blob_id {
-        qb.push(" AND blob_id = ").push_bind(blob_id);
-    }
-    if let Some(cursor) = params.cursor {
-        qb.push(" AND id < ").push_bind(cursor);
-    }
-    qb.push(" ORDER BY id DESC LIMIT ")
-        .push_bind(limit as i64 + 1);
-    let mut items: Vec<Job> = qb.build_query_as().fetch_all(exec).await?;
+    let mut items: Vec<Job> = list_query("", params, lease)
+        .build_query_as()
+        .fetch_all(exec)
+        .await?;
     let next_cursor = if items.len() > limit {
         items.truncate(limit);
         items.last().map(|j| j.id)
@@ -529,6 +512,78 @@ pub(crate) async fn list(
         None
     };
     Ok(Page { items, next_cursor })
+}
+
+/// The plan of `list` for `params`, as `EXPLAIN` prints it. For a test
+/// that pins each filter shape the listing accepts to an index.
+#[cfg(any(test, feature = "test-support"))]
+pub async fn explain_list(
+    exec: impl PgExecutor<'_>,
+    params: &ListParams,
+    lease: Duration,
+) -> sqlx::Result<String> {
+    let lines: Vec<String> = list_query("EXPLAIN ", params, lease)
+        .build_query_scalar()
+        .fetch_all(exec)
+        .await?;
+    Ok(lines.join("\n"))
+}
+
+/// `list`'s statement, after `prefix`. A blob's jobs are a handful, on
+/// `jobs_blob_idx`. Without a blob, a kind or a priority is read as one
+/// range of `jobs_kind_idx` in id order per (kind, priority) it covers,
+/// three for a kind, ten for a priority, each cut at the page: a rare
+/// kind among millions of purges costs a page, not a walk of the table.
+fn list_query(prefix: &str, params: &ListParams, lease: Duration) -> QueryBuilder<Postgres> {
+    let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(prefix);
+    let page = params.limit as i64 + 1;
+    let by_kind = params.blob_id.is_none() && (params.kind.is_some() || params.priority.is_some());
+    if by_kind {
+        let kinds: Vec<&str> = match params.kind {
+            Some(kind) => vec![kind.as_str()],
+            None => JobKind::ALL.iter().map(|k| k.as_str()).collect(),
+        };
+        let priorities: Vec<i16> = match params.priority {
+            Some(priority) => vec![priority.rank()],
+            None => Priority::ALL.iter().map(|p| p.rank()).collect(),
+        };
+        qb.push("SELECT j.* FROM unnest(")
+            .push_bind(kinds)
+            .push("::text[]) AS k (kind) CROSS JOIN unnest(")
+            .push_bind(priorities)
+            .push(
+                "::int2[]) AS p (priority) CROSS JOIN LATERAL (\
+                 SELECT * FROM jobs WHERE kind = k.kind AND priority = p.priority",
+            );
+    } else {
+        qb.push("SELECT * FROM jobs WHERE true");
+        if let Some(blob_id) = params.blob_id {
+            qb.push(" AND blob_id = ").push_bind(blob_id);
+            if let Some(kind) = params.kind {
+                qb.push(" AND kind = ").push_bind(kind.as_str());
+            }
+            if let Some(priority) = params.priority {
+                qb.push(" AND priority = ").push_bind(priority.rank());
+            }
+        }
+    }
+    if let Some(state) = params.state {
+        qb.push(" AND ");
+        push_state(&mut qb, lease);
+        qb.push(" = ").push_bind(state.as_str());
+    }
+    if let Some(cursor) = params.cursor {
+        qb.push(" AND id < ").push_bind(cursor);
+    }
+    if by_kind {
+        qb.push(" ORDER BY id DESC LIMIT ")
+            .push_bind(page)
+            .push(") AS j ORDER BY j.id DESC LIMIT ")
+            .push_bind(page);
+    } else {
+        qb.push(" ORDER BY id DESC LIMIT ").push_bind(page);
+    }
+    qb
 }
 
 // Public for the integration tests, not part of the API.

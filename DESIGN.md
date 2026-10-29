@@ -3359,7 +3359,12 @@ that knows. A `worker` process has no API; it binds
 `server.private_addr` all the same, serving `/healthz` and `/metrics` only.
 
 `GET /jobs` lists jobs newest first, cursor paginated on the id, filtered by
-`kind`, `state`, `priority` and `blob_id`. `GET /jobs/:id` shows one with its
+`kind`, `state`, `priority` and `blob_id`. A blob's jobs come off
+`jobs_blob_idx`. A kind or a priority without a blob comes off
+`jobs_kind_idx (kind, priority, id)`, one range in id order per
+(kind, priority) the filter covers, three for a kind and ten for a
+priority, each read only as far as the page, so a rare kind among millions
+of purges costs a page and not a walk of the table. `GET /jobs/:id` shows one with its
 `last_error`. `POST /jobs/:id/retry` resets a dead job's attempts, makes it
 due and notifies the workers; `DELETE /jobs/:id` removes one, and a dead
 purge's blob gets a new purge, due now, since nothing else would take its

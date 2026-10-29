@@ -1309,3 +1309,90 @@ async fn the_census_tells_every_state_and_the_ops_router_serves_it() {
     let age: f64 = oldest.rsplit(' ').next().unwrap().parse().unwrap();
     assert!(age >= 60.0, "{oldest}");
 }
+
+/// Listing by kind or priority without a blob reads `jobs_kind_idx` in id
+/// order, a range per (kind, priority) cut at the page, never the whole
+/// table; and the pages come back newest first across the priorities.
+#[tokio::test]
+async fn the_job_listing_walks_its_indexes() {
+    let db = TestDatabase::new().await;
+    use agrafe::jobs::{self, JobKind, ListParams, Priority};
+
+    let app = setup(db).await;
+    let pool = app.state.pool();
+    let lease = Duration::from_secs(600);
+    // Purges at every priority, interleaved, and one audit among them;
+    // held, so that the one pending slot per kind does not dedupe them.
+    let mut purges: Vec<i64> = sqlx::query_scalar(
+        "INSERT INTO jobs (kind, priority, locked_at, locked_by) \
+         SELECT 'purge', (n % 3 - 1)::int2, now(), 'w' FROM generate_series(1, 30) AS n \
+         RETURNING id",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    purges.reverse();
+    sqlx::query("INSERT INTO jobs (kind) VALUES ('audit')")
+        .execute(pool)
+        .await
+        .unwrap();
+
+    let mut seen = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = app
+            .state
+            .list_jobs(&ListParams {
+                kind: Some(JobKind::Purge),
+                cursor,
+                limit: 7,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        seen.extend(page.items.iter().map(|j| j.id));
+        match page.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    assert_eq!(seen, purges, "every purge, newest first");
+    let page = app
+        .state
+        .list_jobs(&ListParams {
+            priority: Some(Priority::High),
+            limit: 50,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.items.len(), 10);
+    assert!(page.items.windows(2).all(|w| w[0].id > w[1].id));
+
+    let mut conn = pool.acquire().await.unwrap();
+    for off in ["SET enable_seqscan = off", "SET enable_bitmapscan = off"] {
+        sqlx::query(off).execute(&mut *conn).await.unwrap();
+    }
+    let shapes = [
+        (Some(JobKind::Audit), None),
+        (None, Some(Priority::High)),
+        (Some(JobKind::Audit), Some(Priority::Low)),
+    ];
+    for (kind, priority) in shapes {
+        for cursor in [None, Some(1_000_000)] {
+            let params = ListParams {
+                kind,
+                priority,
+                cursor,
+                limit: jobs::DEFAULT_LIMIT,
+                ..Default::default()
+            };
+            let plan = jobs::explain_list(&mut *conn, &params, lease)
+                .await
+                .unwrap();
+            let shape = format!("{kind:?} {priority:?} {cursor:?}");
+            assert!(plan.contains("jobs_kind_idx"), "{shape}: {plan}");
+            assert!(!plan.contains("jobs_pkey"), "{shape}: {plan}");
+        }
+    }
+}
