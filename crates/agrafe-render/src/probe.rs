@@ -487,22 +487,20 @@ mod tests {
     #[test]
     fn the_office_converter_needs_landlock_or_bubblewrap() {
         // Outside the pipe directory, which the system temporary directory
-        // is on Linux: under the crate, removed on drop.
-        let elsewhere = tempfile::Builder::new()
-            .prefix(".agrafe-probe-test-")
-            .tempdir_in(env!("CARGO_MANIFEST_DIR"))
-            .unwrap();
+        // is on Linux, wherever the checkout is: a checkout under /tmp
+        // would fail the directory rule this test is not about.
+        let elsewhere = Path::new("/");
         let config = with_office(agrafe_sandbox::Isolation::Auto);
-        let err = check_office_host(&config, Some(elsewhere.path()), &status(None)).unwrap_err();
+        let err = check_office_host(&config, Some(elsewhere), &status(None)).unwrap_err();
         assert!(matches!(err, ProbeError::OfficeUnconfined { .. }), "{err}");
         assert!(err.to_string().contains("no landlock"), "{err}");
-        check_office_host(&config, Some(elsewhere.path()), &status(Some(4))).unwrap();
+        check_office_host(&config, Some(elsewhere), &status(Some(4))).unwrap();
         // bubblewrap's mount namespace stands in for Landlock.
         let wrapped = agrafe_sandbox::Status {
             bubblewrap: Some("0.11.1".to_string()),
             ..status(None)
         };
-        check_office_host(&config, Some(elsewhere.path()), &wrapped).unwrap();
+        check_office_host(&config, Some(elsewhere), &wrapped).unwrap();
 
         // No converter, or isolation off: nothing to check.
         check_office_host(&Config::default(), None, &status(None)).unwrap();
