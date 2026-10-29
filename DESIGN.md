@@ -2259,7 +2259,9 @@ on "has preview", never on category. Sources, in order:
    could cover what the image shows, a black rectangle or a run of full
    blocks over a scan to begin with; or a DOCX/ODT with exactly one media file
    (under `word/media/` or `Pictures/`) that is a raster image, and at
-   most `max_text_chars` of non-whitespace text in the body. The embedded
+   most `max_text_chars` of non-whitespace text in the body, CDATA and
+   references included, read within 8 MiB (a body cut there is not
+   sparse, since what follows is unread). The embedded
    image is pulled out at full resolution and goes through the image
    pipeline: JPEG and JPEG 2000 streams as they are, in a grey, RGB or
    CMYK colour space, raw 8 or 16 bit grey or RGB samples as PNM. Anything doubtful (form XObjects, rotation,
