@@ -1750,7 +1750,9 @@ retrofit:
 - Redirects: at most `fetch.max_redirects` (default five), every hop
   through the same checks, `https` only.
 - `fetch.connect_timeout`; `fetch.read_timeout` (default thirty seconds)
-  on every wait for the next bytes, which is what stops a remote that
+  on the wait for the response head, the connect, TLS and every redirect
+  hop included, so it is at least `connect_timeout`, and on every wait
+  for the next bytes, which is what stops a remote that
   trickles from holding one of the few fetch workers, and what lets a
   large file on a slow link run as long as it keeps flowing. The wait is
   timed from the moment the pipeline asks for the bytes, not from the

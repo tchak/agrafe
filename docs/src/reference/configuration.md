@@ -148,7 +148,7 @@ The bucket needs an `AbortIncompleteMultipartUpload` lifecycle rule.
 | Key | Default | Description |
 |---|---|---|
 | `connect_timeout` | `"10s"` | TCP connect and TLS handshake |
-| `read_timeout` | `"30s"` | Longest wait for the next bytes of a response |
+| `read_timeout` | `"30s"` | Longest wait for the response head (connect, TLS and redirects included) or the next bytes of the body; at least `connect_timeout` |
 | `timeout` | `"6h"` | The whole response, as a backstop |
 | `max_redirects` | `5` | Redirects followed, each checked like the first URL |
 | `max_retry_after` | `"15m"` | A longer `Retry-After` makes the fetch permanent |

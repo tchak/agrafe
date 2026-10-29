@@ -155,6 +155,14 @@ impl Config {
                 dir.display()
             )));
         }
+        if self.fetch.connect_timeout > self.fetch.read_timeout {
+            // The head's wait, the connect included, is read_timeout's.
+            return Err(ConfigError::Invalid(
+                "fetch.connect_timeout must be at most fetch.read_timeout, which bounds the \
+                 wait for the response head, the connect included"
+                    .into(),
+            ));
+        }
         self.server.cors.validate()?;
         self.database.validate()?;
         self.webhook.validate()?;
@@ -845,10 +853,13 @@ pub struct FetchConfig {
     /// The TCP connect and the TLS handshake; 10 seconds by default.
     #[serde(with = "humantime_serde", default = "default_fetch_connect_timeout")]
     pub connect_timeout: Duration,
-    /// The longest a read of the response may wait for the next bytes. The
-    /// stall detector: a remote that trickles cannot hold a fetch worker,
-    /// while a large file on a slow link gets as long as it keeps flowing.
-    /// 30 seconds by default.
+    /// The longest the remote may stay silent: for the response head, the
+    /// connect, the TLS handshake and every redirect hop before it included,
+    /// and for the next bytes of the body. The stall detector: a remote
+    /// that trickles cannot hold a fetch worker, while a large file on a
+    /// slow link gets as long as it keeps flowing. At least
+    /// `connect_timeout`, which would otherwise never fire. 30 seconds by
+    /// default.
     #[serde(with = "humantime_serde", default = "default_fetch_read_timeout")]
     pub read_timeout: Duration,
     /// The whole response, headers and body: a backstop behind
@@ -1676,6 +1687,18 @@ mod tests {
             jail.set_env("AGRAFE_SERVER__INTERFACES", "[]");
             let err = load(&example()).unwrap_err().to_string();
             assert!(err.contains("at least one interface"), "{err}");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn the_connect_timeout_fits_in_the_read_timeout() {
+        Jail::expect_with(|jail| {
+            jail.set_env("AGRAFE_FETCH__CONNECT_TIMEOUT", "40s");
+            let err = load(&example()).unwrap_err().to_string();
+            assert!(err.contains("fetch.connect_timeout"), "{err}");
+            jail.set_env("AGRAFE_FETCH__CONNECT_TIMEOUT", "30s");
+            assert_eq!(load(&example())?.fetch.connect_timeout.as_secs(), 30);
             Ok(())
         });
     }
