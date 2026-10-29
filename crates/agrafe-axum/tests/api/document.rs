@@ -219,6 +219,23 @@ async fn whole_workspace_in_one_put_with_a_chosen_main() {
     assert!(download(&app, &built).await.starts_with(b"%PDF-"));
 }
 
+/// An entry file whose name starts with `-` is a file like any other,
+/// not a flag of the helper's.
+#[tokio::test]
+async fn a_main_starting_with_a_dash_compiles() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let mut blob = document_blob("dash.pdf");
+    blob["main"] = json!("-x.typ");
+    let created = create(&app, blob).await;
+    let id = id_of(&created);
+    let (status, body) = put_private(&app, id, manifest(&[text("-x.typ", "Bonjour")])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(run_job(&app, JobKind::Document).await);
+    let built = get_blob(&app, id).await;
+    assert_eq!(built["state"], "ready", "{built}");
+}
+
 #[tokio::test]
 async fn creation_rules() {
     let db = TestDatabase::new().await;

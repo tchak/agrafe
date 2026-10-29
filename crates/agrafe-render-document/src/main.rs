@@ -20,15 +20,27 @@ struct Args {
     /// The directory holding the template and every file it uses.
     #[arg(long)]
     workspace: PathBuf,
-    /// The entry file, relative to the workspace.
-    #[arg(long)]
+    /// The entry file, relative to the workspace; it may start with `-`.
+    #[arg(long, allow_hyphen_values = true)]
     main: String,
     #[arg(long)]
     output: PathBuf,
 }
 
 fn main() -> ExitCode {
-    let args = Args::parse();
+    // clap exits 2 on a usage error, which is the document's verdict here:
+    // a command line the helper does not take is the helper's failure.
+    let args = match Args::try_parse() {
+        Ok(args) => args,
+        Err(err) => {
+            let _ = err.print();
+            return if err.use_stderr() {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            };
+        }
+    };
     match run(&args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {

@@ -84,8 +84,9 @@ pub async fn render_document(
         .readable(workspace)
         .arg("--workspace")
         .arg(workspace)
-        .arg("--main")
-        .arg(main)
+        // Attached, so a path that starts with `-` is the value and not a
+        // flag of its own.
+        .arg(format!("--main={main}"))
         .arg("--output")
         .arg(output);
     run(config, command, output).await
