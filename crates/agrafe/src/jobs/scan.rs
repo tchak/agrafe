@@ -1,6 +1,8 @@
 //! The deferred virus scan: stream the decrypted original to clamd and move
 //! the blob out of `uploaded`.
 
+use jiff::Timestamp;
+
 use super::{Job, JobError};
 use crate::app::Agrafe;
 use crate::blob::BlobState;
@@ -14,8 +16,11 @@ pub async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
         tracing::info!("blob is gone, nothing to scan");
         return Ok(());
     };
-    if blob.state != BlobState::Uploaded {
-        tracing::info!(state = %blob.state, "blob is not waiting for a scan");
+    // As of now: a blob past its expiry while the scan waited (behind
+    // clamd's backoff, say) is expired, reaper or not, and not scanned.
+    let current = blob.state_at(Timestamp::now());
+    if current != BlobState::Uploaded {
+        tracing::info!(state = %current, "blob is not waiting for a scan");
         return Ok(());
     }
 
@@ -39,7 +44,8 @@ pub async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
             Verdict::Infected(name) => tracing::warn!(signature = name, "blob is infected"),
         },
         Transition::Conflict(blob) => {
-            tracing::warn!(state = %blob.state, "blob changed state during the scan")
+            let state = blob.state_at(Timestamp::now());
+            tracing::warn!(%state, "blob changed state during the scan")
         }
         Transition::Missing => tracing::info!("blob was deleted during the scan"),
     }

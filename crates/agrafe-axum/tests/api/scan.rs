@@ -160,6 +160,32 @@ async fn deferred_scan_infected() {
     assert_eq!(stored_plaintext(&app, id).await, bytes);
 }
 
+/// A blob whose expiry passes while its scan waits is expired then,
+/// whether or not the reaper has recorded it: it is not scanned, made
+/// `ready`, rendered or announced.
+#[tokio::test]
+async fn scan_job_skips_a_blob_expired_in_the_queue() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let bytes = png_bytes(5000);
+    let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
+    let id = id_of(&created);
+    let (status, body) = put_private(&app, id, bytes).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], "uploaded");
+    sqlx::query("UPDATE blobs SET expires_at = now() - interval '1 second' WHERE id = $1")
+        .bind(parse_id(id))
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+    assert!(run_scan_job(&app).await);
+    let got = get_blob(&app, id).await;
+    // Recorded `expired` by the reaper's next run; not scanned meanwhile.
+    assert_eq!(got["state"], "uploaded", "{got}");
+    assert!(got["scanned_at"].is_null(), "{got}");
+    assert!(jobs_for(&app, id).await.is_empty(), "nothing rendered");
+}
+
 /// Deleted before the job ran: the job finds nothing to do and succeeds.
 #[tokio::test]
 async fn scan_job_skips_a_deleted_blob() {

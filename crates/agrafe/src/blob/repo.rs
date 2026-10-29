@@ -646,7 +646,8 @@ pub(crate) async fn complete_build(
 }
 
 /// The deferred scan's verdict: `uploaded` to `ready` or `infected`, with the
-/// representations enqueued once the file is known clean.
+/// representations enqueued once the file is known clean. A blob past its
+/// expiry is expired, recorded or not, and takes no verdict.
 pub(crate) async fn finish_scan(
     pool: &PgPool,
     webhook: &WebhookConfig,
@@ -660,7 +661,8 @@ pub(crate) async fn finish_scan(
     let mut tx = pool.begin().await?;
     let updated = sqlx::query_as::<_, Blob>(concat!(
         "UPDATE blobs SET state = $2, scan_state = $3, scanned_at = now(), scan_signature = $5 \
-         WHERE id = $1 AND state = $4 RETURNING ",
+         WHERE id = $1 AND state = $4 AND (expires_at IS NULL OR expires_at > now()) \
+         RETURNING ",
         blob_columns!()
     ))
     .bind(id)
