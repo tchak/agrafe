@@ -771,6 +771,47 @@ async fn the_job_schedules_the_next_run_and_yields_to_a_running_one() {
     assert_eq!(pending.items.len(), 1);
 }
 
+/// A sweep in progress whose worker went away, a restart or a lost host,
+/// keeps its progress: the restart schedules no twin beside it, and the
+/// attempt that reclaims it while the old session still holds the lock
+/// backs off rather than stepping aside, which would delete the row.
+#[tokio::test]
+async fn a_sweep_in_progress_keeps_its_progress() {
+    let db = TestDatabase::new().await;
+    let app = settled_setup(db).await;
+    let pool = app.state.pool();
+    let progress = json!({"after": "00/0000/original", "cursor": uuid::Uuid::now_v7()});
+    let job: i64 = sqlx::query_scalar(
+        "INSERT INTO jobs (kind, priority, payload, run_at, attempts, locked_at, locked_by) \
+         VALUES ('audit', 0, $1, now(), 1, now() - interval '1 day', 'gone') RETURNING id",
+    )
+    .bind(&progress)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+
+    // The restart: the lapsed sweep counts as the pending one.
+    let at = Timestamp::now() + app.state.config().jobs.audit_interval;
+    assert!(!audit::schedule(pool, at).await.unwrap());
+
+    // The old session still holds the lock when the sweep is reclaimed.
+    let mut holder = pool.acquire().await.unwrap();
+    assert!(jobs::try_lock(&mut holder, audit::LOCK).await.unwrap());
+    assert!(run_job(&app, JobKind::Audit).await);
+    let rows: Vec<(i64, serde_json::Value, bool, bool)> = sqlx::query_as(
+        "SELECT id, payload, locked_at IS NULL, run_at > now() FROM jobs WHERE kind = 'audit'",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    let (id, payload, unlocked, later) = &rows[0];
+    assert_eq!(*id, job);
+    assert_eq!(payload["after"], progress["after"]);
+    assert!(*unlocked && *later, "retried with backoff: {rows:?}");
+    jobs::unlock(&mut holder, audit::LOCK).await.unwrap();
+}
+
 /// A representation object the row does not expect: one a render is about
 /// to replace is left alone, one the row says failed is an orphan.
 #[tokio::test]

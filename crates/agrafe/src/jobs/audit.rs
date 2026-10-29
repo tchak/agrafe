@@ -52,7 +52,6 @@ use crate::app::Agrafe;
 use crate::blob::read::{Columns, ReadError, Reader, Stored};
 use crate::blob::{self, BlobState, Representation, RepresentationState, key, repo};
 use crate::config::StorageConfig;
-use crate::trace::TraceContext;
 
 /// Why an audit could not run to the end. A mismatch it finds is a
 /// finding, not an error.
@@ -344,7 +343,8 @@ pub(crate) async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
             Progress::default()
         }
     };
-    if progress.after.is_some() || !progress.cursor.is_nil() {
+    let resuming = progress.after.is_some() || !progress.cursor.is_nil();
+    if resuming {
         tracing::info!(after = ?progress.after, cursor = %progress.cursor, "resuming the audit");
     }
     let checkpoint = job.locked_by.clone().map(|worker| Checkpoint {
@@ -361,7 +361,7 @@ pub(crate) async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
     let next = Timestamp::now() + state.config().jobs.audit_interval;
     match result {
         Ok(report) => {
-            schedule(state.pool(), next).await?;
+            schedule_after(state.pool(), next, Some(job.id)).await?;
             tracing::info!(
                 objects = report.objects,
                 blobs = report.blobs,
@@ -380,32 +380,62 @@ pub(crate) async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
             );
             Ok(())
         }
-        Err(AuditError::Running) => {
-            schedule(state.pool(), next).await?;
+        // Another sweep holds the lock: the command line, or this job's own
+        // previous attempt, whose session outlives its lapsed lease until
+        // the server sees the socket go. A sweep with progress keeps it and
+        // is retried, below; a fresh one has nothing to keep.
+        Err(AuditError::Running) if !resuming => {
+            schedule_after(state.pool(), next, Some(job.id)).await?;
             tracing::info!("another audit is running, skipped this one");
             Ok(())
         }
         Err(err) => {
             if job.attempts >= job.max_attempts {
-                schedule(state.pool(), next).await?;
+                schedule_after(state.pool(), next, Some(job.id)).await?;
             }
             Err(err.into())
         }
     }
 }
 
-/// Enqueue an audit at `run_at`, unless one is already pending. Outside
-/// any trace context, as `reap::schedule`: each run starts a trace.
+/// Enqueue an audit at `run_at`, unless one is live already: pending,
+/// running, or locked by a worker whose lease lapsed, which a restart
+/// leaves behind. A sweep in progress is one, its progress in its row: a
+/// twin beside it would supersede it at its first failure, and the
+/// progress would go with it. Outside any trace context, as
+/// `reap::schedule`: each run starts a trace.
 pub async fn schedule(exec: impl PgExecutor<'_>, run_at: Timestamp) -> sqlx::Result<bool> {
-    TraceContext::detached(super::enqueue(
-        exec,
-        JobKind::Audit,
-        None,
-        Priority::Normal,
-        serde_json::json!({}),
-        run_at,
-    ))
-    .await
+    schedule_after(exec, run_at, None).await
+}
+
+/// `schedule`, for the run `current` scheduling its successor: its own
+/// row, still there until it succeeds, does not count.
+async fn schedule_after(
+    exec: impl PgExecutor<'_>,
+    run_at: Timestamp,
+    current: Option<i64>,
+) -> sqlx::Result<bool> {
+    let result = sqlx::query(
+        "WITH inserted AS (\
+             INSERT INTO jobs (kind, priority, payload, run_at) \
+             SELECT $1, $2, '{}', $3 \
+             WHERE NOT EXISTS (\
+                 SELECT 1 FROM jobs \
+                 WHERE kind = $1 AND blob_id IS NULL AND failed_at IS NULL \
+                   AND id IS DISTINCT FROM $4\
+             ) \
+             ON CONFLICT DO NOTHING RETURNING kind\
+         ) \
+         SELECT pg_notify($5, kind) FROM inserted",
+    )
+    .bind(JobKind::Audit.as_str())
+    .bind(Priority::Normal.rank())
+    .bind(run_at.to_sqlx())
+    .bind(current)
+    .bind(super::CHANNEL)
+    .execute(exec)
+    .await?;
+    Ok(result.rows_affected() == 1)
 }
 
 /// Advisory lock held for the length of one audit, by the session that

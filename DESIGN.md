@@ -3084,7 +3084,10 @@ backend has no reason to ask about one id. The `audit` job sweeps instead,
 weekly (`jobs.audit_interval`): each run enqueues the next once it is
 over, the runner enqueues the first one an interval out (not now: a
 restart is not a reason to list the bucket, and a pending one survives
-it, the duplicate dropped), and `agrafe audit` on the command line runs
+it, the duplicate dropped; so does a running one, or one whose worker
+went away with its lease, which counts as pending: a twin beside a
+sweep in progress would supersede it at its first failure, its progress
+with it), and `agrafe audit` on the command line runs
 the same sweep on demand, for the operator who just did a restore. Unlike
 the reaper, the next run is scheduled at the end and not the start: a
 blob-less job that fails while its twin is pending is redundant, not
@@ -3230,7 +3233,11 @@ Results go to the log and to gauges, see "Observability": counts per
 finding kind from the last run, what it listed and checked, and when it
 finished. No new table. One audit runs at a time: the session holds an
 advisory lock (see "Advisory locks"), and a job finding it held logs and
-steps aside, the command line reports it.
+steps aside, the command line reports it. A job with progress does not:
+the holder may be its own previous attempt, whose session outlives a
+lapsed lease until the server sees the socket go, and stepping aside
+would delete the row and the progress with it; it fails the attempt
+instead, and the retry finds the lock free.
 
 Later, once the sweep exists, a `?verify=true` on the private
 `GET /blobs/:id` that `HEAD`s the blob's objects is a few lines over the
