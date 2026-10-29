@@ -48,6 +48,11 @@ fn write_config(dir: &Path, db: &TestDatabase, storage: &Path) -> std::path::Pat
 }
 
 fn agrafe(config: &Path, args: &[&str]) -> Output {
+    agrafe_logging(config, args, "warn")
+}
+
+/// [`agrafe`] at the log level `filter`.
+fn agrafe_logging(config: &Path, args: &[&str], filter: &str) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_agrafe"));
     command.arg("--config").arg(config).args(args);
     // The configuration is the file's alone: `AGRAFE_` variables in the
@@ -57,7 +62,7 @@ fn agrafe(config: &Path, args: &[&str]) -> Output {
             command.env_remove(name);
         }
     }
-    command.env("RUST_LOG", "warn").output().unwrap()
+    command.env("RUST_LOG", filter).output().unwrap()
 }
 
 fn text(bytes: &[u8]) -> String {
@@ -109,15 +114,21 @@ async fn migrate_then_audit_exits_by_what_it_found() {
     let prefix = storage.join("5b/0190b5a2-1c3d-7e4f-8a9b-0c1d2e3f4a5b");
     std::fs::create_dir_all(&prefix).unwrap();
     std::fs::write(prefix.join("original"), b"lost").unwrap();
-    let out = agrafe(&config, &["audit"]);
+    let out = agrafe_logging(&config, &["audit"], "info");
     assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
     assert!(
         text(&out.stdout).contains("objects with no row:     1"),
         "{}",
         text(&out.stdout)
     );
-    // The mismatch's log line is on stderr; stdout is the tally alone.
+    // The mismatch's log line is on stderr, in the sweep's trace; stdout
+    // is the tally alone.
     assert!(text(&out.stderr).contains("WARN"), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stderr).contains("trace_id="),
+        "{}",
+        text(&out.stderr)
+    );
     assert!(!text(&out.stdout).contains("WARN"), "{}", text(&out.stdout));
     assert!(
         text(&out.stderr).contains("the audit found 1 mismatches"),

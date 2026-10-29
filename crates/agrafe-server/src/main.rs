@@ -21,6 +21,7 @@ use agrafe_axum as api;
 use clap::{Parser, Subcommand};
 use futures::FutureExt;
 use tokio::net::TcpListener;
+use tracing::Instrument as _;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -231,10 +232,17 @@ async fn main() -> Result<(), Error> {
                 delete_unknown,
                 deep: deep.then(|| sample.unwrap_or(NonZeroU32::MIN)),
             };
-            let report = match progress {
-                Some(path) => state.audit_resumable(options, &path).await?,
-                None => state.audit(options).await?,
+            // One trace for the sweep, as the weekly job has: the renders it
+            // requests join it, and its log lines carry the id.
+            let context = agrafe::trace::TraceContext::root();
+            let span = tracing::info_span!("audit", trace_id = %context.trace_id());
+            let sweep = async {
+                match progress {
+                    Some(path) => state.audit_resumable(options, &path).await,
+                    None => state.audit(options).await,
+                }
             };
+            let report = context.scope(sweep).instrument(span).await?;
             println!("{report}");
             match (report.errors, report.mismatches()) {
                 (0, 0) => Ok(()),
