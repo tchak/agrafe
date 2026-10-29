@@ -99,6 +99,41 @@ pub enum ProbeError {
 }
 
 const PROBE_PNG: &[u8] = include_bytes!("../assets/probe/pixel.png");
+/// An image for each loader on the allowlist that libvips may be built
+/// without, or whose codec its distribution packages apart: libheif's
+/// HEVC and AV1 decoders are plugins of their own on Debian.
+const PROBE_LOADERS: &[(&str, &str, &[u8])] = &[
+    (
+        "a GIF",
+        "pixel.gif",
+        include_bytes!("../assets/probe/pixel.gif"),
+    ),
+    (
+        "a WebP",
+        "pixel.webp",
+        include_bytes!("../assets/probe/pixel.webp"),
+    ),
+    (
+        "a TIFF",
+        "pixel.tiff",
+        include_bytes!("../assets/probe/pixel.tiff"),
+    ),
+    (
+        "a HEIC",
+        "pixel.heic",
+        include_bytes!("../assets/probe/pixel.heic"),
+    ),
+    (
+        "an AVIF",
+        "pixel.avif",
+        include_bytes!("../assets/probe/pixel.avif"),
+    ),
+    (
+        "a JPEG 2000",
+        "pixel.jp2",
+        include_bytes!("../assets/probe/pixel.jp2"),
+    ),
+];
 const PROBE_PDF: &[u8] = include_bytes!("../assets/probe/page.pdf");
 const PROBE_IMAGE_PDF: &[u8] = include_bytes!("../assets/probe/image.pdf");
 const PROBE_GEOJSON: &[u8] = include_bytes!("../assets/probe/point.geojson");
@@ -188,11 +223,13 @@ fn canonical(path: &Path) -> std::path::PathBuf {
 }
 
 /// Render a text sample, a one-pixel PNG, a one-page PDF, the JPEG pulled
-/// out of a PDF that wraps one and the map of a one-point GeoJSON through
-/// the exact command lines the jobs use. vips exits non-zero for a bad file
-/// and for a missing loader or an unknown option alike, so without this a
-/// libvips built without PDF or SVG support, or too old for an option,
-/// would mark every file `failed` instead of failing the deployment. The
+/// out of a PDF that wraps one, an image for each optional loader on the
+/// allowlist (GIF, WebP, TIFF, HEIC, AVIF, JPEG 2000) and the map of a
+/// one-point GeoJSON through the exact command lines the jobs use. vips
+/// exits non-zero for a bad file and for a missing loader or an unknown
+/// option alike, so without this a libvips built without PDF, SVG or HEIF
+/// support, or too old for an option, would mark every file `failed`
+/// instead of failing the deployment. The
 /// text sample, the wrapped JPEG and the map also catch a
 /// `render_text_command`, an `extract_command` or a `render_geo_command`
 /// that is not the helper: a missing one fails every job, a wrong one
@@ -250,14 +287,20 @@ async fn probe_tools(config: &Config, tmp_dir: Option<&Path>) -> Result<(), Prob
     let pdf = workdir.path().join("page.pdf");
     tokio::fs::write(&pdf, PROBE_PDF).await?;
     let output = workdir.path().join("probe.webp");
-    for (what, input, kind) in [
-        ("a PNG", &pixel, Input::Raster),
-        ("a PDF page", &pdf, Input::Page),
-        ("a JPEG", &embedded, Input::Raster),
-        ("a text page", &page, Input::Raster),
-    ] {
+    let mut inputs = vec![
+        ("a PNG", pixel, Input::Raster),
+        ("a PDF page", pdf, Input::Page),
+        ("a JPEG", embedded, Input::Raster),
+        ("a text page", page, Input::Raster),
+    ];
+    for &(what, name, bytes) in PROBE_LOADERS {
+        let input = workdir.path().join(name);
+        tokio::fs::write(&input, bytes).await?;
+        inputs.push((what, input, Input::Raster));
+    }
+    for (what, input, kind) in inputs {
         let vips = config.vips_command.clone();
-        let verdict = vips::to_webp(config, input, kind, &output, fit)
+        let verdict = vips::to_webp(config, &input, kind, &output, fit)
             .await
             .map_err(|source| ProbeError::Render {
                 what,

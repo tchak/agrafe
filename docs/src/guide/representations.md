@@ -246,12 +246,12 @@ fail the job and retry it.
 
 Before the workers start, agrafe checks that the sandbox refuses a read it
 did not grant, then renders a text sample, a one-pixel PNG, a one-page PDF,
-the JPEG `agrafe-extract` pulls out of a PDF wrapping one and the map of a
+a GIF, a WebP, a TIFF, a HEIC, an AVIF, a JPEG 2000 image, the JPEG `agrafe-extract` pulls out of a PDF wrapping one and the map of a
 one-point GeoJSON, without a background layer, through
 the exact command lines the jobs use, and, with `media.office.command`
 set, converts a two-page DOCX and an XLSX through LibreOffice and checks
 that the DOCX came out as one page. The process refuses to start if any
-of them fails, so a libvips built without PDF or SVG support, a font
+of them fails, so a libvips built without PDF, SVG or HEIF support, a font
 directory the sandbox does not expose, or a LibreOffice without Calc or
 too old for the first-page export, fails the deployment rather than
 every render. The worker logs what the sandbox gives it, `sandbox:

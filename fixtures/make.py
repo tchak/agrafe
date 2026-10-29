@@ -10,7 +10,9 @@ cannot be written by hand: they are converted from the ZIP ones by
 LibreOffice, when one is found, and only when missing or with `--legacy`,
 since each conversion stamps the time into the file. `slides.ppt` is about
 600 KB, nearly all of it an uncompressed white thumbnail its PowerPoint 97
-filter always writes, which git stores in about 11 KB."""
+filter always writes, which git stores in about 11 KB. The probe's HEIC
+(`pixel.heic`), which Pillow cannot write, is likewise made by `vips` from
+the probe's PNG, only when missing or with `--legacy`."""
 
 import io
 import json
@@ -41,6 +43,15 @@ def png(width, height):
     im = Image.new("RGB", (width, height), (40, 160, 60))
     out = io.BytesIO()
     im.save(out, "PNG")
+    return out.getvalue()
+
+
+def raster(format, width, height):
+    """A flat image in one of the formats Pillow writes, for the probe of
+    the vips loader that reads it."""
+    im = Image.new("RGB", (width, height), (40, 160, 60))
+    out = io.BytesIO()
+    im.save(out, format)
     return out.getvalue()
 
 
@@ -515,6 +526,13 @@ def main():
     PROBE.mkdir(exist_ok=True)
     probe_files = {
         "pixel.png": png(1, 1),
+        # One file for each loader on the allowlist that libvips may be
+        # built without, or whose codec Debian packages apart.
+        "pixel.gif": raster("GIF", 1, 1),
+        "pixel.webp": raster("WEBP", 1, 1),
+        "pixel.tiff": raster("TIFF", 1, 1),
+        "pixel.avif": raster("AVIF", 8, 8),
+        "pixel.jp2": raster("JPEG2000", 8, 8),
         "page.pdf": empty_pdf(20, 10),
         # A JPEG covering a one-page PDF, for agrafe-extract to pull out.
         "image.pdf": image_pdf(jpeg(16, 8), 16, 8, 16, 8, "16 0 0 8 0 0"),
@@ -532,6 +550,14 @@ def main():
     for name, data in probe_files.items():
         (PROBE / name).write_bytes(data)
         print(f"probe/{name}: {len(data)} bytes")
+    heic = PROBE / "pixel.heic"
+    if not heic.exists() or "--legacy" in sys.argv:
+        if shutil.which("vips") is None:
+            print("probe/pixel.heic: not written, no vips found")
+        else:
+            subprocess.run(["vips", "copy", str(PROBE / "pixel.png"), f"{heic}[compression=hevc]"],
+                           check=True, capture_output=True, timeout=60)
+            print(f"probe/pixel.heic: {heic.stat().st_size} bytes, from pixel.png")
 
 
 if __name__ == "__main__":

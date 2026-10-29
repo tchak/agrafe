@@ -2012,8 +2012,11 @@ vips exits non-zero for a bad file and for a missing loader or an unknown
 option alike, so a libvips built without PDF support, or too old for
 `keep=`, would mark every file `failed` and need a variant version bump
 once fixed. Before a worker starts it therefore renders a text sample, a
-one-pixel PNG and a one-page PDF through the exact command lines the jobs
-use (`agrafe_render::probe`, files in `crates/agrafe-render/assets/probe`),
+one-pixel PNG, a one-page PDF and an image for each other loader on the
+allowlist that a libvips may be built without or a distribution packages
+apart (GIF, WebP, TIFF, HEIC, AVIF, JPEG 2000: Debian ships libheif's
+HEVC and AV1 decoders as plugins of their own) through the exact command
+lines the jobs use (`agrafe_render::probe`, files in `crates/agrafe-render/assets/probe`),
 and the process refuses to start if any of them fails, and so the map of a
 one-point GeoJSON with no background layer, through the helper and `vips
 composite`, which catches a libvips without SVG support, and the JPEG

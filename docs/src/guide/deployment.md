@@ -195,6 +195,12 @@ features.
   advisories](https://github.com/libvips/libvips/security/advisories).
 - Prefer a libvips built with **pdfium** over poppler for PDF pages; it is
   the more hardened renderer.
+- libheif decodes HEIC and AVIF through plugins Debian and Ubuntu package
+  apart. Installed with `--no-install-recommends`, Ubuntu 26.04's
+  `libvips-tools` brings the AV1 one only; add `libheif-plugin-libde265`
+  for HEIC. The release images have both, and the startup probe renders
+  one of each, so a missing plugin stops the workers rather than failing
+  every photo from a phone.
 
 ## LibreOffice
 

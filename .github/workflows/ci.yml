@@ -73,7 +73,7 @@ jobs:
         id: apt
         env:
           PACKAGES: >-
-            libvips-tools bubblewrap libreoffice-writer-nogui libreoffice-calc-nogui
+            libvips-tools libheif-plugin-libde265 bubblewrap libreoffice-writer-nogui libreoffice-calc-nogui
             libreoffice-impress-nogui libreoffice-draw-nogui fonts-dejavu-core
             fonts-liberation
         run: |
