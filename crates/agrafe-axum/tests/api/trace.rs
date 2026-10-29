@@ -227,5 +227,14 @@ async fn public_request_spans_never_record_the_token() {
         paths.iter().all(|p| p.contains("/blobs/<token>")),
         "{paths:?}"
     );
+    // The nested router's with its mount prefix.
+    assert_eq!(
+        paths
+            .iter()
+            .filter(|p| p.starts_with("path=/files/blobs/<token>/"))
+            .count(),
+        1,
+        "{paths:?}"
+    );
     assert!(fields.iter().all(|f| !f.contains(&token)), "{fields:?}");
 }

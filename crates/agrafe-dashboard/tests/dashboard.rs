@@ -770,7 +770,7 @@ async fn a_page_runs_in_one_request_span_without_its_query() {
     page(&app, "/dashboard/jobs?kind=scan&state=due", "Jobs").await;
     let fields = fields.0.lock().unwrap().clone();
     let paths: Vec<&String> = fields.iter().filter(|f| f.starts_with("path=")).collect();
-    assert_eq!(paths.len(), 1, "{fields:?}");
+    assert_eq!(paths, ["path=/dashboard/jobs"], "{fields:?}");
     assert!(
         fields.iter().all(|f| !f.contains("kind=scan")),
         "{fields:?}"

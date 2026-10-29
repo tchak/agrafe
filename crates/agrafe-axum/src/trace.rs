@@ -13,7 +13,7 @@ use std::fmt::Display;
 
 use axum::Router;
 use axum::body::Body;
-use axum::extract::Request;
+use axum::extract::{OriginalUri, Request};
 use axum::http::HeaderName;
 use axum::middleware::{self, Next};
 use axum::response::Response;
@@ -29,15 +29,15 @@ use crate::signed;
 pub const TRACEPARENT: HeaderName = HeaderName::from_static("traceparent");
 
 /// `router` with the private interface's request span and trace context:
-/// the path recorded as is, the query string left out, and a
-/// `traceparent` header continued. For routes a host serves next to the
+/// the path recorded as the client sent it, mount prefix included, the
+/// query string left out, and a `traceparent` header continued. For routes a host serves next to the
 /// private interface, the dashboard among them: a router's layers do not
 /// reach what is nested into it afterwards.
 pub fn private<S: Clone + Send + Sync + 'static>(router: Router<S>) -> Router<S> {
     router
         .layer(
             TraceLayer::new_for_http()
-                .make_span_with(|req: &Request<Body>| request_span(req, req.uri().path())),
+                .make_span_with(|req: &Request<Body>| request_span(req, original_path(req))),
         )
         .layer(middleware::from_fn(continue_trace))
 }
@@ -49,10 +49,23 @@ pub(crate) fn public<S: Clone + Send + Sync + 'static>(router: Router<S>) -> Rou
     router
         .layer(
             TraceLayer::new_for_http().make_span_with(|req: &Request<Body>| {
-                request_span(req, signed::redact_token(req.uri().path()))
+                // Redacted on the route's own path, where the token segment
+                // is known to be, then put back behind the mount prefix.
+                let path = req.uri().path();
+                let prefix = original_path(req).strip_suffix(path).unwrap_or_default();
+                request_span(req, format!("{prefix}{}", signed::redact_token(path)))
             }),
         )
         .layer(middleware::from_fn(start_trace))
+}
+
+/// The path as the client sent it: a router nested under a prefix sees its
+/// own path in the URI, which would make `/dashboard/jobs` and `/jobs` one
+/// line in the logs.
+fn original_path(req: &Request<Body>) -> &str {
+    req.extensions()
+        .get::<OriginalUri>()
+        .map_or(req.uri().path(), |original| original.0.path())
 }
 
 fn request_span(req: &Request<Body>, path: impl Display) -> Span {
