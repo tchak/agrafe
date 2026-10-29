@@ -40,7 +40,8 @@ decision.
   file is decoded in the server process: every renderer runs
   [sandboxed](https://tchak.github.io/agrafe/guide/security.html).
 - **Attachments**: a blob lives as long as an owner in your backend uses
-  it, and expires on its own otherwise.
+  it, and expires on its own otherwise; `replace` swaps an owner's file
+  in one request.
 - **Generated files**: spreadsheets (CSV, XLSX, ODS), ZIP archives and
   [typst](https://typst.app) PDF documents, built by jobs.
 - **Webhooks** when a blob is ready or failed, signed the Standard

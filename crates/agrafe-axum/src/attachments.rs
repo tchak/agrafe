@@ -28,17 +28,41 @@ pub fn routes() -> Router<Agrafe> {
         .route("/attachments/{id}", get(get_attachment).delete(detach))
 }
 
+/// The attachment, and with `replace` the ones it detached.
+#[derive(Debug, Serialize)]
+pub struct AttachResponse {
+    #[serde(flatten)]
+    pub attachment: AttachmentResponse,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detached: Option<Vec<AttachmentResponse>>,
+}
+
 /// `201` for a new attachment, `200` for the one the triple already had.
 async fn attach(
     State(agrafe): State<Agrafe>,
     Path(id): Path<Uuid>,
     Json(req): Json<AttachmentRequest>,
 ) -> ApiResult<impl IntoResponse> {
-    let (status, attachment) = match agrafe.attach_blob(id, req).await? {
+    let replace = req.replace;
+    let outcome = agrafe.attach_blob(id, req).await?;
+    let (status, attachment) = match outcome.attached {
         Attached::Created(a) => (StatusCode::CREATED, a),
         Attached::Existing(a) => (StatusCode::OK, a),
     };
-    Ok((status, Json(AttachmentResponse::new(&attachment))))
+    let detached = replace.then(|| {
+        outcome
+            .detached
+            .iter()
+            .map(AttachmentResponse::new)
+            .collect()
+    });
+    Ok((
+        status,
+        Json(AttachResponse {
+            attachment: AttachmentResponse::new(&attachment),
+            detached,
+        }),
+    ))
 }
 
 /// An attachment as the listing shows it: with the state of its blob, and

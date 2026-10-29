@@ -1,7 +1,8 @@
 //! Attachments: attach and detach, the expiry handed from the default to
 //! the first attachment and back on the last detach, delete refusing an
 //! attached blob, the listing and its filters, and the blob row lock that
-//! orders an attach against an expiry.
+//! orders an attach against an expiry, and `replace`, which leaves one
+//! blob at an owner and role.
 
 use agrafe::blob::repo;
 use agrafe::jobs::reap;
@@ -640,6 +641,7 @@ async fn attach_waits_for_the_expiry_lock_and_sees_its_outcome() {
                     owner_kind: "expense".into(),
                     owner_id: "1".into(),
                     role: "receipt".into(),
+                    replace: false,
                 },
             )
             .await
@@ -759,4 +761,260 @@ async fn facets_walk_the_distinct_pairs() {
     assert_eq!(facets.owner_kinds, ["bulk"]);
     assert_eq!(facets.roles.len(), MAX_FACETS);
     assert_eq!(facets.roles[0], "n0001");
+}
+
+fn replacing(owner_kind: &str, owner_id: &str, role: &str) -> Value {
+    let mut body = attachment(owner_kind, owner_id, role);
+    body["replace"] = json!(true);
+    body
+}
+
+/// The blob ids attached at an owner and role, as the listing has them.
+async fn blobs_at(app: &TestApp, owner_kind: &str, owner_id: &str, role: &str) -> Vec<String> {
+    let (status, page) = call(
+        &app.private,
+        req(
+            Method::GET,
+            &format!("/attachments?owner_kind={owner_kind}&owner_id={owner_id}&role={role}"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    let mut ids: Vec<String> = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["blob_id"].as_str().unwrap().to_string())
+        .collect();
+    ids.sort();
+    ids
+}
+
+#[tokio::test]
+async fn replace_leaves_one_blob_at_the_address() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let a = create(&app, raw_blob()).await;
+    let b = create(&app, raw_blob()).await;
+    let c = create(&app, raw_blob()).await;
+    let (_, at_a) = attach(&app, id_of(&a), attachment("expense", "42", "receipt")).await;
+    let (_, at_b) = attach(&app, id_of(&b), attachment("expense", "42", "receipt")).await;
+    // `a` is used elsewhere too, `b` only here.
+    attach(&app, id_of(&a), attachment("user", "1", "avatar")).await;
+    // The same role of another owner is another address.
+    attach(&app, id_of(&b), attachment("expense", "43", "receipt")).await;
+    let (status, plain) = attach(&app, id_of(&b), attachment("expense", "44", "receipt")).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert!(
+        plain.get("detached").is_none(),
+        "only with replace: {plain}"
+    );
+
+    let (status, got) = attach(&app, id_of(&c), replacing("expense", "42", "receipt")).await;
+    assert_eq!(status, StatusCode::CREATED, "{got}");
+    assert_eq!(got["blob_id"], c["id"]);
+    let detached: Vec<&Value> = got["detached"].as_array().unwrap().iter().collect();
+    assert_eq!(detached.len(), 2, "{got}");
+    assert_eq!(detached[0]["id"], at_a["id"], "oldest first");
+    assert_eq!(detached[1]["id"], at_b["id"]);
+    assert_eq!(
+        blobs_at(&app, "expense", "42", "receipt").await,
+        vec![id_of(&c).to_string()]
+    );
+    assert_eq!(blobs_at(&app, "expense", "43", "receipt").await.len(), 1);
+    assert_eq!(blobs_at(&app, "user", "1", "avatar").await.len(), 1);
+
+    // The last detach of each re-arms its expiry; one still used elsewhere
+    // keeps none, and the new blob has none.
+    assert!(get_blob(&app, id_of(&a)).await["expires_at"].is_null());
+    assert!(get_blob(&app, id_of(&b)).await["expires_at"].is_null());
+    assert!(get_blob(&app, id_of(&c)).await["expires_at"].is_null());
+    let (_, got) = attach(&app, id_of(&c), replacing("expense", "43", "receipt")).await;
+    assert_eq!(got["detached"].as_array().unwrap().len(), 1, "{got}");
+    let (_, got) = attach(&app, id_of(&c), replacing("expense", "44", "receipt")).await;
+    assert_eq!(got["detached"].as_array().unwrap().len(), 1, "{got}");
+    let blob = get_blob(&app, id_of(&b)).await;
+    assert!(
+        about(expires_at(&blob).unwrap(), Duration::from_secs(24 * 3600)),
+        "{blob}"
+    );
+
+    // Idempotent: the blob already alone at the address is kept as is.
+    let (status, again) = attach(&app, id_of(&c), replacing("expense", "42", "receipt")).await;
+    assert_eq!(status, StatusCode::OK, "{again}");
+    assert_eq!(again["detached"], json!([]));
+    // Already there among others: kept, and the others go.
+    attach(&app, id_of(&a), attachment("expense", "42", "receipt")).await;
+    let (status, kept) = attach(&app, id_of(&c), replacing("expense", "42", "receipt")).await;
+    assert_eq!(status, StatusCode::OK, "{kept}");
+    assert_eq!(kept["id"], again["id"]);
+    assert_eq!(kept["detached"][0]["blob_id"], a["id"]);
+    assert_eq!(
+        blobs_at(&app, "expense", "42", "receipt").await,
+        vec![id_of(&c).to_string()]
+    );
+}
+
+#[tokio::test]
+async fn a_refused_replace_detaches_nothing() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let old = create(&app, raw_blob()).await;
+    attach(&app, id_of(&old), attachment("expense", "42", "receipt")).await;
+
+    let infected = create(&app, raw_blob()).await;
+    sqlx::query("UPDATE blobs SET state = 'infected' WHERE id = $1")
+        .bind(parse_id(id_of(&infected)))
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+    let (status, body) = attach(
+        &app,
+        id_of(&infected),
+        replacing("expense", "42", "receipt"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let (status, _) = attach(
+        &app,
+        &uuid::Uuid::now_v7().to_string(),
+        replacing("expense", "42", "receipt"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = attach(&app, id_of(&old), replacing("expense", "", "receipt")).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        blobs_at(&app, "expense", "42", "receipt").await,
+        vec![id_of(&old).to_string()]
+    );
+}
+
+#[tokio::test]
+async fn a_blob_created_attached_can_replace() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let old = create(&app, raw_blob()).await;
+    attach(&app, id_of(&old), attachment("user", "7", "avatar")).await;
+
+    let mut blob = raw_blob();
+    blob["attachment"] = replacing("user", "7", "avatar");
+    let created = create(&app, blob).await;
+    assert!(created["expires_at"].is_null(), "{created}");
+    assert_eq!(
+        blobs_at(&app, "user", "7", "avatar").await,
+        vec![id_of(&created).to_string()]
+    );
+    let old = get_blob(&app, id_of(&old)).await;
+    assert_eq!(old["attachments"], json!([]));
+    assert!(
+        about(expires_at(&old).unwrap(), Duration::from_secs(24 * 3600)),
+        "{old}"
+    );
+}
+
+/// Past `MAX_REPLACED` other blobs, a replace is refused rather than
+/// made unbounded, on attach and on creation alike, and nothing changes.
+#[tokio::test]
+async fn replace_is_capped() {
+    let db = TestDatabase::new().await;
+    use agrafe::attachment::MAX_REPLACED;
+
+    let app = setup(db).await;
+    let template = create(&app, raw_blob()).await;
+    // Copies of one blob row, each attached at the address.
+    sqlx::query(
+        "WITH copies AS ( \
+             INSERT INTO blobs \
+             SELECT (jsonb_populate_record(b, jsonb_build_object('id', gen_random_uuid()))).* \
+             FROM blobs b, generate_series(1, $2) WHERE b.id = $1 \
+             RETURNING id \
+         ) \
+         INSERT INTO attachments (id, blob_id, owner_kind, owner_id, role) \
+         SELECT gen_random_uuid(), id, 'gallery', '1', 'photo' FROM copies",
+    )
+    .bind(parse_id(id_of(&template)))
+    .bind(MAX_REPLACED as i32 + 1)
+    .execute(app.state.pool())
+    .await
+    .unwrap();
+
+    let (status, body) = attach(&app, id_of(&template), replacing("gallery", "1", "photo")).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(
+        body["error"]["message"],
+        format!("more than {MAX_REPLACED} blobs to replace at this owner and role")
+    );
+    let mut blob = raw_blob();
+    blob["attachment"] = replacing("gallery", "1", "photo");
+    let (status, body) = call(&app.private, json_req(Method::POST, "/blobs", blob)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(
+        blobs_at(&app, "gallery", "1", "photo").await.len(),
+        agrafe::attachment::DEFAULT_LIMIT,
+        "a full first page, nothing detached"
+    );
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM attachments")
+        .fetch_one(app.state.pool())
+        .await
+        .unwrap();
+    assert_eq!(count, MAX_REPLACED as i64 + 1);
+}
+
+/// Two replaces of one address are serialised: each finds the other's
+/// blob, if it came first, and detaches it, so one blob is left. Without
+/// the address lock, both would read the address before either inserted
+/// and both blobs would stay.
+#[tokio::test]
+async fn two_replaces_of_one_address_leave_one_blob() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let old = create(&app, raw_blob()).await;
+    attach(&app, id_of(&old), attachment("user", "7", "avatar")).await;
+    let first = create(&app, raw_blob()).await;
+    let second = create(&app, raw_blob()).await;
+
+    // Hold the old blob's row: the first replace takes the address, then
+    // waits on that row; the second waits on the address.
+    let mut tx = app.state.pool().begin().await.unwrap();
+    sqlx::query("SELECT id FROM blobs WHERE id = $1 FOR UPDATE")
+        .bind(parse_id(id_of(&old)))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let replace = |blob: &Value| {
+        let state = app.state.clone();
+        let id = parse_id(id_of(blob));
+        tokio::spawn(async move {
+            state
+                .attach_blob(
+                    id,
+                    agrafe::attachment::AttachmentRequest {
+                        owner_kind: "user".into(),
+                        owner_id: "7".into(),
+                        role: "avatar".into(),
+                        replace: true,
+                    },
+                )
+                .await
+        })
+    };
+    let one = replace(&first);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let two = replace(&second);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!one.is_finished() && !two.is_finished(), "both wait");
+    tx.commit().await.unwrap();
+
+    within("the first replace", one).await.unwrap().unwrap();
+    let two = within("the second replace", two).await.unwrap().unwrap();
+    assert_eq!(two.detached.len(), 1, "the second detaches the first");
+    assert_eq!(two.detached[0].blob_id, parse_id(id_of(&first)));
+    assert_eq!(
+        blobs_at(&app, "user", "7", "avatar").await,
+        vec![id_of(&second).to_string()]
+    );
+    for blob in [&old, &first] {
+        assert!(get_blob(&app, id_of(blob)).await["expires_at"].is_string());
+    }
 }

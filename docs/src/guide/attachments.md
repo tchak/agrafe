@@ -45,6 +45,45 @@ one transaction:
 Attaching is refused for a blob that is expired or deleted (`410`) or
 infected (`409`).
 
+## Replace
+
+When a role holds one file, such as an avatar, attach the new blob with
+`"replace": true`. Every other blob at the same `owner_kind`, `owner_id`
+and `role` is detached in the same transaction, and the response lists
+what was removed under `detached`:
+
+```sh
+curl -s "localhost:8080/blobs/$NEW_ID/attachments" \
+  -H 'content-type: application/json' \
+  -d '{"owner_kind": "user", "owner_id": "7", "role": "avatar", "replace": true}'
+```
+
+```json
+{
+  "id": "019a1c3f-…",
+  "blob_id": "019a1c3e-…",
+  "owner_kind": "user",
+  "owner_id": "7",
+  "role": "avatar",
+  "created_at": "2026-10-29T10:02:11.207Z",
+  "detached": [
+    {"id": "019a1c2e-…", "blob_id": "019a1c2d-…", "owner_kind": "user",
+     "owner_id": "7", "role": "avatar", "created_at": "2026-10-19T09:12:03.418Z"}
+  ]
+}
+```
+
+A detached blob that nothing else uses gets its expiry back, as on any
+last detach. If the new blob is already at the address it keeps its
+attachment, and if the attach is refused nothing is detached. Two
+replaces of one address at once leave one blob, the later one. `replace`
+also works in the `attachment` of `POST /blobs`, which does not list what
+it detached.
+
+`replace` is an option of the request, not a rule agrafe remembers: a
+later attach without it can add a second blob to the address. A replace
+that would detach more than 1000 blobs is refused with `409`.
+
 The three strings must not be blank, are at most 255 bytes, and contain no
 control or bidirectional formatting characters. Unlike filenames they are
 not trimmed: an identifier is yours to write.
@@ -132,5 +171,6 @@ about its own data.
 Blobs are write-once. To replace an owner's file:
 
 1. create and upload the new blob;
-2. attach it to the owner;
-3. detach the old one, which expires a day later and is purged.
+2. attach it to the owner with `"replace": true`, which detaches the old
+   one in the same step;
+3. the old one expires a day later and is purged.

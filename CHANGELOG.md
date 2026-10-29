@@ -30,7 +30,8 @@ The first release.
   upload; raw or multipart bodies, write-once blobs, accepted types,
   expiry, and `url` blobs that a job fetches from a presigned URL.
 - **Attachments**: a blob lives as long as an owner in the backend uses
-  it, with tombstones and no purge of a blob still in use.
+  it, with tombstones and no purge of a blob still in use. `replace`
+  makes a blob the only one at an owner and role in one transaction.
 - **Encryption at rest**: envelope encryption with streaming AEAD (Tink's
   AES-GCM-HKDF-STREAMING) and wrapped data keys, KEK rotation, and
   `Range` reads of the plaintext.

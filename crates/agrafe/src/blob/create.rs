@@ -25,6 +25,11 @@ pub enum CreateError {
     /// The request is well formed but not acceptable; the message says why.
     #[error("{0}")]
     Invalid(String),
+    /// The attachment's `replace` found more than
+    /// `attachment::MAX_REPLACED` other blobs at the address; carries the
+    /// cap.
+    #[error("more than {0} blobs to replace at this owner and role")]
+    TooManyToReplace(usize),
     /// The query or the transaction failed.
     #[error("database: {0}")]
     Db(#[from] sqlx::Error),
@@ -32,7 +37,8 @@ pub enum CreateError {
 
 impl Agrafe {
     /// Create a blob: metadata only, no bytes yet. With an `attachment`,
-    /// the blob is attached in the same transaction and carries no expiry.
+    /// the blob is attached in the same transaction and carries no expiry;
+    /// with its `replace`, the other blobs at the address are detached.
     /// A `url` blob gets its fetch job in the same transaction too.
     pub async fn create_blob(&self, req: CreateBlobRequest) -> Result<Blob, CreateError> {
         let config = self.config();
@@ -49,7 +55,10 @@ impl Agrafe {
         let mut tx = self.pool().begin().await?;
         let blob = repo::insert(&mut *tx, &new).await?;
         if let Some(attachment) = &new.attachment {
-            attachment::insert_with_blob(&mut tx, blob.id, attachment).await?;
+            let expires_at = config.blobs.default_expires_at(Timestamp::now());
+            attachment::insert_with_blob(&mut tx, blob.id, attachment, expires_at)
+                .await?
+                .ok_or(CreateError::TooManyToReplace(attachment::MAX_REPLACED))?;
         }
         if blob.input_type.is_fetched() {
             jobs::enqueue(
@@ -996,6 +1005,7 @@ mod tests {
             owner_kind: "expense".into(),
             owner_id: "1".into(),
             role: "receipt".into(),
+            replace: false,
         });
         let b = validate(r, &cfg(), &blobs(), &fetch(), now).unwrap();
         assert_eq!(b.expires_at, None);
@@ -1005,6 +1015,7 @@ mod tests {
             owner_kind: "expense".into(),
             owner_id: "1".into(),
             role: "receipt".into(),
+            replace: false,
         });
         r.expires_in = Some(Duration::from_secs(3600));
         assert!(
@@ -1016,6 +1027,7 @@ mod tests {
             owner_kind: "".into(),
             owner_id: "1".into(),
             role: "receipt".into(),
+            replace: false,
         });
         assert!(
             validate(r, &cfg(), &blobs(), &fetch(), now).is_err(),

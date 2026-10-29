@@ -519,7 +519,7 @@ the row up as before.
 | `priority` | no, default `normal` | `high`, `normal` or `low`: where the blob's fetch, scan, render and build jobs go in their kind's queue, see "Jobs" |
 | `representations` | no, default both | The representations to render, among `thumbnail` and `preview`. `[]` renders nothing, for files nobody will look at through the service. The others are `disabled` for good, see "Derived representations" |
 | `expires_at` or `expires_in` | no, default `blobs.default_expires_in` | Absolute timestamp or duration such as `7d`, in the future. Refused together with `attachment`, and cleared by the first attachment, see "Attachments" |
-| `attachment` | no | `owner_kind`, `owner_id` and `role`: attach in the same transaction as the creation, see "Attachments" |
+| `attachment` | no | `owner_kind`, `owner_id` and `role`, and `replace`: attach in the same transaction as the creation, see "Attachments" |
 
 Checksum is SHA-256 because browsers compute it cheaply with
 `crypto.subtle.digest`, and S3 understands it natively.
@@ -566,7 +566,8 @@ A blob receives bytes exactly once. `PUT` is accepted from `created` only; a
 failed upload goes back to `created`, a successful one never does. There is no
 re-upload, no per-blob switch, and no object version: the original lives at
 one key (see "Object keys"). A backend that needs different bytes creates a new blob,
-attaches it and detaches the old one, which then expires on its own: the way
+attaches it and detaches the old one, in one request with `replace` (see
+"Attachments"), and the old one then expires on its own: the way
 Active Storage treats blobs as immutable and attachments as the thing that
 changes.
 
@@ -725,6 +726,24 @@ one). A blob may be attached in `created`, before its bytes: a backend
 creating a `rows`, `archive` or `document` blob knows its owner at creation, and
 `POST /blobs` takes an optional `attachment` to do both in one transaction.
 
+**Replace.** `"replace": true` on attach, or in the `attachment` of
+`POST /blobs`, makes the blob the only one at its `(owner_kind,
+owner_id, role)`: every other blob attached there is detached in the
+same transaction, the last detach of each re-arming its expiry as a
+detach does, and the response lists the attachments it removed (the
+attach route only). A blob already at the address keeps its attachment;
+a refused attach detaches nothing. It is an option of the request, not a
+property of the role: nothing is stored, and a later attach without it
+may put a second blob at the address again. One-to-one stays the
+backend's rule; `replace` is how it applies it in one step. Why: the
+replacement of a write-once file (see "Write-once") was attach, list,
+then detach, three requests a crash could split, leaving both blobs
+attached and the old one alive for good, and two submissions for one
+owner racing through them would each keep their own blob. Only agrafe
+can make it atomic. A replace that would detach more than a thousand
+blobs is refused with `409`: the address belongs to one owner, but the
+transaction locks each blob row it touches, and it stays bounded.
+
 **Detach.** `DELETE /attachments/:id`. Works on a blob in any state; the last
 detach re-arms the expiry even on a terminal blob, which is what gives an
 infected blob its purge clock once the backend lets go of it.
@@ -767,7 +786,20 @@ backstop: a backend that knows an upload is dead detaches and deletes.
 UPDATE`) for their transaction, then change the attachments and
 `expires_at` together. The reaper's expiry update waits on the same lock and
 re-evaluates its predicate after, so an attach racing an expiry lands on one
-side or the other, never both.
+side or the other, never both. A replace first takes a transaction-level
+advisory lock on a hash of the address, then reads the other blobs there,
+then locks every blob row it changes, the new one included, in id order.
+The advisory lock is what serialises two replaces of one address: each
+locks a different blob, and without it neither would see the other's
+insert, so both blobs would stay; there may be no attachment row yet to
+lock instead. The id order keeps two replaces over overlapping blobs from
+waiting on each other in opposite orders. A plain attach does not take
+the address lock: one landing during a replace is ordered after it, a
+second blob at the address the backend asked for. The reaper's batch
+updates lock their rows in no particular order, so a replace and a batch
+that both want two of the same rows can deadlock; Postgres aborts one,
+the reaper's next tick or the backend's retry goes through, and nothing
+is left half done.
 
 **Schema and listing.**
 

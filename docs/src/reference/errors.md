@@ -98,6 +98,10 @@ All `422 unprocessable`, from `POST /blobs`:
 | `expires_at and expires_in do not apply to a blob created attached` | |
 | `attachment: …` | An invalid `owner_kind`, `owner_id` or `role` |
 
+An `attachment` with `replace` and more than 1000 other blobs at its
+address answers `409 conflict`, `more than 1000 blobs to replace at this
+owner and role`.
+
 A body over 16 MiB answers `413 payload_too_large`.
 
 ## Uploading
@@ -158,6 +162,7 @@ part. Common reasons:
 |---|---|---|---|
 | `404` | `not_found` | `not found` | Unknown blob or attachment |
 | `409` | `conflict` | `blob is infected and cannot be attached` | |
+| `409` | `conflict` | `more than 1000 blobs to replace at this owner and role` | `replace` |
 | `410` | `gone` | `blob is expired and cannot be attached` | Also for `deleted`, and for a blob past its `expires_at` |
 | `422` | `unprocessable` | the field and the rule it broke | Blank, over 255 bytes, control or bidirectional formatting characters |
 | `400` | `bad_request` | `owner_id is only accepted together with owner_kind` | `GET /attachments` |

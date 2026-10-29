@@ -168,7 +168,7 @@ The body is limited to 16 MiB.
 | `representations` | array | no | Among `thumbnail` and `preview`; both by default |
 | `expires_at` | timestamp | no | In the future. Not with `expires_in` or `attachment` |
 | `expires_in` | duration | no | Not with `expires_at` or `attachment`. Default `blobs.default_expires_in` |
-| `attachment` | object | no | `{"owner_kind", "owner_id", "role"}`: attach in the same transaction; the blob then has no expiry |
+| `attachment` | object | no | `{"owner_kind", "owner_id", "role"}`, and `"replace": true` to detach the other blobs at the address: attach in the same transaction; the blob then has no expiry |
 
 The content types a generated blob may declare:
 
@@ -357,12 +357,19 @@ Attaches the blob to an owner, and clears its expiry.
 Each string is not blank, at most 255 bytes, without control or
 bidirectional formatting characters, and not trimmed.
 
+`"replace": true`, optional, detaches every other blob at the same
+`owner_kind`, `owner_id` and `role` in the same transaction. The response
+is then the attachment plus `detached`, the attachments removed, oldest
+first (`[]` when there were none). Nothing is detached when the attach
+is refused.
+
 | Status | Code | When |
 |---|---|---|
 | `201` | | Attached |
 | `200` | | Already attached: the existing attachment |
 | `404` | `not_found` | Unknown blob |
 | `409` | `conflict` | The blob is `infected` |
+| `409` | `conflict` | `replace` with more than 1000 other blobs at the address |
 | `410` | `gone` | The blob is `expired` or `deleted`, or past its `expires_at` |
 | `422` | `unprocessable` | An invalid string |
 

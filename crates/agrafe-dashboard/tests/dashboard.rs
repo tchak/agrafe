@@ -168,11 +168,13 @@ async fn attach(app: &App, blob: Uuid, owner_id: &str) -> Uuid {
         owner_kind: "document".to_string(),
         owner_id: owner_id.to_string(),
         role: "file".to_string(),
+        replace: false,
     };
     app.state
         .attach_blob(blob, req)
         .await
         .unwrap()
+        .attached
         .attachment()
         .id
 }

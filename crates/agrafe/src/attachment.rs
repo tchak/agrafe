@@ -6,7 +6,9 @@
 //! the first attach clears `expires_at`, the last detach sets it to the
 //! default again. Attach and detach lock the blob row for their
 //! transaction, so the expiry and the attachments change together, and
-//! the reaper's expiry update waits on the same lock.
+//! the reaper's expiry update waits on the same lock. An attach with
+//! `replace` also detaches the other blobs at the owner and role, under
+//! an advisory lock of that address.
 //!
 //! [DESIGN.md, "Attachments"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#attachments
 
@@ -36,6 +38,10 @@ pub enum AttachError {
     /// the reaper has recorded it.
     #[error("blob is {0} and cannot be attached")]
     Terminal(BlobState),
+    /// `replace` found more than `MAX_REPLACED` other blobs at the
+    /// address; carries `MAX_REPLACED`.
+    #[error("more than {0} blobs to replace at this owner and role")]
+    TooManyToReplace(usize),
     /// The query or the transaction failed.
     #[error("database: {0}")]
     Db(#[from] sqlx::Error),
@@ -63,25 +69,47 @@ pub enum ListError {
 impl Agrafe {
     /// Attach `blob_id` to an owner. Idempotent: the triple already
     /// attached hands back the existing attachment. Refused for a blob in a
-    /// terminal state or past its expiry.
+    /// terminal state or past its expiry. With `replace`, every other blob
+    /// at the owner and role is detached in the same transaction, the
+    /// last detach of each re-arming its expiry; nothing is detached when
+    /// the attach is refused.
     pub async fn attach_blob(
         &self,
         blob_id: Uuid,
         req: AttachmentRequest,
-    ) -> Result<Attached, AttachError> {
+    ) -> Result<AttachOutcome, AttachError> {
         let new = validate(req).map_err(AttachError::Invalid)?;
         let mut tx = self.pool().begin().await?;
-        let blob = lock_blob(&mut tx, blob_id)
+        let others = if new.replace {
+            lock_address(&mut tx, &new).await?;
+            others_at(&mut tx, blob_id, &new).await?
+        } else {
+            Vec::new()
+        };
+        if others.len() > MAX_REPLACED {
+            return Err(AttachError::TooManyToReplace(MAX_REPLACED));
+        }
+        // Every blob row this attach changes, in id order: a replace takes
+        // several, and two of them over overlapping blobs take them in the
+        // same order.
+        let mut ids: Vec<Uuid> = others.iter().map(|a| a.blob_id).collect();
+        ids.push(blob_id);
+        ids.sort_unstable();
+        let blob = lock_blobs(&mut tx, &ids)
             .await?
+            .into_iter()
+            .find(|b| b.id == blob_id)
             .ok_or(AttachError::NotFound)?;
         let state = blob.state_at(Timestamp::now());
         if state.is_terminal() {
             return Err(AttachError::Terminal(state));
         }
+        let expires_at = self.config().blobs.default_expires_at(Timestamp::now());
+        let detached = detach_all(&mut tx, &others, expires_at).await?;
         let attached = insert(&mut tx, blob_id, &new).await?;
         clear_expiry(&mut tx, blob_id).await?;
         tx.commit().await?;
-        Ok(attached)
+        Ok(AttachOutcome { attached, detached })
     }
 
     /// Remove an attachment. `false` when there is no such attachment.
@@ -191,6 +219,11 @@ pub struct AttachmentRequest {
     pub owner_id: String,
     /// The role the blob plays for the owner (`avatar`).
     pub role: String,
+    /// Make the blob the only one at the owner and role: detach the
+    /// others in the same transaction. Nothing is stored; a later attach
+    /// without it may add a second blob again.
+    #[serde(default)]
+    pub replace: bool,
 }
 
 /// A validated request, ready to insert.
@@ -199,6 +232,7 @@ pub(crate) struct NewAttachment {
     pub owner_kind: String,
     pub owner_id: String,
     pub role: String,
+    pub replace: bool,
 }
 
 /// A row of `attachments`: an owner in the backend uses a blob.
@@ -237,6 +271,21 @@ impl Attached {
         }
     }
 }
+
+/// What `Agrafe::attach_blob` did.
+#[derive(Debug, Clone)]
+pub struct AttachOutcome {
+    /// The attachment, created or existing.
+    pub attached: Attached,
+    /// With `replace`, the attachments it removed from the address,
+    /// oldest first; empty otherwise.
+    pub detached: Vec<Attachment>,
+}
+
+/// Other blobs at an address a `replace` detaches at most, in one
+/// transaction that locks each of their rows. A one-to-one role has one;
+/// past the cap the request is refused rather than made unbounded.
+pub const MAX_REPLACED: usize = 1000;
 
 /// An attachment as the listing shows it: with the state of its blob, and
 /// whether the job that was to finish the blob died, so that an owner's
@@ -315,6 +364,7 @@ pub(crate) fn validate(req: AttachmentRequest) -> Result<NewAttachment, String> 
         owner_kind: req.owner_kind,
         owner_id: req.owner_id,
         role: req.role,
+        replace: req.replace,
     })
 }
 
@@ -345,6 +395,97 @@ async fn lock_blob(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<Blo
     .bind(id)
     .fetch_optional(conn)
     .await
+}
+
+/// The rows of `ids`, sorted, locked in that order for the rest of the
+/// transaction; those that exist.
+async fn lock_blobs(conn: &mut PgConnection, ids: &[Uuid]) -> sqlx::Result<Vec<Blob>> {
+    sqlx::query_as::<_, Blob>(concat!(
+        "SELECT ",
+        blob_columns!(),
+        " FROM blobs WHERE id = ANY($1) ORDER BY id FOR UPDATE"
+    ))
+    .bind(ids)
+    .fetch_all(conn)
+    .await
+}
+
+/// Serialise the replaces of one address for the rest of the transaction.
+/// Without it, two replaces of different blobs each lock their own blob,
+/// neither sees the other's insert, and both stay attached; locking the
+/// address's attachment rows would not do, since there may be none yet.
+/// The key is a 64-bit hash, a key space apart from the jobs' two-key
+/// locks, scoped to the installation as theirs are (see `jobs::try_lock`).
+/// The fields hold no control character, so the separator keeps them
+/// apart; a collision only serialises two addresses.
+async fn lock_address(conn: &mut PgConnection, new: &NewAttachment) -> sqlx::Result<()> {
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock(hashtextextended(concat_ws(chr(31), \
+             'attachment', current_database(), coalesce(current_schema(), ''), $1, $2, $3\
+         ), 0))",
+    )
+    .bind(&new.owner_kind)
+    .bind(&new.owner_id)
+    .bind(&new.role)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+/// The attachments of other blobs at `new`'s address, oldest first, at
+/// most `MAX_REPLACED + 1`: the one past the cap says the replace is
+/// refused. In blob order off the unique index, so the limit stops the
+/// scan, then sorted here.
+async fn others_at(
+    conn: &mut PgConnection,
+    blob_id: Uuid,
+    new: &NewAttachment,
+) -> sqlx::Result<Vec<Attachment>> {
+    let mut others = sqlx::query_as::<_, Attachment>(
+        "SELECT * FROM attachments \
+         WHERE owner_kind = $1 AND owner_id = $2 AND role = $3 AND blob_id <> $4 \
+         ORDER BY blob_id LIMIT $5",
+    )
+    .bind(&new.owner_kind)
+    .bind(&new.owner_id)
+    .bind(&new.role)
+    .bind(blob_id)
+    .bind(MAX_REPLACED as i64 + 1)
+    .fetch_all(conn)
+    .await?;
+    others.sort_unstable_by_key(|a| a.id);
+    Ok(others)
+}
+
+/// Remove `others`, and re-arm the expiry of each blob that lost its last
+/// attachment. The caller holds their blob rows. Those another detach
+/// took meanwhile are not in the result.
+async fn detach_all(
+    conn: &mut PgConnection,
+    others: &[Attachment],
+    expires_at: Timestamp,
+) -> sqlx::Result<Vec<Attachment>> {
+    if others.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids: Vec<Uuid> = others.iter().map(|a| a.id).collect();
+    let mut detached =
+        sqlx::query_as::<_, Attachment>("DELETE FROM attachments WHERE id = ANY($1) RETURNING *")
+            .bind(&ids)
+            .fetch_all(&mut *conn)
+            .await?;
+    detached.sort_unstable_by_key(|a| a.id);
+    let blob_ids: Vec<Uuid> = detached.iter().map(|a| a.blob_id).collect();
+    sqlx::query(
+        "UPDATE blobs SET expires_at = $2 \
+         WHERE id = ANY($1) \
+           AND NOT EXISTS (SELECT 1 FROM attachments a WHERE a.blob_id = blobs.id)",
+    )
+    .bind(&blob_ids)
+    .bind(expires_at.to_sqlx())
+    .execute(conn)
+    .await?;
+    Ok(detached)
 }
 
 /// Insert, or find the attachment the unique index already holds.
@@ -384,14 +525,29 @@ async fn insert(
 
 /// The attachment a blob is created with, in the creating transaction.
 /// The blob was just inserted without an expiry, so there is nothing to
-/// clear.
+/// clear. With `replace`, the other blobs at the address are detached as
+/// on attach, their expiry re-armed at `expires_at`; the new row is the
+/// transaction's own, so only theirs are locked. `None` when there are
+/// more than `MAX_REPLACED` of them.
 pub(crate) async fn insert_with_blob(
     conn: &mut PgConnection,
     blob_id: Uuid,
     new: &NewAttachment,
-) -> sqlx::Result<Attachment> {
+    expires_at: Timestamp,
+) -> sqlx::Result<Option<Attachment>> {
+    if new.replace {
+        lock_address(conn, new).await?;
+        let others = others_at(conn, blob_id, new).await?;
+        if others.len() > MAX_REPLACED {
+            return Ok(None);
+        }
+        let mut ids: Vec<Uuid> = others.iter().map(|a| a.blob_id).collect();
+        ids.sort_unstable();
+        lock_blobs(conn, &ids).await?;
+        detach_all(conn, &others, expires_at).await?;
+    }
     match insert(conn, blob_id, new).await? {
-        Attached::Created(a) | Attached::Existing(a) => Ok(a),
+        Attached::Created(a) | Attached::Existing(a) => Ok(Some(a)),
     }
 }
 
@@ -535,6 +691,7 @@ mod tests {
             owner_kind: owner_kind.into(),
             owner_id: owner_id.into(),
             role: role.into(),
+            replace: false,
         }
     }
 

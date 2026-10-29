@@ -131,6 +131,7 @@ impl From<CreateError> for ApiError {
     fn from(err: CreateError) -> Self {
         match err {
             CreateError::Invalid(msg) => ApiError::Unprocessable(msg),
+            CreateError::TooManyToReplace(_) => ApiError::Conflict(err.to_string()),
             CreateError::Db(e) => ApiError::internal(e),
         }
     }
@@ -180,6 +181,7 @@ impl From<AttachError> for ApiError {
             // know; an expired or deleted one is gone for good.
             AttachError::Terminal(blob::BlobState::Infected) => ApiError::Conflict(err.to_string()),
             AttachError::Terminal(_) => ApiError::Gone(err.to_string()),
+            AttachError::TooManyToReplace(_) => ApiError::Conflict(err.to_string()),
             AttachError::Db(e) => ApiError::internal(e),
         }
     }
