@@ -146,7 +146,8 @@ of the first drawn layer is burned into a corner of the map. There is no
 layer by default: the geometry is then drawn on a flat background and
 nothing leaves the worker. Every render with a layer configured sends the
 extent of a user's geometry to that provider, so the render workers'
-egress must allow those hosts, and nothing else needs it. A layer that
+egress must allow those hosts, and nothing else needs it; a redirect to
+another host is not followed. A layer that
 cannot be fetched, times out or does not decode fails the render attempt,
 which is retried; the file is never marked `failed` for the provider's
 downtime. See [Configuration](../reference/configuration.md#mediamap).

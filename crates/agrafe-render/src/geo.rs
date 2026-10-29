@@ -323,7 +323,8 @@ pub enum FetchError {
 }
 
 /// The HTTP client background layers are fetched through: a timeout on
-/// the whole request, a few redirects, and at most
+/// the whole request, a few redirects on the layer's own host and never
+/// from https to http, and at most
 /// `CONCURRENT_FETCHES` requests in flight per process. One per
 /// process, built from `[media.map]`.
 #[derive(Clone)]
@@ -340,7 +341,20 @@ impl Client {
             .user_agent(concat!("agrafe/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(config.fetch_timeout)
             .timeout(config.fetch_timeout)
-            .redirect(reqwest::redirect::Policy::limited(3))
+            // A provider moves a path, not to another host: one that sends
+            // the worker elsewhere, an internal address to begin with, is
+            // answered by its redirect, which fails the attempt.
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                let first = &attempt.previous()[0];
+                let downgrade = first.scheme() == "https" && attempt.url().scheme() != "https";
+                let same_host = attempt.url().host() == first.host()
+                    && attempt.url().port_or_known_default() == first.port_or_known_default();
+                if attempt.previous().len() > 3 || downgrade || !same_host {
+                    attempt.stop()
+                } else {
+                    attempt.follow()
+                }
+            }))
             .referer(false)
             .build()?;
         Ok(Self {

@@ -41,6 +41,10 @@ enum Answer {
     /// A black PNG of half the requested size, as a WMS that caps or
     /// rounds the size answers.
     Half,
+    /// A redirect to the same request on this host, under another path.
+    Moved,
+    /// A redirect to the same request on another host.
+    Elsewhere(std::net::SocketAddr),
 }
 
 type Requests = Arc<Mutex<Vec<HashMap<String, String>>>>;
@@ -58,6 +62,10 @@ impl Wms {
         let requests: Requests = Arc::default();
         let app = Router::new()
             .route("/wms", get(get_map))
+            .route(
+                "/moved",
+                get(get_map).with_state((Answer::Png, requests.clone())),
+            )
             .with_state((answer, requests.clone()));
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         Self {
@@ -85,8 +93,10 @@ impl Wms {
 async fn get_map(
     State((answer, requests)): State<(Answer, Requests)>,
     Query(params): Query<HashMap<String, String>>,
+    uri: axum::http::Uri,
 ) -> Response {
     requests.lock().unwrap().push(params.clone());
+    let query = uri.query().unwrap_or_default();
     let (width, height) = (params["WIDTH"].as_str(), params["HEIGHT"].as_str());
     match answer {
         Answer::Png => {
@@ -112,6 +122,13 @@ async fn get_map(
             let mut bytes = png("4", "4").await;
             bytes.extend(std::iter::repeat_n(0u8, 100 * 1024));
             ([(header::CONTENT_TYPE, "image/png")], bytes).into_response()
+        }
+        Answer::Moved => {
+            axum::response::Redirect::temporary(&format!("/moved?{query}")).into_response()
+        }
+        Answer::Elsewhere(addr) => {
+            axum::response::Redirect::temporary(&format!("http://{addr}/wms?{query}"))
+                .into_response()
         }
         Answer::Half => {
             let half = |side: &str| (side.parse::<u32>().unwrap() / 2).to_string();
@@ -333,6 +350,37 @@ async fn an_extent_that_does_not_parse_rejects_the_map() {
         "not retried"
     );
     std::fs::remove_file(&helper).unwrap();
+}
+
+/// A provider may move a path on its own host, not send the worker to
+/// another one: that redirect is its answer, and fails the attempt.
+#[tokio::test]
+async fn redirects_stay_on_the_layer_host() {
+    let db = TestDatabase::new().await;
+    let moved = Wms::start(Answer::Moved).await;
+    let clamd = fake_clamd().await;
+    let app = setup_tuned(db, clamd, |c| {
+        c.media.render.map.layers = vec![moved.layer()];
+    })
+    .await;
+    let point = map_blob(&app, "point.geojson", "application/geo+json").await;
+    render_all(&app).await;
+    assert_eq!(moved.requests().len(), 2, "the redirect and the move");
+    assert_eq!(
+        get_blob(&app, id_of(&point)).await["preview_state"],
+        "ready"
+    );
+
+    let db = TestDatabase::new().await;
+    let elsewhere = Wms::start(Answer::Png).await;
+    let addr = elsewhere.url.split('/').nth(2).unwrap().parse().unwrap();
+    provider_fault(
+        db,
+        Answer::Elsewhere(addr),
+        "answered 307 Temporary Redirect",
+    )
+    .await;
+    assert!(elsewhere.requests().is_empty(), "the other host was asked");
 }
 
 #[tokio::test]

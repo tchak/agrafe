@@ -2445,7 +2445,11 @@ on "has preview", never on category. Sources, in order:
    Fetching: one request per applicable layer, each under
    `fetch_timeout` and `max_layer_size`, at most four in flight per
    process, since a `variant_version` bump re-renders every map blob
-   and must not be a burst against the provider. The response is an image
+   and must not be a burst against the provider. Up to three redirects
+   are followed on the layer's own host and port, never from https to
+   http: a provider that sends the worker to another host, an internal
+   address to begin with, has answered with its redirect, which fails the
+   attempt. The response is an image
    only if its `Content-Type` says so and the loader sniff agrees: the
    Géoplateforme answers an XML `ServiceException` with a `200`. A
    failure to fetch, a layer that does not decode included, which the
