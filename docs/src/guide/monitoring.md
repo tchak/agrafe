@@ -25,9 +25,9 @@ deduplicate them in queries, rather than summing across processes.
 
 | Metric | Labels | Meaning |
 |---|---|---|
-| `agrafe_jobs` | `kind`, `state`, `priority` | Jobs in the queue. `state` is `due` (runnable now), `scheduled` (waiting for `run_at`: a retry backing off, a purge waiting for its delay), `running` (lease current) or `dead` |
+| `agrafe_jobs` | `kind`, `state`, `priority` | Jobs in the queue. `state` is `due` (runnable now), `scheduled` (waiting for `run_at`: a retry backing off, a purge waiting for its delay), `running` (lease current) or `dead`. Exact up to a thousand per kind, priority and state; past that, PostgreSQL's estimate, its order of magnitude |
 | `agrafe_jobs_oldest_due_seconds` | `kind`, `priority` | How long the oldest due job has been waiting |
-| `agrafe_jobs_census_ok` | | 1 when the two above come from this scrape, 0 when the census failed (the database out of reach, or a backlog too long to count in five seconds) and they are the last scrape's |
+| `agrafe_jobs_census_ok` | | 1 when the two above come from this scrape, 0 when the census failed (the database out of reach or too slow to answer in five seconds) and they are the last scrape's |
 
 A job whose lease lapsed counts as due, as the claim query sees it.
 
@@ -186,7 +186,8 @@ private_hosts = ["agrafe.internal:8080"]
 ```
 
 - **Jobs:** the queue census, a total per state and, per kind and priority,
-  the count in each state and the age of the oldest due job; then the
+  the count in each state (`≈` marks an estimate, past a thousand) and the
+  age of the oldest due job; then the
   listing, with a tab per state and the `kind`, `priority` and `blob_id`
   filters. A job's page shows its payload and its whole error, and, when it
   is dead, the retry and discard buttons. `?refresh=5` reloads the page every

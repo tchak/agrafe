@@ -373,38 +373,46 @@ impl Job {
     }
 }
 
-/// The SQL twin of `Job::state`, with the lease in seconds bound where
-/// `push_state` binds it.
-const STATE_SQL: (&str, &str) = (
-    "CASE WHEN failed_at IS NOT NULL THEN 'dead' \
-          WHEN locked_at IS NOT NULL AND locked_at >= now() - make_interval(secs => ",
-    ") THEN 'running' \
-          WHEN run_at <= now() THEN 'due' \
-          ELSE 'scheduled' END",
-);
-
-fn push_state(qb: &mut QueryBuilder<Postgres>, lease: Duration) {
-    qb.push(STATE_SQL.0)
-        .push_bind(lease.as_secs_f64())
-        .push(STATE_SQL.1);
+/// The SQL twin of `Job::state`, as the conditions on the columns that
+/// decide `state`, written so that the planner matches each to its
+/// partial index: `jobs_dead_kind_idx` for `dead`, `jobs_held_idx` for
+/// `running`, `jobs_claimable_idx` for `due` and `scheduled`. No index
+/// serves an equality on a `CASE` of them. The lease is a literal, a
+/// number from the configuration, so that the census can estimate a
+/// range from the statement as it is.
+fn state_condition(state: JobState, lease: Duration) -> String {
+    let lease = lease.as_secs_f64();
+    match state {
+        JobState::Dead => "failed_at IS NOT NULL".to_string(),
+        JobState::Running => format!(
+            "failed_at IS NULL AND locked_at IS NOT NULL \
+             AND locked_at >= now() - make_interval(secs => {lease})"
+        ),
+        JobState::Due | JobState::Scheduled => format!(
+            "failed_at IS NULL \
+             AND (locked_at IS NULL OR locked_at < now() - make_interval(secs => {lease})) \
+             AND run_at {} now()",
+            if state == JobState::Due { "<=" } else { ">" }
+        ),
+    }
 }
 
 /// One line of the queue census: how many jobs of `kind` and `priority`
 /// are in `state`, and for the due ones how long the oldest has waited.
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone)]
 pub struct Count {
     /// The kind counted.
-    #[sqlx(try_from = "String")]
     pub kind: JobKind,
     /// The priority counted.
-    #[sqlx(try_from = "i16")]
     pub priority: Priority,
     /// The state counted.
-    #[sqlx(try_from = "String")]
     pub state: JobState,
     /// How many jobs there are; never zero, an empty combination has no
-    /// line.
+    /// line. Exact up to `CENSUS_EXACT`, the planner's estimate past it.
     pub count: i64,
+    /// Whether `count` is the planner's estimate: the range held more
+    /// than `CENSUS_EXACT` jobs.
+    pub estimated: bool,
     /// How long the oldest due job has waited, in seconds since its
     /// `run_at`: `Some` on the `due` line, `None` on every other.
     pub oldest_due_seconds: Option<f64>,
@@ -413,17 +421,28 @@ pub struct Count {
 /// How long the census may take, the wait for a connection included.
 pub const CENSUS_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How many jobs of one kind, priority and state the census counts one
+/// by one. Past it, the count is the planner's estimate of the range.
+pub const CENSUS_EXACT: i64 = 1000;
+
 /// Count the jobs by kind, priority and state. Combinations with nothing
 /// in them have no row.
 ///
-/// The counts are a scan of the table, which holds the backlog: millions
-/// of rows after a mass expiry, half a second per five million. It runs
-/// under `CENSUS_TIMEOUT` as a statement timeout, so a backlog the scan
-/// cannot count in time fails the census rather than piling scans up
-/// scrape after scrape. The age of the oldest due job, what an alert
-/// reads, is not taken from the scan: one probe per kind and priority
-/// reads the head of `jobs_claimable_idx`, however long the queue.
+/// The queue is the backlog: millions of rows after a mass expiry, and
+/// counting them one by one is reading them all, scrape after scrape.
+/// Each combination is instead counted on its state's index (see
+/// `state_condition`) up to `CENSUS_EXACT`, so the census reads at most
+/// that many entries for each of its 120 combinations, a few in practice
+/// as a queue is small or held by a handful of kinds; a combination with
+/// more is the planner's estimate of the range, marked as such, which is
+/// the order of magnitude an operator needs of a backlog that size. The
+/// age of the oldest due job, what an alert reads, is exact: one probe
+/// per kind and priority reads the head of `jobs_claimable_idx`. All of
+/// it runs under `CENSUS_TIMEOUT`, so a slow database fails the census
+/// rather than piling scrapes up.
 pub(crate) async fn counts(pool: &sqlx::PgPool, lease: Duration) -> sqlx::Result<Vec<Count>> {
+    use sqlx::Row as _;
+
     let mut tx = pool.begin().await?;
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "SET LOCAL statement_timeout = {}",
@@ -431,31 +450,102 @@ pub(crate) async fn counts(pool: &sqlx::PgPool, lease: Duration) -> sqlx::Result
     )))
     .execute(&mut *tx)
     .await?;
-    let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
-        "SELECT kind, priority, state, count(*) AS count, NULL::float8 AS oldest_due_seconds \
-         FROM (SELECT kind, priority, ",
-    );
-    push_state(&mut qb, lease);
-    qb.push(" AS state FROM jobs) s GROUP BY kind, priority, state");
-    let mut counts: Vec<Count> = qb.build_query_as().fetch_all(&mut *tx).await?;
+    let kinds: Vec<&str> = JobKind::ALL.iter().map(|k| k.as_str()).collect();
+    let priorities: Vec<i16> = Priority::ALL.iter().map(|p| p.rank()).collect();
+    let rows = sqlx::query(sqlx::AssertSqlSafe(census_sql(lease)))
+        .bind(&kinds)
+        .bind(&priorities)
+        .bind(CENSUS_EXACT + 1)
+        .fetch_all(&mut *tx)
+        .await?;
     let oldest: Vec<(String, i16, f64)> = sqlx::query_as(OLDEST_DUE_SQL)
-        .bind(JobKind::ALL.iter().map(|k| k.as_str()).collect::<Vec<_>>())
-        .bind(Priority::ALL.iter().map(|p| p.rank()).collect::<Vec<_>>())
+        .bind(&kinds)
+        .bind(&priorities)
         .bind(lease.as_secs_f64())
         .fetch_all(&mut *tx)
         .await?;
-    tx.commit().await?;
-    for count in &mut counts {
-        if count.state == JobState::Due {
-            count.oldest_due_seconds = oldest
-                .iter()
-                .find(|(kind, rank, _)| {
-                    *kind == count.kind.as_str() && *rank == count.priority.rank()
+    let mut counts = Vec::new();
+    for row in rows {
+        let kind: JobKind = row.try_get::<String, _>("kind")?.parse().map_err(decode)?;
+        let priority = Priority::try_from(row.try_get::<i16, _>("priority")?).map_err(decode)?;
+        for state in JobState::ALL {
+            let mut count: i64 = row.try_get(state.as_str())?;
+            let estimated = count > CENSUS_EXACT;
+            if estimated {
+                count = estimate(&mut tx, kind, priority, *state, lease)
+                    .await?
+                    .max(CENSUS_EXACT + 1);
+            }
+            if count == 0 {
+                continue;
+            }
+            let oldest_due_seconds = (*state == JobState::Due)
+                .then(|| {
+                    oldest
+                        .iter()
+                        .find(|(k, rank, _)| *k == kind.as_str() && *rank == priority.rank())
+                        .map(|(_, _, seconds)| *seconds)
                 })
-                .map(|(_, _, seconds)| *seconds);
+                .flatten();
+            counts.push(Count {
+                kind,
+                priority,
+                state: *state,
+                count,
+                estimated,
+                oldest_due_seconds,
+            });
         }
     }
+    tx.commit().await?;
     Ok(counts)
+}
+
+/// The census's statement: `$1` the kinds, `$2` the priorities, `$3` how
+/// far to count. A row per kind and priority, a column per state, each a
+/// count of one range of the state's index cut at `$3`.
+fn census_sql(lease: Duration) -> String {
+    let columns: Vec<String> = JobState::ALL
+        .iter()
+        .map(|state| {
+            format!(
+                "(SELECT count(*) FROM (SELECT 1 FROM jobs \
+                  WHERE kind = k.kind AND priority = p.priority AND {} LIMIT $3) AS c) AS {}",
+                state_condition(*state, lease),
+                state.as_str()
+            )
+        })
+        .collect();
+    format!(
+        "SELECT k.kind, p.priority, {} \
+         FROM unnest($1::text[]) AS k (kind) CROSS JOIN unnest($2::int2[]) AS p (priority)",
+        columns.join(", ")
+    )
+}
+
+/// The planner's estimate of how many jobs of `kind` and `priority` are
+/// in `state`, from the statistics: the statement with its values written
+/// in, since a generic plan's estimate knows none of them.
+async fn estimate(
+    conn: &mut PgConnection,
+    kind: JobKind,
+    priority: Priority,
+    state: JobState,
+    lease: Duration,
+) -> sqlx::Result<i64> {
+    let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "EXPLAIN (FORMAT JSON) SELECT 1 FROM jobs WHERE kind = '{}' AND priority = {} AND {}",
+        kind.as_str(),
+        priority.rank(),
+        state_condition(state, lease)
+    )))
+    .fetch_one(conn)
+    .await?;
+    Ok(plan[0]["Plan"]["Plan Rows"].as_f64().unwrap_or(0.0) as i64)
+}
+
+fn decode(err: impl std::error::Error + Send + Sync + 'static) -> sqlx::Error {
+    sqlx::Error::Decode(Box::new(err))
 }
 
 /// The oldest due job of each kind and priority, `$1` the kinds, `$2`
@@ -680,7 +770,7 @@ fn list_query(prefix: &str, params: &ListParams, lease: Duration) -> QueryBuilde
         }
     }
     if let Some(state) = params.state {
-        push_state_columns(&mut qb, state, lease);
+        qb.push(" AND ").push(state_condition(state, lease));
     }
     match params.cursor {
         Some(Cursor::Id(id)) => {
@@ -704,38 +794,6 @@ fn list_query(prefix: &str, params: &ListParams, lease: Duration) -> QueryBuilde
         qb.push(") AS j").push(order_by).push_bind(page);
     }
     qb
-}
-
-/// `state` as conditions on the columns that decide it, what `STATE_SQL`
-/// computes, written so that the planner matches each to its partial
-/// index: no index serves an equality on the `CASE`.
-fn push_state_columns(qb: &mut QueryBuilder<Postgres>, state: JobState, lease: Duration) {
-    let lease = lease.as_secs_f64();
-    match state {
-        JobState::Dead => {
-            qb.push(" AND failed_at IS NOT NULL");
-        }
-        JobState::Running => {
-            qb.push(
-                " AND failed_at IS NULL AND locked_at IS NOT NULL \
-                 AND locked_at >= now() - make_interval(secs => ",
-            )
-            .push_bind(lease)
-            .push(")");
-        }
-        JobState::Due | JobState::Scheduled => {
-            qb.push(
-                " AND failed_at IS NULL \
-                 AND (locked_at IS NULL OR locked_at < now() - make_interval(secs => ",
-            )
-            .push_bind(lease)
-            .push("))")
-            .push(match state {
-                JobState::Due => " AND run_at <= now()",
-                _ => " AND run_at > now()",
-            });
-        }
-    }
 }
 
 // Public for the integration tests, not part of the API.
@@ -951,13 +1009,14 @@ pub(crate) async fn exhausted(
         .await
 }
 
-/// The generic plans of the claim and of `exhausted`, by name, as
+/// The generic plans of the claim, `exhausted` and the census, by name, as
 /// `EXPLAIN` prints them: each prepared and explained under
 /// `plan_cache_mode = force_generic_plan`, the plan a pooled connection
 /// may settle on after five runs. For a test that pins them to their
 /// indexes.
 #[cfg(any(test, feature = "test-support"))]
 pub async fn explain_queue(conn: &mut PgConnection) -> sqlx::Result<Vec<(&'static str, String)>> {
+    let census = census_sql(Duration::from_secs(600));
     let statements = [
         ("claim", CLAIM_SQL, "'w', 'purge', 600"),
         ("exhausted", EXHAUSTED_SQL, "600, 10000"),
@@ -966,6 +1025,7 @@ pub async fn explain_queue(conn: &mut PgConnection) -> sqlx::Result<Vec<(&'stati
             OLDEST_DUE_SQL,
             "'{scan,purge}', '{1,0,-1}', 600",
         ),
+        ("census", &census, "'{scan,purge}', '{1,0,-1}', 1001"),
     ];
     sqlx::query("SET plan_cache_mode = force_generic_plan")
         .execute(&mut *conn)

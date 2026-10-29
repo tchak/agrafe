@@ -454,10 +454,10 @@ async fn the_census_matches_the_counts() {
         );
     }
     let census = agrafe_dashboard::jobs::Census::from_counts(&counts);
-    assert_eq!(census.total(JobState::Due), 2);
-    assert_eq!(census.total(JobState::Scheduled), 1);
-    assert_eq!(census.total(JobState::Running), 0);
-    assert_eq!(census.total(JobState::Dead), 1);
+    assert_eq!(census.total(JobState::Due).count, 2);
+    assert_eq!(census.total(JobState::Scheduled).count, 1);
+    assert_eq!(census.total(JobState::Running).count, 0);
+    assert_eq!(census.total(JobState::Dead).count, 1);
     let rows: Vec<(&str, &str, i64, i64, i64, i64)> = census
         .rows
         .iter()
@@ -465,10 +465,10 @@ async fn the_census_matches_the_counts() {
             (
                 r.kind.as_str(),
                 r.priority.as_str(),
-                r.due,
-                r.scheduled,
-                r.running,
-                r.dead,
+                r.due.count,
+                r.scheduled.count,
+                r.running.count,
+                r.dead.count,
             )
         })
         .collect();

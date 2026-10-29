@@ -337,6 +337,7 @@ mod tests {
             priority: Priority::ALL[0],
             state: JobState::Dead,
             count,
+            estimated: false,
             oldest_due_seconds: None,
         }]
     }

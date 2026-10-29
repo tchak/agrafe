@@ -326,8 +326,8 @@ Errors are pages too, with the status in the title: a bad filter is `400`,
 an id of the wrong shape or an unknown path is `404`.
 
 Views. **Jobs**: the census from `Agrafe::job_counts`, a total per state
-and, per kind and priority, the count in each state and the age of the
-oldest due job; below it the listing with a tab per state and the `kind`,
+and, per kind and priority, the count in each state, an estimate marked
+`≈` past a thousand, and the age of the oldest due job; below it the listing with a tab per state and the `kind`,
 `priority` and `blob_id` filters, and the first line of `last_error` on
 each row. The detail shows the payload pretty-printed, the whole error,
 and on a dead job the retry and discard buttons. **Blobs**: the six
@@ -3341,9 +3341,17 @@ the wait of the oldest due job, which is the number to alert on: it grows
 when a kind's workers cannot keep up, or, for one priority alone, when the
 higher ones starve it. A lapsed lease counts as unclaimed, as the claim query sees
 it. The age is read off the head of `jobs_claimable_idx`, one probe per
-kind and priority, so it costs the same however long the queue; the
-counts are a scan of the backlog, half a second per five million rows,
-and run under a five-second statement timeout. A census that fails,
+kind and priority, so it costs the same however long the queue. The
+counts are not a scan of the backlog, which would be half a second per
+five million rows at every scrape of every process: each (kind,
+priority, state) is counted off its state's index, as the listing reads
+it, one by one up to `CENSUS_EXACT` (a thousand), and past that is the
+planner's estimate of the same range, from the statement with its values
+written in. A scrape thus reads at most a thousand entries for each of
+the 120 combinations, a handful of them in practice, and a backlog of
+millions shows as its order of magnitude, which is what an operator
+reads it for; the alert is on the age, which stays exact. All of it runs
+under a five-second statement timeout. A census that fails,
 too slow or the database out of reach (the wait for a connection
 counts), leaves the queue gauges at the last one's values with
 `agrafe_jobs_census_ok` at 0, and `/metrics` still answers with what the

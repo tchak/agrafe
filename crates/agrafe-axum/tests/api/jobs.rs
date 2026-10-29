@@ -1189,7 +1189,8 @@ async fn a_cross_site_form_post_is_refused() {
 /// The claim reads the head of its kind's queue off `jobs_claimable_idx`,
 /// in the index's order, even under the generic plan a pooled connection
 /// may settle on: no sort, which under `FOR UPDATE` the `LIMIT` could not
-/// bound, so a backlog of millions would be sorted at every claim.
+/// bound, so a backlog of millions would be sorted at every claim. The
+/// census counts each state off its own index, never the table.
 /// Sequential and bitmap scans are off so that, on a table this small, the
 /// planner shows the index it would walk.
 #[tokio::test]
@@ -1205,6 +1206,7 @@ async fn the_claim_walks_its_index_under_a_generic_plan() {
         ("claim", "jobs_claimable_idx"),
         ("exhausted", "jobs_exhausted_idx"),
         ("oldest_due", "jobs_claimable_idx"),
+        ("census", "jobs_claimable_idx"),
     ];
     assert_eq!(plans.len(), want.len());
     for ((name, plan), (want_name, index)) in plans.iter().zip(want) {
@@ -1213,6 +1215,11 @@ async fn the_claim_walks_its_index_under_a_generic_plan() {
         assert!(!plan.contains("Seq Scan"), "{name}: {plan}");
         assert!(!plan.contains("Sort"), "{name}: {plan}");
     }
+    let census = &plans[3].1;
+    for index in ["jobs_dead_kind_idx", "jobs_held_idx"] {
+        assert!(census.contains(index), "{index}: {census}");
+    }
+    assert!(!census.contains("jobs_pkey"), "{census}");
 }
 
 /// A job whose last attempt took its worker down, a process killed or out
@@ -1320,23 +1327,7 @@ async fn job_listings_page_in_their_order() {
     use axum::http::Method;
 
     let app = setup(db).await;
-    let pool = app.state.pool();
-    // Four states, three kinds, three priorities, and `run_at`s shared by
-    // three rows each so that the id breaks the ties. Every row is locked,
-    // a lapsed lock for the due and scheduled ones, so that the one
-    // pending slot per kind does not dedupe them.
-    sqlx::query(
-        "INSERT INTO jobs (kind, priority, run_at, locked_at, locked_by, failed_at) \
-         SELECT (ARRAY['purge', 'audit', 'render'])[n % 3 + 1], (n % 5 % 3 - 1)::int2, \
-                CASE WHEN n % 4 = 3 THEN now() + make_interval(mins => n / 3) \
-                     ELSE now() - make_interval(mins => n / 3) END, \
-                CASE WHEN n % 4 = 0 THEN now() ELSE now() - interval '1 hour' END, 'w', \
-                CASE WHEN n % 4 = 1 THEN now() END \
-         FROM generate_series(1, 80) AS n",
-    )
-    .execute(pool)
-    .await
-    .unwrap();
+    every_state(&app).await;
 
     let everything = every_page(&app, ListParams::default()).await;
     assert_eq!(everything.len(), 80);
@@ -1422,6 +1413,94 @@ async fn job_listings_page_in_their_order() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     let (status, body) = call(&app.private, req(Method::GET, "/jobs?cursor=1.x")).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+/// Eighty jobs: four states, three kinds, three priorities, and `run_at`s
+/// shared by three rows each so that the id breaks the ties. Every row is
+/// locked, a lapsed lock for the due and scheduled ones, so that the one
+/// pending slot per kind does not dedupe them.
+async fn every_state(app: &TestApp) {
+    sqlx::query(
+        "INSERT INTO jobs (kind, priority, run_at, locked_at, locked_by, failed_at) \
+         SELECT (ARRAY['purge', 'audit', 'render'])[n % 3 + 1], (n % 5 % 3 - 1)::int2, \
+                CASE WHEN n % 4 = 3 THEN now() + make_interval(mins => n / 3) \
+                     ELSE now() - make_interval(mins => n / 3) END, \
+                CASE WHEN n % 4 = 0 THEN now() ELSE now() - interval '1 hour' END, 'w', \
+                CASE WHEN n % 4 = 1 THEN now() END \
+         FROM generate_series(1, 80) AS n",
+    )
+    .execute(app.state.pool())
+    .await
+    .unwrap();
+}
+
+/// The census counts each state as `Agrafe::job_state` tells it, one by
+/// one up to `CENSUS_EXACT`, and past it says the count is an estimate.
+#[tokio::test]
+async fn the_census_counts_up_to_its_cap_then_estimates() {
+    let db = TestDatabase::new().await;
+    use agrafe::jobs::{CENSUS_EXACT, JobKind, JobState, ListParams, Priority};
+    use std::collections::BTreeMap;
+
+    let app = setup(db).await;
+    let pool = app.state.pool();
+    every_state(&app).await;
+    let mut expected: BTreeMap<(String, String, String), i64> = BTreeMap::new();
+    for job in every_page(&app, ListParams::default()).await {
+        let key = (
+            job.kind.to_string(),
+            job.priority.to_string(),
+            app.state.job_state(&job).to_string(),
+        );
+        *expected.entry(key).or_default() += 1;
+    }
+    let census = |counts: &[agrafe::jobs::Count]| -> BTreeMap<(String, String, String), i64> {
+        counts
+            .iter()
+            .map(|c| {
+                (
+                    (
+                        c.kind.to_string(),
+                        c.priority.to_string(),
+                        c.state.to_string(),
+                    ),
+                    c.count,
+                )
+            })
+            .collect()
+    };
+    let counts = app.state.job_counts().await.unwrap();
+    assert!(counts.iter().all(|c| !c.estimated), "{counts:?}");
+    assert_eq!(census(&counts), expected);
+
+    // Past the cap, one combination is the planner's estimate.
+    let many = CENSUS_EXACT + 500;
+    sqlx::query(
+        "INSERT INTO jobs (kind, priority, locked_at, locked_by, failed_at) \
+         SELECT 'rows', -1, now(), 'w', now() FROM generate_series(1, $1)",
+    )
+    .bind(many)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query("ANALYZE jobs").execute(pool).await.unwrap();
+    let counts = app.state.job_counts().await.unwrap();
+    let dead_rows: Vec<_> = counts.iter().filter(|c| c.kind == JobKind::Rows).collect();
+    assert_eq!(dead_rows.len(), 1, "{dead_rows:?}");
+    let line = dead_rows[0];
+    assert_eq!((line.priority, line.state), (Priority::Low, JobState::Dead));
+    assert!(line.estimated, "{line:?}");
+    assert!(
+        line.count > CENSUS_EXACT && line.count < 2 * many,
+        "{line:?}"
+    );
+    let rest: Vec<_> = counts
+        .iter()
+        .filter(|c| c.kind != JobKind::Rows)
+        .cloned()
+        .collect();
+    assert!(rest.iter().all(|c| !c.estimated), "{rest:?}");
+    assert_eq!(census(&rest), expected);
 }
 
 /// Every page of a listing, seven jobs at a time.

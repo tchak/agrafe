@@ -138,8 +138,53 @@ impl JobView {
 pub struct Tab {
     pub label: String,
     pub href: String,
-    pub count: i64,
+    pub count: Tally,
     pub active: bool,
+}
+
+/// A count of the census: exact, or the planner's estimate past
+/// `jobs::CENSUS_EXACT`, which the page marks `≈`. A sum is an estimate
+/// when any of its terms is.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Tally {
+    pub count: i64,
+    pub estimated: bool,
+}
+
+impl Tally {
+    fn of(count: &Count) -> Self {
+        Self {
+            count: count.count,
+            estimated: count.estimated,
+        }
+    }
+}
+
+impl std::ops::Add for Tally {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        Self {
+            count: self.count + other.count,
+            estimated: self.estimated || other.estimated,
+        }
+    }
+}
+
+impl std::iter::Sum for Tally {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(Self::default(), std::ops::Add::add)
+    }
+}
+
+impl std::fmt::Display for Tally {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.estimated {
+            write!(f, "≈{}", self.count)
+        } else {
+            write!(f, "{}", self.count)
+        }
+    }
 }
 
 /// One line of the census: a kind and a priority with something in the
@@ -148,10 +193,10 @@ pub struct Tab {
 pub struct CensusRow {
     pub kind: String,
     pub priority: String,
-    pub due: i64,
-    pub scheduled: i64,
-    pub running: i64,
-    pub dead: i64,
+    pub due: Tally,
+    pub scheduled: Tally,
+    pub running: Tally,
+    pub dead: Tally,
     pub oldest_due: Option<f64>,
 }
 
@@ -159,7 +204,7 @@ pub struct CensusRow {
 /// in the order of the kinds and priorities.
 #[derive(Debug, Clone, Default)]
 pub struct Census {
-    pub totals: Vec<(JobState, i64)>,
+    pub totals: Vec<(JobState, Tally)>,
     pub rows: Vec<CensusRow>,
 }
 
@@ -171,7 +216,7 @@ impl Census {
                 let total = counts
                     .iter()
                     .filter(|c| c.state == *state)
-                    .map(|c| c.count)
+                    .map(Tally::of)
                     .sum();
                 (*state, total)
             })
@@ -192,12 +237,12 @@ impl Census {
                     any = true;
                     match c.state {
                         JobState::Due => {
-                            row.due = c.count;
+                            row.due = Tally::of(c);
                             row.oldest_due = c.oldest_due_seconds;
                         }
-                        JobState::Scheduled => row.scheduled = c.count,
-                        JobState::Running => row.running = c.count,
-                        JobState::Dead => row.dead = c.count,
+                        JobState::Scheduled => row.scheduled = Tally::of(c),
+                        JobState::Running => row.running = Tally::of(c),
+                        JobState::Dead => row.dead = Tally::of(c),
                     }
                 }
                 if any {
@@ -208,11 +253,11 @@ impl Census {
         Self { totals, rows }
     }
 
-    pub fn total(&self, state: JobState) -> i64 {
+    pub fn total(&self, state: JobState) -> Tally {
         self.totals
             .iter()
             .find(|(s, _)| *s == state)
-            .map_or(0, |(_, n)| *n)
+            .map_or(Tally::default(), |(_, n)| *n)
     }
 }
 
@@ -245,7 +290,7 @@ async fn list(
     let all = Tab {
         label: "all".to_string(),
         href: query.tab(&base.0, None),
-        count: census.totals.iter().map(|(_, n)| n).sum(),
+        count: census.totals.iter().map(|(_, n)| *n).sum(),
         active: query.state.is_none(),
     };
     let tabs = std::iter::once(all)
