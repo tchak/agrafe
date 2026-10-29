@@ -253,6 +253,11 @@ where
     let interval = state.config().jobs.poll_interval;
     tokio::pin!(shutdown);
     loop {
+        // Nothing is claimed once the signal came, however much is due: a
+        // backlog would otherwise hold the process past its grace period.
+        if (&mut shutdown).now_or_never().is_some() {
+            return Ok(());
+        }
         // Drain what is due, then wait. The wakeup is best effort: a notify
         // that lands between an empty claim and the wait costs one interval.
         let wait = match run_one(&state, kind, &worker).await {

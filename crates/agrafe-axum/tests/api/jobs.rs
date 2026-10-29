@@ -104,6 +104,40 @@ async fn workers_wake_on_notify_and_stop_on_shutdown() {
         .unwrap();
 }
 
+/// Shutdown stops the claims however much is due: the workers return
+/// without draining their backlog, which waits for the next process.
+#[tokio::test]
+async fn shutdown_stops_the_claims_with_a_backlog() {
+    let db = TestDatabase::new().await;
+    let clamd = fake_clamd().await;
+    let app = setup_tuned(db, clamd, |c| {
+        c.jobs.kinds = Some(vec![agrafe::jobs::JobKind::Purge]);
+    })
+    .await;
+    // Purges of deleted blobs, each one done at once.
+    for n in 0..20 {
+        let blob = ready_blob(&app, &png_bytes(100 + n)).await;
+        assert_eq!(delete(&app, id_of(&blob)).await, StatusCode::NO_CONTENT);
+    }
+    sqlx::query("UPDATE jobs SET run_at = now() WHERE kind = 'purge'")
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+    // The signal came before the workers started.
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        agrafe::jobs::runner::run(app.state.clone(), std::future::ready(())),
+    )
+    .await
+    .expect("the workers stop")
+    .unwrap();
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE kind = 'purge'")
+        .fetch_one(app.state.pool())
+        .await
+        .unwrap();
+    assert_eq!(left, 20, "nothing claimed after the signal");
+}
+
 /// A job running longer than its lease keeps it: the heartbeat renews it,
 /// so no other worker claims the job meanwhile.
 #[tokio::test]
