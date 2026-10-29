@@ -587,7 +587,8 @@ pub(crate) fn current_traceparent() -> Option<String> {
 /// transaction commits. The row records the current trace context, see
 /// `crate::trace`; a duplicate dropped keeps the first one's. A job that
 /// finishes its blob clears the failure a dead predecessor left on the
-/// blob's row, see `fail`.
+/// blob's row, see `fail`, but not the audit's verdict on its original:
+/// no job brings an original back.
 // Public for the integration tests, not part of the API.
 #[doc(hidden)]
 pub async fn enqueue(
@@ -606,6 +607,7 @@ pub async fn enqueue(
          ), cleared AS (\
              UPDATE blobs SET failed_at = NULL, last_error = NULL \
              WHERE $7 AND failed_at IS NOT NULL \
+               AND (last_error IS NULL OR last_error NOT LIKE $9) \
                AND id IN (SELECT blob_id FROM inserted)\
          ) \
          SELECT pg_notify($6, kind) FROM inserted",
@@ -618,6 +620,7 @@ pub async fn enqueue(
     .bind(CHANNEL)
     .bind(kind.finishes_blob())
     .bind(current_traceparent())
+    .bind(format!("{}%", audit::STAMP))
     .execute(exec)
     .await?;
     Ok(result.rows_affected() == 1)

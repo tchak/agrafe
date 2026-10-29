@@ -421,7 +421,7 @@ pub const LOCK: i32 = 0x6175_6469; // "audi"
 const PAGE: i64 = 1000;
 
 /// Stamp left on a blob whose original the audit found missing or damaged.
-const STAMP: &str = "audit: ";
+pub(crate) const STAMP: &str = "audit: ";
 
 async fn audit(
     state: &Agrafe,
@@ -817,10 +817,16 @@ impl Sweep<'_> {
             .collect();
         let layout = row.layout();
 
+        // A representation is rendered from the original: with the
+        // original gone or damaged, a render cannot repair it, and its
+        // job would only fail its attempts and replace the stamp with its
+        // own error.
+        let mut lost = false;
         if let Some(key) = &row.storage_key {
             let name = key.strip_prefix(prefix.as_str()).unwrap_or(key);
             match (seen.remove(name), settled) {
                 (None, true) => {
+                    lost = true;
                     self.stamp(
                         row,
                         Finding::MissingOriginal,
@@ -834,6 +840,7 @@ impl Sweep<'_> {
                         .map(|(layout, size)| layout.ciphertext_len(size as u64));
                     match want {
                         Some(want) if want != object.size && !self.young(object) => {
+                            lost = true;
                             self.stamp(
                                 row,
                                 Finding::DamagedOriginal,
@@ -846,7 +853,7 @@ impl Sweep<'_> {
                         }
                         _ => {
                             if self.sampled(row) {
-                                self.deep(row).await;
+                                lost = !self.deep(row).await;
                             }
                         }
                     }
@@ -871,13 +878,15 @@ impl Sweep<'_> {
                             row,
                             kind,
                             &format!("{} bytes, not the {want} its size calls for", object.size),
+                            lost,
                         )
                         .await;
                     }
                 }
                 (None, RepresentationState::Ready) => {
                     if state == BlobState::Ready && settled {
-                        self.rerender(row, kind, "missing from the store").await;
+                        self.rerender(row, kind, "missing from the store", lost)
+                            .await;
                     }
                 }
                 // A render is going to replace it.
@@ -952,10 +961,11 @@ impl Sweep<'_> {
     /// Decrypt the original and compare its SHA-256 with the row's. What
     /// the row or the object is at fault for is a finding; a store that
     /// cannot be read is an error, the original is left for the next run.
-    async fn deep(&mut self, row: &Row) {
+    /// Returns whether the original may still be intact.
+    async fn deep(&mut self, row: &Row) -> bool {
         self.report.deep += 1;
         match read_back(self.state, row).await {
-            Ok(digest) if row.checksum_sha256.as_deref() == Some(&digest[..]) => {}
+            Ok(digest) if row.checksum_sha256.as_deref() == Some(&digest[..]) => true,
             Ok(digest) => {
                 self.stamp(
                     row,
@@ -966,9 +976,11 @@ impl Sweep<'_> {
                     ),
                 )
                 .await;
+                false
             }
             Err(ReadError::Store(err)) if !matches!(err, object_store::Error::NotFound { .. }) => {
                 self.failed(row.id, "reading the original back", &err);
+                true
             }
             Err(err) => {
                 self.stamp(
@@ -977,6 +989,7 @@ impl Sweep<'_> {
                     format!("the original does not read back: {err}"),
                 )
                 .await;
+                false
             }
         }
     }
@@ -1012,9 +1025,14 @@ impl Sweep<'_> {
 
     /// The representation is not what the row says: back to `pending`
     /// and rendered again, as the read path does when it finds the object
-    /// gone.
-    async fn rerender(&mut self, row: &Row, kind: Representation, what: &str) {
+    /// gone. Reported only when the original is `lost` too: there is
+    /// nothing to render it from.
+    async fn rerender(&mut self, row: &Row, kind: Representation, what: &str, lost: bool) {
         self.report.add(Finding::MissingRepresentation);
+        if lost {
+            tracing::warn!(blob = %row.id, finding = %Finding::MissingRepresentation, "audit: the {kind} is {what}, and the original is lost");
+            return;
+        }
         tracing::warn!(blob = %row.id, finding = %Finding::MissingRepresentation, "audit: the {kind} is {what}, rendering it again");
         match repo::request_representation(self.state.pool(), row.id, kind).await {
             Ok(_) => self.state.heads().invalidate(row.id),

@@ -288,6 +288,64 @@ async fn a_missing_representation_is_rendered_again() {
     assert_eq!(report.objects, 3);
 }
 
+/// A rendered blob whose whole prefix is gone, a bucket restored from an
+/// older backup: the representations cannot be rendered again from an
+/// original that is not there, so they are reported, not re-rendered, and
+/// the stamp on the original stays, through the next run and through a
+/// render enqueued from elsewhere.
+#[tokio::test]
+async fn a_lost_original_is_not_rendered_from() {
+    let db = TestDatabase::new().await;
+    let app = settled_setup(db).await;
+    let photo = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
+    let id = id_of(&photo);
+    render_all(&app).await;
+    delete_object(&app, &storage_key(&app, id).await).await;
+    delete_object(&app, &object_key(id, "thumbnail")).await;
+    delete_object(&app, &object_key(id, "preview")).await;
+
+    let report = audit_now(&app).await;
+    assert_eq!(
+        counts(&report),
+        vec![
+            (Finding::MissingOriginal, 1),
+            (Finding::MissingRepresentation, 2)
+        ],
+        "{report}"
+    );
+    let got = get_blob(&app, id).await;
+    assert_eq!(
+        got["last_error"],
+        "audit: the original is missing from the store"
+    );
+    let stamped = got["failed_at"].as_str().unwrap().to_string();
+    assert_eq!(got["thumbnail_state"], "ready", "left as the row had it");
+    assert_eq!(jobs_for(&app, id).await, Vec::<String>::new());
+
+    let report = audit_now(&app).await;
+    assert_eq!(report.count(Finding::MissingOriginal), 1);
+    assert_eq!(jobs_for(&app, id).await, Vec::<String>::new());
+
+    // A render enqueued from elsewhere, the read path finding the object
+    // gone, does not clear the audit's verdict as it would a dead job's.
+    jobs::enqueue(
+        app.state.pool(),
+        JobKind::Render,
+        Some(uuid::Uuid::parse_str(id).unwrap()),
+        jobs::Priority::Normal,
+        json!({}),
+        Timestamp::now(),
+    )
+    .await
+    .unwrap();
+    let got = get_blob(&app, id).await;
+    assert_eq!(got["failed_at"], stamped);
+    assert_eq!(
+        got["last_error"],
+        "audit: the original is missing from the store"
+    );
+}
+
 /// The merge: rows the listing has nothing for sit between listed
 /// prefixes, before the first and after the last, and each is found.
 #[tokio::test]

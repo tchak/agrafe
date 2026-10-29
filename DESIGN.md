@@ -2984,7 +2984,8 @@ never expired either. Without the row's copy, a blob whose job died a
 week ago is indistinguishable from one whose job is queued. The verdict
 follows the job that will finish the blob, not the one that died: it is
 cleared when a job of a finishing kind is enqueued, retried or succeeds
-for the blob, a job dying while a twin of it is live says nothing (the
+for the blob (not the audit's stamp on a lost original, see "Audit": no
+job brings an original back), a job dying while a twin of it is live says nothing (the
 twin was enqueued while it ran, the running one holding no pending slot),
 and a terminal transition clears it too, since nothing is going to finish
 the blob and `GET /blobs?failed=true` is for the ones something could. A
@@ -3148,6 +3149,10 @@ What it does with a finding, each one a `warn` line in the log:
   news of a dead job.
 - Representation `ready` but the object missing or the wrong length: set
   back to `pending` and the render enqueued, the read path's own repair.
+  Report only when the original is missing or damaged too, the shape of a
+  bucket restored from an older backup: there is nothing to render from,
+  and the render job would only fail its attempts and replace the
+  original's stamp with its own error.
 - Missing or truncated source part under a `created` or `uploaded`
   generated blob: report only; the build fails on it itself. The parts
   stay after the build and go with the purge, so under a `ready` blob
