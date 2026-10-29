@@ -7,7 +7,10 @@
 <form class="flex flex-wrap items-end gap-4 mb-4" method="get" action="{{ layout.base }}/attachments">
   {% call m::select("owner_kind", "Owner kind", owner_kinds) %}{% endcall %}
   {% call m::text("owner_id", "Owner id", query.owner_id) %}{% endcall %}
+  {# A role is listed within a kind: alone, no index serves it. #}
+  {% if query.owner_kind.is_some() %}
   {% call m::select("role", "Role", roles) %}{% endcall %}
+  {% endif %}
   {% call m::text("blob_id", "Blob", query.blob_id) %}{% endcall %}
   <fieldset class="fieldset"><button class="btn btn-primary btn-sm" type="submit">Filter</button></fieldset>
 </form>

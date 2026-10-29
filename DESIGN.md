@@ -796,8 +796,9 @@ what it belongs to. `(blob_id)` serves a blob's own attachments and the
 last-detach check.
 
 `GET /attachments` is cursor paginated on the attachment id like `/blobs`,
-with filters `owner_kind`, `owner_id` (with `owner_kind`), `role` and
-`blob_id`; each row carries the blob's state as `blob_state`. `GET
+with filters `owner_kind`, `owner_id` (with `owner_kind`), `role` (with
+`owner_kind` or `blob_id`: no index leads with it, and a rare role alone
+would be a scan of the table) and `blob_id`; each row carries the blob's state as `blob_state`. `GET
 /blobs/:id` inlines the blob's attachments, and `GET /blobs` takes
 `attached`. The three strings are validated like `filename`: not blank, at
 most 255 bytes, no control or bidirectional formatting characters; unlike
@@ -829,7 +830,8 @@ detach moves the row between them, a write it already pays for in
 
 The three listings, `/blobs`, `/attachments` and `/jobs`, take a `limit`,
 default 50, at most 200. A limit out of that range, an unknown filter value
-or an `owner_id` without `owner_kind` answers `400`.
+an `owner_id` without `owner_kind`, or a `role` without `owner_kind` or
+`blob_id`, answers `400`.
 
 ### Classification
 

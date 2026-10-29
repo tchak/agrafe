@@ -188,9 +188,9 @@ impl From<AttachError> for ApiError {
 impl From<attachment::ListError> for ApiError {
     fn from(err: attachment::ListError) -> Self {
         match err {
-            attachment::ListError::Limit(_) | attachment::ListError::OwnerIdAlone => {
-                ApiError::BadRequest(err.to_string())
-            }
+            attachment::ListError::Limit(_)
+            | attachment::ListError::OwnerIdAlone
+            | attachment::ListError::RoleAlone => ApiError::BadRequest(err.to_string()),
             attachment::ListError::Db(e) => ApiError::internal(e),
         }
     }

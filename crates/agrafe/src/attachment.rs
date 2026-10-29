@@ -51,6 +51,10 @@ pub enum ListError {
     /// without.
     #[error("owner_id is only accepted together with owner_kind")]
     OwnerIdAlone,
+    /// `role` was given without `owner_kind` or `blob_id`: no index leads
+    /// with it, and a rare role would be a scan of the whole table.
+    #[error("role is only accepted together with owner_kind or blob_id")]
+    RoleAlone,
     /// The query failed.
     #[error("database: {0}")]
     Db(#[from] sqlx::Error),
@@ -158,13 +162,17 @@ impl Agrafe {
     }
 
     /// List attachments, newest first. `limit` must lie in
-    /// `1..=MAX_LIMIT`, and `owner_id` needs `owner_kind`.
+    /// `1..=MAX_LIMIT`, `owner_id` needs `owner_kind`, and `role` needs
+    /// `owner_kind` or `blob_id`: every listing walks an index.
     pub async fn list_attachments(&self, params: &ListParams) -> Result<Page, ListError> {
         if !(1..=MAX_LIMIT).contains(&params.limit) {
             return Err(ListError::Limit(MAX_LIMIT));
         }
         if params.owner_id.is_some() && params.owner_kind.is_none() {
             return Err(ListError::OwnerIdAlone);
+        }
+        if params.role.is_some() && params.owner_kind.is_none() && params.blob_id.is_none() {
+            return Err(ListError::RoleAlone);
         }
         Ok(list(self.pool(), params).await?)
     }
@@ -438,7 +446,34 @@ pub(crate) async fn for_blobs(
 /// blob's state.
 pub(crate) async fn list(exec: impl PgExecutor<'_>, params: &ListParams) -> sqlx::Result<Page> {
     let limit = params.limit;
-    let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
+    let mut items: Vec<Listed> = list_query("", params)
+        .build_query_as()
+        .fetch_all(exec)
+        .await?;
+    let next_cursor = if items.len() > limit {
+        items.truncate(limit);
+        items.last().map(|a| a.attachment.id)
+    } else {
+        None
+    };
+    Ok(Page { items, next_cursor })
+}
+
+/// The plan of `list` for `params`, as `EXPLAIN` prints it. For a test
+/// that pins each filter shape the listing accepts to an index.
+#[cfg(any(test, feature = "test-support"))]
+pub async fn explain_list(exec: impl PgExecutor<'_>, params: &ListParams) -> sqlx::Result<String> {
+    let lines: Vec<String> = list_query("EXPLAIN ", params)
+        .build_query_scalar()
+        .fetch_all(exec)
+        .await?;
+    Ok(lines.join("\n"))
+}
+
+/// `list`'s statement, after `prefix`.
+fn list_query(prefix: &str, params: &ListParams) -> QueryBuilder<Postgres> {
+    let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(prefix);
+    qb.push(
         "SELECT a.*, b.state AS blob_state, b.failed_at AS blob_failed_at FROM attachments a \
          JOIN blobs b ON b.id = a.blob_id WHERE true",
     );
@@ -458,16 +493,8 @@ pub(crate) async fn list(exec: impl PgExecutor<'_>, params: &ListParams) -> sqlx
         qb.push(" AND a.id < ").push_bind(cursor);
     }
     qb.push(" ORDER BY a.id DESC LIMIT ")
-        .push_bind(limit as i64 + 1);
-
-    let mut items: Vec<Listed> = qb.build_query_as().fetch_all(exec).await?;
-    let next_cursor = if items.len() > limit {
-        items.truncate(limit);
-        items.last().map(|a| a.attachment.id)
-    } else {
-        None
-    };
-    Ok(Page { items, next_cursor })
+        .push_bind(params.limit as i64 + 1);
+    qb
 }
 
 /// Whether any attachment references `blob_id`: the last-detach check and

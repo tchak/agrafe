@@ -391,7 +391,7 @@ Lists attachments, newest first. Each item is an attachment plus its blob's stat
 |---|---|
 | `owner_kind` | |
 | `owner_id` | Only with `owner_kind`; alone it is a `400` |
-| `role` | |
+| `role` | Only together with `owner_kind` or `blob_id`; alone it is a `400` |
 | `blob_id` | A blob id |
 | `cursor` | An attachment id |
 | `limit` | 1 to 200, default 50 |

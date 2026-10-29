@@ -384,6 +384,7 @@ async fn every_page_renders_with_and_without_filters() {
             StatusCode::BAD_REQUEST,
         ),
         ("/dashboard/attachments?owner_id=1", StatusCode::BAD_REQUEST),
+        ("/dashboard/attachments?role=file", StatusCode::BAD_REQUEST),
     ] {
         let (got, body) = get(&app, uri).await;
         assert_eq!(got, status, "{uri}:\n{body}");

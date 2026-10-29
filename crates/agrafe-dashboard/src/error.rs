@@ -68,9 +68,9 @@ impl From<blob::ListError> for DashboardError {
 impl From<attachment::ListError> for DashboardError {
     fn from(err: attachment::ListError) -> Self {
         match err {
-            attachment::ListError::Limit(_) | attachment::ListError::OwnerIdAlone => {
-                DashboardError::BadRequest(err.to_string())
-            }
+            attachment::ListError::Limit(_)
+            | attachment::ListError::OwnerIdAlone
+            | attachment::ListError::RoleAlone => DashboardError::BadRequest(err.to_string()),
             attachment::ListError::Db(e) => DashboardError::internal(e),
         }
     }

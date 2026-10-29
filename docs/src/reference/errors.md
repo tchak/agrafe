@@ -161,6 +161,7 @@ part. Common reasons:
 | `410` | `gone` | `blob is expired and cannot be attached` | Also for `deleted`, and for a blob past its `expires_at` |
 | `422` | `unprocessable` | the field and the rule it broke | Blank, over 255 bytes, control or bidirectional formatting characters |
 | `400` | `bad_request` | `owner_id is only accepted together with owner_kind` | `GET /attachments` |
+| `400` | `bad_request` | `role is only accepted together with owner_kind or blob_id` | `GET /attachments` |
 
 ## Deleting and retrying
 

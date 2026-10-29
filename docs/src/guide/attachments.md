@@ -117,7 +117,7 @@ owner's files can be checked in one request.
 |---|---|
 | `owner_kind` | |
 | `owner_id` | Only together with `owner_kind`; alone it is a `400` |
-| `role` | |
+| `role` | Only together with `owner_kind` or `blob_id`; alone it is a `400` |
 | `blob_id` | Every owner using one blob |
 | `cursor`, `limit` | Pagination: `limit` from 1 to 200, 50 by default |
 

@@ -420,7 +420,7 @@ async fn listing_filters_and_pages() {
         2
     );
     assert_eq!(
-        items(&list(&app, "?role=avatar").await),
+        items(&list(&app, "?owner_kind=user&role=avatar").await),
         vec![ids[3].clone()]
     );
     assert_eq!(
@@ -436,7 +436,13 @@ async fn listing_filters_and_pages() {
     assert_eq!(items(&page2), vec![ids[0].clone()]);
     assert!(page2["next_cursor"].is_null());
 
-    for query in ["owner_id=1", "limit=0", "limit=201", "blob_id=nope"] {
+    for query in [
+        "owner_id=1",
+        "role=receipt",
+        "limit=0",
+        "limit=201",
+        "blob_id=nope",
+    ] {
         let (status, body) = call(
             &app.private,
             req(Method::GET, &format!("/attachments?{query}")),
@@ -500,6 +506,50 @@ async fn the_attached_filter_walks_an_index_of_blobs() {
             assert!(!plan.contains("attachments"), "attached={attached}: {plan}");
             assert!(!plan.contains("Sort"), "attached={attached}: {plan}");
         }
+    }
+}
+
+/// Every filter shape the listing accepts walks an index of
+/// `attachments`: `role` comes only with `owner_kind` or `blob_id`, since
+/// no index leads with it. Sequential and bitmap scans are off so that,
+/// on a table this small, the planner shows the index it would walk.
+#[tokio::test]
+async fn every_attachment_listing_walks_an_index() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let mut conn = app.state.pool().acquire().await.unwrap();
+    for off in ["SET enable_seqscan = off", "SET enable_bitmapscan = off"] {
+        sqlx::query(off).execute(&mut *conn).await.unwrap();
+    }
+    let kind = || Some("expense".to_owned());
+    let id = || Some("1".to_owned());
+    let role = || Some("receipt".to_owned());
+    let blob = || Some(uuid::Uuid::now_v7());
+    let shapes = [
+        (kind(), None, None, None),
+        (kind(), id(), None, None),
+        (kind(), None, role(), None),
+        (kind(), id(), role(), None),
+        (None, None, None, blob()),
+        (None, None, role(), blob()),
+    ];
+    for (owner_kind, owner_id, role, blob_id) in shapes {
+        let params = agrafe::attachment::ListParams {
+            owner_kind,
+            owner_id,
+            role,
+            blob_id,
+            limit: agrafe::attachment::DEFAULT_LIMIT,
+            ..Default::default()
+        };
+        let plan = agrafe::attachment::explain_list(&mut *conn, &params)
+            .await
+            .unwrap();
+        assert!(plan.contains("attachments_"), "{params:?}: {plan}");
+        assert!(
+            !plan.contains("Seq Scan on attachments"),
+            "{params:?}: {plan}"
+        );
     }
 }
 
