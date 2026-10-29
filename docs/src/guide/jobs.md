@@ -47,7 +47,9 @@ and the job is claimed again.
   doubling, capped at an hour, or longer when a remote asked for it with
   `Retry-After`.
 - After five attempts the job is **dead**: never run again, kept with its
-  last error for `jobs.keep_failed`, seven days by default.
+  last error for `jobs.keep_failed`, seven days by default. An attempt that
+  kills its process, out of memory or by a signal, counts too: the reaper
+  declares the job dead once the lease of its fifth attempt lapses.
 
 A failure that another attempt would repeat kills the job at once: a
 template that does not compile, a fetch answered `404`, a source line that
@@ -121,8 +123,9 @@ run, in one transaction:
    fetch died that long ago;
 3. schedules a purge, `upload.purge_delay` out, for the blobs it just
    expired and the infected blobs past their expiry that still hold objects;
-4. prunes dead jobs older than `jobs.keep_failed`, scheduling a dead purge's
-   blob anew;
+4. declares dead the jobs whose fifth attempt ended its process, and prunes
+   dead jobs older than `jobs.keep_failed`, scheduling a dead purge's blob
+   anew;
 5. hands uploads stale for `upload.stale_after` back to `created`;
 6. prunes tombstones purged more than `blobs.keep_purged` ago, with their
    attachments and jobs.

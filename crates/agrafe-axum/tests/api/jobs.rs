@@ -1044,8 +1044,66 @@ async fn the_claim_walks_its_index_under_a_generic_plan() {
     for off in ["SET enable_seqscan = off", "SET enable_bitmapscan = off"] {
         sqlx::query(off).execute(&mut *conn).await.unwrap();
     }
-    let plan = agrafe::jobs::explain_claim(&mut conn).await.unwrap();
-    assert!(plan.contains("jobs_claimable_idx"), "{plan}");
-    assert!(!plan.contains("Seq Scan"), "{plan}");
-    assert!(!plan.contains("Sort"), "{plan}");
+    let plans = agrafe::jobs::explain_queue(&mut conn).await.unwrap();
+    let want = [
+        ("claim", "jobs_claimable_idx"),
+        ("exhausted", "jobs_exhausted_idx"),
+    ];
+    assert_eq!(plans.len(), want.len());
+    for ((name, plan), (want_name, index)) in plans.iter().zip(want) {
+        assert_eq!(*name, want_name);
+        assert!(plan.contains(index), "{name}: {plan}");
+        assert!(!plan.contains("Seq Scan"), "{name}: {plan}");
+        assert!(!plan.contains("Sort"), "{name}: {plan}");
+    }
+}
+
+/// A job whose last attempt took its worker down, a process killed or out
+/// of memory, never reaches `fail`: the claim does not take it again, and
+/// the reaper declares it dead once its lease lapses, with the blob's
+/// verdict, as if its handler had failed.
+#[tokio::test]
+async fn a_job_whose_attempts_ended_their_worker_dies() {
+    use agrafe::jobs::{self, JobKind};
+    use axum::http::Method;
+
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let pool = app.state.pool();
+    let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
+    let id = id_of(&blob);
+    assert_eq!(jobs_for(&app, id).await, ["render"]);
+    // Its last attempt claimed by a worker that died an hour ago.
+    sqlx::query(
+        "UPDATE jobs SET attempts = max_attempts, locked_by = 'gone', \
+         locked_at = now() - interval '1 hour' WHERE blob_id = $1",
+    )
+    .bind(parse_id(id))
+    .execute(pool)
+    .await
+    .unwrap();
+    let lease = std::time::Duration::from_secs(600);
+    assert!(
+        jobs::claim(pool, JobKind::Render, "w1", lease)
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let report = jobs::reap::reap(&app.state, jiff::Timestamp::now())
+        .await
+        .unwrap();
+    assert_eq!(report.exhausted, 1, "{report:?}");
+    let (status, body) = call(
+        &app.private,
+        req(Method::GET, &format!("/jobs?blob_id={id}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["items"][0]["state"], "dead", "{body}");
+    let got = get_blob(&app, id).await;
+    assert_eq!(
+        got["last_error"], "every attempt ended its worker before it finished",
+        "{got}"
+    );
 }

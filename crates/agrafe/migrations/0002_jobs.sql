@@ -37,6 +37,10 @@ CREATE INDEX jobs_claimable_idx ON jobs (kind, priority DESC, run_at, id) WHERE 
 -- many processes start. Needs PostgreSQL 15.
 CREATE UNIQUE INDEX jobs_pending_per_blob_idx ON jobs (kind, blob_id)
     NULLS NOT DISTINCT WHERE locked_at IS NULL;
+-- The reaper declares dead a job whose last attempt ended its worker: out
+-- of attempts, its lease lapsed, never failed. A handful of rows at most.
+CREATE INDEX jobs_exhausted_idx ON jobs (locked_at)
+    WHERE failed_at IS NULL AND attempts >= max_attempts;
 -- The reaper prunes dead jobs, the oldest first.
 CREATE INDEX jobs_dead_idx ON jobs (failed_at) WHERE failed_at IS NOT NULL;
 -- The reaper asks whether a purge job of any state exists for a blob, and

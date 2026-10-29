@@ -336,7 +336,7 @@ async fn a_failing_receiver_leaves_a_dead_job_the_retry_revives() {
 
     // The last attempt makes it dead, and the blob says nothing of it: a
     // notification is not what finishes the blob.
-    sqlx::query("UPDATE jobs SET run_at = now(), attempts = max_attempts WHERE id = $1")
+    sqlx::query("UPDATE jobs SET run_at = now(), attempts = max_attempts - 1 WHERE id = $1")
         .bind(job)
         .execute(pool)
         .await

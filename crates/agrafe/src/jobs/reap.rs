@@ -41,6 +41,7 @@ pub(crate) async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
             abandoned = report.abandoned,
             purges = report.purges,
             reset = report.reset,
+            exhausted = report.exhausted,
             pruned = report.pruned,
             tombstones = report.tombstones,
             backlog = report.backlog,
@@ -105,6 +106,8 @@ pub struct Report {
     pub purges: u64,
     /// Stale uploads handed back to `created`.
     pub reset: usize,
+    /// Jobs declared dead whose last attempt ended its worker.
+    pub exhausted: usize,
     /// Dead jobs removed.
     pub pruned: u64,
     /// Rows of purged blobs removed, their attachments and jobs with them.
@@ -162,6 +165,24 @@ pub async fn reap(state: &Agrafe, now: Timestamp) -> Result<Report, JobError> {
     let mut purges = purge::enqueue_each(&mut *tx, &ids, purge_at, now).await?;
     purges += purge::enqueue_each(&mut *tx, &infected, purge_at, now).await?;
 
+    // A job whose last attempt took its worker down never reached `fail`,
+    // and the claim does not take it again: it dies here, with its blob's
+    // verdict and webhook as if its handler had failed.
+    let exhausted = super::exhausted(&mut tx, config.jobs.lease_timeout, BATCH).await?;
+    backlog |= full(exhausted.len());
+    for job in &exhausted {
+        super::fail(
+            &mut tx,
+            job,
+            "every attempt ended its worker before it finished",
+            true,
+            None,
+            &config.webhook,
+            now,
+        )
+        .await?;
+    }
+
     // A dead purge pruned leaves its blob's objects to nobody: it is
     // scheduled again, due now, its grace long past.
     let dead_before = now
@@ -191,6 +212,7 @@ pub async fn reap(state: &Agrafe, now: Timestamp) -> Result<Report, JobError> {
         abandoned: abandoned.len(),
         purges,
         reset: reset.len(),
+        exhausted: exhausted.len(),
         pruned,
         tombstones,
         skipped: false,

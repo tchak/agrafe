@@ -629,12 +629,14 @@ pub async fn enqueue(
 /// id)` is the `ORDER BY`'s order. With `kind = ANY(...)` the index's
 /// order is not the sort's, and the sort sits under `FOR UPDATE`, where
 /// the `LIMIT` cannot bound it: every claim would sort the kind's whole
-/// backlog.
+/// backlog. A job out of attempts is not claimed again: its last one
+/// ended its worker, or it would be dead, see `exhausted`.
 const CLAIM_SQL: &str = "UPDATE jobs SET locked_at = now(), locked_by = $1, attempts = attempts + 1 \
      WHERE id = (\
          SELECT id FROM jobs \
          WHERE kind = $2 AND run_at <= now() AND failed_at IS NULL \
            AND (locked_at IS NULL OR locked_at < now() - make_interval(secs => $3)) \
+           AND attempts < max_attempts \
          ORDER BY priority DESC, run_at, id \
          FOR UPDATE SKIP LOCKED \
          LIMIT 1\
@@ -642,8 +644,8 @@ const CLAIM_SQL: &str = "UPDATE jobs SET locked_at = now(), locked_by = $1, atte
      RETURNING *";
 
 /// Lock the highest-priority, then oldest, runnable job of `kind` for
-/// `worker`. A job is runnable when it is due, not dead, and either
-/// unlocked or held by a lease older than `lease`.
+/// `worker`. A job is runnable when it is due, not dead, has attempts
+/// left, and is either unlocked or held by a lease older than `lease`.
 // Public for the integration tests, not part of the API.
 #[doc(hidden)]
 pub async fn claim(
@@ -660,28 +662,64 @@ pub async fn claim(
         .await
 }
 
-/// The claim's generic plan, as `EXPLAIN` prints it: prepared and
-/// explained under `plan_cache_mode = force_generic_plan`, the plan a
-/// pooled connection may settle on after five runs. For a test that pins
-/// it to its index.
+/// `exhausted`'s statement: `$1` the lease in seconds, `$2` the limit.
+const EXHAUSTED_SQL: &str = "SELECT * FROM jobs \
+     WHERE failed_at IS NULL AND attempts >= max_attempts \
+       AND locked_at < now() - make_interval(secs => $1) \
+     ORDER BY locked_at \
+     FOR UPDATE SKIP LOCKED \
+     LIMIT $2";
+
+/// Jobs whose last attempt was claimed and whose lease lapsed: the
+/// worker died with it, a process killed, out of memory or by a signal,
+/// so `fail` never ran and the claim will not take it again. At most
+/// `limit` of them, the longest lapsed first, locked for the caller to
+/// declare dead.
+pub(crate) async fn exhausted(
+    conn: &mut PgConnection,
+    lease: Duration,
+    limit: i64,
+) -> sqlx::Result<Vec<Job>> {
+    sqlx::query_as::<_, Job>(EXHAUSTED_SQL)
+        .bind(lease.as_secs_f64())
+        .bind(limit)
+        .fetch_all(&mut *conn)
+        .await
+}
+
+/// The generic plans of the claim and of `exhausted`, by name, as
+/// `EXPLAIN` prints them: each prepared and explained under
+/// `plan_cache_mode = force_generic_plan`, the plan a pooled connection
+/// may settle on after five runs. For a test that pins them to their
+/// indexes.
 #[cfg(any(test, feature = "test-support"))]
-pub async fn explain_claim(conn: &mut PgConnection) -> sqlx::Result<String> {
+pub async fn explain_queue(conn: &mut PgConnection) -> sqlx::Result<Vec<(&'static str, String)>> {
+    let statements = [
+        ("claim", CLAIM_SQL, "'w', 'purge', 600"),
+        ("exhausted", EXHAUSTED_SQL, "600, 10000"),
+    ];
     sqlx::query("SET plan_cache_mode = force_generic_plan")
         .execute(&mut *conn)
         .await?;
-    sqlx::raw_sql(sqlx::AssertSqlSafe(format!("PREPARE claim AS {CLAIM_SQL}")))
-        .execute(&mut *conn)
-        .await?;
-    let lines: Vec<String> = sqlx::query_scalar("EXPLAIN EXECUTE claim('w', 'purge', 600)")
+    let mut plans = Vec::new();
+    for (name, sql, args) in statements {
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("PREPARE queue AS {sql}")))
+            .execute(&mut *conn)
+            .await?;
+        let lines: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "EXPLAIN EXECUTE queue({args})"
+        )))
         .fetch_all(&mut *conn)
         .await?;
-    sqlx::raw_sql("DEALLOCATE claim")
-        .execute(&mut *conn)
-        .await?;
+        sqlx::raw_sql("DEALLOCATE queue")
+            .execute(&mut *conn)
+            .await?;
+        plans.push((name, lines.join("\n")));
+    }
     sqlx::query("RESET plan_cache_mode")
         .execute(&mut *conn)
         .await?;
-    Ok(lines.join("\n"))
+    Ok(plans)
 }
 
 /// Extend `worker`'s lease on a job it is running. Returns whether the job

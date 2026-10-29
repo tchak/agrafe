@@ -2918,7 +2918,8 @@ abandoned `created` blobs, holding source parts untouched for
 `upload.abandoned_after` or attached and untouched altogether for as long,
 or attached with a fetch dead for as long (see "Attachments"); enqueue a purge, `upload.purge_delay` out, for the
 blobs just expired or abandoned that hold objects, and for the infected
-ones past their expiry that no purge job is going to take care of; prune
+ones past their expiry that no purge job is going to take care of;
+declare dead the jobs out of attempts whose last lease lapsed; prune
 dead jobs that failed more than `jobs.keep_failed` (default seven days)
 ago, long enough to have been looked at, and enqueue a purge, due now,
 for the blob of each dead purge among them; hand `uploading` rows older
@@ -2976,7 +2977,11 @@ it: a remote's `Retry-After`) until `max_attempts` (5), then sets
 pending slot per kind and blob, and still there to read. A failure another
 attempt would repeat (a job without its blob, a purge of a live blob, a
 build's permanent errors, see "Build") is dead at once, without the
-backoff. A failing
+backoff. An attempt that takes its worker down, a process killed or out
+of memory, never reaches the failure: the claim does not take a job out
+of attempts, so the fifth such attempt is the last, and the reaper
+declares the job dead once its lease has lapsed, with the blob's verdict
+and the `failed` event as for any other death. A failing
 job whose twin was enqueued while it was locked is dropped in favour of the
 newer one.
 
