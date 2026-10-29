@@ -3494,7 +3494,11 @@ agrafe in its own database. The queries and the migrations name their
 tables unqualified, so the schema is a connection setting, `search_path`
 passed as a startup parameter of every pooled connection, not a string
 spliced into SQL: the same query runs against `public` and against a
-named schema, and the schema can differ per deployment. `migrate` creates
+named schema, and the schema can differ per deployment. `serve` and
+`audit` refuse to start while a migration of their build is missing or
+differs from the one applied (`db::check_migrated`, which reads
+`_sqlx_migrations`): `/healthz` would answer for a process that fails
+every query. `migrate` creates
 the schema when it is missing, before the migrator runs, so that
 `_sqlx_migrations` lands there too and a host that also uses sqlx keeps
 its own history in `public`. The name is validated at load to a plain

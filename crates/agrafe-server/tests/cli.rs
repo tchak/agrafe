@@ -72,6 +72,14 @@ async fn migrate_then_audit_exits_by_what_it_found() {
     std::fs::create_dir(&storage).unwrap();
     let config = write_config(dir.path(), &db, &storage);
 
+    // Not migrated yet: serve and audit refuse to start, naming the step.
+    for args in [&["serve"][..], &["audit"][..]] {
+        let out = agrafe(&config, args);
+        assert!(!out.status.success(), "{args:?}");
+        let stderr = text(&out.stderr);
+        assert!(stderr.contains("run `agrafe migrate`"), "{args:?}: {stderr}");
+    }
+
     let out = agrafe(&config, &["migrate"]);
     assert!(out.status.success(), "{}", text(&out.stderr));
     let tables = sqlx_count(&db).await;

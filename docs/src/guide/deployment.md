@@ -458,7 +458,10 @@ needed: the read cache is per process and short-lived.
   Every process answers it on the private address, worker-only and
   public-only ones included.
 - **Startup:** a worker that cannot run `vips` or a helper exits before
-  serving, with the failing command in the log.
+  serving, with the failing command in the log. Every process, and `agrafe
+  audit`, exits before serving when the database lacks a migration of its
+  release: run `agrafe migrate` first, so that a process that answers
+  `/healthz` has the schema it was written for.
 - **Shutdown:** `SIGTERM` or `SIGINT` stops accepting requests and lets
   in-flight ones finish; workers finish the job they hold and claim no new
   one. A job cut short by a crash or a kill is claimed again once its lease,

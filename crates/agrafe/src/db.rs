@@ -54,6 +54,63 @@ pub async fn migrate(pool: &PgPool, config: &DatabaseConfig) -> Result<(), Migra
     MIGRATOR.run(pool).await
 }
 
+/// Why the database is not the schema this build was written against.
+#[derive(Debug, thiserror::Error)]
+pub enum SchemaError {
+    /// A migration this build embeds has not been applied: `agrafe
+    /// migrate` has not run since the upgrade, or never.
+    #[error("migration {version} ({description}) is not applied: run `agrafe migrate`")]
+    Pending {
+        /// The first one pending.
+        version: i64,
+        /// Its description, from the file name.
+        description: String,
+    },
+    /// An applied migration differs from the one this build embeds, or
+    /// failed half way.
+    #[error("migration {0} as applied is not the one this build embeds")]
+    Changed(i64),
+    /// The query failed.
+    #[error("reading the applied migrations: {0}")]
+    Db(#[from] sqlx::Error),
+}
+
+/// Check that every migration this build embeds is applied to `pool`'s
+/// database, as it embeds it: a process serving against a stale schema
+/// would report itself healthy and fail every query. Reads
+/// `_sqlx_migrations` and nothing else; a database with none is pending
+/// from the first.
+pub async fn check_migrated(pool: &PgPool) -> Result<(), SchemaError> {
+    let applied: Vec<(i64, bool, Vec<u8>)> =
+        match sqlx::query_as("SELECT version, success, checksum FROM _sqlx_migrations")
+            .fetch_all(pool)
+            .await
+        {
+            Ok(rows) => rows,
+            // 42P01, undefined_table: never migrated.
+            Err(sqlx::Error::Database(err)) if err.code().as_deref() == Some("42P01") => {
+                Vec::new()
+            }
+            Err(err) => return Err(err.into()),
+        };
+    for migration in MIGRATOR.iter().filter(|m| !m.migration_type.is_down_migration()) {
+        match applied.iter().find(|(version, ..)| *version == migration.version) {
+            None => {
+                return Err(SchemaError::Pending {
+                    version: migration.version,
+                    description: migration.description.to_string(),
+                });
+            }
+            Some((_, success, checksum)) => {
+                if !success || checksum[..] != migration.checksum[..] {
+                    return Err(SchemaError::Changed(migration.version));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// A nullable `timestamptz` column read straight into `Option<jiff::Timestamp>`.
 ///
 /// `jiff-sqlx` provides a wrapper for the non-null case, which `FromRow` can

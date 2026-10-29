@@ -102,6 +102,8 @@ enum Error {
     Connect(#[from] sqlx::Error),
     #[error("running migrations: {0}")]
     Migrate(#[from] sqlx::migrate::MigrateError),
+    #[error("the database schema: {0}")]
+    Schema(#[from] db::SchemaError),
     #[error(transparent)]
     Init(#[from] InitError),
     #[error("binding the {interface} interface on {addr}: {source}")]
@@ -207,6 +209,7 @@ async fn main() -> Result<(), Error> {
             progress,
         } => {
             let pool = db::connect(&config.database).await?;
+            db::check_migrated(&pool).await?;
             let state = Agrafe::new(config, pool)?;
             let options = audit::Options {
                 fix,
@@ -236,6 +239,9 @@ async fn serve(config: Config) -> Result<(), Error> {
         "agrafe starting"
     );
     let pool = db::connect(&config.database).await?;
+    // Before anything listens: a process against a schema it was not
+    // written for would answer `/healthz` and fail everything else.
+    db::check_migrated(&pool).await?;
     let state = Agrafe::new(config, pool)?;
     let shutdown = shutdown_signal().shared();
     let cfg = &state.config().server;
