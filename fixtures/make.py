@@ -12,7 +12,10 @@ since each conversion stamps the time into the file. `slides.ppt` is about
 600 KB, nearly all of it an uncompressed white thumbnail its PowerPoint 97
 filter always writes, which git stores in about 11 KB. The probe's HEIC
 (`pixel.heic`), which Pillow cannot write, is likewise made by `vips` from
-the probe's PNG, only when missing or with `--legacy`."""
+the probe's PNG, only when missing or with `--legacy`; and so is the
+self-signed certificate of the fetch tests' TLS remote
+(`self-signed.crt.pem`, `self-signed.key.pem`), by `openssl`, since a new
+key is a new file every run."""
 
 import io
 import json
@@ -550,6 +553,17 @@ def main():
     for name, data in probe_files.items():
         (PROBE / name).write_bytes(data)
         print(f"probe/{name}: {len(data)} bytes")
+    cert, key = HERE / "self-signed.crt.pem", HERE / "self-signed.key.pem"
+    if not cert.exists() or "--legacy" in sys.argv:
+        if shutil.which("openssl") is None:
+            print("self-signed.crt.pem: not written, no openssl found")
+        else:
+            subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256",
+                            "-nodes", "-days", "36500", "-subj", "/CN=localhost",
+                            "-addext", "subjectAltName=IP:127.0.0.1,DNS:localhost",
+                            "-keyout", str(key), "-out", str(cert)],
+                           check=True, capture_output=True, timeout=60)
+            print(f"self-signed.crt.pem: {cert.stat().st_size} bytes")
     heic = PROBE / "pixel.heic"
     if not heic.exists() or "--legacy" in sys.argv:
         if shutil.which("vips") is None:

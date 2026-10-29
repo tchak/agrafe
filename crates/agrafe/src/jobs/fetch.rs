@@ -184,6 +184,20 @@ enum ResolveError {
     Refused,
 }
 
+/// The addresses a name resolved to, if the policy lets the client connect
+/// to them. One refused address among several refuses the name: a name
+/// that answers with a public and a private address is a trick, a DNS
+/// rebinding's first half.
+fn checked(addrs: Vec<SocketAddr>, allow_private: bool) -> Result<Vec<SocketAddr>, ResolveError> {
+    if addrs.is_empty() {
+        return Err(ResolveError::NoAddress);
+    }
+    if !allow_private && addrs.iter().any(|a| refused(a.ip())) {
+        return Err(ResolveError::Refused);
+    }
+    Ok(addrs)
+}
+
 impl Resolve for Resolver {
     fn resolve(&self, name: Name) -> Resolving {
         let allow_private = self.allow_private;
@@ -193,14 +207,7 @@ impl Resolve for Resolver {
                 .await
                 .map_err(ResolveError::Unresolved)?
                 .collect();
-            if addrs.is_empty() {
-                return Err(ResolveError::NoAddress.into());
-            }
-            // One refused address among several refuses the name: a name
-            // that answers with a public and a private address is a trick.
-            if !allow_private && addrs.iter().any(|a| refused(a.ip())) {
-                return Err(ResolveError::Refused.into());
-            }
+            let addrs = checked(addrs, allow_private)?;
             Ok(Box::new(addrs.into_iter()) as Addrs)
         })
     }
@@ -417,13 +424,13 @@ fn classify(err: reqwest::Error) -> FetchError {
             }
         };
     }
-    let tls = find_in_chain::<rustls::Error>(&err).is_some();
-    let message = err.without_url().to_string();
-    if tls {
-        FetchError::Tls(message)
-    } else {
-        FetchError::Request(message)
+    // The TLS failure itself, an unknown issuer or an expired certificate,
+    // is what an operator needs; reqwest's own message says only that the
+    // request failed.
+    if let Some(tls) = find_in_chain::<rustls::Error>(&err) {
+        return FetchError::Tls(tls.to_string());
     }
+    FetchError::Request(err.without_url().to_string())
 }
 
 /// The first `T` in the chain of causes of `err`, itself included. An
@@ -640,6 +647,36 @@ mod tests {
             allow_private_networks: allow_private,
             ..FetchConfig::default()
         }
+    }
+
+    #[test]
+    fn a_name_is_refused_whole_for_one_refused_address() {
+        let at = |ips: &[&str]| -> Vec<SocketAddr> {
+            ips.iter()
+                .map(|ip| SocketAddr::new(ip.parse().unwrap(), 443))
+                .collect()
+        };
+        assert!(matches!(
+            checked(at(&["8.8.8.8", "10.0.0.1"]), false),
+            Err(ResolveError::Refused)
+        ));
+        assert!(matches!(
+            checked(at(&["2606:4700::1111", "::ffff:127.0.0.1"]), false),
+            Err(ResolveError::Refused)
+        ));
+        assert_eq!(
+            checked(at(&["8.8.8.8", "1.1.1.1"]), false).unwrap().len(),
+            2
+        );
+        assert!(matches!(
+            checked(Vec::new(), false),
+            Err(ResolveError::NoAddress)
+        ));
+        // Private networks allowed, the same answer passes.
+        assert_eq!(
+            checked(at(&["8.8.8.8", "10.0.0.1"]), true).unwrap().len(),
+            2
+        );
     }
 
     #[test]

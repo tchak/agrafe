@@ -928,6 +928,47 @@ async fn a_tls_failure_is_permanent_and_a_refused_connection_is_not() {
     assert_eq!(get_blob(&app, id).await["state"], "created");
 }
 
+/// A remote whose certificate does not verify, a self-signed one, fails
+/// the handshake for good: the verifier runs, and finds no root for it.
+#[tokio::test]
+async fn an_unverified_certificate_is_a_permanent_tls_failure() {
+    use rustls::pki_types::pem::PemObject as _;
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+
+    let db = TestDatabase::new().await;
+    let app = setup_fetching(db).await;
+    let cert = CertificateDer::from_pem_slice(&fixture("self-signed.crt.pem")).unwrap();
+    let key = PrivateKeyDer::from_pem_slice(&fixture("self-signed.key.pem")).unwrap();
+    let provider = std::sync::Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let config = rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert], key)
+        .unwrap();
+    let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(config));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let https = format!("https://{}", listener.local_addr().unwrap());
+    let handshakes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = handshakes.clone();
+    tokio::spawn(async move {
+        while let Ok((sock, _)) = listener.accept().await {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            // The client gives up mid-handshake; nothing to serve.
+            let _ = acceptor.accept(sock).await;
+        }
+    });
+
+    let created = create(&app, url_blob(&format!("{https}/photo.png"))).await;
+    let id = id_of(&created);
+    assert!(run_job(&app, JobKind::Fetch).await);
+    let (attempts, dead, error) = fetch_job(&app, id).await;
+    assert_eq!((attempts, dead), (1, true), "{error}");
+    assert!(error.contains("tls"), "{error}");
+    assert!(error.to_lowercase().contains("certificate"), "{error}");
+    assert_eq!(handshakes.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
 /// A fetch job that finds its row `uploading` (a fetch cut short, a
 /// duplicate job) waits for the reaper to reset it rather than racing it.
 #[tokio::test]
