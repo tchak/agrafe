@@ -509,6 +509,45 @@ async fn the_attached_filter_walks_an_index_of_blobs() {
     }
 }
 
+/// A blob shared by many owners inlines the first hundred, says it was
+/// cut short, and the listing by blob pages through them all.
+#[tokio::test]
+async fn a_widely_shared_blob_inlines_its_first_attachments() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let mut blob = raw_blob();
+    blob["attachment"] = attachment("expense", "0", "receipt");
+    let created = create(&app, blob).await;
+    let id = id_of(&created);
+    assert_eq!(created["attachments_truncated"], false);
+    sqlx::query(
+        "INSERT INTO attachments (id, blob_id, owner_kind, owner_id, role) \
+         SELECT gen_random_uuid(), $1, 'expense', n::text, 'receipt' \
+         FROM generate_series(1, 100) AS n",
+    )
+    .bind(parse_id(id))
+    .execute(app.state.pool())
+    .await
+    .unwrap();
+
+    let got = get_blob(&app, id).await;
+    assert_eq!(got["attachments"].as_array().unwrap().len(), 100);
+    assert_eq!(got["attachments_truncated"], true);
+    let mut listed = 0;
+    let mut cursor = String::new();
+    loop {
+        let uri = format!("/attachments?blob_id={id}&limit=50{cursor}");
+        let (status, page) = call(&app.private, req(Method::GET, &uri)).await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        listed += page["items"].as_array().unwrap().len();
+        match page["next_cursor"].as_str() {
+            Some(next) => cursor = format!("&cursor={next}"),
+            None => break,
+        }
+    }
+    assert_eq!(listed, 101);
+}
+
 /// Every filter shape the listing accepts walks an index of
 /// `attachments`: `role` comes only with `owner_kind` or `blob_id`, since
 /// no index leads with it. Sequential and bitmap scans are off so that,

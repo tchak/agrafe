@@ -2,8 +2,6 @@
 //! detail with the thumbnail, the attachments and the jobs of one blob,
 //! and the retry action for a blob whose job died.
 
-use std::collections::HashSet;
-
 use askama::Template;
 use askama_web::WebTemplate;
 use axum::Router;
@@ -16,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use agrafe::Agrafe;
-use agrafe::attachment::Attachment;
+use agrafe::attachment::{self, Attachment};
 use agrafe::blob::urls::encode_segment;
 use agrafe::blob::{self, ListParams};
 use agrafe::blob::{Blob, BlobState, RetryError, ScanState};
@@ -136,20 +134,15 @@ async fn list(
     Query(query): Query<BlobsQuery>,
 ) -> Result<BlobsPage, DashboardError> {
     let page = agrafe.list_blobs(query.params()).await?;
-    let ids: Vec<Uuid> = page.items.iter().map(|b| b.id).collect();
-    let attached: HashSet<Uuid> = agrafe
-        .attachments_for(&ids)
-        .await?
-        .into_iter()
-        .map(|a| a.blob_id)
-        .collect();
     let now = Timestamp::now();
     let blobs = page
         .items
         .into_iter()
         .map(|blob| BlobView {
             state: blob.state_at(now),
-            attached: attached.contains(&blob.id),
+            // Whether any attachment exists is whether the row has no
+            // expiry, see "Attachments": no query of `attachments`.
+            attached: blob.expires_at.is_none(),
             blob,
         })
         .collect();
@@ -174,7 +167,10 @@ pub struct BlobPage {
     pub view: BlobView,
     /// The private thumbnail route, always `200`, on the same listener.
     pub thumbnail: String,
+    /// At most `attachment::INLINE_LIMIT`, the first ones.
     pub attachments: Vec<Attachment>,
+    /// More attachments than shown: the listing by blob has them all.
+    pub attachments_truncated: bool,
     pub jobs: Vec<JobView>,
     /// The button shows: actions are on and the job that was to finish
     /// the blob died.
@@ -199,6 +195,9 @@ async fn show(
         agrafe.list_jobs(&params).map_err(DashboardError::from),
     )?;
     let blob = blob.ok_or(DashboardError::NotFound)?;
+    let mut attachments = attachments;
+    let attachments_truncated = attachments.len() > attachment::INLINE_LIMIT;
+    attachments.truncate(attachment::INLINE_LIMIT);
     let thumbnail = format!(
         "{}/blobs/{id}/thumbnail/{}",
         base.api(),
@@ -214,6 +213,7 @@ async fn show(
         },
         thumbnail,
         attachments,
+        attachments_truncated,
         jobs: JobView::many(&agrafe, jobs.items),
     })
 }

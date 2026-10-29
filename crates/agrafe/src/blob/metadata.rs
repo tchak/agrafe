@@ -115,9 +115,13 @@ pub struct BlobMetadata {
     pub failed_at: Option<Timestamp>,
     /// What the dead job last said, set and cleared with `failed_at`.
     pub last_error: Option<String>,
-    /// The owners using the blob, oldest first. A blob with any has no
+    /// The owners using the blob, oldest first, at most
+    /// `attachment::INLINE_LIMIT` of them. A blob with any has no
     /// `expires_at`.
     pub attachments: Vec<AttachmentMetadata>,
+    /// More owners use the blob than `attachments` holds: the listing by
+    /// `blob_id` has them all.
+    pub attachments_truncated: bool,
     /// The signed public URLs of the blob, with the default options.
     pub urls: BlobUrls,
     /// What a read of the blob needs of this row, once it is `ready`, as
@@ -130,7 +134,8 @@ pub struct BlobMetadata {
 
 impl BlobMetadata {
     /// The metadata of `blob`, with its `attachments` and the `urls`
-    /// minted for it.
+    /// minted for it. Past `attachment::INLINE_LIMIT` the attachments are
+    /// cut short and say so.
     pub fn new(blob: &Blob, attachments: &[Attachment], urls: BlobUrls) -> Self {
         let generated = blob.input_type.is_generated();
         Self {
@@ -166,7 +171,12 @@ impl BlobMetadata {
             purged_at: blob.purged_at,
             failed_at: blob.failed_at,
             last_error: blob.last_error.clone(),
-            attachments: attachments.iter().map(AttachmentMetadata::new).collect(),
+            attachments: attachments
+                .iter()
+                .take(crate::attachment::INLINE_LIMIT)
+                .map(AttachmentMetadata::new)
+                .collect(),
+            attachments_truncated: attachments.len() > crate::attachment::INLINE_LIMIT,
             urls,
             envelope: Envelope::from_head(&blob.head(), Timestamp::now()).map(|e| e.encode()),
         }

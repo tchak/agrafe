@@ -66,6 +66,7 @@
     </tr>
     {% endfor %}
     {% if attachments.is_empty() %}<tr><td colspan="5" class="opacity-60">Not attached.</td></tr>{% endif %}
+    {% if attachments_truncated %}<tr><td colspan="5"><a class="link link-primary" href="{{ layout.base }}/attachments?blob_id={{ view.blob.id }}">All of them</a></td></tr>{% endif %}
   </tbody>
 </table>
 </div>

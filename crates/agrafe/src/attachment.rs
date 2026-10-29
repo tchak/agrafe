@@ -116,7 +116,9 @@ impl Agrafe {
         find(self.pool(), id).await
     }
 
-    /// The attachments of every blob among `ids`, oldest first.
+    /// The attachments of every blob among `ids`, oldest first, at most
+    /// `INLINE_LIMIT + 1` of each: the one past the limit says there are
+    /// more, which `GET /attachments?blob_id=` pages through.
     pub async fn attachments_for(&self, ids: &[Uuid]) -> sqlx::Result<Vec<Attachment>> {
         for_blobs(self.pool(), ids).await
     }
@@ -432,14 +434,28 @@ async fn delete(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Result<bool> {
 }
 
 /// The attachments of every blob among `ids`, oldest first.
+/// Attachments the blob metadata inlines at most. A blob shared by many
+/// owners would otherwise make a metadata read, and a page of them, as
+/// large as its fan-out; past the limit the metadata says it is cut short,
+/// and the listing by `blob_id` has the rest.
+pub const INLINE_LIMIT: usize = 100;
+
 pub(crate) async fn for_blobs(
     exec: impl PgExecutor<'_>,
     ids: &[Uuid],
 ) -> sqlx::Result<Vec<Attachment>> {
-    sqlx::query_as::<_, Attachment>("SELECT * FROM attachments WHERE blob_id = ANY($1) ORDER BY id")
-        .bind(ids)
-        .fetch_all(exec)
-        .await
+    // Each blob's first ones off `attachments_blob_idx (blob_id, id)`.
+    sqlx::query_as::<_, Attachment>(
+        "SELECT a.* FROM unnest($1::uuid[]) AS b (id) \
+         CROSS JOIN LATERAL (\
+             SELECT * FROM attachments WHERE blob_id = b.id ORDER BY id LIMIT $2\
+         ) AS a \
+         ORDER BY a.id",
+    )
+    .bind(ids)
+    .bind(INLINE_LIMIT as i64 + 1)
+    .fetch_all(exec)
+    .await
 }
 
 /// Newest first, keyset paginated on the UUID v7 id, each row with its

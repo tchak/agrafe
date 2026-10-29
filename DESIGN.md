@@ -792,14 +792,18 @@ is no index on it alone. `(owner_kind, role, id)` and `(owner_kind, id)`
 serve the low-cardinality scans with the cursor; the first's prefix does not
 serve the second, since the id order the cursor pages on is lost after
 `role`. `role` alone has no index: nothing lists every avatar regardless of
-what it belongs to. `(blob_id)` serves a blob's own attachments and the
-last-detach check.
+what it belongs to. `(blob_id, id)` serves a blob's own attachments in
+order and the last-detach check.
 
 `GET /attachments` is cursor paginated on the attachment id like `/blobs`,
 with filters `owner_kind`, `owner_id` (with `owner_kind`), `role` (with
 `owner_kind` or `blob_id`: no index leads with it, and a rare role alone
 would be a scan of the table) and `blob_id`; each row carries the blob's state as `blob_state`. `GET
-/blobs/:id` inlines the blob's attachments, and `GET /blobs` takes
+/blobs/:id` and `GET /blobs` inline each blob's attachments, the first
+hundred: a blob shared by many owners would otherwise make a metadata
+read, and a page of them, as large as its fan-out. Past a hundred,
+`attachments_truncated` says so and the listing by `blob_id` has the
+rest. `GET /blobs` takes
 `attached`. The three strings are validated like `filename`: not blank, at
 most 255 bytes, no control or bidirectional formatting characters; unlike
 `filename` they are not trimmed, since an identifier is the backend's to

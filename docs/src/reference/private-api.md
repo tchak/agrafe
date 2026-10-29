@@ -141,7 +141,8 @@ Every blob route answers with the full metadata, the same object the
 | `created_at`, `updated_at` | timestamp | |
 | `uploaded_at`, `deleted_at`, `purged_at` | timestamp or null | `purged_at` is set once the objects are gone |
 | `failed_at`, `last_error` | timestamp, string or null | Set while the job that was to finish the blob is dead |
-| `attachments` | array | The owners using the blob, oldest first |
+| `attachments` | array | The owners using the blob, oldest first: the first hundred |
+| `attachments_truncated` | boolean | More than a hundred owners use the blob; `GET /attachments?blob_id=` lists them all |
 | `urls` | object | Signed public URLs, see [Serving files](../guide/serving.md#urls-in-the-metadata) |
 | `envelope` | string or null | For a `ready`, unexpired blob: the opaque envelope for [sealed URLs](../guide/signed-urls.md#sealed-urls) |
 

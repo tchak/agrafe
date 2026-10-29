@@ -18,8 +18,9 @@ CREATE TABLE attachments (
 -- `owner_kind`.
 CREATE UNIQUE INDEX attachments_owner_idx
     ON attachments (owner_kind, owner_id, role, blob_id);
--- A blob's own attachments, and the last-detach check.
-CREATE INDEX attachments_blob_idx ON attachments (blob_id);
+-- A blob's own attachments in id order: the listing by `blob_id`, the
+-- first ones the blob metadata inlines, and the last-detach check.
+CREATE INDEX attachments_blob_idx ON attachments (blob_id, id);
 -- The low-cardinality scans with the cursor.
 CREATE INDEX attachments_kind_role_idx ON attachments (owner_kind, role, id);
 -- The listing by `owner_kind` alone, with the cursor. The prefix of
