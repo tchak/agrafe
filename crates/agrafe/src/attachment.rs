@@ -548,8 +548,11 @@ pub(crate) async fn insert_with_blob(
         if others.len() > MAX_REPLACED {
             return Ok(None);
         }
-        lock_blobs(conn, &others).await?;
-        detach_all(conn, new, &others, expires_at).await?;
+        // Nobody there, the usual case for a new owner: no rows to lock.
+        if !others.is_empty() {
+            lock_blobs(conn, &others).await?;
+            detach_all(conn, new, &others, expires_at).await?;
+        }
     }
     match insert(conn, blob_id, new).await? {
         Attached::Created(a) | Attached::Existing(a) => Ok(Some(a)),
