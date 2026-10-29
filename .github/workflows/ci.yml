@@ -74,6 +74,7 @@ jobs:
         env:
           PACKAGES: >-
             libvips-tools libheif-plugin-libde265 bubblewrap libreoffice-writer-nogui libreoffice-calc-nogui
+            unzip libarchive-tools
             libreoffice-impress-nogui libreoffice-draw-nogui fonts-dejavu-core
             fonts-liberation
         run: |

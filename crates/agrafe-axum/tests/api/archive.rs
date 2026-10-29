@@ -862,3 +862,80 @@ async fn a_damaged_member_kills_the_build() {
     assert!(error.contains("opening segment 0"), "{error}");
     assert_eq!(get_blob(&app, id).await["state"], "uploaded");
 }
+
+/// The archive reads back in the readers the design names as its target,
+/// Info-ZIP and libarchive, not only the `zip` crate: every CRC checked by
+/// `unzip -t`, every member extracted by `bsdtar` where it belongs, a
+/// folder that collided with a file and a name outside ASCII included.
+/// Each tool is used where it is installed; CI installs both.
+#[tokio::test]
+async fn the_archive_extracts_with_unzip_and_bsdtar() {
+    let have = |tool: &str| {
+        std::process::Command::new(tool)
+            .arg("--help")
+            .output()
+            .is_ok()
+    };
+    let (unzip_found, bsdtar_found) = (have("unzip"), have("bsdtar"));
+    if !unzip_found && !bsdtar_found {
+        return;
+    }
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let photo = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
+    let note = ready_file(&app, "note.txt", "text/plain", "été".as_bytes()).await;
+    let empty = ready_file(&app, "empty.txt", "text/plain", b"").await;
+    let created = create(&app, archive_blob("tools.zip")).await;
+    let id = id_of(&created);
+    let entries = [
+        ("Report", id_of(&note)),
+        ("Report/photo.jpg", id_of(&photo)),
+        ("été/note.txt", id_of(&note)),
+        ("empty.txt", id_of(&empty)),
+    ];
+    let (status, body) = put_private(&app, id, manifest(&entries)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(run_job(&app, JobKind::Archive).await);
+    let blob = get_blob(&app, id).await;
+    assert_eq!(blob["state"], "ready", "{blob}");
+    let dir = tempfile::tempdir().unwrap();
+    let zip = dir.path().join("tools.zip");
+    std::fs::write(&zip, download(&app, &blob).await).unwrap();
+
+    if unzip_found {
+        let out = std::process::Command::new("unzip")
+            .arg("-t")
+            .arg(&zip)
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success(),
+            "{text}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(text.contains("No errors detected"), "{text}");
+    }
+    if bsdtar_found {
+        let into = dir.path().join("out");
+        std::fs::create_dir(&into).unwrap();
+        let out = std::process::Command::new("bsdtar")
+            .arg("-xf")
+            .arg(&zip)
+            .arg("-C")
+            .arg(&into)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let read =
+            |path: &str| std::fs::read(into.join(path)).unwrap_or_else(|e| panic!("{path}: {e}"));
+        assert_eq!(read("Report"), "été".as_bytes());
+        assert_eq!(read("Report-1/photo.jpg"), fixture("photo.jpg"));
+        assert_eq!(read("été/note.txt"), "été".as_bytes());
+        assert!(read("empty.txt").is_empty());
+    }
+}
