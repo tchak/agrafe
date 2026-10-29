@@ -198,6 +198,19 @@ pub(crate) async fn run<A: Assemble>(state: &Agrafe, job: &Job) -> Result<(), Jo
     Ok(())
 }
 
+/// Whether the build may still finish the blob's key: the job's lease
+/// still this worker's, and the blob still waiting for its build.
+async fn last_look(state: &Agrafe, job: &Job, blob: &Blob) -> sqlx::Result<bool> {
+    let held = match job.locked_by.as_deref() {
+        Some(worker) => crate::jobs::touch(state.pool(), job.id, worker).await?,
+        None => true,
+    };
+    Ok(held
+        && repo::find(state.pool(), blob.id)
+            .await?
+            .is_some_and(|b| b.state_at(Timestamp::now()) == BlobState::Uploaded))
+}
+
 /// Assemble the file into the original's key. `None` when the blob was no
 /// longer `uploaded` at the end, or the job no longer this worker's: the
 /// object is not finished and nothing is written.
@@ -237,17 +250,19 @@ async fn build<A: Assemble>(
     // lapsed, a worker stalled for longer, is running beside the one that
     // reclaimed it, and the two would complete the same key, the row
     // taking one header and the object the other's bytes.
-    let held = match job.locked_by.as_deref() {
-        Some(worker) => crate::jobs::touch(state.pool(), job.id, worker).await?,
-        None => true,
-    };
-    let still_ours = held
-        && repo::find(state.pool(), blob.id)
-            .await?
-            .is_some_and(|b| b.state_at(Timestamp::now()) == BlobState::Uploaded);
-    if !still_ours {
-        sink.abort().await;
-        return Ok(None);
+    // A database error here aborts the upload too: dropped, its parts would
+    // stay in the bucket until the lifecycle rule, and the retry would
+    // open another beside them.
+    match last_look(state, job, blob).await {
+        Ok(true) => {}
+        Ok(false) => {
+            sink.abort().await;
+            return Ok(None);
+        }
+        Err(err) => {
+            sink.abort().await;
+            return Err(err.into());
+        }
     }
     let (encryption_header, checksum_sha256, checksum_md5, size) = sink.finish().await?;
     Ok(Some(Built {
