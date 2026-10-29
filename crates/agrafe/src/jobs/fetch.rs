@@ -17,7 +17,9 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::{StreamExt, TryStreamExt};
+use bytes::Bytes;
+use futures::StreamExt;
+use futures::stream::{self, BoxStream};
 use jiff::Timestamp;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use reqwest::header::{HeaderMap, RETRY_AFTER};
@@ -200,6 +202,12 @@ impl Resolve for Resolver {
 pub struct Client {
     inner: reqwest::Client,
     max_retry_after: Duration,
+    /// How long the remote may stay silent, for its head or the next
+    /// bytes of its body. Timed here, not by reqwest, whose read timeout
+    /// starts when the bytes are asked for: a pipeline that stops reading
+    /// for a while, a store write or a scan behind, would count against
+    /// the remote.
+    read_timeout: Duration,
 }
 
 impl Client {
@@ -218,7 +226,6 @@ impl Client {
         let inner = reqwest::Client::builder()
             .user_agent(&config.user_agent)
             .connect_timeout(config.connect_timeout)
-            .read_timeout(config.read_timeout)
             .timeout(config.timeout)
             .redirect(policy)
             .referer(false)
@@ -229,13 +236,17 @@ impl Client {
         Ok(Self {
             inner,
             max_retry_after: config.max_retry_after,
+            read_timeout: config.read_timeout,
         })
     }
 
     /// `GET` the URL, following redirects under the policy, and sort the
     /// status into what the job does next.
     async fn get(&self, url: Url) -> Result<reqwest::Response, FetchError> {
-        let response = self.inner.get(url).send().await.map_err(classify)?;
+        let response = tokio::time::timeout(self.read_timeout, self.inner.get(url).send())
+            .await
+            .map_err(|_| FetchError::Stalled(self.read_timeout))?
+            .map_err(classify)?;
         let status = response.status();
         if status.is_success() {
             return Ok(response);
@@ -250,6 +261,29 @@ impl Client {
             return Err(FetchError::Unavailable { status, after });
         }
         Err(FetchError::Status(status))
+    }
+
+    /// The response's body, each wait for the next bytes bounded by
+    /// `read_timeout` from the moment the pipeline asks for them, so that
+    /// only the remote's silence counts.
+    fn body(&self, response: reqwest::Response) -> BoxStream<'static, Result<Bytes, BoxError>> {
+        let read_timeout = self.read_timeout;
+        stream::unfold(
+            Some(response.bytes_stream().boxed()),
+            move |body| async move {
+                let mut body = body?;
+                match tokio::time::timeout(read_timeout, body.next()).await {
+                    Ok(Some(chunk)) => Some((
+                        chunk.map_err(|e| BoxError::from(e.without_url())),
+                        Some(body),
+                    )),
+                    Ok(None) => None,
+                    // The stream ends after the error.
+                    Err(_) => Some((Err(FetchError::Stalled(read_timeout).into()), None)),
+                }
+            },
+        )
+        .boxed()
     }
 }
 
@@ -295,7 +329,11 @@ pub enum FetchError {
     Unresolved(String),
     #[error("tls: {0}")]
     Tls(String),
-    /// A connect or read timeout, a reset, a body cut short: the network.
+    /// The remote sent nothing for `fetch.read_timeout`, its head or the
+    /// next bytes of its body: the remote, never the pipeline behind.
+    #[error("the remote sent nothing for {0:?}")]
+    Stalled(Duration),
+    /// A connect timeout, a reset, a body cut short: the network.
     #[error("request: {0}")]
     Request(String),
     #[error("{0}")]
@@ -322,6 +360,7 @@ impl FetchError {
             FetchError::Uploading { .. }
             | FetchError::Unresolved(_)
             | FetchError::Unavailable { .. }
+            | FetchError::Stalled(_)
             | FetchError::Request(_)
             | FetchError::Db(_) => false,
             FetchError::Upload(err) => !matches!(
@@ -504,10 +543,7 @@ async fn fetch(state: &Agrafe, blob: Blob) -> Result<(), FetchError> {
             return Ok(());
         }
     };
-    let body = response
-        .bytes_stream()
-        .map_err(|e| BoxError::from(e.without_url()))
-        .boxed();
+    let body = state.fetcher().body(response);
     match upload::store_and_complete(state.clone(), blob, declared, body).await {
         Ok(blob) => {
             tracing::info!(state = %blob.state, size = blob.size, "fetched");
@@ -526,6 +562,66 @@ async fn fetch(state: &Agrafe, blob: Blob) -> Result<(), FetchError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A remote on loopback that answers the head at once and the body in
+    /// two halves, `pause` apart.
+    async fn remote(pause: Duration) -> Url {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await;
+            sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nhello")
+                .await
+                .unwrap();
+            tokio::time::sleep(pause).await;
+            let _ = sock.write_all(b"world").await;
+        });
+        format!("http://{addr}/file").parse().unwrap()
+    }
+
+    fn quick_client() -> Client {
+        Client::from_config(&FetchConfig {
+            allow_private_networks: true,
+            read_timeout: Duration::from_millis(500),
+            ..FetchConfig::default()
+        })
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_pipeline_that_stops_reading_is_not_the_remote_stalling() {
+        let client = quick_client();
+        let response = client
+            .get(remote(Duration::from_millis(50)).await)
+            .await
+            .unwrap();
+        let mut body = client.body(response);
+        let mut got = Vec::new();
+        while let Some(chunk) = body.next().await {
+            got.extend_from_slice(&chunk.unwrap());
+            // Longer than the read timeout, between reads: a store write.
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        assert_eq!(got, b"helloworld");
+    }
+
+    #[tokio::test]
+    async fn a_remote_that_goes_silent_stalls() {
+        let client = quick_client();
+        let response = client
+            .get(remote(Duration::from_secs(5)).await)
+            .await
+            .unwrap();
+        let mut body = client.body(response);
+        assert_eq!(&body.next().await.unwrap().unwrap()[..], b"hello");
+        let err = body.next().await.unwrap().unwrap_err();
+        assert_eq!(err.to_string(), "the remote sent nothing for 500ms");
+        assert!(body.next().await.is_none());
+    }
 
     fn config(allow_private: bool) -> FetchConfig {
         FetchConfig {

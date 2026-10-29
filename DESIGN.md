@@ -1726,7 +1726,10 @@ retrofit:
 - `fetch.connect_timeout`; `fetch.read_timeout` (default thirty seconds)
   on every wait for the next bytes, which is what stops a remote that
   trickles from holding one of the few fetch workers, and what lets a
-  large file on a slow link run as long as it keeps flowing;
+  large file on a slow link run as long as it keeps flowing. The wait is
+  timed from the moment the pipeline asks for the bytes, not from the
+  last ones: a store write or a scan holding the pipeline for longer is
+  not the remote's silence;
   `fetch.timeout` (default six hours) on the whole response as a backstop.
   The size is bounded by the pipeline's counter.
 - `fetch.allow_private_networks` (default `false`) lifts the scheme and

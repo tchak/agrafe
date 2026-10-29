@@ -180,8 +180,10 @@ max_files = 10000
 # given at creation, through a job, instead of receiving it through a PUT.
 # The TCP connect and the TLS handshake.
 connect_timeout = "10s"
-# The longest a read may wait for the next bytes of the response. A remote
-# that stalls fails the attempt here, so it cannot hold a fetch worker.
+# The longest the remote may stay silent: for the response head, and for
+# the next bytes of the body from the moment they are asked for. A remote
+# that stalls fails the attempt here, so it cannot hold a fetch worker; a
+# pipeline slow to read, a store write behind, does not count.
 read_timeout = "30s"
 # The whole response, headers and body: a backstop behind read_timeout, so
 # a large file on a slow link is not cut off while it is still flowing. A
