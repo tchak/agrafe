@@ -52,7 +52,8 @@ points, so fetches follow a strict policy:
 - `https` only, with no credentials in the URL;
 - the host is resolved by agrafe, and loopback, private, link-local,
   shared and cloud metadata ranges are refused, IPv4 and IPv6, including an
-  IPv4 address mapped into IPv6. A name that resolves to one refused address
+  IPv4 address mapped into IPv6 or embedded by a translation (NAT64, SIIT,
+  6to4). A name that resolves to one refused address
   among several is refused whole, and the connection goes to the addresses
   that were checked, so DNS rebinding cannot swap them;
 - a literal address in the URL is checked at creation, so a mistake is a

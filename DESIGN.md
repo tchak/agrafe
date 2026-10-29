@@ -1738,7 +1738,8 @@ retrofit:
 - The host is resolved by the service, loopback, private, link-local and
   cloud metadata ranges are refused (the full list is `jobs::fetch::refused`:
   it includes shared address space, the IPv6 unique-local and link-local
-  blocks, and an IPv4 address mapped into IPv6), and the connection is
+  blocks, and an IPv4 address mapped into IPv6 or embedded by NAT64, its
+  local-use prefix, SIIT or 6to4), and the connection is
   made to the resolved addresses, so a DNS rebinding cannot swap it between
   the check and the connect: the client's resolver is ours, and a name that
   answers with one refused address among several is refused whole. A

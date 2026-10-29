@@ -100,7 +100,8 @@ fn check(url: &Url, allow_private: bool) -> Result<(), PolicyError> {
 /// Whether an address is one the service must not connect to: loopback,
 /// private, link-local (where cloud metadata lives), shared address space,
 /// unspecified, multicast, broadcast, documentation and reserved ranges,
-/// and their IPv6 forms, including an IPv4 address mapped into IPv6.
+/// and their IPv6 forms, including an IPv4 address mapped into IPv6 or
+/// embedded by a translation (NAT64, local-use NAT64, SIIT, 6to4).
 pub fn refused(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
@@ -128,6 +129,13 @@ pub fn refused(ip: IpAddr) -> bool {
                 return refused(IpAddr::V4(v4));
             }
             let s = v6.segments();
+            // The IPv4 address two segments carry, as the translations below
+            // embed one: refused if it would be.
+            let embeds = |high: u16, low: u16| {
+                let [a, b] = high.to_be_bytes();
+                let [c, d] = low.to_be_bytes();
+                refused(IpAddr::V4(std::net::Ipv4Addr::new(a, b, c, d)))
+            };
             v6.is_unspecified()
                 || v6.is_loopback()
                 || v6.is_multicast()
@@ -136,13 +144,14 @@ pub fn refused(ip: IpAddr) -> bool {
                 // 2001:db8::/32, documentation.
                 || (s[0] == 0x2001 && s[1] == 0x0db8)
                 // 64:ff9b::/96, NAT64: the IPv4 address is in the low bits.
-                || (s[0] == 0x64 && s[1] == 0xff9b && s[2..6] == [0; 4]
-                    && refused(IpAddr::V4(std::net::Ipv4Addr::new(
-                        (s[6] >> 8) as u8,
-                        s[6] as u8,
-                        (s[7] >> 8) as u8,
-                        s[7] as u8,
-                    ))))
+                || (s[0] == 0x64 && s[1] == 0xff9b && s[2..6] == [0; 4] && embeds(s[6], s[7]))
+                // 64:ff9b:1::/48, NAT64 for local use (RFC 8215), with the
+                // IPv4 address where a /96 translator puts it.
+                || (s[0] == 0x64 && s[1] == 0xff9b && s[2] == 1 && embeds(s[6], s[7]))
+                // ::ffff:0:0:0/96, IPv4-translated (SIIT).
+                || (s[..4] == [0; 4] && s[4] == 0xffff && s[5] == 0 && embeds(s[6], s[7]))
+                // 2002::/16, 6to4: the IPv4 address follows the prefix.
+                || (s[0] == 0x2002 && embeds(s[1], s[2]))
                 // ::ffff:0:0/96 handled above; ::/96 compatibility addresses.
                 || (s[..6] == [0; 6] && (s[6] != 0 || s[7] != 1))
         }
@@ -656,6 +665,12 @@ mod tests {
             "::ffff:127.0.0.1",
             "::ffff:10.0.0.1",
             "64:ff9b::7f00:1",
+            "64:ff9b:1::7f00:1",
+            "64:ff9b:1::a9fe:a9fe",
+            "::ffff:0:7f00:1",
+            "::ffff:0:a00:1",
+            "2002:7f00:1::1",
+            "2002:a9fe:a9fe::1",
             "2001:db8::1",
         ] {
             assert!(refused(ip.parse().unwrap()), "{ip}");
@@ -668,6 +683,9 @@ mod tests {
             "2606:4700::1111",
             "::ffff:8.8.8.8",
             "64:ff9b::808:808",
+            "64:ff9b:1::808:808",
+            "::ffff:0:808:808",
+            "2002:808:808::1",
         ] {
             assert!(!refused(ip.parse().unwrap()), "{ip}");
         }
