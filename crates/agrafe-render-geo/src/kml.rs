@@ -56,7 +56,8 @@ const WHITE: Color = Color {
 /// nothing more, to be laid over the configured default. `None` when the
 /// document is not KML, is not well-formed, or holds no placemark with
 /// a geometry: nothing to draw. A document that ends before its elements
-/// close is drawn as far as it goes.
+/// close, between two of them or inside a tag, is drawn as far as it
+/// goes, the placemark it was reading included.
 pub(crate) fn placemarks(bytes: &[u8]) -> Option<Vec<(Geometry, Style)>> {
     let mut document = Parser::default().parse(bytes)?;
     // The placemarks are moved out, not cloned: their coordinates are
@@ -318,7 +319,17 @@ impl Parser {
         let mut buf = Vec::new();
         let mut root_seen = false;
         loop {
-            match reader.read_event_into(&mut buf).ok()? {
+            let event = match reader.read_event_into(&mut buf) {
+                Ok(event) => event,
+                Err(err)
+                    if root_seen
+                        && crate::cut_short(&err, reader.buffer_position(), bytes.len()) =>
+                {
+                    break;
+                }
+                Err(_) => return None,
+            };
+            match event {
                 Event::Start(start) | Event::Empty(start) if !root_seen => {
                     if start.local_name().as_ref() != "kml" {
                         return None;
@@ -342,7 +353,35 @@ impl Parser {
             }
             buf.clear();
         }
+        self.cut();
         Some(self.document)
+    }
+
+    /// Close what the document left open at its end, innermost first, as
+    /// its end tags would have: the coordinates being read, less a tuple
+    /// the cut may have split, the geometry, the polygon, the placemark.
+    /// A style left open styles nothing: its placemark is the one cut.
+    fn cut(&mut self) {
+        if let Some(mut text) = self.text.take()
+            && let Some((geom, _)) = &self.geom
+        {
+            if !text.ends_with(char::is_whitespace) {
+                text.truncate(text.rfind(char::is_whitespace).unwrap_or(0));
+            }
+            let leaf = if matches!(geom, Geom::Track) {
+                "coord"
+            } else {
+                "coordinates"
+            };
+            self.leaf(leaf, &text);
+        }
+        self.geometry_end();
+        if self.polygon.is_some() {
+            self.close("Polygon");
+        }
+        if self.placemark.is_some() {
+            self.close("Placemark");
+        }
     }
 
     fn open(&mut self, start: &BytesStart<'_>) {
@@ -847,12 +886,36 @@ mod tests {
         // The line: the tuples that are two numbers, and nothing from
         // `ExtendedData` on anything.
         assert_eq!(styles(doc), [Style::default(), Style::default()]);
-        // A document cut short keeps what it holds.
-        assert_eq!(
-            kinds(b"<kml><Placemark><Point><coordinates>4,45</coordinates></Point></Placemark><Placemark><LineString><coordinates>4,45 5,46")
-                .unwrap(),
-            ["point [4.0, 45.0]"]
-        );
+        // A document cut short keeps what it holds, the placemark it was
+        // cut in included, less a tuple the cut split, wherever the cut
+        // falls: in the coordinates, between elements, in a tag.
+        let whole = b"<kml><Placemark><Point><coordinates>4,45</coordinates></Point></Placemark><Placemark><LineString><coordinates>4,45 5,46 6,47</coordinates></LineString></Placemark></kml>";
+        let cut = |at: &str| {
+            &whole[..whole
+                .windows(at.len())
+                .position(|w| w == at.as_bytes())
+                .unwrap()]
+        };
+        for (at, expected) in [
+            // Text that ends at the cut may end inside its last tuple.
+            ("</coordinates></LineString>", "line of 2"),
+            (",47</coordinates></LineString>", "line of 2"),
+            ("</LineString>", "line of 3"),
+            ("LineString></Placemark></kml>", "line of 3"),
+        ] {
+            assert_eq!(
+                kinds(cut(at)).unwrap(),
+                ["point [4.0, 45.0]", expected],
+                "cut at {at}"
+            );
+        }
+        for at in [" 6,47", " 5,46"] {
+            assert_eq!(
+                kinds(cut(at)).unwrap(),
+                ["point [4.0, 45.0]"],
+                "cut at {at}"
+            );
+        }
         // A map that points at itself, or at nothing, ends in the default.
         let circular = br##"<kml>
   <StyleMap id="a"><Pair><key>normal</key><styleUrl>#b</styleUrl></Pair></StyleMap>

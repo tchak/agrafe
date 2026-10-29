@@ -302,6 +302,14 @@ fn kml_shapes(bytes: &[u8], spec: &Spec) -> Option<Vec<(Shape, Style)>> {
 /// The style a feature's properties ask for. A value of the wrong type or
 /// out of the vocabulary is ignored, never an error: nothing from the file
 /// reaches the SVG as it came.
+/// Whether `err`, from a reader `position` bytes into a document of `len`,
+/// is the input ending inside markup, a tag, a comment or an attribute
+/// value: the document was cut short there, which is how a byte-truncated
+/// file almost always ends, and what came before it is drawn.
+pub(crate) fn cut_short(err: &quick_xml::Error, position: u64, len: usize) -> bool {
+    matches!(err, quick_xml::Error::Syntax(_)) && position >= len as u64
+}
+
 pub(crate) fn style_of(properties: &JsonObject) -> Style {
     let color = |key: &str| {
         properties

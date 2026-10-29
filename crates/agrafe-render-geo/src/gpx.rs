@@ -13,7 +13,8 @@ use quick_xml::events::{BytesStart, Event};
 /// The geometries of the GPX document `bytes`, in document order. `None`
 /// when the document is not GPX, is not well-formed, or holds no point
 /// with coordinates: nothing to draw. A document that ends before its
-/// elements close is drawn as far as it goes.
+/// elements close, between two of them or inside a tag, is drawn as far
+/// as it goes, the route or segment it was reading included.
 pub(crate) fn geometries(bytes: &[u8]) -> Option<Vec<Geometry>> {
     let mut reader = Reader::from_reader(bytes);
     let mut buf = Vec::new();
@@ -22,7 +23,16 @@ pub(crate) fn geometries(bytes: &[u8]) -> Option<Vec<Geometry>> {
     // The route or segment being read, when inside one.
     let mut line: Option<Vec<Position>> = None;
     loop {
-        match reader.read_event_into(&mut buf).ok()? {
+        let event = match reader.read_event_into(&mut buf) {
+            Ok(event) => event,
+            Err(err)
+                if root_seen && crate::cut_short(&err, reader.buffer_position(), bytes.len()) =>
+            {
+                break;
+            }
+            Err(_) => return None,
+        };
+        match event {
             Event::Start(start) | Event::Empty(start) => {
                 if !root_seen {
                     if start.local_name().as_ref() != "gpx" {
@@ -49,12 +59,7 @@ pub(crate) fn geometries(bytes: &[u8]) -> Option<Vec<Geometry>> {
             }
             Event::End(end) => {
                 if matches!(end.local_name().as_ref(), "rte" | "trkseg") {
-                    // A segment with fewer than two points is not a line.
-                    if let Some(positions) = line.take().filter(|line| line.len() >= 2) {
-                        geometries.push(Geometry::new(GeometryValue::LineString {
-                            coordinates: positions,
-                        }));
-                    }
+                    end_line(&mut line, &mut geometries);
                 }
             }
             Event::Eof => break,
@@ -62,7 +67,19 @@ pub(crate) fn geometries(bytes: &[u8]) -> Option<Vec<Geometry>> {
         }
         buf.clear();
     }
+    // The route or segment the document was cut in.
+    end_line(&mut line, &mut geometries);
     (!geometries.is_empty()).then_some(geometries)
+}
+
+/// The route or segment being read, as a line of `geometries`; one with
+/// fewer than two points is not a line.
+fn end_line(line: &mut Option<Vec<Position>>, geometries: &mut Vec<Geometry>) {
+    if let Some(positions) = line.take().filter(|line| line.len() >= 2) {
+        geometries.push(Geometry::new(GeometryValue::LineString {
+            coordinates: positions,
+        }));
+    }
 }
 
 /// The `lon` and `lat` attributes of a point element, as a position.
@@ -172,10 +189,31 @@ mod tests {
   <trkpt lat="45" lon="4"/>
 </gpx>"#;
         assert_eq!(kinds(doc).unwrap(), ["line of 2"]);
-        // A document cut short keeps what it holds.
+        // A document cut short keeps what it holds, the segment it was
+        // cut in included, wherever the cut falls: between elements, in a
+        // tag, in an attribute value.
+        let whole = br#"<gpx><wpt lat="45" lon="4"/><trk><trkseg><trkpt lat="45" lon="4"/><trkpt lat="46" lon="5"/><trkpt lat="47" lon="6"/></trkseg></trk></gpx>"#;
+        let cut = |at: &str| {
+            &whole[..whole
+                .windows(at.len())
+                .position(|w| w == at.as_bytes())
+                .unwrap()]
+        };
+        for (at, expected) in [
+            ("</trkseg>", "line of 3"),
+            ("<trkpt lat=\"47", "line of 2"),
+            ("lat=\"47", "line of 2"),
+            ("7\" lon=\"6", "line of 2"),
+        ] {
+            assert_eq!(
+                kinds(cut(at)).unwrap(),
+                ["point [4.0, 45.0]", expected],
+                "cut at {at}"
+            );
+        }
+        // A segment cut after its first point is not a line yet.
         assert_eq!(
-            kinds(b"<gpx><wpt lat=\"45\" lon=\"4\"/><trk><trkseg><trkpt lat=\"45\" lon=\"4\"/>")
-                .unwrap(),
+            kinds(cut("<trkpt lat=\"46")).unwrap(),
             ["point [4.0, 45.0]"]
         );
     }

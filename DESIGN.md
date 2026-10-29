@@ -2324,7 +2324,9 @@ on "has preview", never on category. Sources, in order:
    colour extensions are ignored like `marker-symbol`, and the file is
    drawn in the configured default. A document that is not GPX, or
    holds no point with coordinates, declines; one cut short is drawn as
-   far as it goes. The georust `gpx` crate was weighed and passed over:
+   far as it goes, between two elements or inside a tag (an error at the
+   very end of the input is the cut, not a malformed document), the
+   segment it was cut in included. The georust `gpx` crate was weighed and passed over:
    the glue to it is about the size of the subset needed, and it brings
    `xml-rs` where the helper already has `quick-xml`.
 
@@ -2362,7 +2364,9 @@ on "has preview", never on category. Sources, in order:
    colour that is not eight hex digits, a width that is not a number:
    ignored, never an error. A document that is not KML, or holds no
    placemark with a geometry, declines; one cut short is drawn as far
-   as it goes. A KMZ is a ZIP whose first `.kml` entry, `doc.kml` by
+   as it goes, wherever the cut falls, the placemark it was cut in
+   closed as its end tags would have, less the last tuple of its
+   coordinates when the cut is in them, since it may be split. A KMZ is a ZIP whose first `.kml` entry, `doc.kml` by
    convention, not counting the `__MACOSX/` sidecars a Mac zips in, is
    the document, read through `zip` with a 64 MiB cap on the inflated
    entry, the size a bare document may be, as the sandbox bounds the
