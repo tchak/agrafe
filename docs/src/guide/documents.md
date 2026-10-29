@@ -121,8 +121,9 @@ main.typ:12:5: error: unknown variable: montnat
 ```
 
 The same happens when a referenced blob is gone by the time the build runs,
-since a template cannot do without a file, and when the compile is killed at
-the sandbox's time limit. Fix the template or the data, then create a new
+since a template cannot do without a file, when the compile is killed at
+the sandbox's time limit, and when the PDF would be larger than
+`media.sandbox.max_output_size`. Fix the template or the data, then create a new
 document blob.
 
 Failures of agrafe's own, such as the bucket, the database or the helper

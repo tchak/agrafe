@@ -88,7 +88,13 @@ pub async fn render_document(
         // flag of its own.
         .arg(format!("--main={main}"))
         .arg("--output")
-        .arg(output);
+        .arg(output)
+        // Checked before the write: past the file size limit, the sandbox
+        // would kill the helper with a signal, which reads as its own
+        // failure and is retried, where the template would do the same
+        // every time.
+        .arg("--max-output")
+        .arg(config.sandbox.max_output_size.as_u64().to_string());
     run(config, command, output).await
 }
 

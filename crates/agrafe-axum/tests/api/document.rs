@@ -236,6 +236,28 @@ async fn a_main_starting_with_a_dash_compiles() {
     assert_eq!(built["state"], "ready", "{built}");
 }
 
+/// A document that compiles past the sandbox's file size limit would do
+/// so every time: the helper refuses to write it, and the build dies at
+/// once with the limit named, rather than a signal retried five times.
+#[tokio::test]
+async fn a_document_past_the_output_limit_dies_at_once() {
+    let db = TestDatabase::new().await;
+    let clamd = fake_clamd().await;
+    let app = setup_tuned(db, clamd, |c| {
+        c.media.render.sandbox.max_output_size = bytesize::ByteSize::kib(64);
+    })
+    .await;
+    let created = create(&app, document_blob("long.pdf")).await;
+    let id = id_of(&created);
+    let template = "#for i in range(60) [#lorem(400) #pagebreak()]";
+    let (status, body) = put_private(&app, id, manifest(&[text("main.typ", template)])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(run_job(&app, JobKind::Document).await);
+    let (attempts, dead, error) = job_outcome(&app, id).await;
+    assert_eq!((attempts, dead), (1, true), "{error}");
+    assert!(error.contains("media.sandbox.max_output_size"), "{error}");
+}
+
 #[tokio::test]
 async fn creation_rules() {
     let db = TestDatabase::new().await;
