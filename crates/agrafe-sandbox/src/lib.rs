@@ -450,7 +450,8 @@ async fn run_with(
         let (status, stderr) = tokio::join!(child.wait(), stderr_tail(stderr));
         Ok::<_, std::io::Error>((status?, stderr?))
     };
-    let outcome = match tokio::time::timeout(config.timeout, waited).await {
+    let waited = tokio::time::timeout(config.timeout, waited).await;
+    let outcome = match waited {
         Ok(Ok((status, _))) if status.success() => Outcome::Success,
         // CPU time ran out before the wall clock did, which a process on
         // several threads does: a timeout all the same, not a fault of the
@@ -480,9 +481,13 @@ async fn run_with(
             return Err(Error::Wait { program, source });
         }
         // The child is killed with its process group, for a program that
-        // is a launcher around another, and dropped after.
+        // is a launcher around another, and reaped. The caller is answered
+        // once the group is gone: what it left behind, a socket a killed
+        // LibreOffice still held, is then closed for good.
         Err(_) => {
             kill_group(pid);
+            let _ = tokio::time::timeout(KILL_WAIT, child.wait()).await;
+            wait_group(pid, KILL_WAIT).await;
             Outcome::TimedOut
         }
     };
@@ -513,7 +518,7 @@ async fn stderr_tail(stderr: Option<tokio::process::ChildStderr>) -> std::io::Re
 
 /// Kill the process group the child leads, so that a program that forked
 /// (a launcher script, an office suite's wrapper) does not leave the
-/// worker behind. The child itself is killed by the drop that follows.
+/// worker behind. The child is among them; the caller reaps it.
 /// Under bubblewrap the group holds `bwrap` alone, since its pid 1 starts
 /// a session of its own (`--new-session`); there `--die-with-parent`
 /// does the work, killing pid 1 when `bwrap` dies, and the kernel takes
@@ -532,6 +537,34 @@ fn kill_group(pid: Option<u32>) {
 
 #[cfg(not(unix))]
 fn kill_group(_pid: Option<u32>) {}
+
+/// How long a killed group is waited for: `SIGKILL` cannot be caught, so
+/// this is the kernel tearing down the address spaces, milliseconds even
+/// at the memory limit.
+const KILL_WAIT: Duration = Duration::from_secs(5);
+
+/// Wait, at most `limit`, until no process is left in the group the child
+/// led: a member is gone once reaped, which init does for the orphans a
+/// moment after the kill, and the files it held are closed by then. The
+/// child must have been reaped first, or it would count.
+#[cfg(unix)]
+async fn wait_group(pid: Option<u32>, limit: Duration) {
+    let Some(pid) = pid.and_then(|pid| i32::try_from(pid).ok()) else {
+        return;
+    };
+    let gone = || {
+        // SAFETY: a null signal only checks whether the group has members.
+        let missing = unsafe { libc::kill(-pid, 0) } == -1;
+        missing && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+    };
+    let deadline = tokio::time::Instant::now() + limit;
+    while !gone() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+#[cfg(not(unix))]
+async fn wait_group(_pid: Option<u32>, _limit: Duration) {}
 
 /// Whether the process died of `SIGXCPU`, the CPU time limit. `bwrap`,
 /// the init of its pid namespace, reports a child the kernel killed as an
@@ -1205,20 +1238,14 @@ mod tests {
             .trim()
             .parse()
             .unwrap();
-        // Init reaps the orphan a moment after the kill; until then it is
-        // a zombie, which `kill` still finds.
-        let gone = || {
-            // SAFETY: a null signal only checks whether the pid exists.
-            let missing = unsafe { libc::kill(pid, 0) } == -1;
-            missing && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
-        };
-        for _ in 0..200 {
-            if gone() {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        panic!("the forked `sleep` {pid} outlived the timeout");
+        // Gone, not merely killed, once `run` answers: init has reaped the
+        // orphan, so whatever it held open is closed.
+        // SAFETY: a null signal only checks whether the pid exists.
+        let missing = unsafe { libc::kill(pid, 0) } == -1;
+        assert!(
+            missing && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH),
+            "the forked `sleep` {pid} outlived the timeout"
+        );
     }
 
     /// CPU time is bounded by the wall-clock limit too, summed over the

@@ -2608,8 +2608,11 @@ unchanged. The two filter variants are compiled once each.
 *Process groups.* `soffice` is a script around `oosplash` around
 `soffice.bin`, so a kill at the timeout that reached the direct child
 alone would leave LibreOffice running. Every child is made the leader of a
-process group of its own, and a timeout kills the group before the child
-is dropped. The resource limits were already inherited down the tree.
+process group of its own, and a timeout kills the group, reaps the child
+and waits, five seconds at most, for the group to be empty before it
+answers: a `soffice.bin` still tearing down its address space keeps its
+pipe listening, and the sweep that follows would take it for another
+job's. The resource limits were already inherited down the tree.
 A group is only as good as its membership: a child that called `setsid`
 or `setpgid` would leave it and outlive the timeout, confined but
 immortal, and with `RLIMIT_NPROC` it could fork until the worker's own
