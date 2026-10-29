@@ -1649,11 +1649,12 @@ falls short of it, and a mismatch is never reported as one against a size
 the backend did not give.
 
 The URL is stored on the row, since retries need it, reported in private
-metadata only, and cleared by the completion of the upload: a retry reads
-it only while the blob is `created`, and after that it would be a stale
-secret on every listing. It never appears in `last_error`, logs or public
-metadata: migration URLs are presigned, so they are secrets with an
-expiry. The HTTP client's errors carry the URL and are stripped of it
+metadata only, and cleared by the completion of the upload and by any
+terminal transition, an expiry or a delete: a retry reads it only while
+the blob is `created`, and after that it would be a stale secret on
+every listing. It never appears in `last_error`, logs or public
+metadata, its host included: migration URLs are presigned, so they are
+secrets with an expiry. The HTTP client's errors carry the URL and are stripped of it
 before they are written anywhere, and the server caps the client's own
 crates (`reqwest`, `hyper`) at `info` in its log filter, since they
 name request targets at `debug` and below. Their expiry is one more

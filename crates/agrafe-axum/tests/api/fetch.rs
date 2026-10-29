@@ -516,6 +516,11 @@ async fn the_network_policy_refuses_private_addresses() {
         let (attempts, dead, error) = fetch_job(&app, id).await;
         assert_eq!((attempts, dead), (1, permanent), "{url}: {error}");
         assert!(error.contains(says), "{url}: {error}");
+        // The host is part of the URL, which stays out of the error.
+        assert!(
+            !error.contains("localhost") && !error.contains("no-such-host"),
+            "{error}"
+        );
         assert_eq!(get_blob(&app, id).await["state"], "created");
     }
 }
@@ -775,6 +780,7 @@ async fn an_attached_blob_whose_fetch_died_is_expired_as_abandoned() {
     let got = get_blob(&app, id).await;
     assert_eq!(got["state"], "expired", "{got}");
     assert_eq!(got["failed_at"], json!(null), "terminal: nothing to finish");
+    assert_eq!(got["url"], json!(null), "nothing will fetch it again");
     let (_, listing) = call(
         &app.private,
         req(Method::GET, "/attachments?owner_kind=expense"),

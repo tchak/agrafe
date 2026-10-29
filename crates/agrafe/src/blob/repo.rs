@@ -263,9 +263,10 @@ pub enum Transition {
 }
 
 /// What a terminal transition appends: nothing is going to finish the
-/// blob, so the verdict of the job that was to is moot. `expire` and
-/// `expire_abandoned` spell the same out.
-const CLEAR_FAILURE: &str = ", failed_at = NULL, last_error = NULL";
+/// blob, so the verdict of the job that was to is moot, and a `url` blob's
+/// presigned URL, which nothing will fetch again, would be a stale secret
+/// on every listing. `expire` and `expire_abandoned` spell the same out.
+const CLEAR_FAILURE: &str = ", failed_at = NULL, last_error = NULL, url = NULL";
 
 /// Move `id` from any of `from` to `to`, touching the matching timestamp.
 /// A terminal `to` clears the failure recorded on the row.

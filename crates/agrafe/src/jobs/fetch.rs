@@ -172,13 +172,16 @@ struct Resolver {
 /// did not resolve, which is as often the resolver's bad minute as a typo
 /// and is retried.
 #[derive(Debug, thiserror::Error)]
+/// Why the resolver gave the client no address. The host is not named: it
+/// is part of the URL, which stays out of `last_error`, and the job's blob
+/// already says which fetch it was.
 enum ResolveError {
-    #[error("host {0} does not resolve: {1}")]
-    Unresolved(String, std::io::Error),
-    #[error("host {0} does not resolve")]
-    NoAddress(String),
-    #[error("host {0} resolves to a refused address")]
-    Refused(String),
+    #[error("the host does not resolve: {0}")]
+    Unresolved(std::io::Error),
+    #[error("the host does not resolve")]
+    NoAddress,
+    #[error("the host resolves to a refused address")]
+    Refused,
 }
 
 impl Resolve for Resolver {
@@ -188,15 +191,15 @@ impl Resolve for Resolver {
             let host = name.as_str().to_string();
             let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host.as_str(), 0))
                 .await
-                .map_err(|e| ResolveError::Unresolved(host.clone(), e))?
+                .map_err(ResolveError::Unresolved)?
                 .collect();
             if addrs.is_empty() {
-                return Err(ResolveError::NoAddress(host).into());
+                return Err(ResolveError::NoAddress.into());
             }
             // One refused address among several refuses the name: a name
             // that answers with a public and a private address is a trick.
             if !allow_private && addrs.iter().any(|a| refused(a.ip())) {
-                return Err(ResolveError::Refused(host).into());
+                return Err(ResolveError::Refused.into());
             }
             Ok(Box::new(addrs.into_iter()) as Addrs)
         })
@@ -408,8 +411,8 @@ fn classify(err: reqwest::Error) -> FetchError {
     }
     if let Some(resolve) = find_in_chain::<ResolveError>(&err) {
         return match resolve {
-            ResolveError::Refused(_) => FetchError::Refused(resolve.to_string()),
-            ResolveError::Unresolved(..) | ResolveError::NoAddress(_) => {
+            ResolveError::Refused => FetchError::Refused(resolve.to_string()),
+            ResolveError::Unresolved(_) | ResolveError::NoAddress => {
                 FetchError::Unresolved(resolve.to_string())
             }
         };
