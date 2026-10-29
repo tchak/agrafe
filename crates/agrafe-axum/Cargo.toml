@@ -40,6 +40,8 @@ agrafe-crypto.workspace = true
 agrafe-render.workspace = true
 async-trait = "0.1.92"
 bytesize = "2.7.0"
+# Reading the built XLSX and ODS as a spreadsheet does, typed cells and all.
+calamine = { version = "0.37.0", default-features = false }
 figment = { version = "0.10.19", features = ["toml", "test"] }
 hmac = "0.13.0"
 jiff-sqlx = { version = "0.2.0", features = ["postgres"] }

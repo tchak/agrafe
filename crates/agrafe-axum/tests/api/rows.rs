@@ -197,6 +197,23 @@ async fn csv_is_built_from_rows_in_parts() {
     assert_eq!(rendered["thumbnail_state"], "ready");
 }
 
+/// Every sheet of a built XLSX or ODS as a spreadsheet reader sees it: its
+/// name and its cells, typed, row by row.
+fn sheets(bytes: &[u8]) -> Vec<(String, Vec<Vec<calamine::Data>>)> {
+    use calamine::Reader as _;
+    let mut workbook =
+        calamine::open_workbook_auto_from_rs(Cursor::new(bytes.to_vec())).expect("a workbook");
+    // By the workbook's own order: `worksheets` gives an ODS's in no order.
+    workbook
+        .sheet_names()
+        .into_iter()
+        .map(|name| {
+            let range = workbook.worksheet_range(&name).expect("a sheet");
+            (name, range.rows().map(<[_]>::to_vec).collect())
+        })
+        .collect()
+}
+
 #[tokio::test]
 async fn xlsx_package() {
     let db = TestDatabase::new().await;
@@ -248,6 +265,31 @@ async fn xlsx_package() {
     }
     let styles = String::from_utf8(entry(&entries, "xl/styles.xml").to_vec()).unwrap();
     assert!(styles.contains(r#"numFmtId="14""#) && styles.contains(r#"numFmtId="22""#));
+    // As a spreadsheet reads it: the sheet's name, typed cells, the dates
+    // as dates through their styles, the formula as text.
+    use calamine::Data;
+    let read = sheets(&download(&app, &built).await);
+    assert_eq!(read.len(), 1);
+    let (name, rows) = &read[0];
+    assert_eq!(name, "Export_ 2026");
+    assert_eq!(rows[0][0], Data::String("Name".into()));
+    assert_eq!(
+        rows[1][0..3],
+        [
+            Data::String("Lovelace".into()),
+            Data::Float(1.1),
+            Data::Bool(true)
+        ]
+    );
+    let serial = |cell: &Data| match cell {
+        Data::DateTime(at) if at.is_datetime() => at.as_f64(),
+        other => panic!("not a date: {other:?}"),
+    };
+    assert_eq!(serial(&rows[1][3]), 46312.0);
+    assert!((serial(&rows[1][4]) - 46_312.364_189_8).abs() < 1e-6);
+    assert_eq!(rows[2][0], Data::String("=HYPERLINK(\"x\")".into()));
+    assert_eq!(rows[2][3..5], [Data::Empty, Data::Empty]);
+    assert_eq!(rows[3][3], Data::String("1850-01-01".into()));
 }
 
 #[tokio::test]
@@ -290,6 +332,25 @@ async fn ods_package() {
             "</table:table></office:spreadsheet></office:body></office:document-content>"
         )
     );
+    // As a spreadsheet reads it: typed cells, dates as dates.
+    use calamine::Data;
+    let read = sheets(&bytes);
+    assert_eq!(read.len(), 1);
+    let (name, rows) = &read[0];
+    assert_eq!(name, "export");
+    assert_eq!(
+        rows[1],
+        [
+            Data::String("Lovelace".into()),
+            Data::Float(1.1),
+            Data::Bool(true),
+            Data::DateTimeIso("2026-10-17".into()),
+            Data::DateTimeIso("2026-10-17T08:44:26".into()),
+        ]
+    );
+    assert_eq!(rows[2][0], Data::String("=HYPERLINK(\"x\")".into()));
+    assert_eq!(rows[3][0], Data::String("a,b \"c\"\nd".into()));
+    assert_eq!(rows[3][3], Data::DateTimeIso("1850-01-01".into()));
 }
 
 /// A source with no lines produces a header alone, in every format.
@@ -691,6 +752,21 @@ async fn xlsx_workbook() {
     let third = text("xl/worksheets/sheet3.xml");
     assert_eq!(third.matches("<row ").count(), 1, "a header alone");
     assert!(third.contains("Nothing"), "{third}");
+
+    // As a spreadsheet reads it: three sheets by name, each its rows.
+    let read = sheets(&download(&app, &built).await);
+    let shape: Vec<(&str, usize)> = read
+        .iter()
+        .map(|(n, rows)| (n.as_str(), rows.len()))
+        .collect();
+    assert_eq!(
+        shape,
+        [("Expenses", 4), ("Reviews & notes", 3), ("Empty", 1)]
+    );
+    assert_eq!(
+        read[1].1[2][1],
+        calamine::Data::String("Rejected — late".into())
+    );
 }
 
 #[tokio::test]
@@ -741,6 +817,13 @@ async fn ods_workbook() {
         ),
         "{third}"
     );
+
+    // As a spreadsheet reads it: three sheets by name.
+    let names: Vec<String> = sheets(&download(&app, &built).await)
+        .into_iter()
+        .map(|(n, _)| n)
+        .collect();
+    assert_eq!(names, ["Expenses", "Reviews & notes", "Empty"]);
 }
 
 /// A switch must name the current sheet or a declared one after it; a wrong one
