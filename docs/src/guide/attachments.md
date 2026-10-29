@@ -97,7 +97,9 @@ An attachment at creation promises the blob is in use, not that its bytes
 will arrive. A browser that never sends the `PUT`, or a fetch that gave up,
 would leave an attached `created` blob with no expiry forever. The reaper
 therefore expires a `created` blob that is attached and has not been touched
-for `upload.abandoned_after`, one day by default. Its attachments are kept,
+for `upload.abandoned_after`, one day by default, or, fetched from a URL,
+whose fetch died that long ago: one still waiting in the queue is not
+abandoned. Its attachments are kept,
 so the owner's side sees `blob_state: "expired"` in the listing, and the
 [webhook](webhooks.md) sends an `expired` event.
 

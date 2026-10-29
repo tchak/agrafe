@@ -721,7 +721,11 @@ async fn the_reaper_walks_its_indexes_under_a_generic_plan() {
         ("expire", &["blobs_expires_at_idx"]),
         (
             "expire_abandoned",
-            &["blobs_stale_source_idx", "blobs_abandoned_idx"],
+            &[
+                "blobs_stale_source_idx",
+                "blobs_abandoned_idx",
+                "blobs_dead_fetch_idx",
+            ],
         ),
         ("infected_due_for_purge", &["blobs_infected_unpurged_idx"]),
         (

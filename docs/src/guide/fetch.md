@@ -123,11 +123,15 @@ For each record of the old store:
 # Within a day of the failure: blobs whose fetch died
 curl -s 'localhost:8080/blobs?failed=true' | jq '.items[] | {id, last_error}'
 
-# After a day: an attached blob still waiting for its bytes is expired by
+# A day after the failure: an attached blob whose fetch died is expired by
 # the reaper, attachments kept, so the owner's side sees it
 curl -s 'localhost:8080/attachments?owner_kind=expense&role=receipt' \
   | jq '.items[] | select(.blob_state == "expired")'
 ```
 
 A fetch worker pool of its own (`jobs.concurrency.fetch`, two by default)
-keeps a migration batch from taking scan or render workers.
+keeps a migration batch from taking scan or render workers. An attached blob
+waits in the queue as long as the batch takes: only a fetch that died starts
+the day. An unattached one expires at its `expires_at` whether it was fetched
+or not, so a migration that attaches later sets an `expires_in` long enough
+for the whole batch.

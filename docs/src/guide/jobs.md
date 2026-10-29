@@ -116,8 +116,9 @@ The `reap` job runs every `jobs.reap_interval`, one minute by default. Each
 run, in one transaction:
 
 1. records `expired` on the non-terminal blobs past their `expires_at`;
-2. expires abandoned blobs: unfinished sources, and attached `created` blobs
-   untouched for `upload.abandoned_after`;
+2. expires abandoned blobs: unfinished sources, attached `created` blobs
+   untouched for `upload.abandoned_after`, and attached `url` blobs whose
+   fetch died that long ago;
 3. schedules a purge, `upload.purge_delay` out, for the blobs it just
    expired and the infected blobs past their expiry that still hold objects;
 4. prunes dead jobs older than `jobs.keep_failed`, scheduling a dead purge's

@@ -755,7 +755,9 @@ reaper therefore treats a `created` blob that has been attached and
 untouched for `upload.abandoned_after` (default one day, by its
 `updated_at`) the way it treats a source nobody finished: it is expired,
 attachments and all, and the owner's side sees `expired` in
-`blob_state`. An unattached `created` blob is left to its own
+`blob_state`. A `url` blob counts from its fetch's death instead, its
+`failed_at`, since a fetch waiting in the queue touches nothing (see
+"Fetched blobs"). An unattached `created` blob is left to its own
 `expires_at`, which may be longer than a day on purpose. The rule is a
 backstop: a backend that knows an upload is dead detaches and deletes.
 
@@ -1688,15 +1690,19 @@ day later usually needs a new blob with a fresh URL instead. `POST
 
 Lifetime: an unattached `url` blob expires on its own. An attached one (a
 migration creates with `attachment`, which clears the expiry) whose fetch
-gave up is caught by the abandoned rule: a `created`, attached blob with
-no parts untouched for `upload.abandoned_after` (default one day, by
-`updated_at`) is expired by the reaper, attachments kept, so the owner's
-side sees `blob_state: expired` (see "Attachments"). The dead fetch's
-write of `failed_at` touches the row, so the day counts from the failure,
-which gives the backend a day to see the failure before the blob goes. A
-migration therefore has two queries for its failures: `GET
-/blobs?failed=true` within the day, `GET /attachments?owner_kind=…` with
-`blob_state` after it.
+gave up is caught by the abandoned rule: a `created`, attached `url` blob
+whose fetch died more than `upload.abandoned_after` ago (default one day,
+by `failed_at`) is expired by the reaper, attachments kept, so the owner's
+side sees `blob_state: expired` (see "Attachments"). The day counts from
+the failure, which gives the backend a day to see the failure before the
+blob goes, and only from it: a fetch waiting in the queue touches nothing,
+and a migration's backlog may hold one for longer than a day, so a `url`
+blob is not abandoned while its fetch is pending however old its row. An
+unattached one has no such reprieve: its `expires_at` is the backend's to
+size, and a migration that does not attach as it creates sets an
+`expires_in` that covers the queue. A migration therefore has two queries
+for its failures: `GET /blobs?failed=true` within the day, `GET
+/attachments?owner_kind=…` with `blob_state` after it.
 
 ### Network policy
 
@@ -2909,8 +2915,8 @@ see "Webhooks"), and `audit`, the weekly sweep of the bucket against the
 `blobs` table, see "Audit". One reap, in one transaction, in this order: record
 `expired` on the non-terminal blobs past their `expires_at`; expire the
 abandoned `created` blobs, holding source parts untouched for
-`upload.abandoned_after` or attached and untouched altogether for as long
-(see "Attachments"); enqueue a purge, `upload.purge_delay` out, for the
+`upload.abandoned_after` or attached and untouched altogether for as long,
+or attached with a fetch dead for as long (see "Attachments"); enqueue a purge, `upload.purge_delay` out, for the
 blobs just expired or abandoned that hold objects, and for the infected
 ones past their expiry that no purge job is going to take care of; prune
 dead jobs that failed more than `jobs.keep_failed` (default seven days)

@@ -924,10 +924,14 @@ fn expire_sql(limit: i64) -> String {
 
 /// Expire every `created` blob that was abandoned before `before`: one
 /// holding source parts whose last part landed before then, an export the
-/// backend never finished, and an attached one with no parts that nothing
-/// has touched since then, a file that never arrived. An unattached blob
-/// with no parts is left to its own `expires_at`, which it always has.
-/// Whatever parts there are go with the purge of the prefix.
+/// backend never finished, an attached one with no parts that nothing
+/// has touched since then, a file that never arrived, and an attached
+/// `url` blob whose fetch died before then. A fetch waiting in the queue
+/// touches nothing, so a `url` blob counts from its fetch's death, not
+/// from its last change: a backlog longer than the day would otherwise
+/// lose its tail before it is fetched. An unattached blob with no parts
+/// is left to its own `expires_at`, which it always has. Whatever parts
+/// there are go with the purge of the prefix.
 pub(crate) async fn expire_abandoned(
     conn: &mut PgConnection,
     before: Timestamp,
@@ -941,22 +945,30 @@ pub(crate) async fn expire_abandoned(
 }
 
 /// `expire_abandoned`'s statement: `$1` the state, `$2` the time. The
-/// state is spelled out so that `blobs_stale_source_idx` and
-/// `blobs_abandoned_idx` apply, see `state_literals`. Each kind takes up
+/// state and the input type are spelled out so that
+/// `blobs_stale_source_idx`, `blobs_abandoned_idx` and
+/// `blobs_dead_fetch_idx` apply, see `state_literals`. Each kind takes up
 /// to `limit` from its own index, as `expire_sql` says.
 fn expire_abandoned_sql(limit: i64) -> String {
     let created = state_literals([BlobState::Created]);
+    let url = format!("'{}'", InputType::Url.as_str());
     let sources = format!("state = {created} AND source_parts > 0 AND source_updated_at <= $2");
     let attached = format!(
-        "state = {created} AND source_parts = 0 AND expires_at IS NULL AND updated_at <= $2"
+        "state = {created} AND source_parts = 0 AND expires_at IS NULL AND input_type <> {url} \
+         AND updated_at <= $2"
+    );
+    let fetched = format!(
+        "state = {created} AND input_type = {url} AND expires_at IS NULL AND failed_at <= $2"
     );
     format!(
         "UPDATE blobs SET state = $1{CLEAR_FAILURE} \
          WHERE id = ANY(ARRAY(\
              (SELECT id FROM blobs WHERE {sources} ORDER BY source_updated_at LIMIT {limit}) \
              UNION ALL \
-             (SELECT id FROM blobs WHERE {attached} ORDER BY updated_at LIMIT {limit})\
-         )) AND (({sources}) OR ({attached})) \
+             (SELECT id FROM blobs WHERE {attached} ORDER BY updated_at LIMIT {limit}) \
+             UNION ALL \
+             (SELECT id FROM blobs WHERE {fetched} ORDER BY failed_at LIMIT {limit})\
+         )) AND (({sources}) OR ({attached}) OR ({fetched})) \
          RETURNING id"
     )
 }

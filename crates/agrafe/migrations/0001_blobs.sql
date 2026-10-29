@@ -157,11 +157,17 @@ CREATE INDEX blobs_expires_at_idx   ON blobs (expires_at)
 -- Reaper: stale uploads.
 CREATE INDEX blobs_uploading_idx    ON blobs (upload_heartbeat_at)
     WHERE state = 'uploading';
--- Reaper: abandoned sources, and attached blobs whose file never came.
+-- Reaper: abandoned sources, attached blobs whose file never came, and
+-- attached `url` blobs whose fetch died, by the time of its death: one
+-- waiting in the queue is not abandoned however long the queue.
 CREATE INDEX blobs_stale_source_idx ON blobs (source_updated_at)
     WHERE state = 'created' AND source_parts > 0;
 CREATE INDEX blobs_abandoned_idx ON blobs (updated_at)
-    WHERE state = 'created' AND source_parts = 0 AND expires_at IS NULL;
+    WHERE state = 'created' AND source_parts = 0 AND expires_at IS NULL
+      AND input_type <> 'url';
+CREATE INDEX blobs_dead_fetch_idx ON blobs (failed_at)
+    WHERE state = 'created' AND input_type = 'url' AND expires_at IS NULL
+      AND failed_at IS NOT NULL;
 -- Reaper: infected blobs whose objects may still be in the bucket, the
 -- original, the source parts a generated blob held, or what an upload that
 -- never finished left (see `Blob::holds_objects`), purged once past their

@@ -763,17 +763,9 @@ async fn an_attached_blob_whose_fetch_died_is_expired_as_abandoned() {
     );
     assert_eq!(reap_now(&app).await, Report::default(), "not yet");
 
-    // The failure touched the row; a day later it is abandoned.
-    sqlx::query("ALTER TABLE blobs DISABLE TRIGGER blobs_updated_at")
-        .execute(pool)
-        .await
-        .unwrap();
-    sqlx::query("UPDATE blobs SET updated_at = now() - interval '2 days' WHERE id = $1")
+    // A day after the failure it is abandoned.
+    sqlx::query("UPDATE blobs SET failed_at = now() - interval '2 days' WHERE id = $1")
         .bind(parse_id(id))
-        .execute(pool)
-        .await
-        .unwrap();
-    sqlx::query("ALTER TABLE blobs ENABLE TRIGGER blobs_updated_at")
         .execute(pool)
         .await
         .unwrap();
@@ -797,6 +789,42 @@ async fn an_attached_blob_whose_fetch_died_is_expired_as_abandoned() {
     )
     .await;
     assert_eq!(status, StatusCode::GONE);
+}
+
+/// A migration's backlog can hold a fetch for longer than a day: an
+/// attached blob whose fetch is still queued is not abandoned however old
+/// its row, and is fetched when its turn comes.
+#[tokio::test]
+async fn an_attached_blob_waiting_for_its_fetch_is_not_abandoned() {
+    let db = TestDatabase::new().await;
+    let app = setup_fetching(db).await;
+    let pool = app.state.pool();
+    let body = png_bytes(1500);
+    let base = remote(move |_| ok(&body)).await;
+    let mut blob = url_blob(&format!("{base}/photo.png"));
+    blob["attachment"] = json!({"owner_kind": "expense", "owner_id": "1", "role": "receipt"});
+    let created = create(&app, blob).await;
+    let id = id_of(&created);
+
+    // Two days in the queue, untouched.
+    sqlx::query("ALTER TABLE blobs DISABLE TRIGGER blobs_updated_at")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE blobs SET updated_at = now() - interval '2 days' WHERE id = $1")
+        .bind(parse_id(id))
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("ALTER TABLE blobs ENABLE TRIGGER blobs_updated_at")
+        .execute(pool)
+        .await
+        .unwrap();
+    assert_eq!(reap_now(&app).await, Report::default());
+    assert_eq!(get_blob(&app, id).await["state"], "created");
+
+    assert!(run_job(&app, JobKind::Fetch).await);
+    assert_eq!(get_blob(&app, id).await["state"], "ready");
 }
 
 /// A blob past its expiry is not fetched, reaper or no reaper: the remote

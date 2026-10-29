@@ -118,10 +118,11 @@ stale_after = "10m"
 # Downloads that started before the delete keep their bytes.
 purge_delay = "1h"
 # A rows or archive source left unfinished for this long after its last part
-# is an abandoned export, and an attached blob still waiting for its bytes
-# after this long untouched is a file that never came: the reaper expires
-# both, purging any parts and keeping the attachments for the owner's side
-# to see. Unattached blobs have their own expires_at instead.
+# is an abandoned export, an attached blob still waiting for its bytes
+# after this long untouched is a file that never came, and an attached url
+# blob whose fetch died this long ago is one that will not: the reaper
+# expires all three, purging any parts and keeping the attachments for the
+# owner's side to see. Unattached blobs have their own expires_at instead.
 abandoned_after = "1d"
 # The content types a raw, multipart or url blob may be created with, exact
 # ("application/pdf") or by type ("image/*"). Empty, the default, accepts
