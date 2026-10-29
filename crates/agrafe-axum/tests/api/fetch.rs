@@ -532,6 +532,7 @@ async fn a_body_cut_short_is_retried_and_one_over_the_cap_is_not() {
     let base = remote(|hit| match hit.path.as_str() {
         "/short" => short(5000, &png_bytes(1000)),
         "/huge" => chunked(&png_bytes(20 * 1024)),
+        "/huge-declared" => ok(&png_bytes(20 * 1024)),
         other => panic!("{other}"),
     })
     .await;
@@ -555,6 +556,27 @@ async fn a_body_cut_short_is_retried_and_one_over_the_cap_is_not() {
         error.contains("exceeds the maximum of 16384 bytes"),
         "{error}"
     );
+    assert!(stored_objects(&app).await.is_empty());
+
+    // Declared over the cap: refused on the head, before the row is
+    // claimed for an upload or a byte of the body is read.
+    let created = create(&app, url_blob(&format!("{base}/huge-declared"))).await;
+    let id = id_of(&created);
+    assert!(run_job(&app, JobKind::Fetch).await);
+    let (attempts, dead, error) = fetch_job(&app, id).await;
+    assert_eq!((attempts, dead), (1, true), "{error}");
+    assert!(
+        error.starts_with("fetch: Content-Length ")
+            && error.ends_with("exceeds the maximum of 16384 bytes"),
+        "{error}"
+    );
+    let (started,): (Option<jiff_sqlx::Timestamp>,) =
+        sqlx::query_as("SELECT upload_started_at FROM blobs WHERE id = $1")
+            .bind(parse_id(id))
+            .fetch_one(app.state.pool())
+            .await
+            .unwrap();
+    assert!(started.is_none(), "never claimed for an upload");
     assert!(stored_objects(&app).await.is_empty());
 }
 
