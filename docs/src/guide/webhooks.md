@@ -39,6 +39,7 @@ user-agent: agrafe/0.1.0
 webhook-id: 019a1c2e-7f3b-7c41-9a0e-3f5d2b8c1e44
 webhook-timestamp: 1792393200
 webhook-signature: v1,K5oZfzN95Z9UVu1EsfQmfVNQhnkZ2pj9o9NDN/H/pI4=
+traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
 
 {
   "event": "ready",
@@ -79,6 +80,9 @@ so any of its libraries verifies a delivery with the `whsec_` secret as is.
 - `webhook-signature` is `v1,` followed by the base64 of an HMAC-SHA256
   over `id.timestamp.body`, keyed with the base64-decoded part of the
   secret after `whsec_`.
+- `traceparent` is the W3C trace context of the event: the trace of the
+  request to agrafe that led to it, so a receiver that continues it ties
+  the event to the upload in its own traces. It is not signed.
 
 Verify over the raw body, before parsing it, then reject stale timestamps.
 By hand, in Ruby:

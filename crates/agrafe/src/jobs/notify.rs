@@ -242,12 +242,17 @@ impl Client {
     }
 
     /// `POST` `body` as delivery `id`, signed over the timestamp of now.
+    /// Run in a trace, the notify job's, the request carries it as a
+    /// `traceparent`: the receiver is the host whose request started the
+    /// trace, and the event it gets is part of it.
     pub async fn deliver(&self, id: &str, body: String) -> Result<(), WebhookError> {
         let timestamp = Timestamp::now().as_second();
         let signature = sign(&self.key, id, timestamp, &body);
-        let response = self
-            .inner
-            .post(&self.url)
+        let mut request = self.inner.post(&self.url);
+        if let Some(context) = crate::trace::TraceContext::current() {
+            request = request.header("traceparent", context.to_string());
+        }
+        let response = request
             .header(CONTENT_TYPE, "application/json")
             .header(USER_AGENT, concat!("agrafe/", env!("CARGO_PKG_VERSION")))
             .header("webhook-id", id.to_string())

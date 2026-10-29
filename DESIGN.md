@@ -3386,7 +3386,11 @@ and the current span. A host calling the handle directly runs the call in
 **The private port continues the caller's trace; the public port does not.**
 A single valid `traceparent` header on a private request is continued, so
 the host application's trace id is the one in agrafe's logs; none, several
-or a malformed one starts a new trace, as W3C says. Public requests always
+or a malformed one starts a new trace, as W3C says. The loop closes the
+other way too: a webhook delivery carries its notify job's context as a
+`traceparent`, so the host's receiver sees the event of an upload in the
+trace the upload started. The receiver is the host, not a third party,
+so the id is not a leak. Public requests always
 start one: their clients are browsers and anyone, and a trace id chosen by
 the client could merge unrelated work or flood one trace. Roots are marked
 sampled: the sampling decision is an exporter's, and a parent marked
@@ -3485,7 +3489,9 @@ lost on the way back would drop the second as a repeat. `webhook-timestamp`
 is the Unix seconds
 at sending, and `webhook-signature` is `v1,` followed by the base64 of the
 HMAC-SHA256 of `id.timestamp.body` under the secret. The receiver checks
-the signature over the raw body, then rejects a stale timestamp. The
+the signature over the raw body, then rejects a stale timestamp. A
+`traceparent` header carries the trace the event belongs to (see
+"Tracing"). The
 secret, `webhook.secret`, is `whsec_` followed by base64 as the standard's
 libraries expect it, so a backend verifies with one of them and no code.
 It is its own secret, not a `[signing]` key: those mint URLs and should

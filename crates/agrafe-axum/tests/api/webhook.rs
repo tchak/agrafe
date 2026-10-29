@@ -184,10 +184,22 @@ async fn ready_is_delivered_signed_with_the_metadata() {
     let (_, payload) = notify_job(&app, id).await.expect("a notify job");
     assert_eq!(payload["event"], "ready");
     assert!(payload["occurred_at"].is_string());
+    let (traceparent,): (String,) =
+        sqlx::query_as("SELECT traceparent FROM jobs WHERE blob_id = $1 AND kind = 'notify'")
+            .bind(parse_id(id))
+            .fetch_one(app.state.pool())
+            .await
+            .unwrap();
 
     assert!(run_job(&app, JobKind::Notify).await);
     let hit = receiver.hit();
     assert_eq!(verify(&hit), payload["id"].as_str().unwrap());
+    // The delivery carries the trace of the request the event came from.
+    let trace_id = |header: &str| header.split('-').nth(1).unwrap().to_string();
+    assert_eq!(
+        trace_id(hit.headers["traceparent"].to_str().unwrap()),
+        trace_id(&traceparent)
+    );
     assert_eq!(hit.body["event"], "ready");
     assert_eq!(hit.body["attempt"], 1);
     assert_eq!(hit.body["occurred_at"], payload["occurred_at"]);
