@@ -239,9 +239,16 @@ impl<'a> Manifest<'a> {
 
 /// The names given out so far, compared case-insensitively since
 /// `Report.pdf` and `report.pdf` land on the same file when extracted on
-/// macOS or Windows.
+/// macOS or Windows. Files and directories share the namespace: a file
+/// `a` and a file `a/b` cannot both be extracted, so whichever comes
+/// second gets the counter, a directory for every member under it.
 pub struct Taken {
     names: HashSet<String>,
+    /// The directories given out, lowercase, which no file may take.
+    dirs: HashSet<String>,
+    /// Where each directory of the manifest went, by its lowercase path:
+    /// itself, or renamed when a file had its name first.
+    dir_names: HashMap<String, String>,
     /// Where the counter of a path that collided stands, by the path's
     /// lowercase form, so a manifest of ten thousand `facture.pdf` costs ten
     /// thousand claims and not fifty million: without it each claim would
@@ -262,6 +269,8 @@ impl Taken {
         names.insert(ERRORS_FILE.to_lowercase());
         Self {
             names,
+            dirs: HashSet::new(),
+            dir_names: HashMap::new(),
             counters: HashMap::new(),
         }
     }
@@ -271,14 +280,15 @@ impl Taken {
     /// component (as [`split_extension`] sees it, so `a.tar.gz` becomes
     /// `a-1.tar.gz`), the first free one. The name is taken in turn.
     pub fn claim(&mut self, path: &str) -> String {
-        let lower = path.to_lowercase();
-        if self.names.insert(lower.clone()) {
-            return path.to_string();
-        }
         let (dir, file) = match path.rsplit_once('/') {
-            Some((dir, file)) => (format!("{dir}/"), file),
+            Some((dir, file)) => (format!("{}/", self.directory(dir)), file),
             None => (String::new(), path),
         };
+        let wanted = format!("{dir}{file}");
+        let lower = wanted.to_lowercase();
+        if !self.dirs.contains(&lower) && self.names.insert(lower.clone()) {
+            return wanted;
+        }
         let (stem, ext) = split_extension(file);
         // A name the backend sent itself may sit on the counter; each is
         // skipped once, so the whole pass stays linear in the manifest.
@@ -286,10 +296,35 @@ impl Taken {
         loop {
             let candidate = format!("{dir}{stem}-{next}{ext}");
             *next += 1;
-            if self.names.insert(candidate.to_lowercase()) {
+            let candidate_lower = candidate.to_lowercase();
+            if !self.dirs.contains(&candidate_lower) && self.names.insert(candidate_lower) {
                 return candidate;
             }
         }
+    }
+
+    /// Where the manifest's directory `dir` goes in the archive: itself,
+    /// its parent's renaming applied, unless a file already has that name,
+    /// in which case the first `dir-N` no file has. Decided once, so every
+    /// member under it agrees.
+    fn directory(&mut self, dir: &str) -> String {
+        let lower = dir.to_lowercase();
+        if let Some(name) = self.dir_names.get(&lower) {
+            return name.clone();
+        }
+        let (parent, own) = match dir.rsplit_once('/') {
+            Some((parent, own)) => (format!("{}/", self.directory(parent)), own),
+            None => (String::new(), dir),
+        };
+        let mut name = format!("{parent}{own}");
+        let mut next = 1;
+        while self.names.contains(&name.to_lowercase()) {
+            name = format!("{parent}{own}-{next}");
+            next += 1;
+        }
+        self.dirs.insert(name.to_lowercase());
+        self.dir_names.insert(lower, name.clone());
+        name
     }
 }
 
@@ -315,6 +350,23 @@ mod tests {
         assert_eq!(taken.claim(".bashrc"), ".bashrc");
         assert_eq!(taken.claim(".bashrc"), ".bashrc-1");
         assert_eq!(taken.claim("errors.txt"), "errors-1.txt", "reserved");
+    }
+
+    /// A file and a directory of one name cannot both be extracted: the
+    /// second to come gets the counter, a directory for all under it.
+    #[test]
+    fn a_file_and_a_directory_do_not_share_a_name() {
+        let mut taken = Taken::new();
+        assert_eq!(taken.claim("a"), "a");
+        assert_eq!(taken.claim("a/b"), "a-1/b");
+        assert_eq!(taken.claim("A/c"), "a-1/c", "the same directory");
+        assert_eq!(taken.claim("c/d"), "c/d");
+        assert_eq!(taken.claim("c"), "c-1");
+        assert_eq!(taken.claim("C"), "C-2");
+        assert_eq!(taken.claim("x/y/z"), "x/y/z");
+        assert_eq!(taken.claim("x/y"), "x/y-1");
+        // A renamed directory's name is no file's either.
+        assert_eq!(taken.claim("a-1"), "a-1-1");
     }
 
     /// Accept caps paths below the ZIP limit by what a counter adds, so a

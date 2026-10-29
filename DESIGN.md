@@ -1379,7 +1379,11 @@ in manifest order: a path already taken becomes `stem-1.ext`, `stem-2.ext`,
 `a-1.tar.gz`; a name without a dot, or with only a leading one, gets the
 counter at the end), the first free name wins and is taken in turn. Taken is
 case-insensitive, since `Report.pdf` and `report.pdf` land on the same file
-when extracted on macOS or Windows. The taken set is the build's, held in
+when extracted on macOS or Windows. Files and directories share the names:
+a file `a` and a file `a/b` cannot both be extracted (Info-ZIP and bsdtar
+leave one of them out with no word in `ERRORS.txt`), so whichever comes
+second gets the counter, a file as above, a directory as `a-1` for every
+member under it. The taken set is the build's, held in
 memory for the one pass; a hundred thousand paths is a few megabytes, and
 nothing about it needs to survive between parts.
 

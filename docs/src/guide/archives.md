@@ -49,7 +49,9 @@ before the extension; a compressed file keeps its double extension whole,
 so `a.tar.gz` becomes `a-1.tar.gz` and `export.csv.gz` becomes
 `export-1.csv.gz`. Paths are compared ignoring case, since
 `Report.pdf` and `report.pdf` land on the same file on macOS and Windows.
-The first occurrence keeps its name.
+A file and a folder of the same name collide too: `Report` the file, then
+`Report/notes.pdf`, puts the folder at `Report-1/`, with every member under
+it. The first occurrence keeps its name.
 
 ## Members that disappear
 
