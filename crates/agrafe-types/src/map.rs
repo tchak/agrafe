@@ -268,10 +268,40 @@ pub struct Extent {
     pub layers: Vec<usize>,
 }
 
+/// Half the side of the Web Mercator square, in metres: the x of 180°
+/// and the y of the latitude the projection stops at.
+pub const HALF_WORLD: f64 = std::f64::consts::PI * 6_378_137.0;
+
 impl Extent {
     /// The larger side, in metres.
     pub fn span(&self) -> f64 {
         (self.maxx - self.minx).max(self.maxy - self.miny)
+    }
+
+    /// Whether the box lies within the Web Mercator square. One padded
+    /// past it, a world-spanning file's, is a request a WMS may refuse
+    /// every time.
+    pub fn within_world(&self) -> bool {
+        -HALF_WORLD <= self.minx
+            && self.maxx <= HALF_WORLD
+            && -HALF_WORLD <= self.miny
+            && self.maxy <= HALF_WORLD
+    }
+
+    /// The indices of the `layers` drawn on this box, in order: those whose
+    /// rule applies to its span, and none on a box outside the world. The
+    /// helper lists them and the server checks the list against its own.
+    pub fn applicable(&self, layers: &[LayerRule]) -> Vec<usize> {
+        if !self.within_world() {
+            return Vec::new();
+        }
+        let span = self.span();
+        layers
+            .iter()
+            .enumerate()
+            .filter(|(_, rule)| rule.applies(span))
+            .map(|(i, _)| i)
+            .collect()
     }
 }
 

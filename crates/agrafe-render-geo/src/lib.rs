@@ -21,14 +21,12 @@ mod kml;
 use std::fmt::Write as _;
 
 use agrafe_types::map::{
-    Color, DEFAULT_COLOR, Extent, Format, MAX_STROKE_WIDTH, MarkerSize, Spec, Style,
+    Color, DEFAULT_COLOR, Extent, Format, HALF_WORLD, MAX_STROKE_WIDTH, MarkerSize, Spec, Style,
 };
 use geojson::{GeoJson, Geometry, GeometryValue, JsonObject, Position};
 
 /// The Earth's radius of the spherical Mercator, EPSG:3857, in metres.
 const EARTH_RADIUS: f64 = 6_378_137.0;
-/// Half the width of the Web Mercator square, in metres: the x of 180°.
-const HALF_WORLD: f64 = std::f64::consts::PI * EARTH_RADIUS;
 /// The latitude the projection stops at, where the square map ends.
 const MAX_LATITUDE: f64 = 85.051_128_78;
 /// How far a drawn vertex may stray from the exact line, in pixels.
@@ -442,23 +440,17 @@ fn extent_of<'a>(shapes: impl Iterator<Item = &'a Shape>, spec: &Spec) -> Extent
     } else {
         h = w / ratio;
     }
-    let span = w.max(h);
-    let layers = spec
-        .layers
-        .iter()
-        .enumerate()
-        .filter(|(_, rule)| rule.applies(span))
-        .map(|(i, _)| i)
-        .collect();
-    Extent {
+    let mut extent = Extent {
         minx: cx - w / 2.0,
         miny: cy - h / 2.0,
         maxx: cx + w / 2.0,
         maxy: cy + h / 2.0,
         width,
         height,
-        layers,
-    }
+        layers: Vec::new(),
+    };
+    extent.layers = extent.applicable(&spec.layers);
+    extent
 }
 
 /// Douglas–Peucker: the points of `line` that keep it within
@@ -947,9 +939,11 @@ mod tests {
     fn a_world_spanning_collection_fits_the_box() {
         let map = rendered("world.geojson", &spec());
         let extent = &map.extent;
-        let half_world = std::f64::consts::PI * EARTH_RADIUS;
-        assert!(extent.maxx - extent.minx > 1.5 * half_world, "{extent:?}");
-        assert_eq!(extent.layers, vec![0, 1]);
+        assert!(extent.maxx - extent.minx > 1.5 * HALF_WORLD, "{extent:?}");
+        // Padded past the world square: no layer is asked for a box a WMS
+        // may refuse every time, and the background is flat.
+        assert!(!extent.within_world());
+        assert_eq!(extent.layers, Vec::<usize>::new());
         // Every pixel coordinate lands inside the box.
         for number in map
             .svg

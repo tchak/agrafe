@@ -238,7 +238,7 @@ async fn the_background_comes_from_the_layers_that_apply() {
         c.media.render.map.layers = vec![photo, names];
     })
     .await;
-    // A parcel is well under 3 km: one request. The world: two.
+    // A parcel is well under 3 km: one request.
     let parcel = map_blob(&app, "polygon-hole.geojson", "application/geo+json").await;
     render_all(&app).await;
     let requests = wms.requests();
@@ -264,9 +264,10 @@ async fn the_background_comes_from_the_layers_that_apply() {
     assert_eq!(blob["preview_source"], "geojson");
     rendered(&app, &format!("/blobs/{id}/preview/polygon-hole.geojson")).await;
 
+    // A box past the world square, the world's padded, asks for none.
     let world = map_blob(&app, "world.geojson", "application/geo+json").await;
     render_all(&app).await;
-    assert_eq!(wms.requests().len(), 3);
+    assert_eq!(wms.requests().len(), 1);
     let id = id_of(&world);
     assert_eq!(get_blob(&app, id).await["preview_state"], "ready");
 }

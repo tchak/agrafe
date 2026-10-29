@@ -455,9 +455,11 @@ fn fitted_file(index: usize) -> String {
 
 /// What is wrong with the extent the helper wrote for `spec`, if
 /// anything. The helper is the untrusted side: its pixel box must be the
-/// one asked for, its layers must be the spec's, in order, and its box
-/// must be a box, or the server would fetch, index and composite on a
-/// compromised helper's say-so.
+/// one asked for, its box must be a box, and its layers must be the ones
+/// the spec's rules give for that box, or the server would fetch, index
+/// and composite on a compromised helper's say-so. The box is still the
+/// helper's to choose; what it may make the server fetch is a configured
+/// layer for a box inside the world.
 fn check_extent(extent: &Extent, spec: &Spec) -> Result<(), String> {
     if (extent.width, extent.height) != (spec.width, spec.height) {
         return Err(format!(
@@ -468,12 +470,11 @@ fn check_extent(extent: &Extent, spec: &Spec) -> Result<(), String> {
     if !(extent.minx < extent.maxx && extent.miny < extent.maxy) {
         return Err("an empty or inverted bounding box".into());
     }
-    let in_order = extent.layers.windows(2).all(|pair| pair[0] < pair[1]);
-    if !in_order || extent.layers.iter().any(|&i| i >= spec.layers.len()) {
+    let applicable = extent.applicable(&spec.layers);
+    if extent.layers != applicable {
         return Err(format!(
-            "layers {:?}, of the {} configured",
-            extent.layers,
-            spec.layers.len()
+            "layers {:?}, where the rules give {applicable:?}",
+            extent.layers
         ));
     }
     Ok(())
@@ -574,6 +575,7 @@ fn host_of(url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agrafe_types::map::HALF_WORLD;
 
     #[test]
     fn parses_lengths() {
@@ -659,15 +661,20 @@ mod tests {
 
     #[test]
     fn checks_the_extent_against_the_spec() {
+        let layer = Layer {
+            url: "https://wms.example/?{bbox}{width}{height}".into(),
+            attribution: None,
+            min_span: None,
+            max_span: None,
+        };
+        // The second layer wants 1 km, which the 400 m box is not.
         let config = Map {
             layers: vec![
+                layer.clone(),
                 Layer {
-                    url: "https://wms.example/?{bbox}{width}{height}".into(),
-                    attribution: None,
-                    min_span: None,
-                    max_span: None,
-                };
-                2
+                    min_span: Some(Metres(1000.0)),
+                    ..layer
+                },
             ],
             ..Map::default()
         };
@@ -686,14 +693,19 @@ mod tests {
             maxy: 300.0,
             width: 400,
             height: 300,
-            layers: vec![0, 1],
+            layers: vec![0],
         };
         assert_eq!(check_extent(&good, &spec), Ok(()));
-        let none = Extent {
+        // Past the world square, a world-spanning file's box: no layer.
+        let world = Extent {
+            minx: -1.2 * HALF_WORLD,
+            maxx: 1.2 * HALF_WORLD,
+            miny: -0.9 * HALF_WORLD,
+            maxy: 0.9 * HALF_WORLD,
             layers: Vec::new(),
             ..good.clone()
         };
-        assert_eq!(check_extent(&none, &spec), Ok(()));
+        assert_eq!(check_extent(&world, &spec), Ok(()));
         let bad = [
             Extent {
                 width: 4000,
@@ -712,16 +724,28 @@ mod tests {
                 ..good.clone()
             },
             Extent {
-                layers: vec![2],
+                layers: Vec::new(),
                 ..good.clone()
             },
             Extent {
-                layers: vec![1, 0],
+                layers: vec![0, 1],
+                ..good.clone()
+            },
+            Extent {
+                layers: vec![1],
+                ..good.clone()
+            },
+            Extent {
+                layers: vec![2],
                 ..good.clone()
             },
             Extent {
                 layers: vec![0, 0],
                 ..good.clone()
+            },
+            Extent {
+                layers: vec![0],
+                ..world.clone()
             },
         ];
         for extent in bad {

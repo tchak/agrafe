@@ -141,7 +141,10 @@ their stroke, polygon holes stay holes, and points are discs with a ring.
 The background comes from the WMS layers of `[[media.map.layers]]`,
 each a `GetMap` URL template that agrafe fills with the bounding box in
 EPSG:3857 and the pixel size, composited bottom to top, and each drawn
-only on an extent between its `min_span` and `max_span`. The attribution
+only on an extent between its `min_span` and `max_span`; a map whose
+extent leaves the world, a file spanning the globe, gets no layer. Use
+`max_span` to keep requests within what a layer covers: a provider that
+refuses a bbox fails the attempt every time. The attribution
 of the first drawn layer is burned into a corner of the map. There is no
 layer by default: the geometry is then drawn on a flat background and
 nothing leaves the worker. Every render with a layer configured sends the

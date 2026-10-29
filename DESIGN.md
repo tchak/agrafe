@@ -2285,10 +2285,13 @@ on "has preview", never on category. Sources, in order:
    `geojson`, `quick-xml` and `zip` parsers live only there. The worker
    checks
    the extent against the spec it wrote (the pixel box it
-   asked for, layer indices that exist, in order, a box that is a box)
+   asked for, a box that is a box, and exactly the layers the spec's
+   rules give for that box, `Extent::applicable`, which both sides call)
    before acting on it, since the helper is the untrusted side and a
    compromised one must not choose what the worker fetches or indexes:
-   a mismatch is a rejection. The worker, trusted code, then fetches one
+   a mismatch is a rejection. The box remains the helper's, so what a
+   compromised one can still ask for is a configured layer over some box
+   inside the world. The worker, trusted code, then fetches one
    WMS `GetMap` image per applicable layer, concurrently, into the work
    directory, and decodes each into a `.v` at exactly the pixel box with
    `vips thumbnail` forced to that size: a WMS may cap or round the size
@@ -2433,7 +2436,10 @@ on "has preview", never on category. Sources, in order:
    in, composited bottom to top, and drawn only on an extent between its
    `min_span` and `max_span`: a boundaries-and-names layer that carries no
    toponym at parcel scale is skipped there, and most maps are
-   parcel-sized and cost one request. A `GetMap` with the bbox in
+   parcel-sized and cost one request. No layer is drawn on a box that
+   leaves the Web Mercator square, as a world-spanning file's does once
+   padded and widened: a WMS may refuse that bbox on every attempt, and
+   the retries would end in a dead job rather than a map. A `GetMap` with the bbox in
    EPSG:3857 and the output size gives the background at exactly the pixel
    box wanted, with no tile stitching, no zoom rounding, no crop; an XYZ
    layer kind can come later, stitched with `vips arrayjoin`. The code
