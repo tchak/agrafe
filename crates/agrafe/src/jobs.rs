@@ -623,35 +623,64 @@ pub async fn enqueue(
     Ok(result.rows_affected() == 1)
 }
 
-/// Lock the highest-priority, then oldest, runnable job of one of `kinds`
-/// for `worker`. A job is runnable when it is due, not dead, and either
+/// The claim: one kind bound by equality, so that the kind is a constant
+/// to the planner and `jobs_claimable_idx (kind, priority DESC, run_at,
+/// id)` is the `ORDER BY`'s order. With `kind = ANY(...)` the index's
+/// order is not the sort's, and the sort sits under `FOR UPDATE`, where
+/// the `LIMIT` cannot bound it: every claim would sort the kind's whole
+/// backlog.
+const CLAIM_SQL: &str = "UPDATE jobs SET locked_at = now(), locked_by = $1, attempts = attempts + 1 \
+     WHERE id = (\
+         SELECT id FROM jobs \
+         WHERE kind = $2 AND run_at <= now() AND failed_at IS NULL \
+           AND (locked_at IS NULL OR locked_at < now() - make_interval(secs => $3)) \
+         ORDER BY priority DESC, run_at, id \
+         FOR UPDATE SKIP LOCKED \
+         LIMIT 1\
+     ) \
+     RETURNING *";
+
+/// Lock the highest-priority, then oldest, runnable job of `kind` for
+/// `worker`. A job is runnable when it is due, not dead, and either
 /// unlocked or held by a lease older than `lease`.
 // Public for the integration tests, not part of the API.
 #[doc(hidden)]
 pub async fn claim(
     exec: impl PgExecutor<'_>,
-    kinds: &[JobKind],
+    kind: JobKind,
     worker: &str,
     lease: Duration,
 ) -> sqlx::Result<Option<Job>> {
-    let kinds: Vec<&str> = kinds.iter().map(|k| k.as_str()).collect();
-    sqlx::query_as::<_, Job>(
-        "UPDATE jobs SET locked_at = now(), locked_by = $1, attempts = attempts + 1 \
-         WHERE id = (\
-             SELECT id FROM jobs \
-             WHERE kind = ANY($2) AND run_at <= now() AND failed_at IS NULL \
-               AND (locked_at IS NULL OR locked_at < now() - make_interval(secs => $3)) \
-             ORDER BY priority DESC, run_at, id \
-             FOR UPDATE SKIP LOCKED \
-             LIMIT 1\
-         ) \
-         RETURNING *",
-    )
-    .bind(worker)
-    .bind(kinds)
-    .bind(lease.as_secs_f64())
-    .fetch_optional(exec)
-    .await
+    sqlx::query_as::<_, Job>(CLAIM_SQL)
+        .bind(worker)
+        .bind(kind.as_str())
+        .bind(lease.as_secs_f64())
+        .fetch_optional(exec)
+        .await
+}
+
+/// The claim's generic plan, as `EXPLAIN` prints it: prepared and
+/// explained under `plan_cache_mode = force_generic_plan`, the plan a
+/// pooled connection may settle on after five runs. For a test that pins
+/// it to its index.
+#[cfg(any(test, feature = "test-support"))]
+pub async fn explain_claim(conn: &mut PgConnection) -> sqlx::Result<String> {
+    sqlx::query("SET plan_cache_mode = force_generic_plan")
+        .execute(&mut *conn)
+        .await?;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!("PREPARE claim AS {CLAIM_SQL}")))
+        .execute(&mut *conn)
+        .await?;
+    let lines: Vec<String> = sqlx::query_scalar("EXPLAIN EXECUTE claim('w', 'purge', 600)")
+        .fetch_all(&mut *conn)
+        .await?;
+    sqlx::raw_sql("DEALLOCATE claim")
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("RESET plan_cache_mode")
+        .execute(&mut *conn)
+        .await?;
+    Ok(lines.join("\n"))
 }
 
 /// Extend `worker`'s lease on a job it is running. Returns whether the job

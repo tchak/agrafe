@@ -146,14 +146,9 @@ async fn running_job_keeps_its_lease() {
     // Past the lease, with the job still waiting on clamd.
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert!(locked_at().await > claimed, "the lease was renewed");
-    let stolen = agrafe::jobs::claim(
-        app.state.pool(),
-        &[agrafe::jobs::JobKind::Scan],
-        "w2",
-        lease,
-    )
-    .await
-    .unwrap();
+    let stolen = agrafe::jobs::claim(app.state.pool(), agrafe::jobs::JobKind::Scan, "w2", lease)
+        .await
+        .unwrap();
     assert!(stolen.is_none(), "another worker took the job: {stolen:?}");
 
     release.notify_one();
@@ -211,7 +206,7 @@ async fn job_queue_mechanics() {
     );
 
     // Claiming locks; a locked job is invisible until its lease expires.
-    let job = jobs::claim(pool, &[JobKind::Scan], "w1", lease)
+    let job = jobs::claim(pool, JobKind::Scan, "w1", lease)
         .await
         .unwrap()
         .unwrap();
@@ -219,7 +214,7 @@ async fn job_queue_mechanics() {
     assert_eq!(job.attempts, 1);
     assert_eq!(job.locked_by.as_deref(), Some("w1"));
     assert!(
-        jobs::claim(pool, &[JobKind::Scan], "w2", lease)
+        jobs::claim(pool, JobKind::Scan, "w2", lease)
             .await
             .unwrap()
             .is_none()
@@ -229,7 +224,7 @@ async fn job_queue_mechanics() {
         .execute(pool)
         .await
         .unwrap();
-    let again = jobs::claim(pool, &[JobKind::Scan], "w2", lease)
+    let again = jobs::claim(pool, JobKind::Scan, "w2", lease)
         .await
         .unwrap()
         .unwrap();
@@ -247,7 +242,7 @@ async fn job_queue_mechanics() {
     assert!(!jobs::touch(pool, job.id, "w1").await.unwrap());
     assert!(jobs::touch(pool, job.id, "w2").await.unwrap());
     assert!(
-        jobs::claim(pool, &[JobKind::Scan], "w1", lease)
+        jobs::claim(pool, JobKind::Scan, "w1", lease)
             .await
             .unwrap()
             .is_none()
@@ -267,13 +262,13 @@ async fn job_queue_mechanics() {
         .unwrap()
     );
     assert!(
-        jobs::claim(pool, &[JobKind::Render], "w1", lease)
+        jobs::claim(pool, JobKind::Render, "w1", lease)
             .await
             .unwrap()
             .is_none()
     );
     assert!(
-        jobs::claim(pool, &[JobKind::Reap], "w1", lease)
+        jobs::claim(pool, JobKind::Reap, "w1", lease)
             .await
             .unwrap()
             .is_none()
@@ -290,7 +285,7 @@ async fn job_queue_mechanics() {
     };
     assert!(at > now);
     assert!(
-        jobs::claim(pool, &[JobKind::Scan], "w1", lease)
+        jobs::claim(pool, JobKind::Scan, "w1", lease)
             .await
             .unwrap()
             .is_none()
@@ -302,7 +297,7 @@ async fn job_queue_mechanics() {
         .execute(pool)
         .await
         .unwrap();
-    let held = jobs::claim(pool, &[JobKind::Scan], "w1", lease)
+    let held = jobs::claim(pool, JobKind::Scan, "w1", lease)
         .await
         .unwrap()
         .unwrap();
@@ -331,7 +326,7 @@ async fn job_queue_mechanics() {
     assert_eq!(scans, 1);
 
     // Success removes the row.
-    let purge = jobs::claim(pool, &[JobKind::Purge], "w1", lease)
+    let purge = jobs::claim(pool, JobKind::Purge, "w1", lease)
         .await
         .unwrap()
         .unwrap();
@@ -474,7 +469,7 @@ async fn operators_see_retry_and_discard_dead_jobs() {
     assert_eq!(body["last_error"], "boom", "kept until the next attempt");
     let claimed = jobs::claim(
         pool,
-        &[JobKind::Scan],
+        JobKind::Scan,
         "w1",
         std::time::Duration::from_secs(600),
     )
@@ -614,10 +609,7 @@ async fn priority_orders_a_kind_and_comes_from_the_blob() {
         ids.push((name, id));
     }
     let mut order = Vec::new();
-    while let Some(job) = jobs::claim(pool, &[JobKind::Scan], "w", lease)
-        .await
-        .unwrap()
-    {
+    while let Some(job) = jobs::claim(pool, JobKind::Scan, "w", lease).await.unwrap() {
         let name = ids
             .iter()
             .find(|(_, id)| Some(*id) == job.blob_id)
@@ -835,7 +827,7 @@ async fn the_blob_verdict_tracks_the_live_job() {
     // A running job holds no pending slot, so a twin can be enqueued; the
     // first one dying for good is not the blob's verdict.
     assert!(enqueue().await.unwrap());
-    let first = jobs::claim(pool, &[JobKind::Scan], "w1", lease)
+    let first = jobs::claim(pool, JobKind::Scan, "w1", lease)
         .await
         .unwrap()
         .unwrap();
@@ -855,7 +847,7 @@ async fn the_blob_verdict_tracks_the_live_job() {
         .execute(pool)
         .await
         .unwrap();
-    let twin = jobs::claim(pool, &[JobKind::Scan], "w1", lease)
+    let twin = jobs::claim(pool, JobKind::Scan, "w1", lease)
         .await
         .unwrap()
         .unwrap();
@@ -872,7 +864,7 @@ async fn the_blob_verdict_tracks_the_live_job() {
         .await
         .unwrap();
     assert!(enqueue().await.unwrap());
-    let alone = jobs::claim(pool, &[JobKind::Scan], "w1", lease)
+    let alone = jobs::claim(pool, JobKind::Scan, "w1", lease)
         .await
         .unwrap()
         .unwrap();
@@ -962,4 +954,24 @@ async fn a_cross_site_form_post_is_refused() {
         .await;
         assert_eq!(status, StatusCode::CONFLICT, "{headers:?}: {body}");
     }
+}
+
+/// The claim reads the head of its kind's queue off `jobs_claimable_idx`,
+/// in the index's order, even under the generic plan a pooled connection
+/// may settle on: no sort, which under `FOR UPDATE` the `LIMIT` could not
+/// bound, so a backlog of millions would be sorted at every claim.
+/// Sequential and bitmap scans are off so that, on a table this small, the
+/// planner shows the index it would walk.
+#[tokio::test]
+async fn the_claim_walks_its_index_under_a_generic_plan() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let mut conn = app.state.pool().acquire().await.unwrap();
+    for off in ["SET enable_seqscan = off", "SET enable_bitmapscan = off"] {
+        sqlx::query(off).execute(&mut *conn).await.unwrap();
+    }
+    let plan = agrafe::jobs::explain_claim(&mut conn).await.unwrap();
+    assert!(plan.contains("jobs_claimable_idx"), "{plan}");
+    assert!(!plan.contains("Seq Scan"), "{plan}");
+    assert!(!plan.contains("Sort"), "{plan}");
 }

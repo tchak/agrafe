@@ -138,7 +138,7 @@ where
 #[doc(hidden)]
 pub async fn run_one(state: &Agrafe, kind: JobKind, worker: &str) -> sqlx::Result<bool> {
     let lease = state.config().jobs.lease_timeout;
-    let Some(job) = super::claim(state.pool(), &[kind], worker, lease).await? else {
+    let Some(job) = super::claim(state.pool(), kind, worker, lease).await? else {
         return Ok(false);
     };
     // Each attempt is a unit of the trace that enqueued the job, or the

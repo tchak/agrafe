@@ -26,9 +26,11 @@ CREATE TABLE jobs (
 );
 
 -- The claim: highest priority first, oldest within it, by kind, not dead.
--- Locked rows whose lease has lapsed are claimable too, so the index does
--- not exclude them.
-CREATE INDEX jobs_claimable_idx ON jobs (kind, priority DESC, run_at) WHERE failed_at IS NULL;
+-- Its whole `ORDER BY`, `id` included, so that the claim reads the head of
+-- the queue with no sort: a reaper batch shares one `run_at`. Locked rows
+-- whose lease has lapsed are claimable too, so the index does not exclude
+-- them.
+CREATE INDEX jobs_claimable_idx ON jobs (kind, priority DESC, run_at, id) WHERE failed_at IS NULL;
 -- One pending job of each kind per blob; enqueue uses ON CONFLICT DO
 -- NOTHING, and a `notify` replaces the pending one with the newer event.
 -- Blob-less jobs dedupe too, so the periodic `reap` never piles up however
