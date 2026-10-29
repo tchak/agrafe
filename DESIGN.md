@@ -832,6 +832,17 @@ table, appended at its right edge like the primary key; an attach or a
 detach moves the row between them, a write it already pays for in
 `blobs_expires_at_idx`. A test pins both plans.
 
+Each filter has its own `(column, id)` index, and filters combine by AND
+with no composite index behind them: two filters are one index walked
+from the cursor and the other checked on each row. A page is cheap when
+the combination is common among the rows the walk meets, and costs as
+many rows as lie between matches when it is rare: `state=ready` with an
+infected `scan_state` walks every ready blob for an empty last page.
+That is a bound accepted for an operator's listing, which is the
+dashboard's and the backend's occasional look, not a request path; a
+combination that turns out to be both rare and asked often gets its own
+composite index rather than the listing a scan budget.
+
 The three listings, `/blobs`, `/attachments` and `/jobs`, take a `limit`,
 default 50, at most 200. A limit out of that range, an unknown filter value
 an `owner_id` without `owner_kind`, or a `role` without `owner_kind` or
