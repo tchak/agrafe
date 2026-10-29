@@ -602,7 +602,7 @@ async fn operators_see_retry_and_discard_dead_jobs() {
     assert_eq!(body["items"].as_array().unwrap().len(), 1);
     let (_, body) = call(&app.private, req(Method::GET, "/jobs?limit=1")).await;
     assert_eq!(body["items"][0]["id"], pending, "newest first");
-    assert_eq!(body["next_cursor"], pending);
+    assert_eq!(body["next_cursor"], pending.to_string());
     let (_, body) = call(
         &app.private,
         req(Method::GET, &format!("/jobs?limit=1&cursor={pending}")),
@@ -1310,89 +1310,188 @@ async fn the_census_tells_every_state_and_the_ops_router_serves_it() {
     assert!(age >= 60.0, "{oldest}");
 }
 
-/// Listing by kind or priority without a blob reads `jobs_kind_idx` in id
-/// order, a range per (kind, priority) cut at the page, never the whole
-/// table; and the pages come back newest first across the priorities.
+/// Every listing in its order: newest first, `due` and `scheduled` in
+/// queue order, whatever the filters, and page after page the same jobs
+/// as the state `Agrafe::job_state` gives each, in Rust.
 #[tokio::test]
-async fn the_job_listing_walks_its_indexes() {
+async fn job_listings_page_in_their_order() {
     let db = TestDatabase::new().await;
-    use agrafe::jobs::{self, JobKind, ListParams, Priority};
+    use agrafe::jobs::{Job, JobKind, JobState, ListParams, Priority};
+    use axum::http::Method;
 
     let app = setup(db).await;
     let pool = app.state.pool();
-    let lease = Duration::from_secs(600);
-    // Purges at every priority, interleaved, and one audit among them;
-    // held, so that the one pending slot per kind does not dedupe them.
-    let mut purges: Vec<i64> = sqlx::query_scalar(
-        "INSERT INTO jobs (kind, priority, locked_at, locked_by) \
-         SELECT 'purge', (n % 3 - 1)::int2, now(), 'w' FROM generate_series(1, 30) AS n \
-         RETURNING id",
+    // Four states, three kinds, three priorities, and `run_at`s shared by
+    // three rows each so that the id breaks the ties. Every row is locked,
+    // a lapsed lock for the due and scheduled ones, so that the one
+    // pending slot per kind does not dedupe them.
+    sqlx::query(
+        "INSERT INTO jobs (kind, priority, run_at, locked_at, locked_by, failed_at) \
+         SELECT (ARRAY['purge', 'audit', 'render'])[n % 3 + 1], (n % 5 % 3 - 1)::int2, \
+                CASE WHEN n % 4 = 3 THEN now() + make_interval(mins => n / 3) \
+                     ELSE now() - make_interval(mins => n / 3) END, \
+                CASE WHEN n % 4 = 0 THEN now() ELSE now() - interval '1 hour' END, 'w', \
+                CASE WHEN n % 4 = 1 THEN now() END \
+         FROM generate_series(1, 80) AS n",
     )
-    .fetch_all(pool)
+    .execute(pool)
     .await
     .unwrap();
-    purges.reverse();
-    sqlx::query("INSERT INTO jobs (kind) VALUES ('audit')")
-        .execute(pool)
-        .await
-        .unwrap();
 
-    let mut seen = Vec::new();
-    let mut cursor = None;
-    loop {
-        let page = app
-            .state
-            .list_jobs(&ListParams {
-                kind: Some(JobKind::Purge),
-                cursor,
-                limit: 7,
-                ..Default::default()
-            })
+    let everything = every_page(&app, ListParams::default()).await;
+    assert_eq!(everything.len(), 80);
+    let filters = [
+        (None, None),
+        (Some(JobKind::Purge), None),
+        (None, Some(Priority::High)),
+        (Some(JobKind::Audit), Some(Priority::Low)),
+    ];
+    for state in JobState::ALL {
+        for (kind, priority) in filters {
+            let mut expected: Vec<&Job> = everything
+                .iter()
+                .filter(|j| app.state.job_state(j) == *state)
+                .filter(|j| kind.is_none_or(|k| j.kind == k))
+                .filter(|j| priority.is_none_or(|p| j.priority == p))
+                .collect();
+            match state {
+                JobState::Due | JobState::Scheduled => {
+                    expected.sort_by_key(|j| (j.run_at, j.id));
+                }
+                _ => expected.sort_by_key(|j| std::cmp::Reverse(j.id)),
+            }
+            let expected: Vec<i64> = expected.iter().map(|j| j.id).collect();
+            assert!(!expected.is_empty(), "{state} {kind:?} {priority:?}");
+            let got: Vec<i64> = every_page(
+                &app,
+                ListParams {
+                    state: Some(*state),
+                    kind,
+                    priority,
+                    ..Default::default()
+                },
+            )
             .await
-            .unwrap();
-        seen.extend(page.items.iter().map(|j| j.id));
-        match page.next_cursor {
-            Some(next) => cursor = Some(next),
-            None => break,
+            .iter()
+            .map(|j| j.id)
+            .collect();
+            assert_eq!(got, expected, "{state} {kind:?} {priority:?}");
         }
     }
-    assert_eq!(seen, purges, "every purge, newest first");
-    let page = app
+
+    // A cursor of one order is no use to the other.
+    let due = app
         .state
         .list_jobs(&ListParams {
-            priority: Some(Priority::High),
-            limit: 50,
+            state: Some(JobState::Due),
+            limit: 1,
             ..Default::default()
         })
         .await
         .unwrap();
-    assert_eq!(page.items.len(), 10);
-    assert!(page.items.windows(2).all(|w| w[0].id > w[1].id));
+    let cursor = due.next_cursor.unwrap();
+    let wrong = app
+        .state
+        .list_jobs(&ListParams {
+            state: Some(JobState::Dead),
+            cursor: Some(cursor),
+            limit: 1,
+            ..Default::default()
+        })
+        .await;
+    assert!(
+        matches!(wrong, Err(agrafe::jobs::ListError::Cursor)),
+        "{wrong:?}"
+    );
+    let (status, body) = call(
+        &app.private,
+        req(
+            Method::GET,
+            &format!("/jobs?state=due&limit=1&cursor={cursor}"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["items"][0]["state"], "due", "{body}");
+    assert!(body["next_cursor"].is_string(), "{body}");
+    let (status, body) = call(
+        &app.private,
+        req(Method::GET, &format!("/jobs?state=dead&cursor={cursor}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, body) = call(&app.private, req(Method::GET, "/jobs?cursor=1.x")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
 
-    let mut conn = pool.acquire().await.unwrap();
+/// Every page of a listing, seven jobs at a time.
+async fn every_page(app: &TestApp, params: agrafe::jobs::ListParams) -> Vec<agrafe::jobs::Job> {
+    let mut params = agrafe::jobs::ListParams { limit: 7, ..params };
+    let mut seen = Vec::new();
+    loop {
+        let page = app.state.list_jobs(&params).await.unwrap();
+        seen.extend(page.items);
+        match page.next_cursor {
+            Some(next) => params.cursor = Some(next),
+            None => return seen,
+        }
+    }
+}
+
+/// Each listing without a blob reads its state's index, a range per
+/// (kind, priority) cut at the page, never the whole table.
+#[tokio::test]
+async fn the_job_listing_walks_its_indexes() {
+    let db = TestDatabase::new().await;
+    use agrafe::jobs::{self, Cursor, JobKind, JobState, ListParams, Priority};
+
+    let app = setup(db).await;
+    let lease = Duration::from_secs(600);
+    let mut conn = app.state.pool().acquire().await.unwrap();
     for off in ["SET enable_seqscan = off", "SET enable_bitmapscan = off"] {
         sqlx::query(off).execute(&mut *conn).await.unwrap();
     }
-    let shapes = [
+    let states = [
+        (None, "jobs_kind_idx"),
+        (Some(JobState::Dead), "jobs_dead_kind_idx"),
+        (Some(JobState::Running), "jobs_held_idx"),
+        (Some(JobState::Due), "jobs_claimable_idx"),
+        (Some(JobState::Scheduled), "jobs_claimable_idx"),
+    ];
+    let filters = [
+        (None, None),
         (Some(JobKind::Audit), None),
         (None, Some(Priority::High)),
         (Some(JobKind::Audit), Some(Priority::Low)),
     ];
-    for (kind, priority) in shapes {
-        for cursor in [None, Some(1_000_000)] {
-            let params = ListParams {
-                kind,
-                priority,
-                cursor,
-                limit: jobs::DEFAULT_LIMIT,
-                ..Default::default()
-            };
-            let plan = jobs::explain_list(&mut *conn, &params, lease)
-                .await
-                .unwrap();
-            let shape = format!("{kind:?} {priority:?} {cursor:?}");
-            assert!(plan.contains("jobs_kind_idx"), "{shape}: {plan}");
-            assert!(!plan.contains("jobs_pkey"), "{shape}: {plan}");
+    for (state, index) in states {
+        let cursor = match state {
+            Some(JobState::Due | JobState::Scheduled) => {
+                Cursor::Queue(jiff::Timestamp::now(), 1_000_000)
+            }
+            _ => Cursor::Id(1_000_000),
+        };
+        for (kind, priority) in filters {
+            if state.is_none() && kind.is_none() && priority.is_none() {
+                continue; // the whole listing, newest first: the primary key
+            }
+            for cursor in [None, Some(cursor)] {
+                let params = ListParams {
+                    state,
+                    kind,
+                    priority,
+                    cursor,
+                    limit: jobs::DEFAULT_LIMIT,
+                    ..Default::default()
+                };
+                let plan = jobs::explain_list(&mut *conn, &params, lease)
+                    .await
+                    .unwrap();
+                let shape = format!("{state:?} {kind:?} {priority:?} {cursor:?}");
+                assert!(plan.contains(index), "{shape}: {plan}");
+                assert!(!plan.contains("jobs_pkey"), "{shape}: {plan}");
+                assert!(!plan.contains("Seq Scan"), "{shape}: {plan}");
+            }
         }
     }
 }

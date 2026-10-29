@@ -51,6 +51,9 @@ impl<S: Send + Sync> FromRequestParts<S> for Base {
     }
 }
 
+/// The shortest auto-refresh a page takes, in seconds.
+pub const MIN_REFRESH: u32 = 5;
+
 /// The chrome of a page: the mount point its links start from, the notice
 /// an action left, and the auto-refresh an operator asked for.
 #[derive(Debug, Clone)]
@@ -76,8 +79,11 @@ impl Layout {
         self
     }
 
+    /// Reload every so many seconds, `MIN_REFRESH` at the least: each
+    /// reload of the queue page runs the census and a listing again, and a
+    /// pasted `?refresh=1` is not to run them every second.
     pub fn refresh(mut self, seconds: Option<u32>) -> Self {
-        self.refresh = seconds.filter(|s| *s > 0);
+        self.refresh = seconds.filter(|s| *s > 0).map(|s| s.max(MIN_REFRESH));
         self
     }
 }

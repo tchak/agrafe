@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use agrafe::Agrafe;
-use agrafe::jobs::{self, Action, Job, JobKind, JobState, ListParams, Priority};
+use agrafe::jobs::{self, Action, Cursor, Job, JobKind, JobState, ListParams, Priority};
 
 use super::extract::{Json, Path, Query};
 use crate::error::{ApiError, ApiResult};
@@ -71,7 +71,7 @@ impl JobResponse {
 #[derive(Debug, Serialize)]
 pub struct JobListResponse {
     pub items: Vec<JobResponse>,
-    pub next_cursor: Option<i64>,
+    pub next_cursor: Option<Cursor>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -80,7 +80,7 @@ pub struct JobListQuery {
     pub state: Option<JobState>,
     pub priority: Option<Priority>,
     pub blob_id: Option<Uuid>,
-    pub cursor: Option<i64>,
+    pub cursor: Option<Cursor>,
     pub limit: Option<usize>,
 }
 

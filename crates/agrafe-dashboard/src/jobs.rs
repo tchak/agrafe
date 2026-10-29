@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use agrafe::Agrafe;
-use agrafe::jobs::{self, Action, Count, Job, JobKind, JobState, ListParams, Priority};
+use agrafe::jobs::{self, Action, Count, Cursor, Job, JobKind, JobState, ListParams, Priority};
 
 use crate::error::DashboardError;
 use crate::filters;
@@ -63,7 +63,7 @@ pub struct JobsQuery {
         deserialize_with = "empty_to_none",
         skip_serializing_if = "Option::is_none"
     )]
-    pub cursor: Option<i64>,
+    pub cursor: Option<Cursor>,
     /// Reload the page every so many seconds, like a live poll.
     #[serde(
         default,
@@ -104,7 +104,7 @@ impl JobsQuery {
         href(base, "/jobs", &q)
     }
 
-    fn next(&self, base: &str, cursor: i64) -> String {
+    fn next(&self, base: &str, cursor: Cursor) -> String {
         let q = JobsQuery {
             cursor: Some(cursor),
             notice: None,
@@ -226,6 +226,8 @@ pub struct JobsPage {
     pub kinds: Vec<Opt>,
     pub priorities: Vec<Opt>,
     pub jobs: Vec<JobView>,
+    /// What order the listing is in, when it is not newest first.
+    pub order: Option<&'static str>,
     pub next: Option<String>,
 }
 
@@ -255,6 +257,11 @@ async fn list(
         }))
         .collect();
     let next = page.next_cursor.map(|c| query.next(&base.0, c));
+    let order = match query.state {
+        Some(JobState::Due) => Some("Longest waiting first, as the workers take them."),
+        Some(JobState::Scheduled) => Some("Soonest due first."),
+        _ => None,
+    };
     Ok(JobsPage {
         layout: Layout::new(&base, "jobs")
             .notice(query.notice)
@@ -265,6 +272,7 @@ async fn list(
         census,
         tabs,
         jobs: JobView::many(&agrafe, page.items),
+        order,
         next,
     })
 }

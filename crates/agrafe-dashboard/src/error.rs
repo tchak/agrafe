@@ -48,7 +48,9 @@ impl From<sqlx::Error> for DashboardError {
 impl From<jobs::ListError> for DashboardError {
     fn from(err: jobs::ListError) -> Self {
         match err {
-            jobs::ListError::Limit(_) => DashboardError::BadRequest(err.to_string()),
+            jobs::ListError::Limit(_) | jobs::ListError::Cursor => {
+                DashboardError::BadRequest(err.to_string())
+            }
             jobs::ListError::Db(e) => DashboardError::internal(e),
         }
     }

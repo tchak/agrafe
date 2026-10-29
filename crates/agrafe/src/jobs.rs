@@ -35,6 +35,10 @@ pub enum ListError {
     /// `limit` lies outside `1..=MAX_LIMIT`; carries `MAX_LIMIT`.
     #[error("limit must be between 1 and {0}")]
     Limit(usize),
+    /// The cursor is another order's: `due` and `scheduled` page in queue
+    /// order, every other listing by id.
+    #[error("the cursor is not this listing's: due and scheduled jobs page in queue order")]
+    Cursor,
     /// The query failed.
     #[error("database: {0}")]
     Db(#[from] sqlx::Error),
@@ -44,10 +48,18 @@ pub enum ListError {
 /// dead one can be retried or discarded, since a pending job is the only
 /// thing that will finish its blob.
 impl Agrafe {
-    /// List jobs, newest first. `limit` must lie in `1..=MAX_LIMIT`.
+    /// List jobs, newest first, or the `due` and `scheduled` ones in queue
+    /// order (see `Cursor`). `limit` must lie in `1..=MAX_LIMIT`, and the
+    /// cursor be one of a listing in the same order.
     pub async fn list_jobs(&self, params: &ListParams) -> Result<Page, ListError> {
         if !(1..=MAX_LIMIT).contains(&params.limit) {
             return Err(ListError::Limit(MAX_LIMIT));
+        }
+        if params
+            .cursor
+            .is_some_and(|c| c.order() != Order::of(params.state))
+        {
+            return Err(ListError::Cursor);
         }
         Ok(list(self.pool(), params, self.config().jobs.lease_timeout).await?)
     }
@@ -479,8 +491,8 @@ pub struct ListParams {
     pub priority: Option<Priority>,
     /// Only the jobs of this blob.
     pub blob_id: Option<Uuid>,
-    /// The `next_cursor` of the previous page: only jobs older than it.
-    pub cursor: Option<i64>,
+    /// The `next_cursor` of the previous page: only the jobs after it.
+    pub cursor: Option<Cursor>,
     /// The page size, in `1..=MAX_LIMIT`.
     pub limit: usize,
 }
@@ -488,13 +500,107 @@ pub struct ListParams {
 /// A page of a job listing.
 #[derive(Debug)]
 pub struct Page {
-    /// The jobs, newest first.
+    /// The jobs, in the listing's order (see `Cursor`).
     pub items: Vec<Job>,
     /// The cursor of the next page; `None` on the last one.
-    pub next_cursor: Option<i64>,
+    pub next_cursor: Option<Cursor>,
 }
 
-/// Newest first, keyset paginated on the id.
+/// Where the next page of a job listing starts. A listing is newest first
+/// and pages on the id, except `due` and `scheduled`, which are in queue
+/// order, the soonest `run_at` first, and page on it and the id: what runs
+/// next is what an operator asks of them, and the order an index serves,
+/// where newest first would walk a backlog to find a page. To a client, a
+/// string: the id, or `<run_at in microseconds>.<id>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cursor {
+    /// Past this id, newest first.
+    Id(i64),
+    /// Past this `run_at` and id, in queue order.
+    Queue(Timestamp, i64),
+}
+
+impl Cursor {
+    /// The cursor past `job` in the order of a listing of `state`.
+    fn after(job: &Job, state: Option<JobState>) -> Self {
+        match Order::of(state) {
+            Order::Newest => Cursor::Id(job.id),
+            Order::Queue => Cursor::Queue(job.run_at, job.id),
+        }
+    }
+
+    fn order(&self) -> Order {
+        match self {
+            Cursor::Id(_) => Order::Newest,
+            Cursor::Queue(..) => Order::Queue,
+        }
+    }
+}
+
+impl std::fmt::Display for Cursor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Cursor::Id(id) => write!(f, "{id}"),
+            Cursor::Queue(at, id) => write!(f, "{}.{id}", at.as_microsecond()),
+        }
+    }
+}
+
+/// A string that is no job listing's cursor.
+#[derive(Debug, thiserror::Error)]
+#[error("not a job listing cursor: {0:?}")]
+pub struct BadCursor(String);
+
+impl std::str::FromStr for Cursor {
+    type Err = BadCursor;
+
+    fn from_str(s: &str) -> Result<Self, BadCursor> {
+        let bad = || BadCursor(s.to_owned());
+        match s.split_once('.') {
+            None => s.parse().map(Cursor::Id).map_err(|_| bad()),
+            Some((at, id)) => {
+                let at = at.parse().map_err(|_| bad())?;
+                let at = Timestamp::from_microsecond(at).map_err(|_| bad())?;
+                Ok(Cursor::Queue(at, id.parse().map_err(|_| bad())?))
+            }
+        }
+    }
+}
+
+impl Serialize for Cursor {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for Cursor {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+/// The order of a listing's pages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Order {
+    /// Newest first, by id.
+    Newest,
+    /// Soonest first, by `run_at` then id.
+    Queue,
+}
+
+impl Order {
+    fn of(state: Option<JobState>) -> Self {
+        match state {
+            Some(JobState::Due | JobState::Scheduled) => Order::Queue,
+            _ => Order::Newest,
+        }
+    }
+}
+
+/// Newest first, keyset paginated on the id; `due` and `scheduled` in
+/// queue order (see `Cursor`).
 pub(crate) async fn list(
     exec: impl PgExecutor<'_>,
     params: &ListParams,
@@ -507,7 +613,7 @@ pub(crate) async fn list(
         .await?;
     let next_cursor = if items.len() > limit {
         items.truncate(limit);
-        items.last().map(|j| j.id)
+        items.last().map(|j| Cursor::after(j, params.state))
     } else {
         None
     };
@@ -530,15 +636,21 @@ pub async fn explain_list(
 }
 
 /// `list`'s statement, after `prefix`. A blob's jobs are a handful, on
-/// `jobs_blob_idx`. Without a blob, a kind or a priority is read as one
-/// range of `jobs_kind_idx` in id order per (kind, priority) it covers,
-/// three for a kind, ten for a priority, each cut at the page: a rare
-/// kind among millions of purges costs a page, not a walk of the table.
+/// `jobs_blob_idx`. Without a blob, a state, a kind or a priority is read
+/// as one range per (kind, priority) it covers, ten kinds by three
+/// priorities, or three with a kind, each cut at the page, and the page
+/// sorted from them: a rare kind or a dead job among millions of purges
+/// costs a page, not a walk of the table. The range is the state's own
+/// index: `jobs_dead_kind_idx` for `dead`, `jobs_held_idx` for `running`,
+/// `jobs_claimable_idx` in queue order for `due` and `scheduled`, and
+/// `jobs_kind_idx` for any state.
 fn list_query(prefix: &str, params: &ListParams, lease: Duration) -> QueryBuilder<Postgres> {
     let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(prefix);
     let page = params.limit as i64 + 1;
-    let by_kind = params.blob_id.is_none() && (params.kind.is_some() || params.priority.is_some());
-    if by_kind {
+    let order = Order::of(params.state);
+    let ranged = params.blob_id.is_none()
+        && (params.state.is_some() || params.kind.is_some() || params.priority.is_some());
+    if ranged {
         let kinds: Vec<&str> = match params.kind {
             Some(kind) => vec![kind.as_str()],
             None => JobKind::ALL.iter().map(|k| k.as_str()).collect(),
@@ -568,22 +680,62 @@ fn list_query(prefix: &str, params: &ListParams, lease: Duration) -> QueryBuilde
         }
     }
     if let Some(state) = params.state {
-        qb.push(" AND ");
-        push_state(&mut qb, lease);
-        qb.push(" = ").push_bind(state.as_str());
+        push_state_columns(&mut qb, state, lease);
     }
-    if let Some(cursor) = params.cursor {
-        qb.push(" AND id < ").push_bind(cursor);
+    match params.cursor {
+        Some(Cursor::Id(id)) => {
+            qb.push(" AND id < ").push_bind(id);
+        }
+        Some(Cursor::Queue(at, id)) => {
+            qb.push(" AND (run_at, id) > (")
+                .push_bind(at.to_sqlx())
+                .push(", ")
+                .push_bind(id)
+                .push(")");
+        }
+        None => {}
     }
-    if by_kind {
-        qb.push(" ORDER BY id DESC LIMIT ")
-            .push_bind(page)
-            .push(") AS j ORDER BY j.id DESC LIMIT ")
-            .push_bind(page);
-    } else {
-        qb.push(" ORDER BY id DESC LIMIT ").push_bind(page);
+    let order_by = match order {
+        Order::Newest => " ORDER BY id DESC LIMIT ",
+        Order::Queue => " ORDER BY run_at, id LIMIT ",
+    };
+    qb.push(order_by).push_bind(page);
+    if ranged {
+        qb.push(") AS j").push(order_by).push_bind(page);
     }
     qb
+}
+
+/// `state` as conditions on the columns that decide it, what `STATE_SQL`
+/// computes, written so that the planner matches each to its partial
+/// index: no index serves an equality on the `CASE`.
+fn push_state_columns(qb: &mut QueryBuilder<Postgres>, state: JobState, lease: Duration) {
+    let lease = lease.as_secs_f64();
+    match state {
+        JobState::Dead => {
+            qb.push(" AND failed_at IS NOT NULL");
+        }
+        JobState::Running => {
+            qb.push(
+                " AND failed_at IS NULL AND locked_at IS NOT NULL \
+                 AND locked_at >= now() - make_interval(secs => ",
+            )
+            .push_bind(lease)
+            .push(")");
+        }
+        JobState::Due | JobState::Scheduled => {
+            qb.push(
+                " AND failed_at IS NULL \
+                 AND (locked_at IS NULL OR locked_at < now() - make_interval(secs => ",
+            )
+            .push_bind(lease)
+            .push("))")
+            .push(match state {
+                JobState::Due => " AND run_at <= now()",
+                _ => " AND run_at > now()",
+            });
+        }
+    }
 }
 
 // Public for the integration tests, not part of the API.

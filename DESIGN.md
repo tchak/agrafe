@@ -319,7 +319,9 @@ along `attachments_kind_role_idx`, one index probe per pair, capped at
 and a cache would only add a staleness window. Pagination is the existing cursor, a
 "next" link. Actions are `POST` forms that redirect (`303`) to the page
 they came from with a one-line notice in the query. The queue page takes
-`?refresh=5` and reloads itself through `<meta http-equiv="refresh">`.
+`?refresh=5` and reloads itself through `<meta http-equiv="refresh">`,
+every five seconds at the most often: each reload runs the census and a
+listing again.
 Errors are pages too, with the status in the title: a bad filter is `400`,
 an id of the wrong shape or an unknown path is `404`.
 
@@ -3359,12 +3361,27 @@ that knows. A `worker` process has no API; it binds
 `server.private_addr` all the same, serving `/healthz` and `/metrics` only.
 
 `GET /jobs` lists jobs newest first, cursor paginated on the id, filtered by
-`kind`, `state`, `priority` and `blob_id`. A blob's jobs come off
-`jobs_blob_idx`. A kind or a priority without a blob comes off
-`jobs_kind_idx (kind, priority, id)`, one range in id order per
-(kind, priority) the filter covers, three for a kind and ten for a
-priority, each read only as far as the page, so a rare kind among millions
-of purges costs a page and not a walk of the table. `GET /jobs/:id` shows one with its
+`kind`, `state`, `priority` and `blob_id`; `due` and `scheduled` are listed
+in queue order instead, the soonest `run_at` first, paginated on `run_at`
+and the id, and the cursor is an opaque string that tells the two orders
+apart. A state is not a column: it is the lease and the clock read
+against `failed_at`, `locked_at` and `run_at`, and no index serves an
+equality on that `CASE`. So the listing writes each state as the column
+conditions that decide it, each matched to its own index: `dead` to
+`jobs_dead_kind_idx` and `running` to `jobs_held_idx`, partial indexes on
+`(kind, priority, id)` holding only the dead and the held rows, newest
+first; `due` and `scheduled`, split by `run_at` against `now()`, which no
+partial index can hold, to `jobs_claimable_idx`, whose order is `run_at`'s.
+That is why those two are in queue order: newest first, a due listing
+during a mass expiry would walk past every purge not yet due to fill a
+page, where in queue order it reads the head of the queue, which is also
+what an operator asks of it. A blob's jobs come off `jobs_blob_idx`.
+Without a blob, a state, a kind or a priority is one range per (kind,
+priority) it covers, ten kinds by three priorities or three with a kind,
+each read only as far as the page, and the page sorted from those; a kind
+or a priority with no state reads `jobs_kind_idx (kind, priority, id)`.
+A rare kind or a dead job among millions of purges costs a page, not a
+walk of the table. `GET /jobs/:id` shows one with its
 `last_error`. `POST /jobs/:id/retry` resets a dead job's attempts, makes it
 due and notifies the workers; `DELETE /jobs/:id` removes one, and a dead
 purge's blob gets a new purge, due now, since nothing else would take its

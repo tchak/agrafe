@@ -199,7 +199,9 @@ impl From<attachment::ListError> for ApiError {
 impl From<jobs::ListError> for ApiError {
     fn from(err: jobs::ListError) -> Self {
         match err {
-            jobs::ListError::Limit(_) => ApiError::BadRequest(err.to_string()),
+            jobs::ListError::Limit(_) | jobs::ListError::Cursor => {
+                ApiError::BadRequest(err.to_string())
+            }
             jobs::ListError::Db(e) => ApiError::internal(e),
         }
     }

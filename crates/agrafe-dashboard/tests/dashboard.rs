@@ -264,6 +264,7 @@ async fn every_page_renders_with_and_without_filters() {
     assert!(body.contains(r#"name="state" value="dead""#), "{body}");
     let body = page(&app, "/dashboard/jobs?state=due&refresh=5", "Jobs").await;
     assert!(body.contains("No jobs match."), "{body}");
+    assert!(body.contains("Longest waiting first"), "{body}");
     assert!(
         body.contains(r#"<meta http-equiv="refresh" content="5">"#),
         "{body}"
@@ -271,6 +272,12 @@ async fn every_page_renders_with_and_without_filters() {
     assert!(
         body.contains(r#"href="/dashboard/jobs?refresh=5""#),
         "the tabs keep the filters:\n{body}"
+    );
+    // Five seconds at the least: each reload runs the census again.
+    let body = page(&app, "/dashboard/jobs?refresh=1", "Jobs").await;
+    assert!(
+        body.contains(r#"<meta http-equiv="refresh" content="5">"#),
+        "{body}"
     );
     let body = page(
         &app,

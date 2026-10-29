@@ -190,7 +190,7 @@ private_hosts = ["agrafe.internal:8080"]
   listing, with a tab per state and the `kind`, `priority` and `blob_id`
   filters. A job's page shows its payload and its whole error, and, when it
   is dead, the retry and discard buttons. `?refresh=5` reloads the page every
-  five seconds.
+  five seconds, the shortest interval it takes.
 - **Blobs:** the filters of `GET /blobs`. A blob's page shows its
   thumbnail, its attachments and its jobs, and a retry button when it has
   failed.

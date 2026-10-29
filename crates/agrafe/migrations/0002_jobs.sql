@@ -41,6 +41,13 @@ CREATE UNIQUE INDEX jobs_pending_per_blob_idx ON jobs (kind, blob_id)
 -- of attempts, its lease lapsed, never failed. A handful of rows at most.
 CREATE INDEX jobs_exhausted_idx ON jobs (locked_at)
     WHERE failed_at IS NULL AND attempts >= max_attempts;
+-- `GET /jobs?state=dead` and `?state=running`, newest first, a range per
+-- (kind, priority) as for `jobs_kind_idx`. Partial, so only the dead and
+-- the held rows, a few days of failures and about one per worker, are in
+-- them; `due` and `scheduled` are ranges of `jobs_claimable_idx`.
+CREATE INDEX jobs_dead_kind_idx ON jobs (kind, priority, id) WHERE failed_at IS NOT NULL;
+CREATE INDEX jobs_held_idx ON jobs (kind, priority, id)
+    WHERE locked_at IS NOT NULL AND failed_at IS NULL;
 -- The reaper prunes dead jobs, the oldest first.
 CREATE INDEX jobs_dead_idx ON jobs (failed_at) WHERE failed_at IS NOT NULL;
 -- `GET /jobs?kind=` and `?priority=`, newest first: one range in id order

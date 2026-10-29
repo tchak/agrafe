@@ -445,7 +445,10 @@ Detaches. The last detach sets the blob's expiry to
 
 ### `GET /jobs`
 
-Lists jobs, newest first.
+Lists jobs, newest first, except `state=due` and `state=scheduled`, which
+come in queue order: the soonest `run_at` first, so the due jobs that have
+waited longest and the scheduled ones that run next lead. A job's cursor
+is a string; pass it back as it came, to a listing of the same order.
 
 | Parameter | Values |
 |---|---|
@@ -453,7 +456,7 @@ Lists jobs, newest first.
 | `state` | `due`, `scheduled`, `running`, `dead` |
 | `priority` | `high`, `normal`, `low` |
 | `blob_id` | A blob id |
-| `cursor` | A job id |
+| `cursor` | The previous page's `next_cursor` |
 | `limit` | 1 to 200, default 50 |
 
 ### `GET /jobs/:id`

@@ -192,7 +192,9 @@ From `POST /blobs/:id/urls`, all `422 unprocessable` except the first:
 
 `GET /blobs`, `GET /attachments` and `GET /jobs` answer `400 bad_request`
 with `limit must be between 1 and 200` for a limit out of range, and for an
-unknown filter value.
+unknown filter value. `GET /jobs` does too for a cursor that is not one of
+its own, and for one of the other order: `the cursor is not this
+listing's: due and scheduled jobs page in queue order`.
 
 ## Reading
 
