@@ -103,7 +103,8 @@ delivery. Anything else fails the attempt: another status, a timeout, a
 connection error. Redirects are not followed.
 
 Failed attempts are retried through the job queue, 30 seconds after the
-first failure, doubling up to an hour, five attempts in all. The delivery is
+first failure, doubling up to an hour, ten attempts over about three hours
+in all. The delivery is
 then a dead `notify` job, with the head of the receiver's answer in its
 `last_error`:
 

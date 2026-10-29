@@ -99,6 +99,13 @@ macro_rules! on_conflict {
     };
 }
 
+/// Attempts a delivery gets, where other jobs get five: with the backoff
+/// doubling from 30 seconds to its hour, ten attempts span about three
+/// hours, so a receiver down for an hour, a deploy or a certificate gone
+/// stale, drains its backlog by itself once it is back. Five would give up
+/// after seven and a half minutes.
+pub const MAX_ATTEMPTS: i32 = 10;
+
 fn payload(event: Event, now: Timestamp) -> serde_json::Value {
     serde_json::to_value(Payload {
         id: Uuid::now_v7(),
@@ -122,8 +129,8 @@ pub async fn enqueue(
 ) -> sqlx::Result<()> {
     sqlx::query(concat!(
         "WITH written AS (\
-             INSERT INTO jobs (kind, blob_id, priority, payload, run_at, traceparent) \
-             VALUES ($1, $2, $3, $4, $5, $7) ",
+             INSERT INTO jobs (kind, blob_id, priority, payload, run_at, traceparent, max_attempts) \
+             VALUES ($1, $2, $3, $4, $5, $7, $8) ",
         on_conflict!(),
         " RETURNING kind\
          ) \
@@ -136,6 +143,7 @@ pub async fn enqueue(
     .bind(now.to_sqlx())
     .bind(super::CHANNEL)
     .bind(super::current_traceparent())
+    .bind(MAX_ATTEMPTS)
     .execute(exec)
     .await?;
     Ok(())
@@ -156,8 +164,8 @@ pub(crate) async fn enqueue_each(
     let payloads: Vec<serde_json::Value> = blob_ids.iter().map(|_| payload(event, now)).collect();
     sqlx::query(concat!(
         "WITH written AS (\
-             INSERT INTO jobs (kind, blob_id, priority, payload, run_at, traceparent) \
-             SELECT $1, b.id, b.priority, e.payload, $4, $6 \
+             INSERT INTO jobs (kind, blob_id, priority, payload, run_at, traceparent, max_attempts) \
+             SELECT $1, b.id, b.priority, e.payload, $4, $6, $7 \
              FROM unnest($2::uuid[], $3::jsonb[]) AS e (id, payload) \
              JOIN blobs b ON b.id = e.id ",
         on_conflict!(),
@@ -171,6 +179,7 @@ pub(crate) async fn enqueue_each(
     .bind(now.to_sqlx())
     .bind(super::CHANNEL)
     .bind(super::current_traceparent())
+    .bind(MAX_ATTEMPTS)
     .execute(exec)
     .await?;
     Ok(())

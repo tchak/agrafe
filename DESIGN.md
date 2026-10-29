@@ -3373,8 +3373,10 @@ stamps the blob; the reaper for the ids `expire` and `expire_abandoned`
 return). Postgres gives the outbox for free: no transition without its
 notification, no notification for a transition that lost its conditional
 `UPDATE`. The retries with backoff, the dead state, the `/jobs` listing,
-`POST /jobs/:id/retry` and the `keep_failed` pruning all come along, so a
-backend down for an hour drains its backlog with no new machinery, and an
+`POST /jobs/:id/retry` and the `keep_failed` pruning all come along. A
+delivery gets ten attempts where other jobs get five, about three hours of
+the doubling backoff rather than seven and a half minutes, so a backend
+down for an hour drains its backlog with no new machinery, and an
 operator sees undelivered notifications where dead jobs already are. A
 dead `notify` says nothing on the blob: it is the news of the blob, not
 its progress. When no URL is configured nothing is enqueued, so a

@@ -311,6 +311,10 @@ async fn a_failing_receiver_leaves_a_dead_job_the_retry_revives() {
     let id = id_of(&blob);
     let (job, payload) = notify_job(&app, id).await.unwrap();
     let delivery = payload["id"].as_str().unwrap().to_string();
+    // Ten attempts, about three hours of backoff: a receiver down for an
+    // hour is drained by itself.
+    let shown = app.state.find_job(job).await.unwrap().unwrap();
+    assert_eq!(shown.max_attempts, 10);
 
     // The attempt fails and backs off, the response body in last_error.
     assert!(run_job(&app, JobKind::Notify).await);
