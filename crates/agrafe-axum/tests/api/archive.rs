@@ -534,6 +534,34 @@ async fn archive_size_limit_is_checked_at_accept() {
     assert_eq!(get_blob(&app, id).await["source_parts"], 1);
 }
 
+#[tokio::test]
+async fn archive_entry_limit_is_checked_at_accept() {
+    let db = TestDatabase::new().await;
+    let app = setup_tuned(db, fake_clamd().await, |c| {
+        c.archive.max_entries = 3;
+    })
+    .await;
+    let member = ready_blob(&app, &png_bytes(100)).await;
+    let m = id_of(&member);
+    let created = create(&app, archive_blob("many.zip")).await;
+    let id = id_of(&created);
+    let (status, body) = put_part(&app, id, 1, manifest(&[("a.png", m), ("b.png", m)])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // Across the parts: the fourth entry is one too many.
+    let (status, body) = put_part(&app, id, 2, manifest(&[("c.png", m), ("d.png", m)])).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("archive.max_entries"),
+        "{body}"
+    );
+    let got = get_blob(&app, id).await;
+    assert_eq!(got["state"], "created");
+    assert_eq!(got["source_parts"], 1);
+}
+
 /// A member that was ready at accept and is gone at build time is skipped
 /// and listed; the archive is still built.
 #[tokio::test]

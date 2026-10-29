@@ -77,7 +77,9 @@ the blob is `created` or `uploaded`, `size` is the running estimate; once
 
 The estimate is checked against `archive.max_size`, 100 GiB by default and
 at most 309 GiB. `upload.max_size` does not apply: it is sized for one
-request.
+request. The entries are bounded by `archive.max_entries`, a million by
+default, across the parts: a part whose lines go past it is refused with a
+`422`, the parts before it kept.
 
 ## Workers
 

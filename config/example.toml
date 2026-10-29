@@ -163,6 +163,10 @@ read_cache_entries = 100000
 # the object store allows 10 000 per object, and the encryption needs a
 # margin on top of the estimate.
 max_size = "100 GiB"
+# Upper bound on the entries of a generated archive, across the manifest's
+# parts, checked as it is accepted. The build holds a few hundred bytes per
+# entry until it writes the archive's directory at the end.
+max_entries = 1000000
 
 [document]
 # Upper bound on the workspace of a generated document, the members' sizes

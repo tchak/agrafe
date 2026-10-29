@@ -1382,7 +1382,11 @@ and exact once it is `ready`. It is checked against `archive.max_size`, a
 limit of its own since `upload.max_size` is sized for one request, at most
 309 GiB: 10 000 parts of 32 MiB, less one percent because the parts carry
 the ciphertext, a tag per segment longer than the estimate, plus the
-`ERRORS.txt` and the end records the estimate leaves out.
+`ERRORS.txt` and the end records the estimate leaves out. The entries are
+bounded too, by `archive.max_entries` (default a million), checked as the
+manifest is accepted: the build keeps a few hundred bytes per entry, the
+central directory, the names taken and the errors, until the end, and
+that memory needs a ceiling as the size has one.
 
 The build streams the ZIP as it assembles it, through a writer of its own
 in `jobs::build::zip` rather than the `zip` crate, which stays out of the

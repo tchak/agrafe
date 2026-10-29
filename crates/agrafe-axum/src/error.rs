@@ -237,6 +237,7 @@ impl From<UploadError> for ApiError {
             | UploadError::TooManyParts(_)
             | UploadError::Line { .. }
             | UploadError::ArchiveTooLarge(_)
+            | UploadError::TooManyEntries(_)
             | UploadError::WorkspaceTooLarge(_)
             | UploadError::TooManyFiles(_) => ApiError::Unprocessable(err.to_string()),
             UploadError::Infected(name) => ApiError::Infected(Some(name)),

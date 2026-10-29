@@ -191,6 +191,10 @@ pub enum UploadError {
     /// run past `archive.max_size`, which it carries.
     #[error("the archive would exceed the maximum of {0} bytes (archive.max_size)")]
     ArchiveTooLarge(u64),
+    /// The entries of an `archive` source run past `archive.max_entries`,
+    /// which it carries.
+    #[error("the archive would exceed the maximum of {0} entries (archive.max_entries)")]
+    TooManyEntries(u64),
     /// The files of a `document` source run past
     /// `document.max_workspace_size`, which it carries.
     #[error("the workspace would exceed the maximum of {0} bytes (document.max_workspace_size)")]

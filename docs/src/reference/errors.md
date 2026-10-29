@@ -128,6 +128,7 @@ From `PUT /blobs/:id` on either port, and `PUT /blobs/:id/parts/:n`:
 | `422` | `unprocessable` | `line N: …` | A source line failed its rules, see below |
 | `422` | `unprocessable` | `a source has at most 10000 parts` | |
 | `422` | `unprocessable` | `the archive would exceed the maximum of N bytes (archive.max_size)` | |
+| `422` | `unprocessable` | `the archive would exceed the maximum of N entries (archive.max_entries)` | |
 | `422` | `unprocessable` | `the workspace would exceed the maximum of N bytes (document.max_workspace_size)` | |
 | `422` | `unprocessable` | `the workspace would exceed the maximum of N files (document.max_files)` | |
 | `422` | `infected` | `file is infected: <signature>` on the private port, `file is infected` on the public one | Stored; the blob is `infected` |

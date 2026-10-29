@@ -100,6 +100,10 @@ pub struct Accept {
     max_part: u64,
     /// `archive.max_size`.
     max_archive: u64,
+    /// `archive.max_entries`.
+    max_entries: u64,
+    /// The entries the parts before this one held.
+    entries_before: u64,
     /// The archive's size as the parts before this one left it.
     size_before: u64,
     lines: Lines,
@@ -116,6 +120,8 @@ impl Accept {
         Self {
             max_part: config.upload.max_size.as_u64(),
             max_archive: config.archive.max_size.as_u64(),
+            max_entries: config.archive.max_entries,
+            entries_before: blob.source_rows.max(0) as u64,
             size_before: blob.size.unwrap_or(0).max(0) as u64,
             state,
             lines: Lines::new(),
@@ -177,6 +183,9 @@ impl Tap for Accept {
         self.lines.push(chunk);
         while let Some((line, bytes)) = self.lines.next_line()? {
             let entry = parse_line(&bytes).map_err(|reason| LineError { line, reason })?;
+            if self.entries_before + self.rows >= self.max_entries {
+                return Err(UploadError::TooManyEntries(self.max_entries));
+            }
             self.pending.push(Pending {
                 line,
                 path_len: entry.path.len(),

@@ -725,6 +725,13 @@ pub struct ArchiveConfig {
     /// default, at most `MAX_SIZE_LIMIT`.
     #[serde(default = "default_archive_max_size")]
     pub max_size: ByteSize,
+    /// Upper bound on the entries of a generated archive, across the
+    /// manifest's parts, checked at accept time. The build keeps a few
+    /// hundred bytes per entry until it writes the central directory at
+    /// the end, so its memory needs a ceiling as its size has one: a
+    /// million entries is a few hundred megabytes. 1 000 000 by default.
+    #[serde(default = "default_archive_max_entries")]
+    pub max_entries: u64,
 }
 
 impl ArchiveConfig {
@@ -742,10 +749,15 @@ fn default_archive_max_size() -> ByteSize {
     ByteSize::gib(100)
 }
 
+fn default_archive_max_entries() -> u64 {
+    1_000_000
+}
+
 impl Default for ArchiveConfig {
     fn default() -> Self {
         Self {
             max_size: default_archive_max_size(),
+            max_entries: default_archive_max_entries(),
         }
     }
 }

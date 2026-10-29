@@ -131,6 +131,7 @@ The bucket needs an `AbortIncompleteMultipartUpload` lifecycle rule.
 | Key | Default | Description |
 |---|---|---|
 | `max_size` | `"100 GiB"` | Largest generated archive, checked against the members' sizes as the manifest arrives. At most 309 GiB |
+| `max_entries` | `1000000` | Most entries in a generated archive, across the manifest's parts, checked as it arrives |
 
 ## `[document]`
 
