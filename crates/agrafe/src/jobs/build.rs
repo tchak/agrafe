@@ -19,6 +19,7 @@ pub mod zip;
 use agrafe_crypto::Key;
 use agrafe_crypto::streaming::{Encryptor, Layout};
 use bytes::Bytes;
+use jiff::Timestamp;
 use md5::Md5;
 use object_store::path::Path as ObjectPath;
 use object_store::{ObjectStoreExt, WriteMultipart};
@@ -162,8 +163,11 @@ pub(crate) async fn run<A: Assemble>(state: &Agrafe, job: &Job) -> Result<(), Jo
         tracing::info!("blob is gone, nothing to build");
         return Ok(());
     };
-    if blob.state != BlobState::Uploaded || blob.input_type != A::INPUT {
-        tracing::info!(state = %blob.state, input_type = %blob.input_type, "blob is not waiting for a build");
+    // As of now: a blob past its expiry while it waited in the queue is
+    // expired, reaper or not, and not built.
+    let current = blob.state_at(Timestamp::now());
+    if current != BlobState::Uploaded || blob.input_type != A::INPUT {
+        tracing::info!(state = %current, input_type = %blob.input_type, "blob is not waiting for a build");
         return Ok(());
     }
     let Some(built) = build::<A>(state, job, &blob).await? else {
@@ -240,7 +244,7 @@ async fn build<A: Assemble>(
     let still_ours = held
         && repo::find(state.pool(), blob.id)
             .await?
-            .is_some_and(|b| b.state == BlobState::Uploaded);
+            .is_some_and(|b| b.state_at(Timestamp::now()) == BlobState::Uploaded);
     if !still_ours {
         sink.abort().await;
         return Ok(None);

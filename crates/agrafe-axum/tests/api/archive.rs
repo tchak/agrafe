@@ -642,6 +642,37 @@ async fn delete_before_the_build_writes_nothing() {
     assert_eq!(jobs_for(&app, id).await, vec!["purge"]);
 }
 
+/// An archive whose expiry passes while its build waits in the queue is
+/// expired then, whether or not the reaper has recorded it: it is not
+/// built, and nothing is written.
+#[tokio::test]
+async fn an_archive_expired_in_the_queue_is_not_built() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let member = ready_blob(&app, &png_bytes(200)).await;
+    let created = create(&app, archive_blob("late.zip")).await;
+    let id = id_of(&created);
+    let (status, _) = put_private(&app, id, manifest(&[("a.png", id_of(&member))])).await;
+    assert_eq!(status, StatusCode::OK);
+    sqlx::query("UPDATE blobs SET expires_at = now() - interval '1 second' WHERE id = $1")
+        .bind(parse_id(id))
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+    assert!(run_job(&app, JobKind::Archive).await);
+    let blob = get_blob(&app, id).await;
+    // Recorded `expired` by the reaper's next run; not built meanwhile.
+    assert_eq!(blob["state"], "uploaded", "{blob}");
+    assert!(blob["archive_entries"].is_null(), "{blob}");
+    let objects: Vec<String> = stored_objects(&app)
+        .await
+        .into_iter()
+        .map(|o| o.location.to_string())
+        .filter(|k| k.starts_with(&object_key(id, "")))
+        .collect();
+    assert_eq!(objects, vec![object_key(id, "source/1")], "no original");
+}
+
 /// A `created` blob holding parts has objects: a delete purges them, and
 /// a source nobody finishes is expired by the reaper and purged.
 #[tokio::test]

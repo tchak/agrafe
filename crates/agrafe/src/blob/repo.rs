@@ -617,7 +617,8 @@ pub(crate) async fn complete_build(
         "UPDATE blobs \
          SET state = $2, storage_key = $4, encryption_header = $5, checksum_sha256 = $6, \
              size = $7, archive_entries = $8, archive_errors = $9, checksum_md5 = $10 \
-         WHERE id = $1 AND state = $3 RETURNING ",
+         WHERE id = $1 AND state = $3 AND (expires_at IS NULL OR expires_at > now()) \
+         RETURNING ",
         blob_columns!()
     ))
     .bind(id)

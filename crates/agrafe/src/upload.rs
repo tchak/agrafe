@@ -452,11 +452,12 @@ pub(crate) async fn unfinished(
 
 /// The row changed in the moment since the last ownership check, and the
 /// object just written at `storage_key` is complete. Reset, expired or
-/// deleted, it is nobody's and goes. Under another upload, or finished by
-/// one, it may be its: leave it.
+/// deleted, it is nobody's and goes, an expiry the reaper has yet to
+/// record included. Under another upload, or finished by one, it may be
+/// its: leave it.
 pub(crate) async fn disown(state: &Agrafe, current: &Blob, storage_key: &str) {
     if matches!(
-        current.state,
+        current.state_at(Timestamp::now()),
         BlobState::Created | BlobState::Expired | BlobState::Deleted
     ) {
         delete_quietly(state, storage_key).await;
