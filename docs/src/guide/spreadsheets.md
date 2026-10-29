@@ -150,8 +150,11 @@ the cell limit, is refused at the line that crossed it.
 - **CSV** follows RFC 4180, in UTF-8 with a byte order mark so Excel reads
   the accents. A value starting with `=`, `+`, `-`, `@`, a tab or a carriage
   return is prefixed with a single quote, so user-entered text cannot become
-  a formula on an agent's desktop. CSV is the format for machines; an XLSX
-  is what people should open.
+  a formula on an agent's desktop. That holds for a reader that splits on
+  `,`: Excel in a French or German locale, opening the file by a double
+  click, splits on `;`, so `abc;=1+1` becomes two cells and the second is
+  evaluated, as in any CSV. CSV is the format for machines; an XLSX or ODS,
+  whose text cells are never evaluated, is what people should open.
 - **XLSX** cells are typed, with inline strings. Text cells are never
   evaluated. Dates use Excel's built-in date formats, so they show in the
   user's locale.

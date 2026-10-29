@@ -1324,8 +1324,11 @@ three are streamed row by row, the header first:
   `@`, a tab or a carriage return is prefixed with a single quote: a CSV
   opened in a spreadsheet evaluates such cells as formulas, and a backend
   exporting user-entered text must not be able to ship `=HYPERLINK(...)` to
-  an agent's desktop. CSV has no types, and a French Excel splits on `;`
-  and reads `3.14` as text, so the CSV is the format for machines and the
+  an agent's desktop. That holds for a reader that splits on `,`: a French
+  Excel splits on `;`, so `abc;=1+1` is two cells there and the second is
+  evaluated, and quoting the field would change nothing, a quote inside a
+  `;`-separated field being literal. CSV has no types either, and the same
+  Excel reads `3.14` as text, so the CSV is the format for machines and the
   XLSX is what an agent opens.
 - XLSX with typed cells and inline strings rather than a shared string
   table, which would need a second pass over the data. Text cells are never

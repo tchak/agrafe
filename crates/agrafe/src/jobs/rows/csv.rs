@@ -86,6 +86,14 @@ mod tests {
         String::from_utf8(out).unwrap()
     }
 
+    /// A formula after a `;` is left as it is, for a reader that splits on
+    /// `,`: one that splits on `;` would evaluate it however the field was
+    /// quoted, which DESIGN.md "Rows" tells the operator.
+    #[test]
+    fn a_formula_after_a_semicolon_is_left_alone() {
+        assert_eq!(row(&[Cell::Text("abc;=1+1".into())]), "abc;=1+1\r\n");
+    }
+
     #[test]
     fn records() {
         assert_eq!(
