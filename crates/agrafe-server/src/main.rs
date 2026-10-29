@@ -58,7 +58,7 @@ enum Command {
     /// Apply pending database migrations.
     Migrate,
     /// Check the bucket against the blobs table once, as the weekly audit
-    /// job does: one log line per mismatch, the tally on stdout, and a
+    /// job does: one log line per mismatch on stderr, the tally on stdout, and a
     /// non-zero exit when anything was found.
     Audit {
         /// Delete the orphan objects older than upload.stale_after: the
@@ -178,7 +178,13 @@ async fn main() -> Result<(), Error> {
     let cli = Cli::parse();
     let env = std::env::var(EnvFilter::DEFAULT_ENV).unwrap_or_default();
     let filter = cap_http_targets(env_filter(&env), &env);
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    // Logs on stderr: stdout is the audit's report, to keep or pipe apart.
+    // Coloured on a terminal only, not in a log collector's input.
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
+        .init();
 
     if let Some(path) = &cli.config
         && !path.exists()

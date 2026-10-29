@@ -215,7 +215,10 @@ instead.
 
 ## Logs
 
-agrafe logs to standard output through `tracing`, filtered by `RUST_LOG`:
+agrafe logs to standard error through `tracing`, filtered by `RUST_LOG`;
+standard output is left to what a command reports, the tally of `agrafe
+audit`. A directive `RUST_LOG` cannot parse is named on standard error at
+startup and left out, the others kept:
 
 ```sh
 RUST_LOG=info agrafe serve                 # default

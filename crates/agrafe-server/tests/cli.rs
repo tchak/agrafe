@@ -116,6 +116,9 @@ async fn migrate_then_audit_exits_by_what_it_found() {
         "{}",
         text(&out.stdout)
     );
+    // The mismatch's log line is on stderr; stdout is the tally alone.
+    assert!(text(&out.stderr).contains("WARN"), "{}", text(&out.stderr));
+    assert!(!text(&out.stdout).contains("WARN"), "{}", text(&out.stdout));
     assert!(
         text(&out.stderr).contains("the audit found 1 mismatches"),
         "{}",
