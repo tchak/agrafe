@@ -17,6 +17,8 @@ use object_store::path::Path as ObjectPath;
 use object_store::{GetOptions, GetRange, ObjectStoreExt};
 use uuid::Uuid;
 
+use crate::storage::Store;
+
 use super::envelope::Envelope;
 use super::{Blob, BlobHead};
 use crate::app::Agrafe;
@@ -210,6 +212,34 @@ impl Stored {
     }
 }
 
+/// How much of a source part one request reads. A part is read a window at
+/// a time, each fetched whole: the build consumes its lines in batches with
+/// long member copies between them, and a response held open and idle that
+/// long is one an object store cuts off, failing the attempt every time.
+const PART_WINDOW: u64 = 8 * 1024 * 1024;
+
+/// The bytes of `path`, `len` long, as a stream of ranged reads of at most
+/// `window` bytes, each requested when the one before is used up.
+fn windows(
+    store: Store,
+    path: ObjectPath,
+    len: u64,
+    window: u64,
+) -> BoxStream<'static, object_store::Result<Bytes>> {
+    futures::stream::try_unfold(0u64, move |offset| {
+        let (store, path) = (store.clone(), path.clone());
+        async move {
+            if offset >= len {
+                return Ok(None);
+            }
+            let end = (offset + window).min(len);
+            let bytes = store.get_range(&path, offset..end).await?;
+            Ok(Some((bytes, end)))
+        }
+    })
+    .boxed()
+}
+
 /// Opens segments as their ciphertext arrives, trimming to the requested
 /// plaintext range.
 pub struct Reader {
@@ -306,14 +336,12 @@ impl Reader {
 
         let storage_key = super::key::source(blob.id, n);
         let path = ObjectPath::from(storage_key.as_str());
-        // One request: the object's length comes with the response.
-        let got = state.store().get(&path).await?;
-        let len = got.meta.size;
+        let len = state.store().head(&path).await?.size;
         let size = layout.plaintext_len(len).map_err(|_| ReadError::Length {
             key: storage_key.clone(),
             len,
         })?;
-        let mut source = got.into_stream().boxed();
+        let mut source = windows(state.store().clone(), path, len, PART_WINDOW);
         let mut buffer = BytesMut::with_capacity(layout.segment_size());
         while buffer.len() < HEADER_LEN {
             match source.next().await {
@@ -379,5 +407,34 @@ impl Reader {
         // Neither step copies: the buffer is frozen and the slice is a view
         // into it.
         Ok(Some(sealed.freeze().slice(skip..skip + take)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use futures::TryStreamExt as _;
+    use object_store::memory::InMemory;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn a_part_is_read_in_windows_to_its_end() {
+        let store: Store = Arc::new(InMemory::new());
+        let path = ObjectPath::from("part");
+        let bytes: Vec<u8> = (0..10u8).collect();
+        store.put(&path, bytes.clone().into()).await.unwrap();
+        for window in [1, 3, 10, 64] {
+            let read: Vec<Bytes> = windows(store.clone(), path.clone(), 10, window)
+                .try_collect()
+                .await
+                .unwrap();
+            assert_eq!(read.len() as u64, 10_u64.div_ceil(window), "{window}");
+            assert!(read.iter().all(|w| w.len() as u64 <= window), "{window}");
+            assert_eq!(read.concat(), bytes, "{window}");
+        }
+        let empty: Vec<Bytes> = windows(store, path, 0, 3).try_collect().await.unwrap();
+        assert!(empty.is_empty());
     }
 }

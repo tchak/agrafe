@@ -1431,9 +1431,11 @@ object than copying it. A member up to 8 MiB, which is most of them, is
 read whole when fetched ahead; a larger one is opened when its turn comes.
 Holding a response open and idle while a long entry copies is what the
 look-ahead must not do: an object store cuts such a connection off after a
-while, and that would fail the attempt. Memory is bounded by 8 MiB times
-the look-ahead, plus a segment for the member being streamed and the parts
-in flight.
+while, and that would fail the attempt. The manifest's own parts obey the
+same rule: they are read 8 MiB at a time, each window fetched whole, so the
+part being read is never a response left idle across a batch of copies.
+Memory is bounded by 8 MiB times the look-ahead, plus the manifest's
+window, a segment for the member being streamed and the parts in flight.
 
 A source that was `ready` at accept time can be deleted, expire or be purged
 before the build reaches it. The build does not fail for it: the entry is
