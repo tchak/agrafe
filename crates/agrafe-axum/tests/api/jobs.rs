@@ -190,6 +190,46 @@ async fn running_job_keeps_its_lease() {
     assert_eq!(get_blob(&app, id).await["state"], "ready");
 }
 
+/// A lease lost all the same, another worker holding the job after a
+/// lapse, ends the attempt where it stands: the job is the other worker's
+/// to finish, and two runs of one job would write the same objects.
+#[tokio::test]
+async fn a_lost_lease_ends_the_attempt() {
+    let db = TestDatabase::new().await;
+    let received = Arc::new(Notify::new());
+    let clamd = fake_clamd_in(FakeClamd::Held {
+        received: received.clone(),
+        release: Arc::new(Notify::new()),
+    })
+    .await;
+    let lease = Duration::from_millis(1200);
+    let app = setup_tuned(db, clamd, |c| c.jobs.lease_timeout = lease).await;
+    let bytes = png_bytes(5000);
+    let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
+    let (status, body) = put_private(&app, id_of(&created), bytes).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let state = app.state.clone();
+    let job = tokio::spawn(async move {
+        agrafe::jobs::runner::run_one(&state, agrafe::jobs::JobKind::Scan, "w1")
+            .await
+            .unwrap()
+    });
+    within("clamd to receive the stream", received.notified()).await;
+    // Reclaimed by another worker while clamd holds the scan for ever.
+    sqlx::query("UPDATE jobs SET locked_by = 'w2', locked_at = now() WHERE kind = 'scan'")
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+    assert!(within("the abandoned attempt", job).await.unwrap());
+    let held_by: Vec<Option<String>> =
+        sqlx::query_scalar("SELECT locked_by FROM jobs WHERE kind = 'scan'")
+            .fetch_all(app.state.pool())
+            .await
+            .unwrap();
+    assert_eq!(held_by, vec![Some("w2".to_owned())], "left to w2");
+}
+
 #[tokio::test]
 async fn job_queue_mechanics() {
     let db = TestDatabase::new().await;

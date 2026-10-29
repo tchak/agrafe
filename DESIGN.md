@@ -2976,8 +2976,12 @@ and counts the attempt. A locked job is
 claimable again once `jobs.lease_timeout` has passed, which is how a crashed
 worker's job gets picked up. A live worker renews its lease every third of
 it while the handler runs, so a scan longer than the lease is not handed to
-a second worker; only a dead one lets the lease lapse. Success deletes the
-row. Failure, a handler panic included, unlocks it with exponential backoff
+a second worker; only a dead one lets the lease lapse. One that was only
+stalled, and finds at its next renewal that another worker holds the job,
+abandons the attempt where it stands, and a build checks its lease once
+more before it completes its object: two runs of one job would write the
+same key, the row taking one header and the object the other's bytes.
+Success deletes the row. Failure, a handler panic included, unlocks it with exponential backoff
 (30 s, doubling, capped at an hour, or longer when the failure asks for
 it: a remote's `Retry-After`) until `max_attempts` (5), then sets
 `failed_at` and leaves it locked: never run again, not holding the one

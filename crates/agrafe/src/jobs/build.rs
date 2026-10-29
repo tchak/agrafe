@@ -166,8 +166,10 @@ pub(crate) async fn run<A: Assemble>(state: &Agrafe, job: &Job) -> Result<(), Jo
         tracing::info!(state = %blob.state, input_type = %blob.input_type, "blob is not waiting for a build");
         return Ok(());
     }
-    let Some(built) = build::<A>(state, &blob).await? else {
-        tracing::warn!("blob left `uploaded` during the build, nothing written");
+    let Some(built) = build::<A>(state, job, &blob).await? else {
+        tracing::warn!(
+            "blob left `uploaded`, or the job its lease, during the build: nothing written"
+        );
         return Ok(());
     };
     match repo::complete_build(state.pool(), &state.config().webhook, id, &built).await? {
@@ -193,9 +195,13 @@ pub(crate) async fn run<A: Assemble>(state: &Agrafe, job: &Job) -> Result<(), Jo
 }
 
 /// Assemble the file into the original's key. `None` when the blob was no
-/// longer `uploaded` at the end: the object is not finished and nothing
-/// is written.
-async fn build<A: Assemble>(state: &Agrafe, blob: &Blob) -> Result<Option<Built>, BuildError> {
+/// longer `uploaded` at the end, or the job no longer this worker's: the
+/// object is not finished and nothing is written.
+async fn build<A: Assemble>(
+    state: &Agrafe,
+    job: &Job,
+    blob: &Blob,
+) -> Result<Option<Built>, BuildError> {
     let missing = |what| BuildError::Incomplete {
         blob_id: blob.id,
         what,
@@ -222,10 +228,19 @@ async fn build<A: Assemble>(state: &Agrafe, blob: &Blob) -> Result<Option<Built>
         }
     };
     // One last look before the object becomes visible: the key is the
-    // blob's, so only a build of a blob still waiting may finish it.
-    let still_ours = repo::find(state.pool(), blob.id)
-        .await?
-        .is_some_and(|b| b.state == BlobState::Uploaded);
+    // blob's, so only a build of a blob still waiting may finish it, and
+    // only the build whose job still holds its lease. A build whose lease
+    // lapsed, a worker stalled for longer, is running beside the one that
+    // reclaimed it, and the two would complete the same key, the row
+    // taking one header and the object the other's bytes.
+    let held = match job.locked_by.as_deref() {
+        Some(worker) => crate::jobs::touch(state.pool(), job.id, worker).await?,
+        None => true,
+    };
+    let still_ours = held
+        && repo::find(state.pool(), blob.id)
+            .await?
+            .is_some_and(|b| b.state == BlobState::Uploaded);
     if !still_ours {
         sink.abort().await;
         return Ok(None);

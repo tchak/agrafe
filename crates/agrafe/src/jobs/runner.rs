@@ -170,14 +170,19 @@ async fn run_claimed(state: &Agrafe, job: &Job, worker: &str) -> sqlx::Result<()
     // A handler that panics has failed this attempt; it must not take the
     // worker, or the process in the `all` role, down with it. The lease is
     // renewed while it runs, so a job longer than the lease is not handed
-    // to a second worker.
+    // to a second worker. A lease lost all the same, another worker holding
+    // the job, ends the attempt where it stands: two runs of one job would
+    // write the same objects, and the row is the other worker's to finish.
     let outcome = tokio::select! {
         outcome = std::panic::AssertUnwindSafe(handle(state, job)).catch_unwind() => {
             outcome.unwrap_or_else(|panic| {
                 Err(JobError::Panicked(panic_message(&*panic).to_string()))
             })
         }
-        _ = heartbeat(state, job.id, worker, lease) => unreachable!("the heartbeat never ends"),
+        () = heartbeat(state, job.id, worker, lease) => {
+            tracing::warn!("lease lost: the job was reclaimed or removed, attempt abandoned");
+            return Ok(());
+        }
     };
     let took = started.elapsed();
     let outcome = match outcome {
@@ -320,6 +325,9 @@ where
 }
 
 /// Renew the lease every third of it, for as long as this future is polled.
+/// Renew `worker`'s lease on the job until it is lost: another worker
+/// claimed the job after a lapse, or the job is gone. A renewal that fails
+/// is retried at the next tick; the lease may still hold.
 async fn heartbeat(state: &Agrafe, id: i64, worker: &str, lease: Duration) {
     let period = (lease / 3).max(Duration::from_secs(1));
     let mut ticks = tokio::time::interval(period);
@@ -328,7 +336,7 @@ async fn heartbeat(state: &Agrafe, id: i64, worker: &str, lease: Duration) {
         ticks.tick().await;
         match super::touch(state.pool(), id, worker).await {
             Ok(true) => {}
-            Ok(false) => tracing::warn!("lease lost: the job was reclaimed or removed"),
+            Ok(false) => return,
             Err(err) => tracing::warn!(error = ?err, "could not renew the job lease"),
         }
     }
