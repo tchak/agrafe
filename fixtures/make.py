@@ -187,16 +187,19 @@ def odt(text, media=None):
     return out.getvalue()
 
 
-def xlsx(rows, macro_enabled=False):
+def xlsx(rows, macro_enabled=False, break_after=None):
     """A workbook of one sheet holding `rows`, lists of strings, as inline
     strings. Macro-enabled, the workbook part declares the XLSM content
-    type; the package is otherwise the same, there being no macro."""
+    type; the package is otherwise the same, there being no macro. With
+    `break_after`, a manual page break follows that row, so the sheet
+    prints on two pages."""
     def cell(col, row, value):
         return f'<c r="{chr(65 + col)}{row}" t="inlineStr"><is><t>{value}</t></is></c>'
     data = "".join(
         f'<row r="{r + 1}">' + "".join(cell(c, r + 1, v) for c, v in enumerate(row)) + "</row>"
         for r, row in enumerate(rows)
     )
+    breaks = "" if break_after is None else f'<rowBreaks count="1" manualBreakCount="1"><brk id="{break_after}" max="16383" man="1"/></rowBreaks>'
     main = "application/vnd.ms-excel.sheet.macroEnabled.main+xml" if macro_enabled else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w") as z:
@@ -204,7 +207,7 @@ def xlsx(rows, macro_enabled=False):
         zip_entry(z, "_rels/.rels", '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>')
         zip_entry(z, "xl/workbook.xml", '<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Feuille1" sheetId="1" r:id="rId1"/></sheets></workbook>')
         zip_entry(z, "xl/_rels/workbook.xml.rels", '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>')
-        zip_entry(z, "xl/worksheets/sheet1.xml", f'<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>{data}</sheetData></worksheet>')
+        zip_entry(z, "xl/worksheets/sheet1.xml", f'<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>{data}</sheetData>{breaks}</worksheet>')
     return out.getvalue()
 
 
@@ -517,11 +520,11 @@ def main():
         "image.pdf": image_pdf(jpeg(16, 8), 16, 8, 16, 8, "16 0 0 8 0 0"),
         "point.geojson": geojson(feature({"type": "Point", "coordinates": PARIS})),
         # Through LibreOffice when one is configured, one file per
-        # application: the DOCX, the PPTX and the ODG have two pages so
-        # that the one-page export is checked on each filter, and the ODT
-        # carries a macro that must not run.
+        # application: the DOCX, the XLSX, the PPTX and the ODG have two
+        # pages so that the one-page export is checked on each filter, and
+        # the ODT carries a macro that must not run.
         "pages.docx": docx("Page {page}", pages=2),
-        "sheet.xlsx": xlsx([["a", "b"], ["1", "2"]]),
+        "sheet.xlsx": xlsx([["a", "b"], ["1", "2"]], break_after=1),
         "slides.pptx": pptx(["Slide 1", "Slide 2"]),
         "drawing.odg": odg(2),
         "macro.odt": macro_odt(),

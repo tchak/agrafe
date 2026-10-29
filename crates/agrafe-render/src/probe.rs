@@ -337,13 +337,13 @@ async fn probe_tools(config: &Config, tmp_dir: Option<&Path>) -> Result<(), Prob
     Ok(())
 }
 
-/// Convert a two-page DOCX, a one-sheet XLSX, a two-slide PPTX, a
+/// Convert a two-page DOCX, a two-page XLSX, a two-slide PPTX, a
 /// two-page ODG and an ODT carrying a macro through the exact command
 /// lines the render job uses, and render the results through vips: a
 /// LibreOffice without one of its four applications (Debian packages them
 /// apart), without fonts, or too old for the JSON filter options would
 /// mark every office file of that kind `failed` instead of failing the
-/// deployment. The DOCX, the PPTX and the ODG have two pages so that
+/// deployment. The DOCX, the XLSX, the PPTX and the ODG have two pages so that
 /// `PageRange` is known to be honoured by each export filter: the PDF
 /// must have one, which vips tells by refusing the second. The ODT binds
 /// a Basic macro to its load event that creates a folder next to the
@@ -356,7 +356,7 @@ pub async fn probe_office(config: &Config, tmp_dir: Option<&Path>) -> Result<(),
     let output = workdir.path().join("probe.webp");
     for (what, name, content_type, bytes, two_pages) in [
         ("a two-page DOCX", "writer", DOCX, PROBE_DOCX, true),
-        ("an XLSX", "calc", XLSX, PROBE_XLSX, false),
+        ("a two-page XLSX", "calc", XLSX, PROBE_XLSX, true),
         ("a two-slide PPTX", "impress", PPTX, PROBE_PPTX, true),
         ("a two-page ODG", "draw", ODG, PROBE_ODG, true),
         ("an ODT with a macro", "macro", ODT, PROBE_MACRO, false),

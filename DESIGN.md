@@ -2024,14 +2024,14 @@ fails every render job of a PDF, DOCX or ODT, a wrong one declines every
 embedded image), and it never touches the network. With
 `media.office.command` set, it converts one file per LibreOffice
 application through the exact command lines and renders the results: a
-two-page DOCX, a one-sheet XLSX, a two-slide PPTX, a two-page ODG and an
+two-page DOCX, a two-page XLSX, a two-slide PPTX, a two-page ODG and an
 ODT carrying a macro (`probe/pages.docx`, `sheet.xlsx`, `slides.pptx`,
 `drawing.odg`, `macro.odt`). A LibreOffice without one of Writer, Calc,
 Impress or Draw (Debian packages them apart, and a deployment for
 spreadsheets and letters may well lack Impress), without fonts, or too
 old for the JSON filter options fails the deployment rather than every
-office file of that kind. The DOCX, the PPTX and the ODG have two pages
-so that `PageRange` is known to be honoured by each export filter, since
+office file of that kind. The DOCX, the XLSX (a manual page break), the
+PPTX and the ODG have two pages so that `PageRange` is known to be honoured by each export filter, since
 there is at least one report of it being ignored, and a slide export has
 notes and handout settings of its own: vips must render page one of the
 export and refuse page two, which tells a one-page PDF from a longer one
