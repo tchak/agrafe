@@ -66,6 +66,11 @@ pub struct Metrics {
     audit_blobs: IntGauge,
     audit_errors: IntGauge,
     audit_last_run: IntGauge,
+    /// Held from a census's first write to the end of the gather that
+    /// renders it: a concurrent scrape, a pair of Prometheus replicas,
+    /// would otherwise read the other's census half written, zeros where
+    /// the table has jobs.
+    census: std::sync::Mutex<()>,
 }
 
 impl Default for Metrics {
@@ -221,6 +226,7 @@ impl Metrics {
             audit_blobs,
             audit_errors,
             audit_last_run,
+            census: std::sync::Mutex::new(()),
         }
     }
 
@@ -277,12 +283,20 @@ impl Metrics {
     /// gauges keep the last one's values and `agrafe_jobs_census_ok` says
     /// so: what the process knows of itself is still worth the scrape.
     pub fn render(&self, counts: Option<&[Count]>) -> Result<String, MetricsError> {
-        self.census_ok.set(i64::from(counts.is_some()));
-        if let Some(counts) = counts {
-            self.set_census(counts);
-        }
+        let families = {
+            // A panic elsewhere under the lock left nothing to repair.
+            let _census = self
+                .census
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.census_ok.set(i64::from(counts.is_some()));
+            if let Some(counts) = counts {
+                self.set_census(counts);
+            }
+            self.registry.gather()
+        };
         let mut out = Vec::new();
-        TextEncoder::new().encode(&self.registry.gather(), &mut out)?;
+        TextEncoder::new().encode(&families, &mut out)?;
         Ok(String::from_utf8_lossy(&out).into_owned())
     }
 
@@ -309,6 +323,52 @@ impl Metrics {
                     .with_label_values(&[kind, priority])
                     .set(seconds);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn census(count: i64) -> Vec<Count> {
+        vec![Count {
+            kind: JobKind::Notify,
+            priority: Priority::ALL[0],
+            state: JobState::Dead,
+            count,
+            oldest_due_seconds: None,
+        }]
+    }
+
+    /// Two scrapes at once each render a census whole: the one written
+    /// by either, never the reset between them.
+    #[test]
+    fn concurrent_renders_see_a_whole_census() {
+        let metrics = std::sync::Arc::new(Metrics::new());
+        let line = |count| {
+            format!(
+                "agrafe_jobs{{kind=\"notify\",priority=\"{}\",state=\"dead\"}} {count}",
+                Priority::ALL[0].as_str()
+            )
+        };
+        let (one, two) = (line(1), line(2));
+        let scrapers: Vec<_> = [1, 2]
+            .into_iter()
+            .map(|count| {
+                let metrics = metrics.clone();
+                let (one, two) = (one.clone(), two.clone());
+                std::thread::spawn(move || {
+                    let counts = census(count);
+                    for _ in 0..2000 {
+                        let text = metrics.render(Some(&counts)).unwrap();
+                        assert!(text.contains(&one) || text.contains(&two), "{text}");
+                    }
+                })
+            })
+            .collect();
+        for scraper in scrapers {
+            scraper.join().unwrap();
         }
     }
 }
