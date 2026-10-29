@@ -583,11 +583,13 @@ where
     };
     // One last look before the object becomes visible: every key is the
     // blob's, so the object must only ever be finished by the upload that
-    // holds the row.
+    // holds the row. A database error here aborts the upload too: dropped,
+    // its parts would stay in the bucket until the lifecycle rule.
     let stored = match pumped {
-        Ok(out) => match repo::touch_upload(state.pool(), blob_id, started).await? {
-            true => Ok(out),
-            false => Err(lost(state, blob_id).await),
+        Ok(out) => match repo::touch_upload(state.pool(), blob_id, started).await {
+            Ok(true) => Ok(out),
+            Ok(false) => Err(lost(state, blob_id).await),
+            Err(err) => Err(err.into()),
         },
         Err(err) => Err(err),
     };
