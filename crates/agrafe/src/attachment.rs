@@ -80,15 +80,7 @@ impl Agrafe {
     ) -> Result<AttachOutcome, AttachError> {
         let new = validate(req).map_err(AttachError::Invalid)?;
         let mut tx = self.pool().begin().await?;
-        let others = if new.replace {
-            lock_address(&mut tx, &new).await?;
-            others_at(&mut tx, blob_id, &new).await?
-        } else {
-            Vec::new()
-        };
-        if others.len() > MAX_REPLACED {
-            return Err(AttachError::TooManyToReplace(MAX_REPLACED));
-        }
+        let others = others_to_replace(&mut tx, blob_id, &new).await?;
         // Every blob row this attach changes, in id order: a replace takes
         // several, and two of them over overlapping blobs take them in the
         // same order.
@@ -534,29 +526,61 @@ async fn insert(
 /// The blob was just inserted without an expiry, so there is nothing to
 /// clear. With `replace`, the other blobs at the address are detached as
 /// on attach, their expiry re-armed at `expires_at`; the new row is the
-/// transaction's own, so only theirs are locked. `None` when there are
-/// more than `MAX_REPLACED` of them.
+/// transaction's own, so only theirs are locked.
 pub(crate) async fn insert_with_blob(
     conn: &mut PgConnection,
     blob_id: Uuid,
     new: &NewAttachment,
     expires_at: Timestamp,
-) -> sqlx::Result<Option<Attachment>> {
-    if new.replace {
-        lock_address(conn, new).await?;
-        let others = others_at(conn, blob_id, new).await?;
-        if others.len() > MAX_REPLACED {
-            return Ok(None);
-        }
-        // Nobody there, the usual case for a new owner: no rows to lock.
-        if !others.is_empty() {
-            lock_blobs(conn, &others).await?;
-            detach_all(conn, new, &others, expires_at).await?;
-        }
+) -> Result<Attachment, ReplaceError> {
+    let others = others_to_replace(conn, blob_id, new).await?;
+    // Nobody there, the usual case for a new owner: no rows to lock.
+    if !others.is_empty() {
+        lock_blobs(conn, &others).await?;
+        detach_all(conn, new, &others, expires_at).await?;
     }
     match insert(conn, blob_id, new).await? {
-        Attached::Created(a) | Attached::Existing(a) => Ok(Some(a)),
+        Attached::Created(a) | Attached::Existing(a) => Ok(a),
     }
+}
+
+/// Why a replace was refused before the attach itself.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ReplaceError {
+    /// More than `MAX_REPLACED` other blobs at the address; carries the
+    /// cap.
+    #[error("more than {0} blobs to replace at this owner and role")]
+    TooMany(usize),
+    /// The query failed.
+    #[error("database: {0}")]
+    Db(#[from] sqlx::Error),
+}
+
+impl From<ReplaceError> for AttachError {
+    fn from(err: ReplaceError) -> Self {
+        match err {
+            ReplaceError::TooMany(cap) => AttachError::TooManyToReplace(cap),
+            ReplaceError::Db(e) => AttachError::Db(e),
+        }
+    }
+}
+
+/// With `replace`, the other blobs at the address, read under the address
+/// lock, in id order; none without. Refused past `MAX_REPLACED`.
+async fn others_to_replace(
+    conn: &mut PgConnection,
+    blob_id: Uuid,
+    new: &NewAttachment,
+) -> Result<Vec<Uuid>, ReplaceError> {
+    if !new.replace {
+        return Ok(Vec::new());
+    }
+    lock_address(conn, new).await?;
+    let others = others_at(conn, blob_id, new).await?;
+    if others.len() > MAX_REPLACED {
+        return Err(ReplaceError::TooMany(MAX_REPLACED));
+    }
+    Ok(others)
 }
 
 /// The blob is attached: it no longer expires.

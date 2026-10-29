@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use super::{Blob, InputType, Representation, repo};
 use crate::app::Agrafe;
-use crate::attachment::{self, AttachmentRequest, NewAttachment};
+use crate::attachment::{self, AttachmentRequest, NewAttachment, ReplaceError};
 use crate::classify::{self, Category};
 use crate::config::{BlobsConfig, FetchConfig, UploadConfig};
 use crate::jobs::{self, JobKind, Priority, fetch};
@@ -35,6 +35,15 @@ pub enum CreateError {
     Db(#[from] sqlx::Error),
 }
 
+impl From<ReplaceError> for CreateError {
+    fn from(err: ReplaceError) -> Self {
+        match err {
+            ReplaceError::TooMany(cap) => CreateError::TooManyToReplace(cap),
+            ReplaceError::Db(e) => CreateError::Db(e),
+        }
+    }
+}
+
 impl Agrafe {
     /// Create a blob: metadata only, no bytes yet. With an `attachment`,
     /// the blob is attached in the same transaction and carries no expiry;
@@ -56,9 +65,7 @@ impl Agrafe {
         let blob = repo::insert(&mut *tx, &new).await?;
         if let Some(attachment) = &new.attachment {
             let expires_at = config.blobs.default_expires_at(Timestamp::now());
-            attachment::insert_with_blob(&mut tx, blob.id, attachment, expires_at)
-                .await?
-                .ok_or(CreateError::TooManyToReplace(attachment::MAX_REPLACED))?;
+            attachment::insert_with_blob(&mut tx, blob.id, attachment, expires_at).await?;
         }
         if blob.input_type.is_fetched() {
             jobs::enqueue(
