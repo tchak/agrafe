@@ -636,6 +636,47 @@ async fn a_file_and_a_directory_cannot_share_a_path() {
     assert!(error.contains("both a file and a directory"), "{error}");
 }
 
+/// `document.max_files` bounds the directories the paths make as it
+/// bounds the files, and a path is at most 32 components deep: a few deep,
+/// distinct paths would otherwise cost a directory per component.
+#[tokio::test]
+async fn the_directories_a_workspace_makes_are_bounded() {
+    let db = TestDatabase::new().await;
+    let clamd = fake_clamd().await;
+    let app = setup_tuned(db, clamd, |c| c.document.max_files = 5).await;
+    let created = create(&app, document_blob("deep.pdf")).await;
+    let id = id_of(&created);
+
+    let deep = format!("{}/f.typ", ["d"; 32].join("/"));
+    let (status, body) = put_part(&app, id, 1, manifest(&[text(&deep, "")])).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("32 components deep"),
+        "{body}"
+    );
+
+    // Three files, six directories.
+    let lines = [
+        text("main.typ", "x"),
+        text("a/b/c/f.typ", ""),
+        text("x/y/z/f.typ", ""),
+    ];
+    let (status, body) = put_part(&app, id, 1, manifest(&lines)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, _) = finish(&app, id).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(run_job(&app, JobKind::Document).await);
+    let (_, dead, error) = job_outcome(&app, id).await;
+    assert!(dead, "{error}");
+    assert!(
+        error.contains("maximum of 5 directories (document.max_files)"),
+        "{error}"
+    );
+}
+
 /// The blob is deleted while its document waits to be built: nothing is
 /// written and the job is done.
 #[tokio::test]

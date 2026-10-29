@@ -1489,7 +1489,10 @@ Per line, at accept:
   disk. The files are bounded too, by `document.max_files` (default
   10 000), since bytes alone bound nothing: an empty inline file costs
   none, and a manifest of a few million of them would cost the worker as
-  many files and directories on disk. The PDF's size is unknown until it
+  many files and directories on disk. Lines bound the files and not the
+  directories their paths make, a directory per component, so a path is
+  at most 32 components deep at accept, and the build refuses a
+  workspace whose directories run past `document.max_files` as well. The PDF's size is unknown until it
   is built, so unlike an archive's, a document's `size` is null until it
   is `ready`.
 - Nothing checks that the manifest holds the main file: it may come in a

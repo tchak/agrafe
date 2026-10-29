@@ -103,7 +103,7 @@ a file and as a directory (`lib` and `lib/a.typ`), fails the build.
 | Setting | Default | Bounds |
 |---|---|---|
 | `document.max_workspace_size` | 256 MiB | The members' sizes plus the inline bytes |
-| `document.max_files` | 10 000 | The manifest's lines across its parts |
+| `document.max_files` | 10 000 | The manifest's lines across its parts, and the directories their paths make, a path at most 32 components deep |
 
 Both are checked as the manifest arrives and again by the build, which
 writes the workspace to the worker's disk under `media.tmp_dir`. A

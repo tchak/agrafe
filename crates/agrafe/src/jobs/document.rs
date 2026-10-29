@@ -93,7 +93,9 @@ impl Assemble for Document {
 }
 
 /// Every file of the manifest under `root`, within
-/// `document.max_workspace_size` and `document.max_files`.
+/// `document.max_workspace_size` and `document.max_files`, which bounds
+/// the directories the paths make as it bounds the files: lines of deep,
+/// distinct paths would otherwise cost the disk a directory per component.
 async fn write_workspace(state: &Agrafe, blob: &Blob, root: &Path) -> Result<(), BuildError> {
     let config = &state.config().document;
     let max = config.max_workspace_size.as_u64();
@@ -113,6 +115,12 @@ async fn write_workspace(state: &Agrafe, blob: &Blob, root: &Path) -> Result<(),
         layout
             .place(&entry.path)
             .map_err(|reason| source.malformed(line.line, reason))?;
+        if layout.dirs.len() as u64 > config.max_files {
+            return Err(BuildError::Workspace(format!(
+                "the workspace exceeds the maximum of {} directories (document.max_files)",
+                config.max_files
+            )));
+        }
         let path = root.join(&entry.path);
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent)

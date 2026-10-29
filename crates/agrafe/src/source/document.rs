@@ -26,6 +26,11 @@ use crate::upload::{Tap, UploadError};
 pub const MAX_PATH_LEN: usize = 1024;
 pub const MAX_COMPONENT_LEN: usize = 255;
 
+/// Most components a workspace path may have: a path makes a directory
+/// of each but its last, and `document.max_files` counts lines, so the
+/// depth is what bounds the directories one line costs.
+pub const MAX_PATH_DEPTH: usize = 32;
+
 /// The entry file when the creation names none.
 pub const DEFAULT_MAIN: &str = "main.typ";
 
@@ -97,6 +102,11 @@ pub fn normalize_path(raw: &str) -> Result<String, String> {
     if path.split('/').any(|c| c.len() > MAX_COMPONENT_LEN) {
         return Err(format!(
             "path has a component longer than {MAX_COMPONENT_LEN} bytes"
+        ));
+    }
+    if path.split('/').count() > MAX_PATH_DEPTH {
+        return Err(format!(
+            "path is more than {MAX_PATH_DEPTH} components deep"
         ));
     }
     Ok(path)
@@ -314,5 +324,8 @@ mod tests {
         let long = [component.as_str(); 5].join("/");
         assert!(long.len() > MAX_PATH_LEN);
         assert!(normalize_path(&long).is_err());
+        let deepest = ["a"; MAX_PATH_DEPTH].join("/");
+        assert!(normalize_path(&deepest).is_ok());
+        assert!(normalize_path(&format!("{deepest}/a")).is_err());
     }
 }
