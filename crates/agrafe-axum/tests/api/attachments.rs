@@ -1018,3 +1018,66 @@ async fn two_replaces_of_one_address_leave_one_blob() {
         assert!(get_blob(&app, id_of(blob)).await["expires_at"].is_string());
     }
 }
+
+/// A replace reads the address, then waits for the blob rows. A blob
+/// detached and attached again there meanwhile has a new attachment row;
+/// its attach committed before the replace took its row, so the replace
+/// detaches it all the same, by address rather than by the rows it read.
+#[tokio::test]
+async fn a_replace_detaches_a_blob_reattached_while_it_waited() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let old = create(&app, raw_blob()).await;
+    let (_, first_row) = attach(&app, id_of(&old), attachment("user", "7", "avatar")).await;
+    let new = create(&app, raw_blob()).await;
+
+    // Hold the old blob's row; the replace reads the address, then waits
+    // on it. Meanwhile, what a detach and an attach of the old blob at
+    // the same address do: its row goes, a new one comes.
+    let mut tx = app.state.pool().begin().await.unwrap();
+    sqlx::query("SELECT id FROM blobs WHERE id = $1 FOR UPDATE")
+        .bind(parse_id(id_of(&old)))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let router = app.private.clone();
+    let new_id = id_of(&new).to_string();
+    let replace = tokio::spawn(async move {
+        call(
+            &router,
+            json_req(
+                Method::POST,
+                &format!("/blobs/{new_id}/attachments"),
+                replacing("user", "7", "avatar"),
+            ),
+        )
+        .await
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!replace.is_finished(), "waits on the row");
+    sqlx::query("DELETE FROM attachments WHERE id = $1")
+        .bind(parse_id(first_row["id"].as_str().unwrap()))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let second_row: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO attachments (id, blob_id, owner_kind, owner_id, role) \
+         VALUES ($1, $2, 'user', '7', 'avatar') RETURNING id",
+    )
+    .bind(uuid::Uuid::now_v7())
+    .bind(parse_id(id_of(&old)))
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let (status, got) = within("the replace", replace).await.unwrap();
+    assert_eq!(status, StatusCode::CREATED, "{got}");
+    assert_eq!(got["detached"].as_array().unwrap().len(), 1, "{got}");
+    assert_eq!(got["detached"][0]["id"], second_row.to_string());
+    assert_eq!(
+        blobs_at(&app, "user", "7", "avatar").await,
+        vec![id_of(&new).to_string()]
+    );
+    assert!(get_blob(&app, id_of(&old)).await["expires_at"].is_string());
+}

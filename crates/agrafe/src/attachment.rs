@@ -92,7 +92,7 @@ impl Agrafe {
         // Every blob row this attach changes, in id order: a replace takes
         // several, and two of them over overlapping blobs take them in the
         // same order.
-        let mut ids: Vec<Uuid> = others.iter().map(|a| a.blob_id).collect();
+        let mut ids = others.clone();
         ids.push(blob_id);
         ids.sort_unstable();
         let blob = lock_blobs(&mut tx, &ids)
@@ -105,7 +105,7 @@ impl Agrafe {
             return Err(AttachError::Terminal(state));
         }
         let expires_at = self.config().blobs.default_expires_at(Timestamp::now());
-        let detached = detach_all(&mut tx, &others, expires_at).await?;
+        let detached = detach_all(&mut tx, &new, &others, expires_at).await?;
         let attached = insert(&mut tx, blob_id, &new).await?;
         clear_expiry(&mut tx, blob_id).await?;
         tx.commit().await?;
@@ -432,17 +432,16 @@ async fn lock_address(conn: &mut PgConnection, new: &NewAttachment) -> sqlx::Res
     Ok(())
 }
 
-/// The attachments of other blobs at `new`'s address, oldest first, at
-/// most `MAX_REPLACED + 1`: the one past the cap says the replace is
-/// refused. In blob order off the unique index, so the limit stops the
-/// scan, then sorted here.
+/// The other blobs at `new`'s address, in id order off the unique index,
+/// so the limit stops the scan; at most `MAX_REPLACED + 1` of them, the
+/// one past the cap saying the replace is refused.
 async fn others_at(
     conn: &mut PgConnection,
     blob_id: Uuid,
     new: &NewAttachment,
-) -> sqlx::Result<Vec<Attachment>> {
-    let mut others = sqlx::query_as::<_, Attachment>(
-        "SELECT * FROM attachments \
+) -> sqlx::Result<Vec<Uuid>> {
+    sqlx::query_scalar(
+        "SELECT blob_id FROM attachments \
          WHERE owner_kind = $1 AND owner_id = $2 AND role = $3 AND blob_id <> $4 \
          ORDER BY blob_id LIMIT $5",
     )
@@ -452,28 +451,36 @@ async fn others_at(
     .bind(blob_id)
     .bind(MAX_REPLACED as i64 + 1)
     .fetch_all(conn)
-    .await?;
-    others.sort_unstable_by_key(|a| a.id);
-    Ok(others)
+    .await
 }
 
-/// Remove `others`, and re-arm the expiry of each blob that lost its last
-/// attachment. The caller holds their blob rows. Those another detach
-/// took meanwhile are not in the result.
+/// Remove the attachments of `others` at `new`'s address, oldest first in
+/// the result, and re-arm the expiry of each blob that lost its last
+/// attachment. The caller holds the blob rows, so what is at the address
+/// now is what the replace is ordered after. By address, not by the rows
+/// `others_at` read: a blob detached and attached again between that read
+/// and the row lock has a new row, and goes all the same. One detached
+/// meanwhile, or pruned, is not in the result.
 async fn detach_all(
     conn: &mut PgConnection,
-    others: &[Attachment],
+    new: &NewAttachment,
+    others: &[Uuid],
     expires_at: Timestamp,
 ) -> sqlx::Result<Vec<Attachment>> {
     if others.is_empty() {
         return Ok(Vec::new());
     }
-    let ids: Vec<Uuid> = others.iter().map(|a| a.id).collect();
-    let mut detached =
-        sqlx::query_as::<_, Attachment>("DELETE FROM attachments WHERE id = ANY($1) RETURNING *")
-            .bind(&ids)
-            .fetch_all(&mut *conn)
-            .await?;
+    let mut detached = sqlx::query_as::<_, Attachment>(
+        "DELETE FROM attachments \
+         WHERE owner_kind = $1 AND owner_id = $2 AND role = $3 AND blob_id = ANY($4) \
+         RETURNING *",
+    )
+    .bind(&new.owner_kind)
+    .bind(&new.owner_id)
+    .bind(&new.role)
+    .bind(others)
+    .fetch_all(&mut *conn)
+    .await?;
     detached.sort_unstable_by_key(|a| a.id);
     let blob_ids: Vec<Uuid> = detached.iter().map(|a| a.blob_id).collect();
     sqlx::query(
@@ -541,10 +548,8 @@ pub(crate) async fn insert_with_blob(
         if others.len() > MAX_REPLACED {
             return Ok(None);
         }
-        let mut ids: Vec<Uuid> = others.iter().map(|a| a.blob_id).collect();
-        ids.sort_unstable();
-        lock_blobs(conn, &ids).await?;
-        detach_all(conn, &others, expires_at).await?;
+        lock_blobs(conn, &others).await?;
+        detach_all(conn, new, &others, expires_at).await?;
     }
     match insert(conn, blob_id, new).await? {
         Attached::Created(a) | Attached::Existing(a) => Ok(Some(a)),

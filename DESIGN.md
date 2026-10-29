@@ -793,9 +793,13 @@ The advisory lock is what serialises two replaces of one address: each
 locks a different blob, and without it neither would see the other's
 insert, so both blobs would stay; there may be no attachment row yet to
 lock instead. The id order keeps two replaces over overlapping blobs from
-waiting on each other in opposite orders. A plain attach does not take
-the address lock: one landing during a replace is ordered after it, a
-second blob at the address the backend asked for. The reaper's batch
+waiting on each other in opposite orders. Once it holds the rows, the
+replace detaches by address, whatever is there of those blobs, not the
+attachment rows it read before: a blob detached and attached again in
+between has a new row, and its attach committed before the lock, so it
+goes too. A plain attach does not take the address lock: one of another
+blob landing during a replace is ordered after it, a second blob at the
+address the backend asked for. The reaper's batch
 updates lock their rows in no particular order, so a replace and a batch
 that both want two of the same rows can deadlock; Postgres aborts one,
 the reaper's next tick or the backend's retry goes through, and nothing
