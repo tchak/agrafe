@@ -188,7 +188,10 @@ async fn run_claimed(state: &Agrafe, job: &Job, worker: &str) -> sqlx::Result<()
     let outcome = match outcome {
         Ok(()) => {
             let mut conn = state.pool().acquire().await?;
-            super::succeed(&mut conn, job).await?;
+            if !super::succeed(&mut conn, job).await? {
+                tracing::warn!("lease lost: the job was reclaimed or removed, row left alone");
+                return Ok(());
+            }
             tracing::info!(took_ms = took.as_millis() as u64, "job done");
             Outcome::Ok
         }
@@ -222,6 +225,13 @@ async fn run_claimed(state: &Agrafe, job: &Job, worker: &str) -> sqlx::Result<()
                 Failure::Superseded => {
                     tracing::warn!(error, "job failed and was superseded");
                     Outcome::Superseded
+                }
+                Failure::Lost => {
+                    tracing::warn!(
+                        error,
+                        "job failed after its lease was lost: the job was reclaimed or removed, row left alone"
+                    );
+                    return Ok(());
                 }
             }
         }
@@ -324,7 +334,6 @@ where
     }
 }
 
-/// Renew the lease every third of it, for as long as this future is polled.
 /// Renew `worker`'s lease on the job until it is lost: another worker
 /// claimed the job after a lapse, or the job is gone. A renewal that fails
 /// is retried at the next tick; the lease may still hold.

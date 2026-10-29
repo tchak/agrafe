@@ -230,6 +230,99 @@ async fn a_lost_lease_ends_the_attempt() {
     assert_eq!(held_by, vec![Some("w2".to_owned())], "left to w2");
 }
 
+/// A lease lost between the last renewal and the attempt's end: whatever
+/// the first holder makes of the attempt, the row is the new holder's,
+/// left as it is, and the blob takes no verdict from the old attempt.
+#[tokio::test]
+async fn a_lost_lease_leaves_the_row_to_its_new_holder() {
+    let db = TestDatabase::new().await;
+    use agrafe::jobs::{self, Failure, JobKind, Priority};
+
+    let app = setup(db).await;
+    let webhook = app.state.config().webhook.clone();
+    let pool = app.state.pool();
+    let now = jiff::Timestamp::now();
+    let lease = Duration::from_secs(600);
+    let created = create(&app, raw_blob()).await;
+    let id = id_of(&created);
+    let blob = parse_id(id);
+    assert!(
+        jobs::enqueue(
+            pool,
+            JobKind::Scan,
+            Some(blob),
+            Priority::Normal,
+            json!({}),
+            now
+        )
+        .await
+        .unwrap()
+    );
+    let first = jobs::claim(pool, JobKind::Scan, "w1", lease)
+        .await
+        .unwrap()
+        .unwrap();
+    sqlx::query("UPDATE jobs SET locked_at = now() - interval '11 minutes' WHERE id = $1")
+        .bind(first.id)
+        .execute(pool)
+        .await
+        .unwrap();
+    let second = jobs::claim(pool, JobKind::Scan, "w2", lease)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(second.id, first.id);
+
+    let held = || async {
+        sqlx::query_as::<_, (Option<String>, i32, bool)>(
+            "SELECT locked_by, attempts, failed_at IS NOT NULL FROM jobs WHERE id = $1",
+        )
+        .bind(first.id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    };
+    let mut conn = pool.acquire().await.unwrap();
+    assert!(!jobs::succeed(&mut conn, &first).await.unwrap());
+    for permanent in [false, true] {
+        let mut tx = pool.begin().await.unwrap();
+        assert_eq!(
+            jobs::fail(&mut tx, &first, "boom", permanent, None, &webhook, now)
+                .await
+                .unwrap(),
+            Failure::Lost,
+            "permanent: {permanent}"
+        );
+        tx.commit().await.unwrap();
+        assert_eq!(held().await, (Some("w2".to_owned()), 2, false));
+    }
+    // Superseded or not, the row is not the old holder's to remove.
+    assert!(
+        jobs::enqueue(
+            pool,
+            JobKind::Scan,
+            Some(blob),
+            Priority::Normal,
+            json!({}),
+            now
+        )
+        .await
+        .unwrap()
+    );
+    assert_eq!(
+        jobs::fail(&mut conn, &first, "boom", false, None, &webhook, now)
+            .await
+            .unwrap(),
+        Failure::Lost
+    );
+    assert_eq!(held().await, (Some("w2".to_owned()), 2, false));
+    let got = get_blob(&app, id).await;
+    assert!(got["failed_at"].is_null(), "{got}");
+
+    assert!(jobs::succeed(&mut conn, &second).await.unwrap());
+    assert_eq!(jobs_for(&app, id).await, vec!["scan"], "the twin is left");
+}
+
 #[tokio::test]
 async fn job_queue_mechanics() {
     let db = TestDatabase::new().await;

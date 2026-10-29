@@ -899,17 +899,25 @@ pub(crate) async fn try_xact_lock(conn: &mut PgConnection, key: i32) -> sqlx::Re
 /// A finished job leaves the table. One that finishes its blob clears the
 /// verdict a dead twin may have left on the row meanwhile: the twin was
 /// enqueued while this one ran, and the blob is not stuck after all.
+/// Returns whether the row was still `job`'s holder's to remove: a lease
+/// that lapsed may have handed it to another worker, whose it is now.
 // Public for the integration tests, not part of the API.
 #[doc(hidden)]
-pub async fn succeed(conn: &mut PgConnection, job: &Job) -> sqlx::Result<()> {
-    sqlx::query("DELETE FROM jobs WHERE id = $1")
+pub async fn succeed(conn: &mut PgConnection, job: &Job) -> sqlx::Result<bool> {
+    let removed = sqlx::query("DELETE FROM jobs WHERE id = $1 AND locked_by = $2")
         .bind(job.id)
+        .bind(job.locked_by.as_deref())
         .execute(&mut *conn)
-        .await?;
+        .await?
+        .rows_affected()
+        == 1;
+    if !removed {
+        return Ok(false);
+    }
     if let Some(blob_id) = job.blob_id.filter(|_| job.kind.finishes_blob()) {
         clear_failure(&mut *conn, blob_id).await?;
     }
-    Ok(())
+    Ok(true)
 }
 
 /// What became of a failed job.
@@ -923,6 +931,9 @@ pub enum Failure {
     Dead,
     /// An identical job was enqueued meanwhile and will run instead.
     Superseded,
+    /// The lease lapsed and another worker holds the row: it is left to
+    /// that worker, untouched.
+    Lost,
 }
 
 /// Record a failed attempt: retry with exponential backoff while attempts
@@ -932,7 +943,8 @@ pub enum Failure {
 /// honoured when it is longer than the backoff. A death stamped on the
 /// blob is reported to the webhook, when `webhook` wants `failed`; the
 /// caller runs this in a transaction so the stamp and its notification
-/// commit together.
+/// commit together. Every write is conditioned on `job`'s holder, so an
+/// attempt whose lease another worker took over changes nothing.
 // Public for the integration tests, not part of the API.
 #[doc(hidden)]
 pub async fn fail(
@@ -946,11 +958,19 @@ pub async fn fail(
 ) -> sqlx::Result<Failure> {
     let error = truncate(error);
     if permanent || job.attempts >= job.max_attempts {
-        sqlx::query("UPDATE jobs SET failed_at = now(), last_error = $2 WHERE id = $1")
-            .bind(job.id)
-            .bind(&error)
-            .execute(&mut *conn)
-            .await?;
+        let marked = sqlx::query(
+            "UPDATE jobs SET failed_at = now(), last_error = $2 WHERE id = $1 AND locked_by = $3",
+        )
+        .bind(job.id)
+        .bind(&error)
+        .bind(job.locked_by.as_deref())
+        .execute(&mut *conn)
+        .await?
+        .rows_affected()
+            == 1;
+        if !marked {
+            return Ok(Failure::Lost);
+        }
         // The blob keeps the verdict too: the dead job is pruned after
         // `jobs.keep_failed`, the stuck blob is not. Unless a twin of this
         // job, enqueued while it ran, is still going to finish the blob.
@@ -992,8 +1012,7 @@ pub async fn fail(
     // A twin enqueued while this one ran, pending or already running,
     // carries on and this one is redundant.
     if has_twin(&mut *conn, job).await? {
-        succeed(&mut *conn, job).await?;
-        return Ok(Failure::Superseded);
+        return superseded(conn, job).await;
     }
     // A twin enqueued since the check makes the unlock a second pending
     // job of this kind for the blob. The unlock runs under a savepoint:
@@ -1002,25 +1021,37 @@ pub async fn fail(
     let mut savepoint = conn.begin().await?;
     let result = sqlx::query(
         "UPDATE jobs SET locked_at = NULL, locked_by = NULL, run_at = $2, last_error = $3 \
-         WHERE id = $1",
+         WHERE id = $1 AND locked_by = $4",
     )
     .bind(job.id)
     .bind(run_at.to_sqlx())
     .bind(&error)
+    .bind(job.locked_by.as_deref())
     .execute(&mut *savepoint)
     .await;
     match result {
-        Ok(_) => {
+        Ok(done) => {
             savepoint.commit().await?;
-            Ok(Failure::Retry(run_at))
+            Ok(match done.rows_affected() {
+                1 => Failure::Retry(run_at),
+                _ => Failure::Lost,
+            })
         }
         Err(err) if is_unique_violation(&err) => {
             savepoint.rollback().await?;
-            succeed(&mut *conn, job).await?;
-            Ok(Failure::Superseded)
+            superseded(conn, job).await
         }
         Err(err) => Err(err),
     }
+}
+
+/// Remove a failed `job` a twin carries on for, if it is still its
+/// holder's to remove.
+async fn superseded(conn: &mut PgConnection, job: &Job) -> sqlx::Result<Failure> {
+    Ok(match succeed(conn, job).await? {
+        true => Failure::Superseded,
+        false => Failure::Lost,
+    })
 }
 
 /// Whether another live job of `job`'s kind exists for its blob, or, for

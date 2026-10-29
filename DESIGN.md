@@ -3044,6 +3044,10 @@ stalled, and finds at its next renewal that another worker holds the job,
 abandons the attempt where it stands, and a build checks its lease once
 more before it completes its object: two runs of one job would write the
 same key, the row taking one header and the object the other's bytes.
+What the attempt does to its row at the end, delete, unlock or mark dead,
+is conditioned on its worker still holding it: a lease lost between the
+last renewal and the end leaves the row, and the blob's verdict, to the
+worker that holds it now.
 Success deletes the row. Failure, a handler panic included, unlocks it with exponential backoff
 (30 s, doubling, capped at an hour, or longer when the failure asks for
 it: a remote's `Retry-After`) until `max_attempts` (5), then sets
