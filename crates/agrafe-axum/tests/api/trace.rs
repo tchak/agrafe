@@ -1,7 +1,8 @@
 //! The trace context a request hands to the jobs it enqueues, and a job to
 //! the jobs it enqueues in turn.
 
-use agrafe::jobs::{JobKind, reap};
+use agrafe::jobs::notify::{self, Event};
+use agrafe::jobs::{JobKind, Priority, audit, reap};
 use agrafe::trace::TraceContext;
 use axum::http::{Method, StatusCode};
 use jiff::Timestamp;
@@ -237,4 +238,115 @@ async fn public_request_spans_never_record_the_token() {
         "{paths:?}"
     );
     assert!(fields.iter().all(|f| !f.contains(&token)), "{fields:?}");
+}
+
+const OTHER: &str = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+
+/// A retry leaves the stored context alone: the job runs again in the
+/// trace that enqueued it, not the retrying request's.
+#[tokio::test]
+async fn a_retry_keeps_the_jobs_trace() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let bytes = png_bytes(10 * 1024);
+    let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
+    let id = id_of(&created);
+    let mut put = put_raw(&format!("/blobs/{id}"), bytes);
+    put.headers_mut()
+        .insert("traceparent", CALLER.parse().unwrap());
+    let (status, body) = call(&app.private, put).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (job, _) = context_of(&app, id, JobKind::Scan).await;
+    sqlx::query(
+        "UPDATE jobs SET attempts = max_attempts, locked_at = now(), locked_by = 'w', \
+         failed_at = now() WHERE id = $1",
+    )
+    .bind(job)
+    .execute(app.state.pool())
+    .await
+    .unwrap();
+
+    let mut retry = req(Method::POST, &format!("/jobs/{job}/retry"));
+    retry
+        .headers_mut()
+        .insert("traceparent", OTHER.parse().unwrap());
+    let (status, body) = call(&app.private, retry).await;
+    assert!(status.is_success(), "{status}: {body}");
+    let (_, context) = context_of(&app, id, JobKind::Scan).await;
+    assert_eq!(context.trace_id().to_string(), CALLER_TRACE);
+}
+
+/// A notify that replaces the pending one takes the newer event's trace:
+/// the delivery is that event's.
+#[tokio::test]
+async fn a_replacing_notify_takes_the_newer_events_trace() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let created = create(&app, blob_for(b"x", "text/plain", "raw")).await;
+    let id = id_of(&created);
+    let pool = app.state.pool();
+    let blob = parse_id(id);
+    for (traceparent, event) in [(CALLER, Event::Ready), (OTHER, Event::Failed)] {
+        TraceContext::parse(traceparent)
+            .unwrap()
+            .scope(notify::enqueue(
+                pool,
+                blob,
+                Priority::Normal,
+                event,
+                Timestamp::now(),
+            ))
+            .await
+            .unwrap();
+    }
+    let (_, context) = context_of(&app, id, JobKind::Notify).await;
+    assert_eq!(
+        context.trace_id().to_string(),
+        TraceContext::parse(OTHER).unwrap().trace_id().to_string()
+    );
+}
+
+/// The audit schedules its successor outside its trace, as the reap does.
+#[tokio::test]
+async fn the_audit_schedules_its_successor_outside_its_trace() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let pool = app.state.pool();
+    let scheduled = TraceContext::root()
+        .scope(audit::schedule(pool, Timestamp::now()))
+        .await;
+    assert!(scheduled.unwrap());
+    let traceparents: Vec<Option<String>> =
+        sqlx::query_scalar("SELECT traceparent FROM jobs WHERE kind = 'audit'")
+            .fetch_all(pool)
+            .await
+            .unwrap();
+    assert_eq!(traceparents, [None]);
+}
+
+/// The private request span records the path without its query string
+/// and the trace id of the caller it continues.
+#[tokio::test]
+async fn private_request_spans_record_the_path_and_the_trace() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let fields = Fields::default();
+    let _default =
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(fields.clone()));
+    let mut list = req(Method::GET, "/blobs?limit=5");
+    list.headers_mut()
+        .insert("traceparent", CALLER.parse().unwrap());
+    let (status, body) = call(&app.private, list).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let fields = fields.all();
+    assert!(fields.iter().any(|f| f == "path=/blobs"), "{fields:?}");
+    assert!(fields.iter().all(|f| !f.contains("limit=")), "{fields:?}");
+    assert!(
+        fields
+            .iter()
+            .any(|f| f == &format!("trace_id={CALLER_TRACE}")),
+        "{fields:?}"
+    );
 }

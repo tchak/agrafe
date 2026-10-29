@@ -1171,3 +1171,48 @@ async fn a_job_whose_attempts_ended_their_worker_dies() {
         "{got}"
     );
 }
+
+/// The census counts each state as `Job::state` tells it, a lapsed lease
+/// as unclaimed, and the worker-only process's ops router serves it too.
+#[tokio::test]
+async fn the_census_tells_every_state_and_the_ops_router_serves_it() {
+    use axum::http::Method;
+
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    // The test lease is ten minutes: half an hour ago is lapsed.
+    sqlx::query(
+        "INSERT INTO jobs (kind, run_at, locked_at, locked_by, failed_at) VALUES \
+         ('reap', now() + interval '1 hour', NULL, NULL, NULL), \
+         ('audit', now() - interval '1 hour', now(), 'w', now()), \
+         ('purge', now() - interval '1 minute', now(), 'w', NULL), \
+         ('notify', now() - interval '1 minute', now() - interval '30 minutes', 'w', NULL)",
+    )
+    .execute(app.state.pool())
+    .await
+    .unwrap();
+    let ops = agrafe_axum::ops_router(app.state.clone());
+    let (status, body) = call(&ops, req(Method::GET, "/healthz")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = call(&ops, req(Method::GET, "/metrics")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let text = body.as_str().unwrap();
+    for (kind, state) in [
+        ("reap", "scheduled"),
+        ("audit", "dead"),
+        ("purge", "running"),
+        ("notify", "due"),
+    ] {
+        let line =
+            format!("agrafe_jobs{{kind=\"{kind}\",priority=\"normal\",state=\"{state}\"}} 1");
+        assert!(text.contains(&line), "{line}\n{text}");
+    }
+    let oldest = text
+        .lines()
+        .find(|l| {
+            l.starts_with("agrafe_jobs_oldest_due_seconds{kind=\"notify\",priority=\"normal\"}")
+        })
+        .unwrap_or_else(|| panic!("{text}"));
+    let age: f64 = oldest.rsplit(' ').next().unwrap().parse().unwrap();
+    assert!(age >= 60.0, "{oldest}");
+}
