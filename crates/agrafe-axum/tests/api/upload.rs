@@ -265,6 +265,54 @@ async fn multipart_rejections() {
     assert_eq!(get_blob(&app, id).await["state"], "created");
 }
 
+/// A `file` part that disagrees with the declaration fails like a raw body
+/// does, though the pipeline stops with the part half read: 422, the blob
+/// handed back, nothing stored, and the inline scan's one permit released.
+#[tokio::test]
+async fn multipart_size_and_checksum_rejections() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    // Under `inline_scan_max_size`: each attempt takes the inline permit.
+    let bytes = png_bytes(1500);
+    let mut flipped = bytes.clone();
+    flipped[750] ^= 0xff;
+    let longer = [bytes.as_slice(), &[0]].concat();
+
+    let cases = [
+        ("checksum", flipped, "checksum"),
+        ("too short", bytes[..1499].to_vec(), "size"),
+        ("too long", longer, "size"),
+    ];
+    for (name, file, message) in cases {
+        let created = create(&app, blob_for(&bytes, "image/png", "multipart")).await;
+        let id = id_of(&created);
+        let upload = public_url(&created, "upload");
+        let (status, res) = call(
+            &app.public,
+            put_multipart(&upload, &[("file", &file), ("after", b"x")]),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{name}: {res}");
+        let said = res["error"]["message"].as_str().unwrap();
+        assert!(said.contains(message), "{name}: {res}");
+        let got = get_blob(&app, id).await;
+        assert_eq!(got["state"], "created", "{name}");
+        assert!(jobs_for(&app, id).await.is_empty(), "{name}");
+    }
+    let objects = stored_objects(&app).await;
+    assert!(objects.is_empty(), "{objects:?}");
+
+    // The permit came back each time: the next upload is scanned inline.
+    let created = create(&app, blob_for(&bytes, "image/png", "multipart")).await;
+    let id = id_of(&created);
+    let upload = public_url(&created, "upload");
+    let (status, res) = call(&app.public, put_multipart(&upload, &[("file", &bytes)])).await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    let got = get_blob(&app, id).await;
+    assert_eq!(got["state"], "ready", "{got}");
+    assert_eq!(got["scan_state"], "clean", "{got}");
+}
+
 /// A multipart `PUT` of `body` as it is, cut into pieces of `piece` bytes
 /// the way a client streams it.
 fn put_multipart_raw(uri: &str, body: Vec<u8>, piece: usize) -> Request<Body> {
