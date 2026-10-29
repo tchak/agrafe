@@ -78,6 +78,16 @@ pub struct Config {
     pub webhook: WebhookConfig,
 }
 
+/// The environment's share of the configuration: `AGRAFE_<SECTION>__<KEY>`
+/// only. Every key lives in a section, and the variables without one,
+/// `AGRAFE_CONFIG` or the tests' `AGRAFE_SANDBOX_REQUIRED`, are not
+/// configuration.
+fn env() -> Env {
+    Env::prefixed("AGRAFE_")
+        .filter(|key| key.as_str().contains("__"))
+        .split("__")
+}
+
 impl Config {
     /// Load from `path` (if it exists) and the environment.
     pub fn load(path: Option<&Path>) -> Result<Self, ConfigError> {
@@ -86,14 +96,7 @@ impl Config {
             figment = figment.merge(Toml::file_exact(path));
         }
         let config: Config = figment
-            // `AGRAFE_<SECTION>__<KEY>` only: every key lives in a section,
-            // and the variables without one, `AGRAFE_CONFIG` or the tests'
-            // `AGRAFE_SANDBOX_REQUIRED`, are not configuration.
-            .merge(
-                Env::prefixed("AGRAFE_")
-                    .filter(|key| key.as_str().contains("__"))
-                    .split("__"),
-            )
+            .merge(env())
             .extract()
             .map_err(|e| ConfigError::Load(Box::new(e)))?;
         config.validate()?;
@@ -1347,7 +1350,7 @@ mod tests {
                      [signing]\ncurrent_key = \"k1\"\nkeys = { k1 = \"a2V5\" }\n\
                      [server]\npublic_base_url = \"https://files.example\"\n",
                 ))
-                .merge(figment::providers::Env::prefixed("AGRAFE_").split("__"))
+                .merge(env())
                 .extract()
         };
         Jail::expect_with(|_| {
