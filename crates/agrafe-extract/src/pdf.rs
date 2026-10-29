@@ -408,13 +408,14 @@ fn image_bytes(doc: &Document, image: &Stream, max_output: usize) -> Option<Extr
         return super::raster_format(&image.content)
             .filter(|sniffed| *sniffed == format)
             .map(|format| Extracted {
+                header: Vec::new(),
                 bytes: image.content.clone(),
                 format,
             });
     }
     // Raw samples, possibly behind a lossless filter. Any image filter left
     // in the chain makes this fail, which is the answer we want.
-    let data = image.decompressed_content_with_limit(max_output).ok()?;
+    let mut data = image.decompressed_content_with_limit(max_output).ok()?;
     let dimension = |key: &[u8]| {
         dict.get_deref(key, doc)
             .ok()
@@ -450,9 +451,12 @@ fn image_bytes(doc: &Document, image: &Stream, max_output: usize) -> Option<Extr
     } else {
         ("P5", "pgm")
     };
-    let mut bytes = format!("{magic}\n{width} {height}\n{maxval}\n").into_bytes();
-    bytes.extend_from_slice(&data[..expected]);
-    Some(Extracted { bytes, format })
+    data.truncate(expected);
+    Some(Extracted {
+        header: format!("{magic}\n{width} {height}\n{maxval}\n").into_bytes(),
+        bytes: data,
+        format,
+    })
 }
 
 /// Samples per pixel of a grey, RGB or CMYK colour space, the ones whose
@@ -533,8 +537,8 @@ mod tests {
         let pdf = include_bytes!("../../../fixtures/flate.pdf");
         let out = extract(pdf, &thresholds(), LIMIT).unwrap();
         assert_eq!(out.format, "ppm");
-        assert!(out.bytes.starts_with(b"P6\n4 2\n255\n"));
-        assert_eq!(out.bytes.len(), "P6\n4 2\n255\n".len() + 4 * 2 * 3);
+        assert_eq!(out.header, b"P6\n4 2\n255\n");
+        assert_eq!(out.bytes.len(), 4 * 2 * 3);
     }
 
     #[test]
@@ -680,8 +684,8 @@ mod tests {
         let grey = flate_with(|d| d.set("ColorSpace", Object::Name(b"DeviceGray".to_vec())));
         let grey = grey.unwrap();
         assert_eq!(grey.format, "pgm");
-        assert!(grey.bytes.starts_with(b"P5\n4 2\n255\n"));
-        assert_eq!(grey.bytes.len(), "P5\n4 2\n255\n".len() + 4 * 2);
+        assert_eq!(grey.header, b"P5\n4 2\n255\n");
+        assert_eq!(grey.bytes.len(), 4 * 2);
 
         // 16 bits a sample needs twice the bytes the stream has.
         assert_eq!(flate_with(|d| d.set("BitsPerComponent", 16)), None);

@@ -46,7 +46,10 @@ fn run(args: &Args) -> std::io::Result<()> {
     if let Some(found) =
         agrafe_extract::extract(&args.content_type, &bytes, &thresholds, args.max_output)
     {
-        std::fs::write(&args.output, found.bytes)?;
+        use std::io::Write as _;
+        let mut output = std::fs::File::create(&args.output)?;
+        output.write_all(&found.header)?;
+        output.write_all(&found.bytes)?;
     }
     Ok(())
 }

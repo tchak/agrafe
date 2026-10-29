@@ -29,8 +29,12 @@ pub struct Thresholds {
 /// An image pulled out of a document, in a format libvips loads.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Extracted {
-    /// The encoded image as the document stores it, or a PNM wrapped
-    /// around the raw samples of a PDF image.
+    /// Written before `bytes`: the PNM header of raw samples, empty for an
+    /// encoded image. Apart, so that samples as large as the output limit
+    /// are not copied behind it.
+    pub header: Vec<u8>,
+    /// The encoded image as the document stores it, or the raw samples of
+    /// a PDF image.
     pub bytes: Vec<u8>,
     /// `jpeg`, `png`, `ppm`, ... Informational: vips sniffs the bytes.
     pub format: &'static str,

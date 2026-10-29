@@ -69,6 +69,7 @@ fn extract(
     }
     let format = super::raster_format(&data)?;
     Some(Extracted {
+        header: Vec::new(),
         bytes: data,
         format,
     })
