@@ -744,3 +744,31 @@ async fn the_reaper_walks_its_indexes_under_a_generic_plan() {
         }
     }
 }
+
+/// A reap that fails is superseded by the successor it scheduled before
+/// working, through the runner's transaction: not left locked until its
+/// lease lapses, nor retried with backoff.
+#[tokio::test]
+async fn a_failing_reap_is_superseded_by_its_successor() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let pool = app.state.pool();
+    let blob = ready_blob(&app, &png_bytes(100)).await;
+    set_expired(&app, id_of(&blob)).await;
+    sqlx::query("DELETE FROM jobs WHERE kind = 'reap'")
+        .execute(pool)
+        .await
+        .unwrap();
+    reap::schedule(pool, Timestamp::now()).await.unwrap();
+    fail_blob_updates(&app, "true").await;
+    assert!(run_job(&app, JobKind::Reap).await);
+    restore_blob_updates(&app).await;
+
+    let reaps: Vec<(Option<String>, bool, bool)> = sqlx::query_as(
+        "SELECT locked_by, failed_at IS NOT NULL, run_at > now() FROM jobs WHERE kind = 'reap'",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    assert_eq!(reaps, vec![(None, false, true)], "only the successor");
+}

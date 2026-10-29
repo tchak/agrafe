@@ -313,17 +313,57 @@ async fn job_queue_mechanics() {
         .await
         .unwrap()
     );
+    // Inside a transaction, as the runner calls it.
+    let mut tx = pool.begin().await.unwrap();
     assert_eq!(
-        jobs::fail(&mut conn, &held, "boom", false, None, &webhook, now)
+        jobs::fail(&mut tx, &held, "boom", false, None, &webhook, now)
             .await
             .unwrap(),
         Failure::Superseded
     );
+    tx.commit().await.unwrap();
     let scans: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE kind = 'scan'")
         .fetch_one(pool)
         .await
         .unwrap();
     assert_eq!(scans, 1);
+
+    // So does one whose twin is running already.
+    let twin = jobs::claim(pool, JobKind::Scan, "w2", lease)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        jobs::enqueue(
+            pool,
+            JobKind::Scan,
+            Some(blob),
+            Priority::Normal,
+            json!({}),
+            now
+        )
+        .await
+        .unwrap()
+    );
+    let newer = jobs::claim(pool, JobKind::Scan, "w3", lease)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    assert_eq!(
+        jobs::fail(&mut tx, &twin, "boom", false, None, &webhook, now)
+            .await
+            .unwrap(),
+        Failure::Superseded
+    );
+    tx.commit().await.unwrap();
+    let held_by: Vec<Option<String>> =
+        sqlx::query_scalar("SELECT locked_by FROM jobs WHERE kind = 'scan'")
+            .fetch_all(pool)
+            .await
+            .unwrap();
+    assert_eq!(held_by, vec![Some("w3".to_owned())]);
+    jobs::succeed(&mut conn, &newer).await.unwrap();
 
     // Success removes the row.
     let purge = jobs::claim(pool, JobKind::Purge, "w1", lease)

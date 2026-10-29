@@ -22,7 +22,7 @@ use std::time::Duration;
 use jiff::{SignedDuration, Timestamp};
 use jiff_sqlx::ToSqlx;
 use serde::{Deserialize, Serialize};
-use sqlx::{PgConnection, PgExecutor, Postgres, QueryBuilder};
+use sqlx::{Connection as _, PgConnection, PgExecutor, Postgres, QueryBuilder};
 use uuid::Uuid;
 
 use crate::app::Agrafe;
@@ -550,8 +550,6 @@ async fn clear_failure(exec: impl PgExecutor<'_>, blob_id: Uuid) -> sqlx::Result
 /// same transaction, due now: its blob's objects are still to go, and
 /// nothing else would take them.
 pub(crate) async fn discard(conn: &mut PgConnection, id: i64) -> sqlx::Result<Action> {
-    use sqlx::Connection as _;
-
     let mut tx = conn.begin().await?;
     let deleted = sqlx::query_as::<_, Job>(
         "DELETE FROM jobs WHERE id = $1 AND failed_at IS NOT NULL RETURNING *",
@@ -891,6 +889,17 @@ pub async fn fail(
             asked.max(backoff(job.attempts))
         });
     let run_at = now + wait;
+    // A twin enqueued while this one ran, pending or already running,
+    // carries on and this one is redundant.
+    if has_twin(&mut *conn, job).await? {
+        succeed(&mut *conn, job).await?;
+        return Ok(Failure::Superseded);
+    }
+    // A twin enqueued since the check makes the unlock a second pending
+    // job of this kind for the blob. The unlock runs under a savepoint:
+    // `fail` runs inside the caller's transaction, which the violation
+    // would otherwise abort.
+    let mut savepoint = conn.begin().await?;
     let result = sqlx::query(
         "UPDATE jobs SET locked_at = NULL, locked_by = NULL, run_at = $2, last_error = $3 \
          WHERE id = $1",
@@ -898,18 +907,42 @@ pub async fn fail(
     .bind(job.id)
     .bind(run_at.to_sqlx())
     .bind(&error)
-    .execute(&mut *conn)
+    .execute(&mut *savepoint)
     .await;
     match result {
-        Ok(_) => Ok(Failure::Retry(run_at)),
-        // Unlocking would make a second pending job of this kind for the
-        // blob; the newer one carries on and this one is redundant.
+        Ok(_) => {
+            savepoint.commit().await?;
+            Ok(Failure::Retry(run_at))
+        }
         Err(err) if is_unique_violation(&err) => {
+            savepoint.rollback().await?;
             succeed(&mut *conn, job).await?;
             Ok(Failure::Superseded)
         }
         Err(err) => Err(err),
     }
+}
+
+/// Whether another live job of `job`'s kind exists for its blob, or, for
+/// a blob-less job, of its kind with no blob: pending or running, not
+/// dead. On `jobs_blob_idx`, or for the blob-less kinds, of which there
+/// are a handful of rows, on `jobs_claimable_idx`.
+async fn has_twin(conn: &mut PgConnection, job: &Job) -> sqlx::Result<bool> {
+    let sql = match job.blob_id {
+        Some(_) => {
+            "SELECT EXISTS (SELECT 1 FROM jobs \
+             WHERE blob_id = $3 AND kind = $1 AND failed_at IS NULL AND id <> $2)"
+        }
+        None => {
+            "SELECT EXISTS (SELECT 1 FROM jobs \
+             WHERE blob_id IS NULL AND kind = $1 AND failed_at IS NULL AND id <> $2)"
+        }
+    };
+    let mut query = sqlx::query_scalar(sql).bind(job.kind.as_str()).bind(job.id);
+    if let Some(blob_id) = job.blob_id {
+        query = query.bind(blob_id);
+    }
+    query.fetch_one(&mut *conn).await
 }
 
 fn backoff(attempts: i32) -> SignedDuration {
