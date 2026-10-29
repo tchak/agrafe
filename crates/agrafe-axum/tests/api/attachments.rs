@@ -1081,3 +1081,83 @@ async fn a_replace_detaches_a_blob_reattached_while_it_waited() {
     );
     assert!(get_blob(&app, id_of(&old)).await["expires_at"].is_string());
 }
+
+/// A replace locks its blob rows in id order; a transaction holding them
+/// in the other order, as the reaper's batch may, deadlocks with it.
+/// Postgres aborts the replace, which did nothing, and the request says
+/// so: `503 unavailable` with `Retry-After`, not an internal error.
+#[tokio::test]
+async fn a_replace_a_deadlock_aborted_asks_for_a_retry() {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let lo = create(&app, raw_blob()).await;
+    let hi = create(&app, raw_blob()).await;
+    for blob in [&lo, &hi] {
+        attach(&app, id_of(blob), attachment("user", "7", "avatar")).await;
+    }
+    let new = create(&app, raw_blob()).await;
+
+    // Hold the higher row: the replace takes the lower one and waits on
+    // it. Then take the lower one: a cycle, which the replace, the one
+    // waiting longest, is the first to find and gives way to.
+    let mut tx = app.state.pool().begin().await.unwrap();
+    sqlx::query("SELECT id FROM blobs WHERE id = $1 FOR UPDATE")
+        .bind(parse_id(id_of(&hi)))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let router = app.private.clone();
+    let new_id = id_of(&new).to_string();
+    let replace = tokio::spawn(async move {
+        let res = router
+            .oneshot(json_req(
+                Method::POST,
+                &format!("/blobs/{new_id}/attachments"),
+                replacing("user", "7", "avatar"),
+            ))
+            .await
+            .unwrap();
+        let status = res.status();
+        let retry_after = res
+            .headers()
+            .get("retry-after")
+            .map(|v| v.to_str().unwrap().to_string());
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        (status, retry_after, body)
+    });
+    for _ in 0..100 {
+        // This database only: the tests share the server.
+        let waiting: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity \
+             WHERE datname = current_database() AND wait_event_type = 'Lock' \
+               AND query LIKE '%FROM blobs WHERE id = ANY($1) ORDER BY id FOR UPDATE%'",
+        )
+        .fetch_one(app.state.pool())
+        .await
+        .unwrap();
+        if waiting > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(!replace.is_finished(), "waits on the higher row");
+    sqlx::query("SELECT id FROM blobs WHERE id = $1 FOR UPDATE")
+        .bind(parse_id(id_of(&lo)))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.rollback().await.unwrap();
+
+    let (status, retry_after, body) = within("the replace", replace).await.unwrap();
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(body["error"]["code"], "unavailable");
+    assert_eq!(retry_after.as_deref(), Some("1"));
+    let mut both = vec![id_of(&lo).to_string(), id_of(&hi).to_string()];
+    both.sort();
+    assert_eq!(blobs_at(&app, "user", "7", "avatar").await, both);
+    assert_eq!(get_blob(&app, id_of(&new)).await["attachments"], json!([]));
+}

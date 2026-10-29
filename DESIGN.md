@@ -225,7 +225,10 @@ This includes failures axum would otherwise answer in plain text: malformed
 JSON, unknown query values, a non-UUID path segment, unknown routes (`404`)
 and wrong methods (`405`). Handlers use wrapper extractors in `extract.rs`
 that convert those rejections. Internal errors are logged in full and reported
-as `internal` with no detail.
+as `internal` with no detail. One kind of database error is not internal:
+a transaction Postgres aborted to break a deadlock did nothing, and the
+same request again goes through, so it answers `503 unavailable` with
+`Retry-After` (see "Attachments" for where it arises).
 
 ### CORS
 
@@ -803,7 +806,9 @@ address the backend asked for. The reaper's batch
 updates lock their rows in no particular order, so a replace and a batch
 that both want two of the same rows can deadlock; Postgres aborts one,
 the reaper's next tick or the backend's retry goes through, and nothing
-is left half done.
+is left half done. The aborted request is told so: `503 unavailable`
+with `Retry-After`, from the SQLSTATE (`db::is_retryable`), not a `500`
+that reads as a failure.
 
 **Schema and listing.**
 

@@ -145,9 +145,41 @@ impl From<NullableTimestamp> for Option<jiff::Timestamp> {
     }
 }
 
+/// Whether Postgres aborted the transaction to break a deadlock (or, under
+/// a stricter isolation level, a serialisation failure): nothing was
+/// committed, nothing is half done, and the same request again goes
+/// through. An operation that locks several rows, such as a replace (see
+/// `attachment`), can meet the reaper's batch doing the same in another
+/// order; the caller is told to retry rather than that something broke.
+pub fn is_retryable(err: &sqlx::Error) -> bool {
+    err.as_database_error()
+        .and_then(|e| e.code())
+        .is_some_and(|code| code == "40P01" || code == "40001")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The SQLSTATE of a deadlock or a serialisation failure says retry;
+    /// any other error, or one that is not the database's, does not.
+    #[tokio::test]
+    async fn retryable_is_a_deadlock_or_a_serialisation_failure() {
+        let db = test::TestDatabase::empty().await;
+        let pool = db.pool();
+        let raise = |code: &'static str| async move {
+            sqlx::query(AssertSqlSafe(format!(
+                "DO $$ BEGIN RAISE EXCEPTION 'test' USING ERRCODE = '{code}'; END $$"
+            )))
+            .execute(pool)
+            .await
+            .unwrap_err()
+        };
+        assert!(is_retryable(&raise("40P01").await));
+        assert!(is_retryable(&raise("40001").await));
+        assert!(!is_retryable(&raise("23505").await));
+        assert!(!is_retryable(&sqlx::Error::RowNotFound));
+    }
 
     fn config(schema: &str) -> DatabaseConfig {
         DatabaseConfig {

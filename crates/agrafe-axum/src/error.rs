@@ -8,7 +8,7 @@ use agrafe::blob::{self, representation};
 use agrafe::jobs;
 use agrafe::upload::UploadError;
 use axum::Json;
-use axum::http::StatusCode;
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 
@@ -60,6 +60,11 @@ pub enum ApiError {
     /// retry or an attach cannot bring back.
     #[error("{0}")]
     Gone(String),
+    /// `503` with `Retry-After`: Postgres aborted the transaction to break
+    /// a deadlock with another, nothing was done, and the same request
+    /// again goes through. See `agrafe::db::is_retryable`.
+    #[error("{0}")]
+    Unavailable(String),
     /// `500`, the server's fault: logged in full, answered as `internal error`.
     #[error("{0}")]
     Internal(Box<dyn std::error::Error + Send + Sync>),
@@ -98,6 +103,7 @@ impl ApiError {
             ApiError::Conflict(_) => StatusCode::CONFLICT,
             ApiError::Forbidden(_) => StatusCode::FORBIDDEN,
             ApiError::Gone(_) => StatusCode::GONE,
+            ApiError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -116,14 +122,23 @@ impl ApiError {
             ApiError::Conflict(_) => "conflict",
             ApiError::Forbidden(_) => "forbidden",
             ApiError::Gone(_) => "gone",
+            ApiError::Unavailable(_) => "unavailable",
             ApiError::Internal(_) => "internal",
         }
     }
 }
 
+/// A database error: a transaction Postgres aborted to break a deadlock
+/// asks the client to try again; anything else is the server's fault.
 impl From<sqlx::Error> for ApiError {
     fn from(err: sqlx::Error) -> Self {
-        ApiError::internal(err)
+        if agrafe::db::is_retryable(&err) {
+            ApiError::Unavailable(
+                "another change got in the way and nothing was done; retry the request".into(),
+            )
+        } else {
+            ApiError::internal(err)
+        }
     }
 }
 
@@ -132,7 +147,7 @@ impl From<CreateError> for ApiError {
         match err {
             CreateError::Invalid(msg) => ApiError::Unprocessable(msg),
             CreateError::TooManyToReplace(_) => ApiError::Conflict(err.to_string()),
-            CreateError::Db(e) => ApiError::internal(e),
+            CreateError::Db(e) => ApiError::from(e),
         }
     }
 }
@@ -143,7 +158,7 @@ impl From<blob::ListError> for ApiError {
             blob::ListError::Limit(_) | blob::ListError::ContentType(_) => {
                 ApiError::BadRequest(err.to_string())
             }
-            blob::ListError::Db(e) => ApiError::internal(e),
+            blob::ListError::Db(e) => ApiError::from(e),
         }
     }
 }
@@ -152,7 +167,7 @@ impl From<blob::DeleteError> for ApiError {
     fn from(err: blob::DeleteError) -> Self {
         match err {
             blob::DeleteError::Attached => ApiError::Conflict(err.to_string()),
-            blob::DeleteError::Db(e) => ApiError::internal(e),
+            blob::DeleteError::Db(e) => ApiError::from(e),
         }
     }
 }
@@ -167,7 +182,7 @@ impl From<blob::RetryError> for ApiError {
             RetryError::Terminal(BlobState::Infected) => ApiError::Conflict(err.to_string()),
             RetryError::Terminal(_) => ApiError::Gone(err.to_string()),
             RetryError::Nothing(_) | RetryError::Pending => ApiError::Conflict(err.to_string()),
-            RetryError::Db(e) => ApiError::internal(e),
+            RetryError::Db(e) => ApiError::from(e),
         }
     }
 }
@@ -182,7 +197,7 @@ impl From<AttachError> for ApiError {
             AttachError::Terminal(blob::BlobState::Infected) => ApiError::Conflict(err.to_string()),
             AttachError::Terminal(_) => ApiError::Gone(err.to_string()),
             AttachError::TooManyToReplace(_) => ApiError::Conflict(err.to_string()),
-            AttachError::Db(e) => ApiError::internal(e),
+            AttachError::Db(e) => ApiError::from(e),
         }
     }
 }
@@ -193,7 +208,7 @@ impl From<attachment::ListError> for ApiError {
             attachment::ListError::Limit(_)
             | attachment::ListError::OwnerIdAlone
             | attachment::ListError::RoleAlone => ApiError::BadRequest(err.to_string()),
-            attachment::ListError::Db(e) => ApiError::internal(e),
+            attachment::ListError::Db(e) => ApiError::from(e),
         }
     }
 }
@@ -204,7 +219,7 @@ impl From<jobs::ListError> for ApiError {
             jobs::ListError::Limit(_) | jobs::ListError::Cursor => {
                 ApiError::BadRequest(err.to_string())
             }
-            jobs::ListError::Db(e) => ApiError::internal(e),
+            jobs::ListError::Db(e) => ApiError::from(e),
         }
     }
 }
@@ -214,7 +229,7 @@ impl From<MintError> for ApiError {
         match err {
             MintError::NotFound => ApiError::NotFound,
             MintError::Invalid(msg) => ApiError::Unprocessable(msg),
-            MintError::Db(e) => ApiError::internal(e),
+            MintError::Db(e) => ApiError::from(e),
         }
     }
 }
@@ -252,11 +267,11 @@ impl From<UploadError> for ApiError {
                 Ok(api) => *api,
                 Err(other) => ApiError::BadRequest(format!("reading the request body: {other}")),
             },
+            UploadError::Db(e) => ApiError::from(e),
             UploadError::NoColumns
             | UploadError::Store(_)
             | UploadError::Crypto(_)
             | UploadError::Key(_)
-            | UploadError::Db(_)
             | UploadError::Task(_) => ApiError::internal(err),
         }
     }
@@ -295,7 +310,13 @@ impl IntoResponse for ApiError {
                 message,
             },
         };
-        (status, Json(body)).into_response()
+        let mut response = (status, Json(body)).into_response();
+        if let ApiError::Unavailable(_) = self {
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+        }
+        response
     }
 }
 

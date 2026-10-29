@@ -36,6 +36,7 @@ route, which answers an icon rather than an error.
 | `unsupported_media_type` | `415` | A JSON route called without `Content-Type: application/json` |
 | `unprocessable` | `422` | The request is well-formed but invalid: a field, a checksum, a size, a type, a source line |
 | `infected` | `422` | The uploaded file is infected. The blob is now `infected` |
+| `unavailable` | `503` | Postgres aborted the request's transaction to break a deadlock with another; nothing was done. `Retry-After` says when to send it again |
 | `internal` | `500` | agrafe's own failure: the database, the bucket, a key that does not unwrap |
 
 ## Request parsing
@@ -100,7 +101,8 @@ All `422 unprocessable`, from `POST /blobs`:
 
 An `attachment` with `replace` and more than 1000 other blobs at its
 address answers `409 conflict`, `more than 1000 blobs to replace at this
-owner and role`.
+owner and role`; one that deadlocked with the reaper answers `503
+unavailable` with `Retry-After`, as on attach, and no blob was created.
 
 A body over 16 MiB answers `413 payload_too_large`.
 
@@ -163,6 +165,7 @@ part. Common reasons:
 | `404` | `not_found` | `not found` | Unknown blob or attachment |
 | `409` | `conflict` | `blob is infected and cannot be attached` | |
 | `409` | `conflict` | `more than 1000 blobs to replace at this owner and role` | `replace` |
+| `503` | `unavailable` | `another change got in the way and nothing was done; retry the request` | A `replace` that deadlocked with the reaper's batch over the same blobs; `Retry-After: 1` |
 | `410` | `gone` | `blob is expired and cannot be attached` | Also for `deleted`, and for a blob past its `expires_at` |
 | `422` | `unprocessable` | the field and the rule it broke | Blank, over 255 bytes, control or bidirectional formatting characters |
 | `400` | `bad_request` | `owner_id is only accepted together with owner_kind` | `GET /attachments` |
