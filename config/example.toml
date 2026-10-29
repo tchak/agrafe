@@ -71,7 +71,7 @@ path = "./data"
 # account = "agrafe"
 # container = "agrafe"
 # access_key = ""           # prefer AGRAFE_STORAGE__AZURE__ACCESS_KEY
-# endpoint = ""             # Azurite or a sovereign cloud
+# endpoint = ""             # Azurite or a sovereign cloud; http:// is allowed
 
 # The bucket needs an AbortIncompleteMultipartUpload lifecycle rule, as on S3.
 # Without service_account_key, GOOGLE_SERVICE_ACCOUNT, the application default

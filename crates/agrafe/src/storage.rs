@@ -18,7 +18,7 @@ use object_store::{
 };
 use tracing::{Instrument as _, Span};
 
-use crate::config::StorageConfig;
+use crate::config::{AzureStorageConfig, S3StorageConfig, StorageConfig};
 
 /// The object store every blob's objects live in, shared across the
 /// process.
@@ -56,36 +56,8 @@ pub fn build(config: &StorageConfig) -> Result<Store, Error> {
             let store = LocalFileSystem::new_with_prefix(&local.path)?;
             Ok(Arc::new(store))
         }
-        StorageConfig::S3 { s3 } => {
-            let mut builder = AmazonS3Builder::from_env().with_bucket_name(&s3.bucket);
-            if let Some(region) = &s3.region {
-                builder = builder.with_region(region);
-            }
-            if let Some(endpoint) = &s3.endpoint {
-                builder = builder.with_endpoint(endpoint);
-            }
-            if let Some(key) = &s3.access_key_id {
-                builder = builder.with_access_key_id(key);
-            }
-            if let Some(secret) = &s3.secret_access_key {
-                builder = builder.with_secret_access_key(secret.expose());
-            }
-            let store = builder.build()?;
-            Ok(Arc::new(store))
-        }
-        StorageConfig::Azure { azure } => {
-            let mut builder = MicrosoftAzureBuilder::from_env()
-                .with_account(&azure.account)
-                .with_container_name(&azure.container);
-            if let Some(key) = &azure.access_key {
-                builder = builder.with_access_key(key.expose());
-            }
-            if let Some(endpoint) = &azure.endpoint {
-                builder = builder.with_endpoint(endpoint.clone());
-            }
-            let store = builder.build()?;
-            Ok(Arc::new(store))
-        }
+        StorageConfig::S3 { s3 } => Ok(Arc::new(s3_builder(s3).build()?)),
+        StorageConfig::Azure { azure } => Ok(Arc::new(azure_builder(azure).build()?)),
         StorageConfig::Gcs { gcs } => {
             let mut builder = GoogleCloudStorageBuilder::from_env().with_bucket_name(&gcs.bucket);
             if let Some(key) = &gcs.service_account_key {
@@ -95,6 +67,51 @@ pub fn build(config: &StorageConfig) -> Result<Store, Error> {
             Ok(Arc::new(store))
         }
     }
+}
+
+/// Whether `endpoint` is a plain-http URL: MinIO, LocalStack or Azurite
+/// on a development machine or in CI. The client refuses http unless told
+/// otherwise, so an endpoint spelled so is the telling.
+fn is_http(endpoint: &str) -> bool {
+    endpoint
+        .get(..7)
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("http://"))
+}
+
+fn s3_builder(s3: &S3StorageConfig) -> AmazonS3Builder {
+    let mut builder = AmazonS3Builder::from_env().with_bucket_name(&s3.bucket);
+    if let Some(region) = &s3.region {
+        builder = builder.with_region(region);
+    }
+    if let Some(endpoint) = &s3.endpoint {
+        builder = builder.with_endpoint(endpoint);
+        if is_http(endpoint) {
+            builder = builder.with_allow_http(true);
+        }
+    }
+    if let Some(key) = &s3.access_key_id {
+        builder = builder.with_access_key_id(key);
+    }
+    if let Some(secret) = &s3.secret_access_key {
+        builder = builder.with_secret_access_key(secret.expose());
+    }
+    builder
+}
+
+fn azure_builder(azure: &AzureStorageConfig) -> MicrosoftAzureBuilder {
+    let mut builder = MicrosoftAzureBuilder::from_env()
+        .with_account(&azure.account)
+        .with_container_name(&azure.container);
+    if let Some(key) = &azure.access_key {
+        builder = builder.with_access_key(key.expose());
+    }
+    if let Some(endpoint) = &azure.endpoint {
+        builder = builder.with_endpoint(endpoint.clone());
+        if is_http(endpoint) {
+            builder = builder.with_allow_http(true);
+        }
+    }
+    builder
 }
 
 /// A store whose operations each run in a `storage` span, `op` and `path`
@@ -303,6 +320,43 @@ mod tests {
         })))
         .unwrap();
         assert!(store.to_string().contains("agrafe-test"), "{store}");
+    }
+
+    /// An http endpoint, an emulator's, is let through to it: the client
+    /// would refuse every request otherwise. An https one changes nothing.
+    #[test]
+    fn an_http_endpoint_allows_http() {
+        use object_store::ClientConfigKey::AllowHttp;
+        use object_store::aws::AmazonS3ConfigKey;
+        use object_store::azure::AzureConfigKey;
+        let s3 = |endpoint: &str| S3StorageConfig {
+            bucket: "agrafe-test".into(),
+            region: None,
+            endpoint: Some(endpoint.into()),
+            access_key_id: None,
+            secret_access_key: None,
+        };
+        let allowed = |endpoint| {
+            s3_builder(&s3(endpoint)).get_config_value(&AmazonS3ConfigKey::Client(AllowHttp))
+        };
+        assert_eq!(allowed("http://127.0.0.1:9000").as_deref(), Some("true"));
+        assert_eq!(allowed("HTTP://minio:9000").as_deref(), Some("true"));
+        assert_ne!(
+            allowed("https://s3.fr-par.scw.cloud").as_deref(),
+            Some("true")
+        );
+        let azure = AzureStorageConfig {
+            account: "agrafeaccount".into(),
+            container: "agrafe-test".into(),
+            access_key: None,
+            endpoint: Some("http://127.0.0.1:10000/agrafeaccount".into()),
+        };
+        assert_eq!(
+            azure_builder(&azure)
+                .get_config_value(&AzureConfigKey::Client(AllowHttp))
+                .as_deref(),
+            Some("true")
+        );
     }
 
     #[test]

@@ -68,7 +68,7 @@ be left out.
 |---|---|---|
 | `bucket` | **required** with `s3` | Bucket name |
 | `region` | none | Region |
-| `endpoint` | none | Endpoint URL, for S3-compatible stores |
+| `endpoint` | none | Endpoint URL, for S3-compatible stores; an `http://` one, MinIO or LocalStack, is allowed plain http |
 | `access_key_id` | none | Access key |
 | `secret_access_key` | none | Secret key. A secret |
 
@@ -81,7 +81,7 @@ The bucket needs an `AbortIncompleteMultipartUpload` lifecycle rule.
 | `account` | **required** with `azure` | Storage account name |
 | `container` | **required** with `azure` | Container name |
 | `access_key` | none | Account key. A secret. Without it, the `AZURE_*` environment variables or a managed identity |
-| `endpoint` | none | Endpoint URL, for Azurite or a sovereign cloud |
+| `endpoint` | none | Endpoint URL, for Azurite or a sovereign cloud; an `http://` one is allowed plain http |
 
 ### `[storage.gcs]`
 
