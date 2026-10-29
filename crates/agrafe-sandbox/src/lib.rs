@@ -608,6 +608,14 @@ fn bubblewrap_failure(program: String, stderr: &str) -> Option<Error> {
 #[cfg(unix)]
 const CPU_GRACE: u64 = 1;
 
+/// The stack limit (`RLIMIT_STACK`), fixed rather than inherited: glibc
+/// gives every thread a stack of that size, all of it counted against the
+/// address space limit, so a service manager's 256 MiB stack would leave
+/// openjpeg's decoding threads short of memory and crash vips on a JPEG
+/// 2000. 8 MiB is Linux's default.
+#[cfg(unix)]
+const STACK: u64 = 8 << 20;
+
 #[cfg(unix)]
 fn apply_limits(command: &mut tokio::process::Command, config: &Config) {
     let memory = config.memory.as_u64();
@@ -632,6 +640,7 @@ fn apply_limits(command: &mut tokio::process::Command, config: &Config) {
         command.pre_exec(move || {
             libc::setrlimit(libc::RLIMIT_AS, &limit(memory));
             libc::setrlimit(libc::RLIMIT_DATA, &limit(memory));
+            libc::setrlimit(libc::RLIMIT_STACK, &limit(STACK));
             libc::setrlimit(libc::RLIMIT_CPU, &cpu);
             libc::setrlimit(libc::RLIMIT_FSIZE, &limit(output));
             libc::setrlimit(libc::RLIMIT_NPROC, &limit(processes));
@@ -1324,6 +1333,25 @@ mod tests {
              sys.exit(0 if resource.getrlimit(resource.RLIMIT_NPROC) == (777, 777) else 1)\n",
         ]);
         let outcome = run(limit, &config).await.unwrap();
+        assert!(matches!(outcome, Outcome::Success), "{outcome:?}");
+    }
+
+    /// The stack limit is the sandbox's, not the worker's: thread stacks
+    /// are sized by it and count against the address space.
+    #[tokio::test]
+    async fn stack_is_fixed() {
+        if Command::new("python3").program().is_relative() {
+            eprintln!("skipped: no python3");
+            return;
+        }
+        let mut limit = Command::new("python3");
+        limit.args([
+            "-I",
+            "-c",
+            "import resource, sys\n\
+             sys.exit(0 if resource.getrlimit(resource.RLIMIT_STACK) == (8 << 20, 8 << 20) else 1)\n",
+        ]);
+        let outcome = run(limit, &config()).await.unwrap();
         assert!(matches!(outcome, Outcome::Success), "{outcome:?}");
     }
 

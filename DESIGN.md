@@ -2545,7 +2545,7 @@ only, no secrets; vips also gets `TMPDIR`, `VIPS_CONCURRENCY` and
 through), `setrlimit` bounds on address space and data
 (`media.sandbox.memory`, default 1 GiB), CPU time, output file size
 (`max_output_size`) and process count (`max_processes`, default 1024),
-no core dumps, and a kill at the wall-clock limit
+a stack of 8 MiB, no core dumps, and a kill at the wall-clock limit
 (`media.sandbox.timeout`, default 60 s). The process count is
 `RLIMIT_NPROC`, which the kernel counts per uid, every process and
 thread of it, the worker's own included: it bounds a fork bomb at what
@@ -2562,7 +2562,11 @@ which catches `SIGXCPU` and aborts, and `oosplash` exits 134 for it, the
 code of any crash; the limit there is a plain rejection of the file.
 (With the two limits equal the
 kernel checks the hard one first and sends `SIGKILL`, which says
-nothing.) The address space limit is enforced by Linux and ignored by
+nothing.) The stack limit is fixed rather than inherited because glibc
+sizes every thread's stack by it, and all of it counts against the
+address space: under a runner image or a service manager that raised it
+to 256 MiB, the threads openjpeg starts to decode a JPEG 2000 left vips
+short of its 1 GiB and it died of `SIGSEGV`. The address space limit is enforced by Linux and ignored by
 macOS, so development machines get only the timeout. The child's stderr
 is a pipe, which no rlimit bounds: the worker reads it as it is written
 and keeps the last 4 KiB, so a decoder that prints an error per broken
