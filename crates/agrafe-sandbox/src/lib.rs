@@ -53,6 +53,7 @@ use tracing::Instrument as _;
 /// Deserialises from the `[media.sandbox]` table of the server
 /// configuration.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     /// Wall-clock limit; the process is killed past it.
     #[serde(with = "humantime_serde", default = "default_timeout")]

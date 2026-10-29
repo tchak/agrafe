@@ -3,6 +3,9 @@
 agrafe reads one TOML file, given by `--config` or `AGRAFE_CONFIG`, then
 environment variables. Every key can be set from the environment: prefix it
 with `AGRAFE_`, upper-case it, and join the levels with a double underscore.
+A key agrafe does not know, misspelled or in the wrong table, is refused at
+startup with its name, from the file or the environment; a variable without
+a double underscore, such as `AGRAFE_CONFIG`, is not a key and is left alone.
 
 | Key | Environment variable |
 |---|---|

@@ -25,6 +25,7 @@ use crate::{Config, Error, Rejection, Verdict};
 
 /// The `[media.office]` table: the converter and its own limits.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Office {
     /// The LibreOffice binary, a bare name looked up on `PATH` or a path.
     /// Unset by default, and office files get the icon.
@@ -44,6 +45,7 @@ pub struct Office {
 /// of its sandbox (the output size, the isolation, the extra readable
 /// paths) is `[media.sandbox]`'s.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OfficeSandbox {
     /// Wall-clock limit per conversion, two minutes by default.
     #[serde(with = "humantime_serde", default = "default_timeout")]

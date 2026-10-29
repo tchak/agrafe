@@ -3511,7 +3511,7 @@ two agrafe installations in two schemas of one database never contend.
 | Database | Postgres via `sqlx`, migrations in `crates/agrafe/migrations/` |
 | Object store | `object_store`, local filesystem, S3, Azure Blob Storage or Google Cloud Storage |
 | Fetching `url` blobs, webhook deliveries | `reqwest` with rustls, a resolver of our own enforcing the address policy on fetches |
-| Config | `figment` with TOML and env providers |
+| Config | `figment` with TOML and env providers; an unknown key is refused, not left at its default |
 | Signing | `hmac` + `sha2` |
 | Encryption | `aes-gcm` + `hkdf`, Tink streaming format, own crate (`agrafe-crypto`) |
 | Sniffing | `infer` |

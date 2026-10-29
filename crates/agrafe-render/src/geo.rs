@@ -52,6 +52,7 @@ const CONCURRENT_FETCHES: usize = 4;
 /// `[media.map]`: how the map of a GeoJSON, GPX, KML or KMZ file is
 /// drawn and what it is drawn over.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[serde(default)]
 pub struct Map {
     /// Added around the geometry, as a fraction of its larger side.
@@ -108,6 +109,7 @@ impl Default for Map {
 
 /// One `[[media.map.layers]]`: a WMS `GetMap` as a URL template.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Layer {
     /// With `{bbox}` (`minx,miny,maxx,maxy` in EPSG:3857), `{width}` and
     /// `{height}` (pixels) to fill in.

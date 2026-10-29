@@ -32,6 +32,7 @@ pub enum ConfigError {
 /// The whole configuration, one field per table of the file. See
 /// `config/example.toml` for every key.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     /// `[server]`: the two interfaces and the role. Required.
     pub server: ServerConfig,
@@ -85,7 +86,14 @@ impl Config {
             figment = figment.merge(Toml::file_exact(path));
         }
         let config: Config = figment
-            .merge(Env::prefixed("AGRAFE_").split("__"))
+            // `AGRAFE_<SECTION>__<KEY>` only: every key lives in a section,
+            // and the variables without one, `AGRAFE_CONFIG` or the tests'
+            // `AGRAFE_SANDBOX_REQUIRED`, are not configuration.
+            .merge(
+                Env::prefixed("AGRAFE_")
+                    .filter(|key| key.as_str().contains("__"))
+                    .split("__"),
+            )
             .extract()
             .map_err(|e| ConfigError::Load(Box::new(e)))?;
         config.validate()?;
@@ -157,6 +165,7 @@ impl Config {
 
 /// The two interfaces and what this process runs.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     /// Where the private interface listens: no signatures, trusted network
     /// only. Every process binds it: one that does not serve the private
@@ -201,6 +210,7 @@ fn default_interfaces() -> Vec<Interface> {
 /// allowed: a public URL is its own authorisation, so no cookie is involved,
 /// and `"*"` exposes nothing a holder of the URL could not fetch anyway.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CorsConfig {
     /// The origins allowed to read public responses from a page, each as a
     /// browser sends it (`https://app.example`, no path or trailing slash),
@@ -328,6 +338,7 @@ impl Role {
 
 /// The Postgres connection.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DatabaseConfig {
     /// The connection URL, `postgres://…`. Carries the password, so it is
     /// a `Secret`.
@@ -371,7 +382,10 @@ fn default_max_connections() -> u32 {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "backend", rename_all = "lowercase")]
 /// The object store, chosen by `storage.backend`, with the settings of
-/// that backend in the table of the same name.
+/// that backend in the table of the same name. The other backends' tables
+/// are let through, unlike an unknown key anywhere else: an image's file
+/// sets up `local` and the environment switches to `s3`, the `[storage.local]`
+/// left behind. The chosen backend's table refuses an unknown key.
 pub enum StorageConfig {
     /// A directory on the local filesystem, `backend = "local"`.
     Local {
@@ -397,6 +411,7 @@ pub enum StorageConfig {
 
 /// Objects as files under a directory.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LocalStorageConfig {
     /// The directory the objects are kept under.
     pub path: String,
@@ -406,6 +421,7 @@ pub struct LocalStorageConfig {
 /// lifecycle rule: a crashed process cannot abort the multipart uploads it
 /// had open.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct S3StorageConfig {
     /// The bucket's name.
     pub bucket: String,
@@ -427,6 +443,7 @@ pub struct S3StorageConfig {
 /// An Azure Blob Storage container. Azure discards uncommitted blocks after
 /// seven days, so no lifecycle rule is needed.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AzureStorageConfig {
     /// The storage account's name.
     pub account: String,
@@ -444,6 +461,7 @@ pub struct AzureStorageConfig {
 /// A Google Cloud Storage bucket. It needs an
 /// `AbortIncompleteMultipartUpload` lifecycle rule, as on S3.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GcsStorageConfig {
     /// The bucket's name.
     pub bucket: String,
@@ -509,6 +527,7 @@ impl std::fmt::Debug for Base64Secret {
 
 /// The keys and lifetimes of signed public URLs.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SigningConfig {
     /// The id, in `keys`, of the key new tokens are minted with.
     pub current_key: String,
@@ -532,6 +551,7 @@ fn default_window() -> Duration {
 
 /// How long minted URLs live, by kind.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SigningTtl {
     /// Upload URLs; an hour by default.
     #[serde(with = "humantime_serde", default = "default_upload_ttl")]
@@ -572,6 +592,7 @@ impl Default for SigningTtl {
 
 /// Limits and timings of uploads.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UploadConfig {
     /// Hard cap on any upload; 5 GiB by default.
     #[serde(default = "default_max_size")]
@@ -652,6 +673,7 @@ impl Default for UploadConfig {
 /// [DESIGN.md, "Attachments"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#attachments
 /// ["State machine"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#state-machine
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BlobsConfig {
     /// Expiry of a blob created without one, and of a blob whose last
     /// attachment was removed, counted from that moment. A blob is either
@@ -718,6 +740,7 @@ impl Default for BlobsConfig {
 ///
 /// [DESIGN.md, "Archives"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#archives
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ArchiveConfig {
     /// Upper bound on the size of a generated archive, estimated at accept
     /// time from the members' sizes. A limit of its own: `upload.max_size`
@@ -766,6 +789,7 @@ impl Default for ArchiveConfig {
 ///
 /// [DESIGN.md, "Documents"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#documents
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DocumentConfig {
     /// Upper bound on the bytes a document's workspace takes once written
     /// out for the compiler, the members' sizes plus the inline files,
@@ -804,6 +828,7 @@ impl Default for DocumentConfig {
 ///
 /// [DESIGN.md, "Fetched blobs"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#fetched-blobs
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FetchConfig {
     /// The TCP connect and the TLS handshake; 10 seconds by default.
     #[serde(with = "humantime_serde", default = "default_fetch_connect_timeout")]
@@ -845,6 +870,7 @@ pub struct FetchConfig {
 ///
 /// [DESIGN.md, "Dashboard"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#dashboard
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DashboardConfig {
     /// Serve it under `/dashboard` on the private interface.
     #[serde(default)]
@@ -892,6 +918,7 @@ impl Default for FetchConfig {
 ///
 /// [DESIGN.md, "Webhooks"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#webhooks
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WebhookConfig {
     /// The one URL the deliveries go to. No webhook when unset: nothing
     /// is enqueued.
@@ -997,6 +1024,7 @@ impl Default for WebhookConfig {
 /// The key-encryption keys each blob's data key is wrapped under, and the
 /// segment size of the streaming AEAD.
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct EncryptionConfig {
     /// The id, in `keks`, of the key new blobs are wrapped under. Optional
     /// in the file, required to start: `Agrafe::new` fails without it.
@@ -1027,6 +1055,7 @@ fn default_chunk_size() -> ByteSize {
 /// The clamd that scans uploads. When it cannot be reached, uploads still
 /// succeed and their scan is deferred to a job.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClamavConfig {
     /// clamd's TCP socket, a host and port; `127.0.0.1:3310` by default.
     #[serde(default = "default_clamav_addr")]
@@ -1073,28 +1102,62 @@ impl Default for ClamavConfig {
 
 /// The derived representations of blobs: thumbnails, previews and the
 /// tools that make them.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct MediaConfig {
     /// The version of every derived representation; bumping it regenerates
     /// them all on next request. At least 1, since zero means "none"
     /// inside sealed URLs; 1 by default.
-    #[serde(default = "default_variant_version")]
     pub variant_version: i32,
     /// Originals above this size get no representations, except the text
     /// thumbnail, which reads only the first few KiB. 64 MiB by default.
-    #[serde(default = "default_max_source_size")]
     pub max_source_size: ByteSize,
     /// Where the workers unpack originals while rendering; the system
     /// temporary directory by default.
-    #[serde(default)]
     pub tmp_dir: Option<PathBuf>,
     /// The tools, boxes and sandbox limits, owned by the render crate and
     /// read from the same `[media]` table: `vips_command`,
     /// `extract_command`, `render_text_command`,
     /// `render_document_command`, `render_geo_command`, `thumbnail`,
     /// `preview`, `embedded_image`, `map`, `sandbox`.
-    #[serde(flatten)]
     pub render: agrafe_render::Config,
+}
+
+/// `[media]` is one table for two crates. Its keys are split by hand rather
+/// than with `#[serde(flatten)]`, which serde will not combine with
+/// `deny_unknown_fields`: a key that neither side knows, a misspelled
+/// `vips_comand` or a `sandbox.isolaton`, is refused rather than ignored.
+impl<'de> Deserialize<'de> for MediaConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use figment::value::{Dict, Value};
+        use serde::de::Error as _;
+
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Own {
+            #[serde(default = "default_variant_version")]
+            variant_version: i32,
+            #[serde(default = "default_max_source_size")]
+            max_source_size: ByteSize,
+            #[serde(default)]
+            tmp_dir: Option<PathBuf>,
+        }
+        const OWN: [&str; 3] = ["variant_version", "max_source_size", "tmp_dir"];
+
+        let mut render = Dict::deserialize(deserializer)?;
+        let own: Dict = OWN
+            .iter()
+            .filter_map(|key| render.remove(*key).map(|value| (key.to_string(), value)))
+            .collect();
+        let own = Own::deserialize(&Value::from(own)).map_err(D::Error::custom)?;
+        let render =
+            agrafe_render::Config::deserialize(&Value::from(render)).map_err(D::Error::custom)?;
+        Ok(Self {
+            variant_version: own.variant_version,
+            max_source_size: own.max_source_size,
+            tmp_dir: own.tmp_dir,
+            render,
+        })
+    }
 }
 
 fn default_variant_version() -> i32 {
@@ -1117,6 +1180,7 @@ impl Default for MediaConfig {
 
 /// The job queue and the workers this process runs.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct JobsConfig {
     /// How often idle workers look for work when no `NOTIFY` woke them;
     /// two seconds by default.
@@ -1223,6 +1287,64 @@ mod tests {
 
     fn load(path: &Path) -> figment::error::Result<Config> {
         Config::load(Some(path)).map_err(|e| e.to_string().into())
+    }
+
+    /// A key no section knows is refused, by name, at every level and
+    /// from either source: the default it would leave in place is not what
+    /// the operator wrote. The variables without a section are not
+    /// configuration and are left alone.
+    #[test]
+    fn unknown_keys_are_refused() {
+        Jail::expect_with(|jail| {
+            jail.set_env("AGRAFE_CONFIG", "agrafe.toml");
+            jail.set_env("AGRAFE_SANDBOX_REQUIRED", "1");
+            load(&example())?;
+
+            let text = std::fs::read_to_string(example()).unwrap();
+            jail.create_file("servr.toml", &format!("{text}\n[servr]\nx = 1\n"))?;
+            let err = load(Path::new("servr.toml")).unwrap_err().to_string();
+            assert!(err.contains("servr"), "{err}");
+            Ok(())
+        });
+        for (var, key) in [
+            ("AGRAFE_UPLOAD__MAX_SISE", "max_sise"),
+            ("AGRAFE_MEDIA__VIPS_COMAND", "vips_comand"),
+            ("AGRAFE_MEDIA__SANDBOX__ISOLATON", "isolaton"),
+            ("AGRAFE_MEDIA__THUMBNAIL__WIDHT", "widht"),
+            ("AGRAFE_STORAGE__LOCAL__PAHT", "paht"),
+        ] {
+            Jail::expect_with(|jail| {
+                jail.set_env(var, "1");
+                let err = load(&example()).unwrap_err().to_string();
+                assert!(err.contains(key), "{var}: {err}");
+                Ok(())
+            });
+        }
+    }
+
+    /// The configuration files the images ship load, with the storage
+    /// backend the image's environment gives.
+    #[test]
+    fn the_image_configs_load() {
+        Jail::expect_with(|jail| {
+            jail.set_env("AGRAFE_STORAGE__BACKEND", "local");
+            for file in ["default.toml", "office.toml"] {
+                let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../docker")
+                    .join(file);
+                let figment = Figment::new()
+                    .merge(Toml::file_exact(&path))
+                    .merge(Toml::string(
+                        "[database]\nurl = \"postgres://db/agrafe\"\n\
+                         [signing]\ncurrent_key = \"k1\"\nkeys = { k1 = \"a2V5\" }\n\
+                         [server]\npublic_base_url = \"https://files.example\"\n",
+                    ));
+                let _: Config = figment
+                    .merge(figment::providers::Env::prefixed("AGRAFE_").split("__"))
+                    .extract()?;
+            }
+            Ok(())
+        });
     }
 
     #[test]
