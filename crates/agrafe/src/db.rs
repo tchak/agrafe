@@ -88,13 +88,17 @@ pub async fn check_migrated(pool: &PgPool) -> Result<(), SchemaError> {
         {
             Ok(rows) => rows,
             // 42P01, undefined_table: never migrated.
-            Err(sqlx::Error::Database(err)) if err.code().as_deref() == Some("42P01") => {
-                Vec::new()
-            }
+            Err(sqlx::Error::Database(err)) if err.code().as_deref() == Some("42P01") => Vec::new(),
             Err(err) => return Err(err.into()),
         };
-    for migration in MIGRATOR.iter().filter(|m| !m.migration_type.is_down_migration()) {
-        match applied.iter().find(|(version, ..)| *version == migration.version) {
+    for migration in MIGRATOR
+        .iter()
+        .filter(|m| !m.migration_type.is_down_migration())
+    {
+        match applied
+            .iter()
+            .find(|(version, ..)| *version == migration.version)
+        {
             None => {
                 return Err(SchemaError::Pending {
                     version: migration.version,

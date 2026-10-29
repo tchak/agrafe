@@ -1322,26 +1322,41 @@ mod tests {
         }
     }
 
-    /// The configuration files the images ship load, with the storage
-    /// backend the image's environment gives.
+    /// The configuration files the images ship load as they are, local
+    /// storage under the image's data directory, and with S3 chosen from the
+    /// environment over them, as the deployment guide does.
     #[test]
     fn the_image_configs_load() {
-        Jail::expect_with(|jail| {
-            jail.set_env("AGRAFE_STORAGE__BACKEND", "local");
+        let load = |file: &str| -> figment::error::Result<Config> {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../docker")
+                .join(file);
+            Figment::new()
+                .merge(Toml::file_exact(&path))
+                .merge(Toml::string(
+                    "[database]\nurl = \"postgres://db/agrafe\"\n\
+                     [signing]\ncurrent_key = \"k1\"\nkeys = { k1 = \"a2V5\" }\n\
+                     [server]\npublic_base_url = \"https://files.example\"\n",
+                ))
+                .merge(figment::providers::Env::prefixed("AGRAFE_").split("__"))
+                .extract()
+        };
+        Jail::expect_with(|_| {
             for file in ["default.toml", "office.toml"] {
-                let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../docker")
-                    .join(file);
-                let figment = Figment::new()
-                    .merge(Toml::file_exact(&path))
-                    .merge(Toml::string(
-                        "[database]\nurl = \"postgres://db/agrafe\"\n\
-                         [signing]\ncurrent_key = \"k1\"\nkeys = { k1 = \"a2V5\" }\n\
-                         [server]\npublic_base_url = \"https://files.example\"\n",
-                    ));
-                let _: Config = figment
-                    .merge(figment::providers::Env::prefixed("AGRAFE_").split("__"))
-                    .extract()?;
+                let config = load(file)?;
+                assert!(
+                    matches!(config.storage, StorageConfig::Local { .. }),
+                    "{file}"
+                );
+            }
+            Ok(())
+        });
+        Jail::expect_with(|jail| {
+            jail.set_env("AGRAFE_STORAGE__BACKEND", "s3");
+            jail.set_env("AGRAFE_STORAGE__S3__BUCKET", "agrafe");
+            for file in ["default.toml", "office.toml"] {
+                let config = load(file)?;
+                assert!(matches!(config.storage, StorageConfig::S3 { .. }), "{file}");
             }
             Ok(())
         });

@@ -77,7 +77,10 @@ async fn migrate_then_audit_exits_by_what_it_found() {
         let out = agrafe(&config, args);
         assert!(!out.status.success(), "{args:?}");
         let stderr = text(&out.stderr);
-        assert!(stderr.contains("run `agrafe migrate`"), "{args:?}: {stderr}");
+        assert!(
+            stderr.contains("run `agrafe migrate`"),
+            "{args:?}: {stderr}"
+        );
     }
 
     let out = agrafe(&config, &["migrate"]);

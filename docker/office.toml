@@ -8,6 +8,11 @@
 private_addr = "0.0.0.0:8080"
 public_addr = "0.0.0.0:8081"
 
+[storage]
+# AGRAFE_STORAGE__BACKEND=s3 and the AGRAFE_STORAGE__S3__* variables switch
+# to a bucket; this table is then left aside.
+backend = "local"
+
 [storage.local]
 path = "/var/lib/agrafe/data"
 
