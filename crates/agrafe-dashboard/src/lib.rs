@@ -28,7 +28,6 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
-use tower_http::trace::TraceLayer;
 
 use agrafe::Agrafe;
 
@@ -45,10 +44,11 @@ const STYLESHEET: &str = include_str!("../assets/daisyui.css");
 /// are built from the prefix it finds itself under, and the thumbnails it
 /// embeds are the private API's, assumed one segment up (`/dashboard`
 /// under `/`, `/internal/dashboard` under `/internal`). It traces its own
-/// requests: a host's `TraceLayer` applied before the nest does not reach
-/// routes nested after it.
+/// requests with the private interface's span and trace context, since a
+/// host's layers applied before the nest do not reach routes nested after
+/// it; a host does not wrap it again.
 pub fn dashboard_router(state: Agrafe) -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/", get(home))
         .route("/style.css", get(stylesheet))
         .merge(jobs::routes())
@@ -56,8 +56,8 @@ pub fn dashboard_router(state: Agrafe) -> Router {
         .merge(attachments::routes())
         .fallback(not_found)
         .layer(middleware::from_fn(error::render))
-        .layer(TraceLayer::new_for_http())
-        .with_state(state)
+        .with_state(state);
+    agrafe_axum::trace::private(router)
 }
 
 async fn home(base: Base) -> Redirect {

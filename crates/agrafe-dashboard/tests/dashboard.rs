@@ -730,3 +730,50 @@ async fn a_retry_redirects_and_the_job_is_due_again() {
         .unwrap();
     assert_eq!(kinds, ["scan"]);
 }
+
+/// Every field value of every span opened while it is the default
+/// subscriber, as `Debug` prints it, whatever the span's level.
+#[derive(Clone, Default)]
+struct Fields(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+impl tracing::field::Visit for Fields {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        self.0
+            .lock()
+            .unwrap()
+            .push(format!("{}={value:?}", field.name()));
+    }
+}
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Fields {
+    fn on_new_span(
+        &self,
+        attrs: &tracing::span::Attributes<'_>,
+        _: &tracing::span::Id,
+        _: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        attrs.record(&mut self.clone());
+    }
+}
+
+/// A page is one `request` span, the private interface's: its path, no
+/// query string, and a trace id; no second span with the full URI.
+#[tokio::test]
+async fn a_page_runs_in_one_request_span_without_its_query() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let db = TestDatabase::new().await;
+    let app = setup(db, false).await;
+    let fields = Fields::default();
+    let _default =
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(fields.clone()));
+    page(&app, "/dashboard/jobs?kind=scan&state=due", "Jobs").await;
+    let fields = fields.0.lock().unwrap().clone();
+    let paths: Vec<&String> = fields.iter().filter(|f| f.starts_with("path=")).collect();
+    assert_eq!(paths.len(), 1, "{fields:?}");
+    assert!(
+        fields.iter().all(|f| !f.contains("kind=scan")),
+        "{fields:?}"
+    );
+    assert!(fields.iter().all(|f| !f.starts_with("uri=")), "{fields:?}");
+}

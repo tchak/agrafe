@@ -264,12 +264,12 @@ async fn serve(config: Config) -> Result<(), Error> {
                 );
             }
             // Nested after the private router's layers, so it gets the host
-            // check and the request span of its own; the cross-site check is
-            // its extractor's.
+            // check of its own; it brings its request span, and the
+            // cross-site check is its extractor's.
             let dashboard = agrafe_dashboard::dashboard_router(state.clone()).layer(
                 axum::middleware::from_fn_with_state(state.clone(), api::host::refuse_unknown_host),
             );
-            app = app.nest("/dashboard", api::trace::private(dashboard));
+            app = app.nest("/dashboard", dashboard);
         }
         app
     } else {
