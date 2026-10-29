@@ -146,6 +146,16 @@ const HTTP_TARGETS: [&str; 4] = ["hyper", "hyper_util", "h2", "reqwest"];
 /// on a target replaces the one the filter already had on it; a directive
 /// on a module below, `hyper::proto=trace`, is more specific and wins over
 /// the cap on its own.
+/// The filter `env`, the value of `RUST_LOG`, spells, `info` when it is
+/// empty or names nothing valid. A directive it cannot parse is reported on stderr and
+/// left out, the others kept: one typo must not silently turn the debug
+/// lines an operator asked for back into `info`.
+fn env_filter(env: &str) -> EnvFilter {
+    EnvFilter::builder()
+        .with_default_directive(tracing_subscriber::filter::LevelFilter::INFO.into())
+        .parse_lossy(env)
+}
+
 fn cap_http_targets(filter: EnvFilter, env: &str) -> EnvFilter {
     HTTP_TARGETS
         .into_iter()
@@ -167,8 +177,7 @@ fn names_target(env: &str, target: &str) -> bool {
 async fn main() -> Result<(), Error> {
     let cli = Cli::parse();
     let env = std::env::var(EnvFilter::DEFAULT_ENV).unwrap_or_default();
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
-    let filter = cap_http_targets(filter, &env);
+    let filter = cap_http_targets(env_filter(&env), &env);
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
     if let Some(path) = &cli.config
@@ -364,5 +373,16 @@ mod tests {
         assert!(asked.contains("hyper=trace"), "{asked}");
         assert!(!asked.contains("hyper=info"), "{asked}");
         assert!(asked.contains("hyper_util=info"), "{asked}");
+    }
+
+    #[test]
+    fn a_bad_directive_leaves_the_others() {
+        let filter = env_filter("debug,hyper=trce").to_string();
+        assert!(filter.contains("debug"), "{filter}");
+        assert!(!filter.contains("trce"), "{filter}");
+        let unset = env_filter("").to_string();
+        assert!(unset.contains("info"), "{unset}");
+        let targeted = env_filter("agrafe=debug").to_string();
+        assert!(targeted.contains("agrafe=debug"), "{targeted}");
     }
 }
