@@ -77,7 +77,9 @@ async fn hasten(exec: impl PgExecutor<'_>, now: Timestamp) -> sqlx::Result<()> {
 /// installation (see `jobs::try_xact_lock`). A run longer than
 /// `jobs.reap_interval` would otherwise overlap the one it scheduled, on
 /// another process, and the two would update the same rows at once.
-const LOCK: i32 = 0x7265_6170; // "reap"
+// Public for the integration tests, not part of the API.
+#[doc(hidden)]
+pub const LOCK: i32 = 0x7265_6170; // "reap"
 
 /// Enqueue a reap at `run_at`, unless one is already pending. Outside any
 /// trace context: a run schedules its successor from inside its own, and

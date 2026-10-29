@@ -313,6 +313,62 @@ async fn the_reap_job_keeps_one_row_pending() {
     assert!(!reap::schedule(pool, Timestamp::now()).await.unwrap());
 }
 
+/// A reap that finds another holding its lock does nothing, and the job
+/// still schedules its successor and leaves. The lock is the
+/// installation's: one taken under another schema does not stop it.
+#[tokio::test]
+async fn a_reap_overlapping_another_does_nothing() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let pool = app.state.pool();
+    let blob = create(&app, raw_blob()).await;
+    set_expired(&app, id_of(&blob)).await;
+
+    let mut holder = pool.acquire().await.unwrap();
+    assert!(jobs::try_lock(&mut holder, reap::LOCK).await.unwrap());
+    let report = reap_now(&app).await;
+    assert_eq!(
+        report,
+        Report {
+            skipped: true,
+            ..Report::default()
+        }
+    );
+    assert_eq!(get_blob(&app, id_of(&blob)).await["state"], "created");
+
+    // Through the job: skipping is not failing, and the clock keeps going.
+    assert!(reap::schedule(pool, Timestamp::now()).await.unwrap());
+    assert!(run_job(&app, JobKind::Reap).await);
+    let (dead, pending): (i64, i64) = sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE failed_at IS NOT NULL), \
+                count(*) FILTER (WHERE failed_at IS NULL AND locked_at IS NULL) \
+         FROM jobs WHERE kind = 'reap'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!((dead, pending), (0, 1));
+    assert_eq!(get_blob(&app, id_of(&blob)).await["state"], "created");
+    jobs::unlock(&mut holder, reap::LOCK).await.unwrap();
+
+    // The same lock taken by another installation, another schema of the
+    // same database, is not this one's.
+    sqlx::query("SET search_path = elsewhere")
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+    assert!(jobs::try_lock(&mut holder, reap::LOCK).await.unwrap());
+    let report = reap_now(&app).await;
+    assert!(!report.skipped);
+    assert_eq!(report.expired, 1);
+    assert_eq!(get_blob(&app, id_of(&blob)).await["state"], "expired");
+    jobs::unlock(&mut holder, reap::LOCK).await.unwrap();
+    sqlx::query("RESET search_path")
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+}
+
 /// A reap takes a batch of each kind of work, and one that filled a batch
 /// brings the next forward rather than leave the rest for an interval.
 #[tokio::test]
