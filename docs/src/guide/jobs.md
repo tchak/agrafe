@@ -214,7 +214,9 @@ the next run finds it again.
 The command prints the tally and exits non-zero when anything was found
 or could not be acted on; foreign objects do not count, so a README in
 the bucket does not fail a restore procedure. Under `--fix` the orphans
-go a thousand per request on S3. One audit runs at a time: the command reports
+go a thousand per request on S3. Over a large bucket, give it
+`--progress <file>`: it saves its place there every minute and a rerun
+with the same file carries on from it. One audit runs at a time: the command reports
 a running job, and a job that finds the command running steps aside
 until its next interval. See
 [Command line](../reference/cli.md#agrafe-audit) and

@@ -728,6 +728,59 @@ async fn the_job_resumes_from_its_progress() {
     );
 }
 
+/// The command line's sweep with a progress file: it saves its place
+/// there as the job does to its row, resumes from what it finds, refuses
+/// a file saved under other options, and removes it once done.
+#[tokio::test]
+async fn the_command_line_sweep_resumes_from_its_progress_file() {
+    let db = TestDatabase::new().await;
+    let app = settled_setup(db).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut ids = Vec::new();
+    for _ in 0..3 {
+        ids.push(id_of(&ready_blob(&app, &png_bytes(100)).await).to_string());
+    }
+    ids.sort_by_key(|id| agrafe::blob::key::order(parse_id(id)));
+    for id in &ids {
+        delete_object(&app, &storage_key(&app, id).await).await;
+    }
+
+    // A fresh file: the whole sweep, saved along the way, then removed.
+    let path = dir.path().join("fresh.json");
+    let report = app
+        .state
+        .audit_resumable(Options::default(), &path)
+        .await
+        .unwrap();
+    assert_eq!(report.count(Finding::MissingOriginal), 3, "{report}");
+    let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+    assert!(left.is_empty(), "{left:?}");
+
+    // A sweep interrupted after the first blob carries on from there.
+    let path = dir.path().join("interrupted.json");
+    let saved = json!({
+        "options": {"fix": false, "delete_unknown": false, "deep": null},
+        "progress": audit::Progress {
+            after: Some(storage_key(&app, &ids[0]).await),
+            cursor: ids[0].parse().unwrap(),
+            report: Report::default(),
+        },
+    });
+    std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+    let err = app.state.audit_resumable(DEEP, &path).await.unwrap_err();
+    assert!(
+        matches!(err, audit::AuditError::ProgressFile { .. }),
+        "other options: {err}"
+    );
+    let report = app
+        .state
+        .audit_resumable(Options::default(), &path)
+        .await
+        .unwrap();
+    assert_eq!(report.blobs, 2, "the two after the saved one: {report}");
+    assert!(!path.exists());
+}
+
 /// The prefix of the saved key gained an object since the save, a
 /// render's that sorts after the original: the resumed listing starts
 /// inside that prefix, and its new object is the next run's, not a

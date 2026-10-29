@@ -82,6 +82,12 @@ enum Command {
         /// With --deep: read one original in N, the same ones every run.
         #[arg(long, value_name = "N", requires = "deep")]
         sample: Option<NonZeroU32>,
+        /// Save the sweep's place to FILE every minute and resume from it
+        /// when it is there, so that an interrupted sweep of a large
+        /// bucket carries on rather than starting over. Removed once the
+        /// sweep is done; a file saved with other options is refused.
+        #[arg(long, value_name = "FILE")]
+        progress: Option<std::path::PathBuf>,
     },
 }
 
@@ -198,6 +204,7 @@ async fn main() -> Result<(), Error> {
             delete_unknown,
             deep,
             sample,
+            progress,
         } => {
             let pool = db::connect(&config.database).await?;
             let state = Agrafe::new(config, pool)?;
@@ -206,7 +213,10 @@ async fn main() -> Result<(), Error> {
                 delete_unknown,
                 deep: deep.then(|| sample.unwrap_or(NonZeroU32::MIN)),
             };
-            let report = state.audit(options).await?;
+            let report = match progress {
+                Some(path) => state.audit_resumable(options, &path).await?,
+                None => state.audit(options).await?,
+            };
             println!("{report}");
             match (report.errors, report.mismatches()) {
                 (0, 0) => Ok(()),

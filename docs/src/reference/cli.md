@@ -46,7 +46,7 @@ reported and does not count. See
 [Jobs and retries](../guide/jobs.md#the-audit).
 
 ```sh
-agrafe --config agrafe.toml audit [--fix] [--delete-unknown] [--deep [--sample <N>]]
+agrafe --config agrafe.toml audit [--fix] [--delete-unknown] [--deep [--sample <N>]] [--progress <FILE>]
 ```
 
 | Option | Description |
@@ -55,6 +55,7 @@ agrafe --config agrafe.toml audit [--fix] [--delete-unknown] [--deep [--sample <
 | `--delete-unknown` | Delete the objects under a prefix no row has, older than `upload.stale_after`. After a database restored from backup these are the blobs the backup missed, rows to recover rather than objects to delete: not until the database is as recovered as it will be |
 | `--deep` | Decrypt the originals and compare their SHA-256 with the rows'. Reads the whole bucket; the listing alone catches a missing or truncated object |
 | `--sample <N>` | With `--deep`: read one original in N, picked by id, so the same ones every run |
+| `--progress <FILE>` | Save the sweep's place to the file every minute, and resume from it when it is there: a sweep of a large bucket takes days, and an interrupted one, a dropped session or a store error, carries on instead of starting over. The file keeps the options, and a run with other options is refused. Removed once the sweep is done |
 
 It needs the database and the bucket, and the KEKs for `--deep`. It runs
 on its own connection and holds a lock the job honours: a job starting

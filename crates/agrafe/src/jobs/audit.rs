@@ -62,6 +62,15 @@ pub enum AuditError {
     /// command line.
     #[error("another audit is running")]
     Running,
+    /// The command line's progress file could not be read or does not
+    /// parse, or holds the progress of a sweep with other options.
+    #[error("the progress file {path}: {reason}")]
+    ProgressFile {
+        /// The file.
+        path: std::path::PathBuf,
+        /// What is wrong with it.
+        reason: String,
+    },
     /// The store listed this blob's objects after those of a greater key,
     /// which no supported backend does; the audit merges the listing with
     /// the table in key order (`blob::key::order`).
@@ -76,7 +85,7 @@ pub enum AuditError {
 }
 
 /// What an audit may do beyond reporting.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Options {
     /// Delete the orphan objects older than `upload.stale_after`, so an
     /// upload in flight is never touched: the objects a row accounts
@@ -300,6 +309,51 @@ impl Agrafe {
     pub async fn audit(&self, options: Options) -> Result<Report, AuditError> {
         audit(self, options, Progress::default(), None).await
     }
+
+    /// [`Agrafe::audit`], saving its place to the file at `path` every
+    /// minute, as the job does to its row, and resuming from it when it
+    /// is there: a sweep of a large bucket is days, and an interrupted
+    /// one carries on rather than starting over. The file holds the
+    /// options too; a sweep with others is refused rather than resumed
+    /// under different ones. It is removed once the sweep is done.
+    pub async fn audit_resumable(
+        &self,
+        options: Options,
+        path: &std::path::Path,
+    ) -> Result<Report, AuditError> {
+        let refused = |reason: String| AuditError::ProgressFile {
+            path: path.to_owned(),
+            reason,
+        };
+        let progress = match tokio::fs::read(path).await {
+            Ok(bytes) => {
+                let saved: Saved =
+                    serde_json::from_slice(&bytes).map_err(|e| refused(e.to_string()))?;
+                if saved.options != options {
+                    return Err(refused(format!(
+                        "it is the progress of a sweep with other options, {:?}",
+                        saved.options
+                    )));
+                }
+                tracing::info!(path = %path.display(), "resuming the audit");
+                saved.progress
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Progress::default(),
+            Err(err) => return Err(refused(err.to_string())),
+        };
+        let checkpoint = Checkpoint {
+            to: SaveTo::File {
+                path: path.to_owned(),
+                options,
+            },
+            saved: Instant::now(),
+        };
+        let report = audit(self, options, progress, Some(checkpoint)).await?;
+        if let Err(err) = tokio::fs::remove_file(path).await {
+            tracing::warn!(error = %err, path = %path.display(), "could not remove the finished audit's progress file");
+        }
+        Ok(report)
+    }
 }
 
 /// Where a sweep stands, kept in the job's payload so the next attempt
@@ -326,11 +380,28 @@ const CHECKPOINT_EVERY: Duration = Duration::from_secs(60);
 /// them one by one anyway.
 const DELETE_BATCH: usize = 1000;
 
-/// The job the sweep saves its progress to, as the worker that holds it.
+/// Where the sweep saves its progress, and when it last did.
 struct Checkpoint {
-    job: i64,
-    worker: String,
+    to: SaveTo,
     saved: Instant,
+}
+
+enum SaveTo {
+    /// The job's payload, as the worker that holds it.
+    Job { job: i64, worker: String },
+    /// The command line's progress file, with the options of its sweep.
+    File {
+        path: std::path::PathBuf,
+        options: Options,
+    },
+}
+
+/// What the command line's progress file holds: the sweep's options, so
+/// that a resumed sweep is the same one, and where it stands.
+#[derive(Serialize, Deserialize)]
+struct Saved {
+    options: Options,
+    progress: Progress,
 }
 
 pub(crate) async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
@@ -349,8 +420,10 @@ pub(crate) async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
         tracing::info!(after = ?progress.after, cursor = %progress.cursor, "resuming the audit");
     }
     let checkpoint = job.locked_by.clone().map(|worker| Checkpoint {
-        job: job.id,
-        worker,
+        to: SaveTo::Job {
+            job: job.id,
+            worker,
+        },
         saved: Instant::now(),
     });
     let result = audit(state, Options::default(), progress, checkpoint).await;
@@ -805,19 +878,46 @@ impl Sweep<'_> {
             cursor: self.cursor,
             report: self.report,
         };
-        let result = sqlx::query(
-            "UPDATE jobs SET payload = $2, attempts = 1 \
-             WHERE id = $1 AND locked_by = $3 AND failed_at IS NULL",
-        )
-        .bind(checkpoint.job)
-        .bind(serde_json::to_value(&progress).expect("a progress serializes"))
-        .bind(&checkpoint.worker)
-        .execute(self.state.pool())
-        .await;
-        match result {
-            Ok(done) if done.rows_affected() == 1 => {}
-            Ok(_) => tracing::warn!("audit progress not saved: the job was reclaimed or removed"),
-            Err(err) => tracing::warn!(error = %err, "could not save the audit's progress"),
+        match &checkpoint.to {
+            SaveTo::Job { job, worker } => {
+                let result = sqlx::query(
+                    "UPDATE jobs SET payload = $2, attempts = 1 \
+                     WHERE id = $1 AND locked_by = $3 AND failed_at IS NULL",
+                )
+                .bind(job)
+                .bind(serde_json::to_value(&progress).expect("a progress serializes"))
+                .bind(worker)
+                .execute(self.state.pool())
+                .await;
+                match result {
+                    Ok(done) if done.rows_affected() == 1 => {}
+                    Ok(_) => {
+                        tracing::warn!(
+                            "audit progress not saved: the job was reclaimed or removed"
+                        );
+                    }
+                    Err(err) => tracing::warn!(error = %err, "could not save the audit's progress"),
+                }
+            }
+            SaveTo::File { path, options } => {
+                let saved = Saved {
+                    options: *options,
+                    progress,
+                };
+                // Written beside and renamed over, so an interruption
+                // mid-write leaves the previous save whole.
+                let bytes = serde_json::to_vec(&saved).expect("a progress serializes");
+                let mut partial = path.clone().into_os_string();
+                partial.push(".partial");
+                let result = async {
+                    tokio::fs::write(&partial, bytes).await?;
+                    tokio::fs::rename(&partial, path).await
+                }
+                .await;
+                if let Err(err) = result {
+                    tracing::warn!(error = %err, path = %path.display(), "could not save the audit's progress");
+                }
+            }
         }
     }
 
