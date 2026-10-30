@@ -145,8 +145,8 @@ called: points, lines, polygons with their holes (`exterior` and
 multi-geometries, curves of line segments, surfaces of polygon patches
 and rings of curves. Arcs, circles, solids and envelopes are not drawn.
 Each geometry is drawn in the system its `srsName` names, or the nearest
-enclosing element's, or the one on the document's first `boundedBy`
-envelope, where a WFS puts it: WGS 84 degrees, Lambert-93 or Web
+enclosing element's, or the one on the `boundedBy` envelope of the
+collection or feature holding it, where a WFS puts it: WGS 84 degrees, Lambert-93 or Web
 Mercator, in any of their spellings. EPSG:4326 written as a URN
 (`urn:ogc:def:crs:EPSG::4326`) or as an `opengis.net/def` URL is latitude
 first, as the OGC specifies, and is read so; `EPSG:4326`, GML 2's

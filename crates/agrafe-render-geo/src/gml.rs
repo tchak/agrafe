@@ -26,9 +26,11 @@
 //! dropped.
 //!
 //! The system is the `srsName` on the geometry, else the nearest
-//! ancestor's, else the document's first `boundedBy` envelope's, which is
-//! where a WFS puts it. GML has no default, so a geometry with none
-//! declines the document, like a shapefile without its `.prj`. Axis
+//! enclosing element's, where the envelope of a `boundedBy` counts for
+//! the element it bounds: the collection's, which is where a WFS puts
+//! it, or a feature's own, for the geometries after it. GML has no
+//! default, so a geometry with none declines the document, like a
+//! shapefile without its `.prj`. Axis
 //! order follows the OGC policy: the URN and `opengis.net/def` spellings
 //! of EPSG:4326 are latitude first, and swapped here; `EPSG:4326`, GML
 //! 2's `epsg.xml#4326` and CRS84 are longitude first, and Lambert-93 and
@@ -71,12 +73,11 @@ enum Part {
 /// inside a tag, is drawn as far as it goes, the geometry it was reading
 /// included.
 pub(crate) fn geometries(bytes: &[u8]) -> Option<Vec<(Geometry, Crs)>> {
-    let mut read = Parser::default().parse(bytes)?;
-    let default = read.default_srs.map(|name| read.srs.intern(name));
+    let read = Parser::default().parse(bytes)?;
     let systems: Vec<Option<(Crs, bool)>> = read.srs.names.iter().map(|n| system(n)).collect();
     let mut out = Vec::with_capacity(read.parts.len());
     for (part, srs) in read.parts {
-        let (crs, swap) = systems[srs.or(default)?].clone()?;
+        let (crs, swap) = systems[srs?].clone()?;
         out.push((geometry_of(part, swap), crs));
     }
     (!out.is_empty()).then_some(out)
@@ -130,14 +131,12 @@ impl Names {
     }
 }
 
-/// The document once read: its geometries, each with the `srsName` it or
-/// an ancestor carries, and the first `boundedBy` envelope's, for those
-/// without.
+/// The document once read: its geometries, each with the `srsName` it,
+/// an enclosing element or the envelope bounding one carries.
 #[derive(Debug, Default)]
 struct Read {
     parts: Vec<(Part, Option<usize>)>,
     srs: Names,
-    default_srs: Option<String>,
 }
 
 /// What a geometry element builds.
@@ -293,7 +292,8 @@ struct Parser {
     skip: Option<usize>,
     /// The depth of the `boundedBy` open, if one is.
     bounded_by: Option<usize>,
-    /// The `srsName`s in scope, by the depth of their element.
+    /// The `srsName`s in scope, by the depth of the element they hold
+    /// for: their own, or the one a `boundedBy` envelope bounds.
     srs: Vec<(usize, usize)>,
     /// The `srsDimension`s in scope, by the depth of their element.
     dimensions: Vec<(usize, usize)>,
@@ -404,8 +404,15 @@ impl Parser {
         }
         match name {
             "Envelope" | "Box" => {
-                if self.bounded_by == Some(depth - 1) && self.read.default_srs.is_none() {
-                    self.read.default_srs = attribute("srsName").filter(|name| !name.is_empty());
+                // The envelope of a `boundedBy` names the system of what
+                // it bounds, the collection or the feature, for the
+                // geometries after it that name none: its `srsName` holds
+                // for that element rather than for the envelope.
+                if self.bounded_by == Some(depth - 1)
+                    && let Some(last) = self.srs.last_mut()
+                    && last.0 == depth
+                {
+                    last.0 = depth - 2;
                 }
                 self.skip = Some(depth);
             }
@@ -475,11 +482,12 @@ impl Parser {
         if self.skip.is_some_and(|at| at < depth) {
             return;
         }
-        // What the element brought into scope, skipped or not.
-        if self.srs.last().is_some_and(|&(at, _)| at == depth) {
+        // What the element brought into scope, skipped or not, and what
+        // an envelope rescoped to it.
+        while self.srs.last().is_some_and(|&(at, _)| at >= depth) {
             self.srs.pop();
         }
-        if self.dimensions.last().is_some_and(|&(at, _)| at == depth) {
+        while self.dimensions.last().is_some_and(|&(at, _)| at >= depth) {
             self.dimensions.pop();
         }
         if self.skip.take().is_some() {
@@ -753,15 +761,17 @@ mod tests {
 
     #[test]
     fn inherits_the_srs_name() {
-        // From the collection to its members, from a feature that carries
-        // it, from a member up to a collection that does not, from the
-        // document's first envelope, and the nearest wins.
+        // From the collection's envelope to its members, from a feature
+        // that carries it, from a member up to a collection that does
+        // not, from a feature's own envelope to that feature and no
+        // further, and the nearest wins.
         let doc = gml32(
             r#"<wfs:boundedBy><gml:Envelope srsName="EPSG:2154"><gml:lowerCorner>1 2</gml:lowerCorner></gml:Envelope></wfs:boundedBy>
 <wfs:member><x:F><x:g><gml:MultiPoint srsName="EPSG:4326"><gml:pointMember><gml:Point><gml:pos>4 45</gml:pos></gml:Point></gml:pointMember><gml:pointMember><gml:Point srsName="EPSG:3857"><gml:pos>5 46</gml:pos></gml:Point></gml:pointMember></gml:MultiPoint></x:g></x:F></wfs:member>
 <wfs:member><x:F srsName="EPSG:3857"><x:g><gml:Point><gml:pos>6 47</gml:pos></gml:Point></x:g></x:F></wfs:member>
 <wfs:member><x:F><x:g><gml:MultiPoint><gml:pointMember><gml:Point srsName="EPSG:4326"><gml:pos>7 48</gml:pos></gml:Point></gml:pointMember></gml:MultiPoint></x:g></x:F></wfs:member>
-<wfs:member><x:F><gml:boundedBy><gml:Envelope srsName="EPSG:4326"/></gml:boundedBy><x:g><gml:Point><gml:pos>700000 6600000</gml:pos></gml:Point></x:g></x:F></wfs:member>"#,
+<wfs:member><x:F><gml:boundedBy><gml:Envelope srsName="EPSG:4326"/></gml:boundedBy><x:g><gml:Point><gml:pos>8 49</gml:pos></gml:Point></x:g></x:F></wfs:member>
+<wfs:member><x:F><x:g><gml:Point><gml:pos>700000 6600000</gml:pos></gml:Point></x:g></x:F></wfs:member>"#,
         );
         assert_eq!(
             kinds(&doc).unwrap(),
@@ -771,18 +781,38 @@ mod tests {
                 // drawn is the collection.
                 ("point 5 46".to_string(), Crs::Degrees),
                 ("point 6 47".to_string(), Crs::WebMercator),
-                ("point 7 48".to_string(), Crs::Degrees),
+                // Under the collection's envelope, a collection without
+                // a system of its own has that one, not a member's.
+                ("point 7 48".to_string(), lambert()),
+                ("point 8 49".to_string(), Crs::Degrees),
                 ("point 700000 6600000".to_string(), lambert()),
             ]
         );
-        // The envelope may come after the geometry it names a system for.
+        // With nothing enclosing it, a collection takes a member's.
+        let bare = gml32(
+            r#"<wfs:member><x:F><x:g><gml:MultiPoint><gml:pointMember><gml:Point srsName="EPSG:4326"><gml:pos>7 48</gml:pos></gml:Point></gml:pointMember><gml:pointMember><gml:Point><gml:pos>8 49</gml:pos></gml:Point></gml:pointMember></gml:MultiPoint></x:g></x:F></wfs:member>"#,
+        );
+        assert_eq!(
+            kinds(&bare).unwrap(),
+            [
+                ("point 7 48".to_string(), Crs::Degrees),
+                ("point 8 49".to_string(), Crs::Degrees),
+            ]
+        );
+        // An envelope names the system of what comes after it in the
+        // element it bounds, not before: the schema puts `boundedBy`
+        // before the properties, and nothing is read twice.
         let late = gml32(
             r#"<wfs:member><x:F><x:g><gml:Point><gml:pos>4 45</gml:pos></gml:Point></x:g></x:F></wfs:member><wfs:boundedBy><gml:Envelope srsName="EPSG:4326"/></wfs:boundedBy>"#,
         );
-        assert_eq!(
-            kinds(&late).unwrap(),
-            [("point 4 45".to_string(), Crs::Degrees)]
+        assert_eq!(kinds(&late), None);
+        // A `boundedBy` with a system of its own, which nothing writes,
+        // holds for the `boundedBy` alone: were it to leak past its
+        // feature, the second point would be in it and the document drawn.
+        let odd = gml32(
+            r#"<wfs:member><x:F><gml:boundedBy srsName="EPSG:3857"><gml:Envelope srsName="EPSG:4326"/></gml:boundedBy><x:g><gml:Point><gml:pos>8 49</gml:pos></gml:Point></x:g></x:F></wfs:member><wfs:member><x:F><x:g><gml:Point><gml:pos>9 50</gml:pos></gml:Point></x:g></x:F></wfs:member>"#,
         );
+        assert_eq!(kinds(&odd), None);
     }
 
     #[test]

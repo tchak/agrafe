@@ -2537,10 +2537,13 @@ on "has preview", never on category. Sources, in order:
    A third ordinate is dropped.
 
    The system is the `srsName` on the geometry, else the nearest
-   ancestor's, else, when neither carries one, one of its parts', else
-   the document's first `boundedBy` envelope's (GML's or WFS 2.0's,
-   which wraps the same envelope), which is where a WFS puts it, read
-   once the document is, since it may come after. GML has no default,
+   enclosing element's, where the envelope of a `boundedBy` (GML's or
+   WFS 2.0's, which wraps the same envelope) counts for the element it
+   bounds, the collection's, which is where a WFS puts it, or a
+   feature's own, for the geometries after it in that element; else,
+   when none of those carries one, one of its parts'. An envelope after
+   a geometry names nothing for it: the schema puts `boundedBy` before
+   the properties, and nothing is read twice. GML has no default,
    so a geometry without one declines the document, like a shapefile
    without its `.prj`, and so does one in a system that is not handled.
    The names go through the lookup the GeoJSON `crs` uses, which knows
