@@ -973,11 +973,13 @@ archive icon. The ZIP
 analogue: a ZIP whose first local file header names a `.kml` entry,
 `doc.kml` as Google Earth writes it first, is a KMZ,
 `application/vnd.google-earth.kmz`, and one whose first entry is a
-`.shp`, `.shx`, `.dbf` or `.prj`, in a folder or not, is a zipped
-shapefile, `application/x-shapefile` (nothing is registered; this is
-the spelling in use); a declaration of `application/zip` is refined to
-either. Entry order is the writer's, so an archive that starts with an
-icon, a `.cpg`, a folder entry or a `__MACOSX/` sidecar is not
+`.shp`, `.shx`, `.dbf`, `.prj` or `.cpg`, in a folder or not, is a
+zipped shapefile, `application/x-shapefile` (nothing is registered;
+this is the spelling in use), the `.cpg` because alphabetical order,
+which most tools zip in, puts it first whenever there is one; a
+declaration of `application/zip` is refined to either. Entry order is
+the writer's, so an archive that starts with an icon, a readme, a
+folder entry or a `__MACOSX/` sidecar is not
 recognised, and a client that knows the field is a map declares the
 type itself. The helper is never run on every ZIP to see whether it
 declines. These are the only cases where the bytes change the

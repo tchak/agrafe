@@ -155,7 +155,7 @@ The bytes flow once through a chain of checks, in this order:
    `application/gml+xml`; and
    a ZIP whose first entry is a `.kml`, declared as `application/zip`,
    gets `application/vnd.google-earth.kmz`, and one whose first entry
-   is a `.shp`, `.shx`, `.dbf` or `.prj` gets `application/x-shapefile`,
+   is a `.shp`, `.shx`, `.dbf`, `.prj` or `.cpg` gets `application/x-shapefile`,
    so all are drawn as maps.
    When `upload.content_types` is set, the declaration
    must still be in it, and the bytes of a blob declared as

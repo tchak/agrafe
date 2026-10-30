@@ -8,12 +8,14 @@
 pub const SHAPEFILE: &str = "application/x-shapefile";
 
 /// Whether a ZIP is a zipped shapefile: its first local file header names
-/// a `.shp`, `.shx`, `.dbf` or `.prj` entry, folder or not. Entry order
-/// is the writer's, so an archive that starts with a `.cpg`, a readme or
+/// a `.shp`, `.shx`, `.dbf`, `.prj` or `.cpg` entry, folder or not; the
+/// `.cpg` because alphabetical order, which `zip -r` and most tools
+/// produce, puts it first whenever there is one. Entry order is the
+/// writer's, so an archive that starts with a readme, a folder entry or
 /// a `__MACOSX/` entry is not recognised, and a client that knows the
 /// field is a map declares the type itself.
 pub fn looks_like_shapefile(head: &[u8]) -> bool {
-    crate::zip::first_entry_ends_with(head, &[b".shp", b".shx", b".dbf", b".prj"])
+    crate::zip::first_entry_ends_with(head, &[b".shp", b".shx", b".dbf", b".prj", b".cpg"])
 }
 
 #[cfg(test)]
@@ -38,12 +40,14 @@ mod tests {
             b"parcelles.shx",
             b"parcelles.dbf",
             b"parcelles.prj",
+            b"parcelles.cpg",
             b"export/Parcelles.SHP",
         ] {
             assert!(looks_like_shapefile(&zip_head(name)), "{name:?}");
         }
         assert!(!looks_like_shapefile(&zip_head(b".shp")));
-        assert!(!looks_like_shapefile(&zip_head(b"parcelles.cpg")));
+        assert!(!looks_like_shapefile(&zip_head(b"parcelles.qmd")));
+        assert!(!looks_like_shapefile(&zip_head(b"LISEZMOI.txt")));
         assert!(!looks_like_shapefile(&zip_head(b"export/")));
         assert!(!looks_like_shapefile(&zip_head(b"doc.kml")));
         assert!(!looks_like_shapefile(&zip_head(b"word/document.xml")));

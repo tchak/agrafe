@@ -84,7 +84,7 @@ declaring a GML namespace (`http://www.opengis.net/gml` or
 `application/gml+xml`. A `.kmz` uploaded as
 `application/zip` whose first entry is a `.kml`, as Google Earth writes
 it, becomes `application/vnd.google-earth.kmz`; one whose first entry is
-a `.shp`, `.shx`, `.dbf` or `.prj`, as QGIS writes them, becomes
+a `.shp`, `.shx`, `.dbf`, `.prj` or `.cpg`, as QGIS writes them, becomes
 `application/x-shapefile`. A ZIP that starts with another entry is not
 recognised, so a client that knows the file is a map declares its type.
 A file with no geometry has no map and gets the text thumbnail instead,

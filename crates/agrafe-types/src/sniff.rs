@@ -38,8 +38,8 @@ const XML: &str = "text/xml";
 /// whose root element is `<gpx>` or `<kml>` is a GPX or a KML one, and
 /// one whose root element declares a GML namespace a GML one, for the
 /// same reason. A ZIP whose first entry is a `.kml` is a KMZ, one
-/// whose first entry is a `.shp`, `.shx`, `.dbf` or `.prj` a zipped
-/// shapefile.
+/// whose first entry is a `.shp`, `.shx`, `.dbf`, `.prj` or `.cpg` a
+/// zipped shapefile.
 ///
 /// An OLE compound file sniffs as the generic storage: without its `std`
 /// feature, which would parse the file's directory in-process, `infer`
@@ -401,8 +401,8 @@ mod tests {
             sniff(&zip_head(b"parcelles/parcelles.shp")),
             Some(SHAPEFILE)
         );
-        assert_eq!(sniff(&zip_head(b"parcelles.dbf")), Some(SHAPEFILE));
-        assert_eq!(sniff(&zip_head(b"parcelles.cpg")), Some("application/zip"));
+        assert_eq!(sniff(&zip_head(b"parcelles.cpg")), Some(SHAPEFILE));
+        assert_eq!(sniff(&zip_head(b"parcelles.qmd")), Some("application/zip"));
     }
 
     /// A ZIP head whose first local file header names `name`.
