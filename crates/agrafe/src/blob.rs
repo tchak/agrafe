@@ -434,6 +434,9 @@ pub enum PreviewSource {
     /// The layers of a zipped shapefile, each from its own system, drawn
     /// over a map background.
     Shapefile,
+    /// The geometries of a GML document, each from the system its
+    /// `srsName` names, drawn over a map background.
+    Gml,
 }
 
 agrafe_types::str_enum!(PreviewSource {
@@ -443,6 +446,7 @@ agrafe_types::str_enum!(PreviewSource {
     Gpx => "gpx",
     Kml => "kml",
     Shapefile => "shapefile",
+    Gml => "gml",
 });
 
 impl From<agrafe_types::map::Format> for PreviewSource {
@@ -456,6 +460,7 @@ impl From<agrafe_types::map::Format> for PreviewSource {
             Format::Gpx => PreviewSource::Gpx,
             Format::Kml | Format::Kmz => PreviewSource::Kml,
             Format::Shapefile => PreviewSource::Shapefile,
+            Format::Gml => PreviewSource::Gml,
         }
     }
 }

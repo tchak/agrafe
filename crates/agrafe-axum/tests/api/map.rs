@@ -1,9 +1,9 @@
-//! Maps for GeoJSON, GPX, KML and KMZ files and zipped shapefiles: the
-//! geometry over a flat background or over the layers of a WMS, here a
-//! local stub; a provider that fails; the JSON upload that turns out to
-//! be GeoJSON, the XML one that turns out to be GPX or KML and the ZIP
-//! ones that turn out to be KMZ or a shapefile; the files that hold no
-//! map.
+//! Maps for GeoJSON, GPX, KML, KMZ and GML files and zipped shapefiles:
+//! the geometry over a flat background or over the layers of a WMS, here
+//! a local stub; a provider that fails; the JSON upload that turns out to
+//! be GeoJSON, the XML ones that turn out to be GPX, KML or GML and the
+//! ZIP ones that turn out to be KMZ or a shapefile; the files that hold
+//! no map.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -745,6 +745,88 @@ async fn a_zipped_shapefile_gets_a_map_preview_and_thumbnail() {
     );
 }
 
+#[tokio::test]
+async fn gml_files_get_a_map_preview_and_thumbnail() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let gml3 = map_blob(&app, "parcels.gml", "application/gml+xml").await;
+    let gml2 = map_blob(&app, "places-gml2.gml", "application/gml+xml").await;
+    render_all(&app).await;
+    for blob in [&gml3, &gml2] {
+        let id = id_of(blob);
+        let name = blob["filename"].as_str().unwrap();
+        let blob = get_blob(&app, id).await;
+        assert_eq!(blob["content_type"], "application/gml+xml", "{name}");
+        assert_eq!(blob["category"], "text", "{name}");
+        assert_eq!(blob["preview_state"], "ready", "{name}");
+        assert_eq!(blob["preview_source"], "gml", "{name}");
+        assert_eq!(blob["thumbnail_state"], "ready", "{name}");
+        let size = rendered(&app, &format!("/blobs/{id}/preview/{name}")).await;
+        assert_eq!(size, (400, 400), "{name}");
+        let size = rendered(&app, &format!("/blobs/{id}/thumbnail/{name}")).await;
+        assert_eq!(size, (256, 256), "{name}");
+        assert_eq!(jobs_for(&app, id).await, Vec::<String>::new(), "{name}");
+    }
+    // Paris in Lambert-93 and Lyon in degrees give two different maps.
+    let preview_of = |blob: &Value| {
+        format!(
+            "/blobs/{}/preview/{}",
+            id_of(blob),
+            blob["filename"].as_str().unwrap()
+        )
+    };
+    let (_, _, a) = fetch(&app.private, get_with(&preview_of(&gml3), &[])).await;
+    let (_, _, b) = fetch(&app.private, get_with(&preview_of(&gml2), &[])).await;
+    assert_ne!(a, b);
+}
+
+#[tokio::test]
+async fn a_gml_declared_as_xml_or_text_is_refined() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let as_xml = map_blob(&app, "parcels.gml", "application/xml").await;
+    let as_text = map_blob(&app, "places-gml2.gml", "text/plain").await;
+    let as_text_xml = map_blob(&app, "empty.gml", "text/xml").await;
+    // The refinement is on the row as soon as the upload completes.
+    for blob in [&as_xml, &as_text, &as_text_xml] {
+        assert_eq!(blob["content_type"], "application/gml+xml", "{blob}");
+    }
+    render_all(&app).await;
+    for blob in [&as_xml, &as_text] {
+        let id = id_of(blob);
+        let name = blob["filename"].as_str().unwrap();
+        let blob = get_blob(&app, id).await;
+        assert_eq!(blob["category"], "text", "{name}");
+        assert_eq!(blob["preview_state"], "ready", "{name}");
+        assert_eq!(blob["preview_source"], "gml", "{name}");
+        // The original is served with the refined type.
+        let (status, headers, _) = fetch(
+            &app.private,
+            get_with(&format!("/blobs/{id}/original/{name}"), &[]),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{name}");
+        assert_eq!(headers["content-type"], "application/gml+xml", "{name}");
+    }
+    // Refined, but nothing to draw: the text thumbnail it had before.
+    let empty = get_blob(&app, id_of(&as_text_xml)).await;
+    assert_eq!(empty["preview_state"], "unavailable");
+    assert_eq!(empty["thumbnail_state"], "ready");
+
+    // Declared as something a GML is not.
+    let bytes = fixture("parcels.gml");
+    let declared = "application/vnd.google-earth.kml+xml";
+    let mut blob = blob_for(&bytes, declared, "raw");
+    blob["skip_virus_scan"] = serde_json::json!(true);
+    let created = create(&app, blob).await;
+    let (status, body) = put_private(&app, id_of(&created), bytes).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(
+        body["error"]["message"],
+        format!("content looks like `application/gml+xml`, not `{declared}`")
+    );
+}
+
 /// A ZIP whose first entry is an icon, not a KMZ to the sniffer.
 fn zip_of_icon() -> Vec<u8> {
     use std::io::Write as _;
@@ -768,6 +850,16 @@ async fn files_without_a_map_get_what_a_text_file_gets() {
     // placemark without geometry.
     let no_points = map_blob(&app, "empty.gpx", "application/gpx+xml").await;
     let no_placemark = map_blob(&app, "empty.kml", "application/vnd.google-earth.kml+xml").await;
+    // GML features without geometry; a GML point without a system, which
+    // GML has no default for.
+    let no_geometry = map_blob(&app, "empty.gml", "application/gml+xml").await;
+    let no_srs = ready_file(
+        &app,
+        "point.gml",
+        "application/gml+xml",
+        br#"<gml:Point xmlns:gml="http://www.opengis.net/gml/3.2"><gml:pos>2.35 48.85</gml:pos></gml:Point>"#,
+    )
+    .await;
     // The same document zipped: an archive, so the icon rather than the
     // text thumbnail.
     let zipped = map_blob(&app, "empty.kmz", "application/vnd.google-earth.kmz").await;
@@ -798,6 +890,8 @@ async fn files_without_a_map_get_what_a_text_file_gets() {
         (&off, "unavailable"),
         (&no_points, "unavailable"),
         (&no_placemark, "unavailable"),
+        (&no_geometry, "unavailable"),
+        (&no_srs, "unavailable"),
     ] {
         let id = id_of(blob);
         let name = blob["filename"].as_str().unwrap();

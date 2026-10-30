@@ -39,7 +39,7 @@ The first release.
 - **Previews and thumbnails** in WebP, rendered by `vips` and four helper
   binaries in a sandbox of Landlock, seccomp and resource limits, or
   bubblewrap where the host grants it: images, PDF first pages, embedded
-  images, text, maps of GeoJSON, GPX, KML and KMZ files and zipped
+  images, text, maps of GeoJSON, GPX, KML, KMZ and GML files and zipped
   shapefiles, and, with
   LibreOffice, office documents; category icons for the rest.
 - **Generated files**: spreadsheets, ZIP archives and PDF documents

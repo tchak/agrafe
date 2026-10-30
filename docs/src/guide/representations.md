@@ -22,7 +22,7 @@ stripped.
 | Other PDF | none | the first page |
 | Other office files: Word, Excel and PowerPoint, their Office 97-2003, macro-enabled and template variants, RTF, OpenDocument texts, spreadsheets, presentations and drawings | none | the first page or slide, through [LibreOffice](deployment.md#libreoffice) when `media.office.command` is set; the icon otherwise |
 | Text, CSV and TSV | none | the first lines, in a monospace font |
-| GeoJSON, GPX, KML, KMZ, zipped shapefiles | the geometry over a map, see [Maps](#maps) | the map |
+| GeoJSON, GPX, KML, KMZ, GML, zipped shapefiles | the geometry over a map, see [Maps](#maps) | the map |
 | Anything else | none | the icon |
 
 A document "wraps a single image" when it is what users produce when asked
@@ -63,8 +63,9 @@ A user interface should key on whether a blob has a preview
 
 A GeoJSON file, `application/geo+json`, a GPX file,
 `application/gpx+xml`, a KML file, `application/vnd.google-earth.kml+xml`,
-a KMZ file, `application/vnd.google-earth.kmz`, or a zipped shapefile,
-`application/x-shapefile`, gets its geometry
+a KMZ file, `application/vnd.google-earth.kmz`, a GML file,
+`application/gml+xml`, or a zipped shapefile, `application/x-shapefile`,
+gets its geometry
 drawn over a map as its preview, and that map fitted into the thumbnail
 box. A `.geojson` uploaded as
 `application/json` or `text/plain`, which is how they tend to arrive, is
@@ -76,7 +77,11 @@ refined too; it holds no GeoJSON at the top level and gets the text
 thumbnail. Likewise a `.gpx` or a `.kml` uploaded as `application/xml`,
 `text/xml` or `text/plain` whose root element, within the first KiB, is
 `<gpx>` or `<kml>` becomes `application/gpx+xml` or
-`application/vnd.google-earth.kml+xml`, and a `.kmz` uploaded as
+`application/vnd.google-earth.kml+xml`. A `.gml` has no root element of
+its own, so one uploaded the same way is recognised by its root element
+declaring a GML namespace (`http://www.opengis.net/gml` or
+`http://www.opengis.net/gml/3.2`) within the first KiB, and becomes
+`application/gml+xml`. A `.kmz` uploaded as
 `application/zip` whose first entry is a `.kml`, as Google Earth writes
 it, becomes `application/vnd.google-earth.kmz`; one whose first entry is
 a `.shp`, `.shx`, `.dbf` or `.prj`, as QGIS writes them, becomes
@@ -132,6 +137,25 @@ other system, is nothing the renderer can place, and the archive gets the
 archive icon. The attributes in the `.dbf` are not drawn, and shapefiles
 have no style: the default of `[media.map.style]` applies. The layers are
 read up to 64 MiB in all, uncompressed.
+
+A GML file, GML 2 or 3 as a WFS serves it or QGIS writes it, is drawn
+from every geometry in it, whatever the features holding them are
+called: points, lines, polygons with their holes (`exterior` and
+`interior`, or GML 2's `outerBoundaryIs` and `innerBoundaryIs`), the
+multi-geometries, curves of line segments, surfaces of polygon patches
+and rings of curves. Arcs, circles, solids and envelopes are not drawn.
+Each geometry is drawn in the system its `srsName` names, or the nearest
+enclosing element's, or the one on the document's first `boundedBy`
+envelope, where a WFS puts it: WGS 84 degrees, Lambert-93 or Web
+Mercator, in any of their spellings. EPSG:4326 written as a URN
+(`urn:ogc:def:crs:EPSG::4326`) or as an `opengis.net/def` URL is latitude
+first, as the OGC specifies, and is read so; `EPSG:4326`, GML 2's
+`epsg.xml#4326` and CRS84 are longitude first. GML has no default
+system, so a geometry without a `srsName` anywhere, or in another
+system, is nothing the renderer can place, and the file gets the text
+thumbnail. GML has no style (SLD is a separate document): the default of
+`[media.map.style]` applies. A zipped `.gml` is an archive, and gets the
+archive icon.
 
 The map shows the geometry's bounding box, padded by `media.map.padding`
 (a tenth of its larger side) and at least `min_span` (200 m) wide, so a
@@ -232,7 +256,7 @@ that repair. Use `POST /blobs/:id/retry` (see [Jobs and retries](jobs.md)).
 No user file is decoded in the server process. `vips` renders images and
 PDF pages and composites maps, `agrafe-extract` pulls embedded images out
 of PDF and office files, `agrafe-render-text` rasterises text samples,
-`agrafe-render-geo` draws GeoJSON, GPX, KML and KMZ files and zipped
+`agrafe-render-geo` draws GeoJSON, GPX, KML, KMZ and GML files and zipped
 shapefiles, and LibreOffice, when
 configured, converts office files to PDF, each as a subprocess with:
 

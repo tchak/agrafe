@@ -18,6 +18,7 @@ use std::path::Path;
 
 use agrafe_types::classify::{self, Category};
 use agrafe_types::geojson::GEOJSON;
+use agrafe_types::gml::GML;
 use agrafe_types::gpx::GPX;
 use agrafe_types::kml::{KML, KMZ};
 use agrafe_types::map::Format;
@@ -51,8 +52,8 @@ pub struct Config {
     /// `PATH` by default.
     #[serde(default = "default_render_document_command")]
     pub render_document_command: String,
-    /// The helper that draws a GeoJSON, GPX, KML or KMZ file or a zipped
-    /// shapefile as SVG, found on `PATH` by default.
+    /// The helper that draws a GeoJSON, GPX, KML, KMZ or GML file or a
+    /// zipped shapefile as SVG, found on `PATH` by default.
     #[serde(default = "default_render_geo_command")]
     pub render_geo_command: String,
     /// The thumbnail box and quality, the `[media.thumbnail]` table.
@@ -65,7 +66,7 @@ pub struct Config {
     /// `[media.embedded_image]` table.
     #[serde(default)]
     pub embedded_image: EmbeddedImage,
-    /// How the map of a GeoJSON, GPX, KML or KMZ file or a zipped
+    /// How the map of a GeoJSON, GPX, KML, KMZ or GML file or a zipped
     /// shapefile is drawn, and what it is drawn over, the `[media.map]`
     /// table.
     #[serde(default)]
@@ -337,9 +338,9 @@ impl Plan {
 /// and every office format (`agrafe_types::office`: Word, Excel,
 /// PowerPoint and OpenDocument files, their legacy, macro-enabled and
 /// template variants, RTF and drawings) its first page through
-/// LibreOffice when one is configured, else the icon. A GeoJSON, GPX or
-/// KML file gets a map, and the text sample of the text file it is when
-/// it holds no geometry; a KMZ and a zipped shapefile get a map too, and
+/// LibreOffice when one is configured, else the icon. A GeoJSON, GPX,
+/// KML or GML file gets a map, and the text sample of the text file it
+/// is when it holds no geometry; a KMZ and a zipped shapefile get a map too, and
 /// the archive icon otherwise. The `text` category, plus CSV and TSV, which classify as
 /// spreadsheets, get a text sample as a thumbnail.
 pub fn plan(content_type: &str) -> Plan {
@@ -379,6 +380,10 @@ pub fn plan(content_type: &str) -> Plan {
         KMZ => Plan {
             picture: &[Source::Map(Format::Kmz)],
             fallback: None,
+        },
+        GML => Plan {
+            picture: &[Source::Map(Format::Gml)],
+            fallback: Some(Fallback::TextSample),
         },
         SHAPEFILE => Plan {
             picture: &[Source::Map(Format::Shapefile)],
@@ -473,6 +478,13 @@ mod tests {
             Plan {
                 picture: &[Source::Map(Format::Kmz)],
                 fallback: None,
+            }
+        );
+        assert_eq!(
+            plan(GML),
+            Plan {
+                picture: &[Source::Map(Format::Gml)],
+                fallback: Some(Fallback::TextSample),
             }
         );
         assert_eq!(

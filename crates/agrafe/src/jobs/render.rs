@@ -5,8 +5,8 @@
 //! One job serves both representations and does whatever is `pending` on
 //! the row. The picture is the file rendered as a whole, from the sources
 //! its content type lists (`agrafe_render::plan`), for a GeoJSON, GPX,
-//! KML or KMZ file or a zipped shapefile its map, drawn by a helper over
-//! a background fetched from a configured provider; the preview is the
+//! KML, KMZ or GML file or a zipped shapefile its map, drawn by a helper
+//! over a background fetched from a configured provider; the preview is the
 //! picture in the preview box, and the thumbnail is the preview fitted
 //! into the thumbnail box. The original is thus decoded once, the two
 //! pictures agree, and a thumbnail regenerated on its own is made from the

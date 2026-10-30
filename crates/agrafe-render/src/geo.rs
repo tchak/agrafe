@@ -1,5 +1,5 @@
-//! Maps for GeoJSON, GPX, KML and KMZ files and zipped shapefiles. Three
-//! steps, two of them in the sandbox: the `agrafe-render-geo` helper reads the file, in the format
+//! Maps for GeoJSON, GPX, KML, KMZ and GML files and zipped shapefiles.
+//! Three steps, two of them in the sandbox: the `agrafe-render-geo` helper reads the file, in the format
 //! the spec names, and writes the geometry as SVG paths with the extent
 //! it chose; this module, trusted code in the
 //! worker, fetches one WMS `GetMap` image per background layer that
@@ -49,7 +49,7 @@ const BACKGROUND: Color = Color {
 /// burst against the provider.
 const CONCURRENT_FETCHES: usize = 4;
 
-/// `[media.map]`: how the map of a GeoJSON, GPX, KML or KMZ file or a
+/// `[media.map]`: how the map of a GeoJSON, GPX, KML, KMZ or GML file or a
 /// zipped shapefile is drawn and what it is drawn over.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]

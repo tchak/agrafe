@@ -9,6 +9,7 @@
 //! bytes are something vips may be handed at all, and with which loader.
 
 use crate::geojson::{self, GEOJSON};
+use crate::gml::{self, GML};
 use crate::gpx::GPX;
 use crate::kml::{self, KML, KMZ};
 use crate::shapefile::{self, SHAPEFILE};
@@ -25,8 +26,8 @@ const OLE: &str = "application/x-ole-storage";
 /// XML and OpenDocument packages among others.
 const ZIP: &str = "application/zip";
 
-/// The content type of an XML document, the container of SVG, GPX, KML and
-/// every `+xml` type.
+/// The content type of an XML document, the container of SVG, GPX, KML,
+/// GML and every `+xml` type.
 const XML: &str = "text/xml";
 
 /// What the first bytes of an upload look like, if recognisable. JSON has
@@ -34,8 +35,9 @@ const XML: &str = "text/xml";
 /// FeatureCollection is a GeoJSON one, and is sniffed as such so that a
 /// `.geojson` declared as JSON or text can be refined (see [`refine`]).
 /// XML has a text sniffer that fires on the declaration; an XML document
-/// whose root element is `<gpx>` or `<kml>` is a GPX or a KML one, for
-/// the same reason. A ZIP whose first entry is a `.kml` is a KMZ, one
+/// whose root element is `<gpx>` or `<kml>` is a GPX or a KML one, and
+/// one whose root element declares a GML namespace a GML one, for the
+/// same reason. A ZIP whose first entry is a `.kml` is a KMZ, one
 /// whose first entry is a `.shp`, `.shx`, `.dbf` or `.prj` a zipped
 /// shapefile.
 ///
@@ -63,10 +65,12 @@ pub fn sniff(head: &[u8]) -> Option<&'static str> {
     if geojson::looks_like_geojson(head) {
         return Some(GEOJSON);
     }
-    // One look at the XML head for both root elements.
+    // One look at the XML head for both root elements. A GPX or KML
+    // root that declares GML too is still GPX or KML.
     match crate::xml::root_element(head) {
         Some(b"gpx") => Some(GPX),
         Some(b"kml") => Some(KML),
+        _ if gml::looks_like_gml(head) => Some(GML),
         _ => inferred,
     }
 }
@@ -74,7 +78,7 @@ pub fn sniff(head: &[u8]) -> Option<&'static str> {
 /// The content type a blob declared as `declared` gets once its bytes
 /// sniffed as `sniffed`: the sniffed type when it is more precise than a
 /// declaration that covers it, as a GeoJSON file declared as JSON or plain
-/// text, a GPX or KML file declared as XML or plain text, or a KMZ file
+/// text, a GPX, KML or GML file declared as XML or plain text, or a KMZ file
 /// or a zipped shapefile declared as a ZIP; `None` to keep the
 /// declaration. The category is the same either way.
 pub fn refine(declared: &str, sniffed: &str) -> Option<&'static str> {
@@ -82,6 +86,7 @@ pub fn refine(declared: &str, sniffed: &str) -> Option<&'static str> {
         ("application/json" | "text/json" | "text/plain", GEOJSON) => Some(GEOJSON),
         ("text/xml" | "text/plain", GPX) => Some(GPX),
         ("text/xml" | "text/plain", KML) => Some(KML),
+        ("text/xml" | "text/plain", GML) => Some(GML),
         ("application/zip", KMZ) => Some(KMZ),
         ("application/zip", SHAPEFILE) => Some(SHAPEFILE),
         _ => None,
@@ -109,8 +114,9 @@ pub fn compatible(declared: &str, sniffed: &str) -> bool {
     if s == GEOJSON {
         return matches!(d, "application/json" | "text/json") || d.starts_with("text/");
     }
-    // A GPX or KML file is XML, which the container rule covers, and text.
-    if s == GPX || s == KML {
+    // A GPX, KML or GML file is XML, which the container rule covers, and
+    // text.
+    if s == GPX || s == KML || s == GML {
         return d.starts_with("text/");
     }
     // The text sniffers (HTML, XML, shell scripts) are heuristics on the
@@ -375,6 +381,18 @@ mod tests {
         assert_eq!(sniff(b"<gpx version=\"1.1\">"), Some(GPX));
         assert_eq!(sniff(b"<?xml version=\"1.0\"?>\n<kml>"), Some(KML));
         assert_eq!(sniff(b"<kml>"), Some(KML));
+        assert_eq!(
+            sniff(b"<?xml version=\"1.0\"?>\n<wfs:FeatureCollection xmlns:wfs=\"http://www.opengis.net/wfs/2.0\" xmlns:gml=\"http://www.opengis.net/gml/3.2\">"),
+            Some(GML)
+        );
+        assert_eq!(
+            sniff(b"<FeatureCollection xmlns=\"http://www.opengis.net/gml\">"),
+            Some(GML)
+        );
+        assert_eq!(
+            sniff(b"<kml xmlns:gml=\"http://www.opengis.net/gml\">"),
+            Some(KML)
+        );
         assert_eq!(sniff(b"<?xml version=\"1.0\"?>\n<svg>"), Some("text/xml"));
         assert_eq!(sniff(b"<svg>"), None);
         assert_eq!(sniff(&zip_head(b"doc.kml")), Some(KMZ));
@@ -456,6 +474,29 @@ mod tests {
         assert!(!compatible(GPX, KML));
         assert!(!compatible(KML, GPX));
         assert!(!compatible(KMZ, KML));
+    }
+
+    #[test]
+    fn refines_xml_declarations_to_gml() {
+        for declared in ["application/xml", "text/xml", "text/plain"] {
+            assert!(compatible(declared, GML), "{declared}");
+            assert_eq!(refine(declared, GML), Some(GML), "{declared}");
+        }
+        assert!(compatible(GML, GML));
+        assert_eq!(refine(GML, GML), None);
+        // A declared GML whose namespaces are declared past the sniffed
+        // head.
+        assert!(compatible(GML, "text/xml"));
+        assert_eq!(refine(GML, "text/xml"), None);
+        assert!(compatible("text/csv", GML));
+        assert_eq!(refine("text/csv", GML), None);
+        assert!(compatible("application/octet-stream", GML));
+        assert!(!compatible("image/png", GML));
+        assert!(!compatible("application/json", GML));
+        assert!(!compatible(KML, GML));
+        assert!(!compatible(GML, KML));
+        assert!(!compatible(GPX, GML));
+        assert!(!compatible(GEOJSON, GML));
     }
 
     #[test]

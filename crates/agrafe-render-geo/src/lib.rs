@@ -1,5 +1,5 @@
-//! Maps for GeoJSON, GPX, KML, KMZ and zipped shapefiles: the geometry
-//! projected to Web Mercator, fitted into a pixel box with some margin, simplified to
+//! Maps for GeoJSON, GPX, KML, KMZ, GML and zipped shapefiles: the
+//! geometry projected to Web Mercator, fitted into a pixel box with some margin, simplified to
 //! the pixel, and drawn as SVG paths in the simplestyle-spec colours of
 //! the file or the default. The file is untrusted, so this runs in the
 //! `agrafe-render-geo` helper, in the sandbox; the server never parses a
@@ -16,6 +16,7 @@
 //! `agrafe_types::map`, along with the style vocabulary.
 
 mod archive;
+mod gml;
 mod gpx;
 mod kml;
 mod shapefile;
@@ -92,13 +93,15 @@ impl Crs {
 
     /// The system `name` spells, in any of the spellings in use:
     /// `urn:ogc:def:crs:EPSG::2154`, `EPSG:2154`,
-    /// `urn:ogc:def:crs:OGC:1.3:CRS84`, an OpenGIS URL.
+    /// `urn:ogc:def:crs:OGC:1.3:CRS84`, an OpenGIS URL, GML 2's
+    /// `http://www.opengis.net/gml/srs/epsg.xml#2154`. Which axis comes
+    /// first is the reader's business: GeoJSON is always easting first.
     fn named(name: &str) -> Option<Crs> {
         let name = name.trim().to_ascii_lowercase();
         if name.ends_with("crs84") {
             return Some(Crs::Degrees);
         }
-        match name.rsplit([':', '/']).next()?.parse::<u32>().ok()? {
+        match name.rsplit([':', '/', '#']).next()?.parse::<u32>().ok()? {
             4326 => Some(Crs::Degrees),
             2154 => Some(Crs::Lambert93(Lcc::lambert93())),
             3857 | 900_913 | 102_100 => Some(Crs::WebMercator),
@@ -221,6 +224,7 @@ pub fn render(bytes: &[u8], spec: &Spec) -> Option<Rendered> {
         Format::Kml => kml_shapes(bytes, spec),
         Format::Kmz => kml_shapes(&kml::document_of_kmz(bytes)?, spec),
         Format::Shapefile => shapefile_shapes(bytes, spec),
+        Format::Gml => gml_shapes(bytes, spec),
     }?;
     if shapes.is_empty() {
         return None;
@@ -313,6 +317,22 @@ fn shapefile_shapes(bytes: &[u8], spec: &Spec) -> Option<Vec<(Shape, Style)>> {
         for geometry in &geometries {
             project_geometry(geometry, &crs, &mut out).ok()?;
         }
+    }
+    Some(
+        out.into_iter()
+            .map(|shape| (shape, spec.style.clone()))
+            .collect(),
+    )
+}
+
+/// The shapes of the GML document `bytes`, all in the default style,
+/// since GML has none, each geometry in the system its `srsName` names.
+/// `None` when the document holds no geometry, one has no `srsName` in a
+/// system that is handled, or a coordinate is off Earth in its system.
+fn gml_shapes(bytes: &[u8], spec: &Spec) -> Option<Vec<(Shape, Style)>> {
+    let mut out = Vec::new();
+    for (geometry, crs) in gml::geometries(bytes)? {
+        project_geometry(&geometry, &crs, &mut out).ok()?;
     }
     Some(
         out.into_iter()
@@ -1412,6 +1432,104 @@ mod tests {
             ..spec.clone()
         };
         assert_eq!(render(&fixture("parcels.zip"), &kmz), None);
+    }
+
+    #[test]
+    fn a_gml_file_is_drawn_in_the_default_style() {
+        let spec = Spec {
+            format: Format::Gml,
+            ..spec()
+        };
+        let map = render(&fixture("parcels.gml"), &spec).expect("rendered");
+        // The parcel with its hole, the path and the pipe, a casing and a
+        // stroke each, and the survey point, all in the default style.
+        assert_eq!(map.svg.matches("<circle").count(), 1, "{}", map.svg);
+        assert!(map.svg.contains(r##"r="8" fill="#ffd400""##), "{}", map.svg);
+        let paths: Vec<&str> = map.svg.lines().filter(|l| l.starts_with("<path")).collect();
+        assert_eq!(paths.len(), 6, "{}", map.svg);
+        assert!(paths[0].contains(r##"fill="#ffd400" fill-opacity="0.35" fill-rule="evenodd""##));
+        assert_eq!(paths[0].matches('Z').count(), 2);
+        assert!(paths[3].contains(r##"fill="none" stroke="#ffd400" stroke-width="4""##));
+        // The path's two segments are one line.
+        assert_eq!(paths[2].matches('M').count(), 1);
+        // Nothing the features name reaches the SVG.
+        for word in ["AB 12", "Chemin", "Borne", "cadastre", "Lambert"] {
+            assert!(!map.svg.contains(word), "{word}");
+        }
+        // Paris, from Lambert-93 named on the collection's envelope: the
+        // point lands where the GeoJSON one in degrees does.
+        let paris = project(&Position::from([2.3522, 48.8566]), &Crs::Degrees).unwrap();
+        let (cx, cy) = (
+            (map.extent.minx + map.extent.maxx) / 2.0,
+            (map.extent.miny + map.extent.maxy) / 2.0,
+        );
+        assert!(
+            (cx - paris.x).abs() < 300.0 && (cy - paris.y).abs() < 300.0,
+            "{cx} {cy}"
+        );
+        assert!(
+            (300.0..3000.0).contains(&map.extent.span()),
+            "{}",
+            map.extent.span()
+        );
+        // GML 2, in degrees longitude first: Lyon.
+        let map = render(&fixture("places-gml2.gml"), &spec).expect("rendered");
+        assert_eq!(map.svg.matches("<circle").count(), 1, "{}", map.svg);
+        assert_eq!(
+            map.svg.lines().filter(|l| l.starts_with("<path")).count(),
+            4
+        );
+        let lyon = project(&Position::from([4.8357, 45.764]), &Crs::Degrees).unwrap();
+        let (cx, cy) = (
+            (map.extent.minx + map.extent.maxx) / 2.0,
+            (map.extent.miny + map.extent.maxy) / 2.0,
+        );
+        assert!(
+            (cx - lyon.x).abs() < 5000.0 && (cy - lyon.y).abs() < 5000.0,
+            "{cx} {cy}"
+        );
+    }
+
+    #[test]
+    fn a_gml_file_declines_like_a_geojson_one() {
+        let spec = Spec {
+            format: Format::Gml,
+            ..spec()
+        };
+        assert_eq!(render(&fixture("empty.gml"), &spec), None);
+        // A file handed over in another format is not a document of it.
+        assert_eq!(render(&fixture("parcels.gml"), &self::spec()), None);
+        assert_eq!(render(&fixture("places.kml"), &spec), None);
+        assert_eq!(render(&fixture("track.gpx"), &spec), None);
+        assert_eq!(render(&fixture("point.geojson"), &spec), None);
+        let kml = Spec {
+            format: Format::Kml,
+            ..spec.clone()
+        };
+        assert_eq!(render(&fixture("parcels.gml"), &kml), None);
+        // Off the globe in its system declines.
+        let point = |srs: &str, pos: &str| {
+            format!(
+                r#"<gml:Point xmlns:gml="http://www.opengis.net/gml/3.2" srsName="{srs}"><gml:pos>{pos}</gml:pos></gml:Point>"#
+            )
+        };
+        assert_eq!(
+            render(point("EPSG:4326", "652469 6862035").as_bytes(), &spec),
+            None
+        );
+        // Paris latitude first by the URN lands where Paris in GeoJSON
+        // does; the same numbers longitude first are off Somalia.
+        let urn = render(
+            point("urn:ogc:def:crs:EPSG::4326", "48.8566 2.3522").as_bytes(),
+            &spec,
+        )
+        .expect("rendered");
+        assert_eq!(urn.extent, rendered("point.geojson", &self::spec()).extent);
+        let epsg =
+            render(point("EPSG:4326", "48.8566 2.3522").as_bytes(), &spec).expect("rendered");
+        let somalia = project(&Position::from([48.8566, 2.3522]), &Crs::Degrees).unwrap();
+        assert!(epsg.extent.minx < somalia.x && somalia.x < epsg.extent.maxx);
+        assert!(epsg.extent.miny < somalia.y && somalia.y < epsg.extent.maxy);
     }
 
     #[test]

@@ -150,7 +150,9 @@ The bytes flow once through a chain of checks, in this order:
    `application/geo+json` as its `content_type`; an XML document
    whose root element is `<gpx>` or `<kml>`, declared as
    `application/xml`, `text/xml` or `text/plain`, gets
-   `application/gpx+xml` or `application/vnd.google-earth.kml+xml`; and
+   `application/gpx+xml` or `application/vnd.google-earth.kml+xml`, and
+   one whose root element declares a GML namespace gets
+   `application/gml+xml`; and
    a ZIP whose first entry is a `.kml`, declared as `application/zip`,
    gets `application/vnd.google-earth.kmz`, and one whose first entry
    is a `.shp`, `.shx`, `.dbf` or `.prj` gets `application/x-shapefile`,

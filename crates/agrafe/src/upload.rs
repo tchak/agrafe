@@ -651,8 +651,8 @@ struct Checks {
     head: Vec<u8>,
     sniffed: bool,
     /// A content type more precise than the declared one, read off the
-    /// bytes: a GeoJSON file declared as JSON, a GPX or KML file declared
-    /// as XML, a KMZ file or a zipped shapefile declared as a ZIP.
+    /// bytes: a GeoJSON file declared as JSON, a GPX, KML or GML file
+    /// declared as XML, a KMZ file or a zipped shapefile declared as a ZIP.
     refined: Option<&'static str>,
     scanner: Scanner,
 }
@@ -846,6 +846,17 @@ mod tests {
             Some("application/gpx+xml")
         );
         assert!(check_type("image/png", gpx, &any).is_err());
+        // A WFS response, recognised by the GML namespace its root declares.
+        let gml = b"<wfs:FeatureCollection xmlns:wfs=\"http://www.opengis.net/wfs/2.0\" xmlns:gml=\"http://www.opengis.net/gml/3.2\"/>";
+        assert_eq!(
+            check_type("text/xml", gml, &any).unwrap(),
+            Some("application/gml+xml")
+        );
+        assert_eq!(
+            check_type("text/xml", gml, &list(&["text/xml"])).unwrap(),
+            None
+        );
+        assert!(check_type("application/gpx+xml", gml, &any).is_err());
         // A ZIP whose first entry is `doc.kml`.
         let mut kmz = b"PK\x03\x04\x14\x00\x00\x00\x08\x00".to_vec();
         kmz.extend_from_slice(&[0; 16]);

@@ -2,7 +2,7 @@
 """Builds the fixture files next to this script, and the renderer probe
 files under crates/agrafe-render/assets/probe. Needs Pillow. The outputs are
 committed; run this only to change them. The XML map fixtures (`.gpx`,
-`.kml`) are hand-written and edited directly; the `.kmz` ones are built
+`.kml`, `.gml`) are hand-written and edited directly; the `.kmz` ones are built
 here from them, and the zipped shapefiles are written here.
 
 The Office 97-2003 fixtures (`letter.doc`, `table.xls`, `slides.ppt`)

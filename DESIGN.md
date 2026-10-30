@@ -74,7 +74,7 @@ into a server process. Dependencies point downwards only.
 | `agrafe-extract` | The `agrafe-extract` helper: pulls the one image out of a PDF or a Writer package (DOCX, ODT and their variants). Library plus binary | `agrafe-types`, `lopdf`, `zip`, `quick-xml` |
 | `agrafe-render-text` | The `agrafe-render-text` helper: rasterises a text sample. Library plus binary | `agrafe-types`, `ab_glyph` |
 | `agrafe-render-document` | The `agrafe-render-document` helper: compiles a typst workspace into a PDF. Library plus binary | `typst`, `typst-pdf`, `typst-assets` |
-| `agrafe-render-geo` | The `agrafe-render-geo` helper: reads a GeoJSON, GPX, KML or KMZ file or a zipped shapefile, projects, fits, simplifies and draws it as SVG paths, with the extent it chose. Library plus binary | `agrafe-types`, `geojson`, `quick-xml`, `zip`, `serde_json` |
+| `agrafe-render-geo` | The `agrafe-render-geo` helper: reads a GeoJSON, GPX, KML, KMZ or GML file or a zipped shapefile, projects, fits, simplifies and draws it as SVG paths, with the extent it chose. Library plus binary | `agrafe-types`, `geojson`, `quick-xml`, `zip`, `serde_json` |
 | `agrafe-render` | Which files render and from what, `vips thumbnail` and `vips composite`, the icons, the drivers that spawn the helpers, the fetcher of map backgrounds, the startup probe, the `[media]` tool config | `agrafe-types`, `agrafe-sandbox`, `reqwest` |
 | `agrafe` | The library: config, database, blobs, upload pipeline, the fetch client, the webhook, encryption, signing, storage, ClamAV, jobs, metrics, URL minting, and the `Agrafe` handle whose methods are the private API | `agrafe-crypto`, `agrafe-types`, `agrafe-render`, `sqlx`, `object_store`, `reqwest` |
 | `agrafe-axum` | The two HTTP interfaces as axum routers, the extractors, `ApiError` and the mapping of the library's errors onto status codes | `agrafe`, `axum` |
@@ -956,7 +956,20 @@ analogue: an XML document whose root element, past the declaration,
 comments and a doctype, is `<gpx>` or `<kml>` within the first KiB is a
 GPX or a KML one, `application/gpx+xml` or
 `application/vnd.google-earth.kml+xml`, and a declaration of
-`application/xml`, `text/xml` or `text/plain` is refined to it. The ZIP
+`application/xml`, `text/xml` or `text/plain` is refined to it. GML has
+no root element of its own (a `wfs:FeatureCollection`, a
+`gml:FeatureCollection`, an application schema's element), so for it
+the rule is the namespace: a root element that declares
+`http://www.opengis.net/gml` (GML 2 and 3.1) or
+`http://www.opengis.net/gml/3.2`, as its default namespace or under a
+prefix, in a start tag that ends within the same KiB, is a GML one,
+`application/gml+xml`, refined from the same declarations; a `<gpx>` or
+`<kml>` root that declares it too stays what its name says. A root whose
+declarations run past the head is not recognised, and the client
+declares the type. An ISO 19139 metadata record declares the namespace
+and holds no geometry: it is refined, and declines to the text
+thumbnail it had before. A zipped `.gml` has no rule and keeps the
+archive icon. The ZIP
 analogue: a ZIP whose first local file header names a `.kml` entry,
 `doc.kml` as Google Earth writes it first, is a KMZ,
 `application/vnd.google-earth.kmz`, and one whose first entry is a
@@ -991,7 +1004,7 @@ and master variants (DOCM, DOTX, XLSM, XLSB, PPSX, POTX, OTT, ODM, …)
 with their base, so an `.xlsm` is not `other` and gets the spreadsheet
 icon and filter. Draw's ODG and OTG are `document`s: pages, with nothing
 closer. Every `+json` or `+xml` type is `text` whatever the registry put
-before the suffix (XHTML, RSS, JSON-LD, GeoJSON, GPX, KML), as are JSON
+before the suffix (XHTML, RSS, JSON-LD, GeoJSON, GPX, KML, GML), as are JSON
 and the script and configuration types (JavaScript, YAML, TOML, SQL,
 shell, JSON lines), so they get the text sample as a thumbnail; the
 compression formats xz, lzip, lz4 and compress are `archive`s with gzip,
@@ -2029,7 +2042,7 @@ Only files with a known source are attempted:
   drawings) when `media.office.command` names a LibreOffice to convert it
   (see "Thumbnail");
 - text files (the `text` category plus CSV and TSV), thumbnails only;
-- GeoJSON, GPX, KML and KMZ files and zipped shapefiles, as a map (see
+- GeoJSON, GPX, KML, KMZ and GML files and zipped shapefiles, as a map (see
   "Preview"), with the text thumbnail when the XML ones hold no
   geometry and the archive icon when the KMZ or the shapefile does;
 - originals at most `media.max_source_size` (default 64 MiB), except for
@@ -2346,10 +2359,10 @@ on "has preview", never on category. Sources, in order:
    containing a screenshot. The parsing runs in the `agrafe-extract`
    helper, its own binary executed in the sandbox, never in a server
    process.
-3. **Map** (`preview_source = geojson`, `gpx`, `kml` or `shapefile`,
+3. **Map** (`preview_source = geojson`, `gpx`, `kml`, `shapefile` or `gml`,
    one value per format, so the row says what was drawn; a KMZ is a KML
    document in a ZIP, and what was drawn is that document): a GeoJSON,
-   GPX, KML or KMZ file's or a zipped shapefile's geometry drawn over a map background, the way a form's
+   GPX, KML, KMZ or GML file's or a zipped shapefile's geometry drawn over a map background, the way a form's
    map field prints in a PDF export. Three steps, two of them in the
    sandbox. The
    `agrafe-render-geo` helper reads the file, in the format the spec
@@ -2491,6 +2504,57 @@ on "has preview", never on category. Sources, in order:
    archive, rather than drawing a map that leaves part of the file out.
    The georust `shapefile` crate was passed over: it brings `dbase` for
    a `.dbf` that is not read, for a reader of two hundred lines.
+
+   GML, what a WFS serves and what QGIS writes when asked for XML, has
+   no style (SLD is a separate document) and is drawn in the default;
+   the work is in the geometry vocabulary, which has two generations,
+   and in the axis order. The reader does not model features: the
+   application schema names the features and the properties holding
+   their geometry, which cannot be known, so it walks the document with
+   `quick-xml`'s namespace-aware reader and draws every element in a
+   GML namespace that is a geometry, wherever it sits, the rest being
+   traversal. A geometry consumes its content, so a polygon's ring is
+   not drawn twice, and inside one an element that is neither a part,
+   a member wrapper nor a position is skipped with its content: `Arc`,
+   `Circle` and the other segment kinds, a foreign element and anything
+   under it. `boundedBy` and its `Envelope` are not drawn, a `Solid` is
+   skipped whole, faces included, and an `xlink:href` member holds
+   nothing. Geometry: `Point`, `LineString`, `LinearRing`, `Polygon`
+   with `exterior`/`interior` or GML 2's `outerBoundaryIs`/
+   `innerBoundaryIs`, the `Multi*` collections and `MultiGeometry`
+   (flattened, through their `*Member` and `*Members` wrappers), a
+   `Curve` whose `LineStringSegment`s are joined end to start into one
+   line, a `Surface` of `PolygonPatch`es, a polygon each, a `Ring` of
+   curve members joined the same way; a line of fewer than two
+   positions, a ring of fewer than four, is dropped. Geometries nest at
+   most sixteen deep, deeper ones being skipped, so the stack of what is
+   open stays small whatever the document; the nesting is flattened as
+   it closes, so nothing recurses on it afterwards. Positions: `pos`,
+   one, its first two ordinates; `posList`, flat, in `srsDimension`
+   from the list, else inherited, else 2, a count that does not divide
+   dropping the geometry; GML 2's `coordinates`, tuples split by `ts`,
+   ordinates by `cs`, with its `decimal`; `coord` with its `X` and `Y`.
+   A third ordinate is dropped.
+
+   The system is the `srsName` on the geometry, else the nearest
+   ancestor's, else, when neither carries one, one of its parts', else
+   the document's first `boundedBy` envelope's (GML's or WFS 2.0's,
+   which wraps the same envelope), which is where a WFS puts it, read
+   once the document is, since it may come after. GML has no default,
+   so a geometry without one declines the document, like a shapefile
+   without its `.prj`, and so does one in a system that is not handled.
+   The names go through the lookup the GeoJSON `crs` uses, which knows
+   `#` as a separator for GML 2's `epsg.xml#2154`, each spelling looked
+   up once. Axis order is the trap: by the OGC policy, the URN
+   spellings of EPSG:4326 (`urn:ogc:def:crs:EPSG::4326`,
+   `urn:x-ogc:def:crs:EPSG:4326`) and its `opengis.net/def` URL are
+   latitude first, while `EPSG:4326`, `epsg.xml#4326` and CRS84 are
+   longitude first, and Lambert-93 and Web Mercator are easting first
+   in every spelling. The reader swaps the ordinates for the
+   latitude-first spellings; the shared projection does not change. A
+   document cut short is drawn as far as it goes, the last number of
+   the positions it was cut in dropped, since it may be split, and a
+   mismatched end tag declines, as for the other XML readers.
 
    The helper projects every coordinate to Web Mercator, clamping the
    latitude to the projection's edge. RFC 7946 allows only longitude and

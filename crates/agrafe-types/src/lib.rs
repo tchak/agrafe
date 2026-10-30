@@ -8,6 +8,7 @@
 pub mod allowlist;
 pub mod classify;
 pub mod geojson;
+pub mod gml;
 pub mod gpx;
 pub mod kml;
 pub mod map;

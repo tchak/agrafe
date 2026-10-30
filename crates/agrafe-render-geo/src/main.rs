@@ -9,7 +9,7 @@ use std::process::ExitCode;
 use agrafe_types::map::Spec;
 use clap::Parser;
 
-/// Draw a GeoJSON, GPX, KML or KMZ file or a zipped shapefile as SVG
+/// Draw a GeoJSON, GPX, KML, KMZ or GML file or a zipped shapefile as SVG
 /// paths over the extent it fits in.
 /// Writes `svg` and `extent` only when the file holds geometry on Earth;
 /// exits zero either way. Nothing about the file is a failure: a non-zero exit

@@ -27,9 +27,9 @@ pub enum Category {
     /// Any `video/*` type.
     Video,
     /// Any `text/*` type except CSV and TSV, plus JSON, XML, every
-    /// `+json` or `+xml` type (GeoJSON, GPX, KML, XHTML, RSS, JSON-LD) and
-    /// the script and configuration types (JavaScript, YAML, TOML, SQL,
-    /// shell, JSON lines).
+    /// `+json` or `+xml` type (GeoJSON, GPX, KML, GML, XHTML, RSS,
+    /// JSON-LD) and the script and configuration types (JavaScript, YAML,
+    /// TOML, SQL, shell, JSON lines).
     Text,
     /// Everything else, `application/octet-stream` included.
     Other,
@@ -148,6 +148,7 @@ mod tests {
         assert_eq!(classify(crate::geojson::GEOJSON), Category::Text);
         assert_eq!(classify(crate::gpx::GPX), Category::Text);
         assert_eq!(classify(crate::kml::KML), Category::Text);
+        assert_eq!(classify(crate::gml::GML), Category::Text);
         assert_eq!(classify(crate::kml::KMZ), Category::Archive);
         assert_eq!(classify(crate::shapefile::SHAPEFILE), Category::Archive);
         assert_eq!(classify("video/mp4"), Category::Video);

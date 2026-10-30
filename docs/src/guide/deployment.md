@@ -11,7 +11,7 @@ the `agrafe` binary with its four helpers next to it.
 | `agrafe-extract` | Pulls the embedded image out of a PDF, DOCX or ODT |
 | `agrafe-render-text` | Rasterises the first lines of a text file |
 | `agrafe-render-document` | Compiles a typst workspace into a PDF |
-| `agrafe-render-geo` | Draws a GeoJSON, GPX, KML or KMZ file or a zipped shapefile as SVG over the map extent it chose |
+| `agrafe-render-geo` | Draws a GeoJSON, GPX, KML, KMZ or GML file or a zipped shapefile as SVG over the map extent it chose |
 
 The helpers are found on the `PATH`, or at the paths given by
 `media.extract_command`, `media.render_text_command`,
