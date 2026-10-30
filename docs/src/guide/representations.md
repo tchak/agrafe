@@ -142,8 +142,9 @@ A GML file, GML 2 or 3 as a WFS serves it or QGIS writes it, is drawn
 from every geometry in it, whatever the features holding them are
 called: points, lines, polygons with their holes (`exterior` and
 `interior`, or GML 2's `outerBoundaryIs` and `innerBoundaryIs`), the
-multi-geometries, curves of line segments, surfaces of polygon patches
-and rings of curves. Arcs, circles, solids and envelopes are not drawn.
+multi-geometries, curves of line segments, surfaces of polygon patches,
+rings of curves and the composite and orientable curves and surfaces.
+Arcs, circles, solids and envelopes are not drawn.
 Each geometry is drawn in the system its `srsName` names, or the nearest
 enclosing element's, or the one on the `boundedBy` envelope of the
 collection or feature holding it, where a WFS puts it: WGS 84 degrees, Lambert-93 or Web

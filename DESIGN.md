@@ -2525,7 +2525,9 @@ on "has preview", never on category. Sources, in order:
    (flattened, through their `*Member` and `*Members` wrappers), a
    `Curve` whose `LineStringSegment`s are joined end to start into one
    line, a `Surface` of `PolygonPatch`es, a polygon each, a `Ring` of
-   curve members joined the same way; a line of fewer than two
+   curve members joined the same way, a `CompositeCurve` joined like a
+   ring and a `CompositeSurface` flattened like a collection, and the
+   `Orientable*` wrapper of each as its base; a line of fewer than two
    positions, a ring of fewer than four, is dropped. Geometries nest at
    most sixteen deep, deeper ones being skipped, so the stack of what is
    open stays small whatever the document; the nesting is flattened as

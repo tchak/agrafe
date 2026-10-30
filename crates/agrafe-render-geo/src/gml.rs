@@ -18,7 +18,9 @@
 //! geometry collection), their `*Member` and `*Members` wrappers; a
 //! `Curve` of `LineStringSegment`s joined end to start into one line, a
 //! `Surface` of `PolygonPatch`es, a polygon each, a `Ring` of curve
-//! members joined the same way. `Arc`, `Circle`, the other segment
+//! members joined the same way, a `CompositeCurve` joined like a ring
+//! and a `CompositeSurface` flattened like a collection, the orientable
+//! wrappers of each as their base. `Arc`, `Circle`, the other segment
 //! kinds, `Solid` and the rest are skipped. Positions are `pos`,
 //! `posList` (flat, `srsDimension` on the list, else inherited, else 2),
 //! GML 2's `coordinates` (tuples split by `ts`, ordinates by `cs`, with
@@ -147,11 +149,13 @@ enum Kind {
     Point,
     /// `LineString`, `LinearRing`, `LineStringSegment`: its positions.
     Line,
-    /// `Curve`, `Ring`: its segments or curve members, joined.
+    /// `Curve`, `Ring`, `CompositeCurve`, `OrientableCurve`: its
+    /// segments or curve members, joined.
     Joined,
     /// `Polygon`, `PolygonPatch`: its rings.
     Polygon,
-    /// The collections and `Surface`: their members, flattened.
+    /// The collections, `Surface`, `CompositeSurface` and
+    /// `OrientableSurface`: their members, flattened.
     Many,
 }
 
@@ -160,10 +164,10 @@ impl Kind {
         Some(match name {
             "Point" => Kind::Point,
             "LineString" | "LinearRing" | "LineStringSegment" => Kind::Line,
-            "Curve" | "Ring" => Kind::Joined,
+            "Curve" | "Ring" | "CompositeCurve" | "OrientableCurve" => Kind::Joined,
             "Polygon" | "PolygonPatch" => Kind::Polygon,
             "MultiPoint" | "MultiLineString" | "MultiPolygon" | "MultiCurve" | "MultiSurface"
-            | "MultiGeometry" | "Surface" => Kind::Many,
+            | "MultiGeometry" | "Surface" | "CompositeSurface" | "OrientableSurface" => Kind::Many,
             _ => return None,
         })
     }
@@ -456,7 +460,8 @@ impl Parser {
             "Y" => self.text = Some((Leaf::Y, String::new())),
             "exterior" | "outerBoundaryIs" => self.role(Role::Outer),
             "interior" | "innerBoundaryIs" => self.role(Role::Inner),
-            "Z" | "segments" | "patches" | "pointProperty" | "pointRep" => {}
+            "Z" | "segments" | "patches" | "pointProperty" | "pointRep" | "baseCurve"
+            | "baseSurface" => {}
             _ if name.ends_with("Member") || name.ends_with("Members") => {}
             // `Arc`, `Circle`, `Solid`, and whatever else a geometry
             // holds that is not drawn.
@@ -914,7 +919,15 @@ mod tests {
   <gml:Arc><gml:posList>1 40 2 41 3 40</gml:posList></gml:Arc>
   <gml:LineStringSegment><gml:posList>3 40 4 40</gml:posList></gml:LineStringSegment>
 </gml:segments></gml:Curve></gml:curveMember><gml:curveMember xlink:href="#elsewhere" xmlns:xlink="http://www.w3.org/1999/xlink"/></gml:MultiCurve>
-<gml:LineString srsName="EPSG:4326"><gml:pointProperty><gml:Point><gml:pos>0 30</gml:pos></gml:Point></gml:pointProperty><gml:pos>1 30</gml:pos></gml:LineString>"##,
+<gml:LineString srsName="EPSG:4326"><gml:pointProperty><gml:Point><gml:pos>0 30</gml:pos></gml:Point></gml:pointProperty><gml:pos>1 30</gml:pos></gml:LineString>
+<gml:MultiSurface srsName="EPSG:4326"><gml:surfaceMember><gml:CompositeSurface>
+  <gml:surfaceMember><gml:Polygon><gml:exterior><gml:LinearRing><gml:posList>0 20 1 20 1 21 0 20</gml:posList></gml:LinearRing></gml:exterior></gml:Polygon></gml:surfaceMember>
+  <gml:surfaceMember><gml:OrientableSurface orientation="-"><gml:baseSurface><gml:Polygon><gml:exterior><gml:LinearRing><gml:posList>2 20 3 20 3 21 2 20</gml:posList></gml:LinearRing></gml:exterior></gml:Polygon></gml:baseSurface></gml:OrientableSurface></gml:surfaceMember>
+</gml:CompositeSurface></gml:surfaceMember></gml:MultiSurface>
+<gml:Polygon srsName="EPSG:4326"><gml:exterior><gml:Ring><gml:curveMember><gml:CompositeCurve>
+  <gml:curveMember><gml:LineString><gml:posList>0 10 1 10</gml:posList></gml:LineString></gml:curveMember>
+  <gml:curveMember><gml:OrientableCurve orientation="-"><gml:baseCurve><gml:LineString><gml:posList>1 10 1 11 0 10</gml:posList></gml:LineString></gml:baseCurve></gml:OrientableCurve></gml:curveMember>
+</gml:CompositeCurve></gml:curveMember></gml:Ring></gml:exterior></gml:Polygon>"##,
         );
         assert_eq!(
             shapes(&doc).unwrap(),
@@ -926,6 +939,12 @@ mod tests {
                 // The arc skipped: its neighbours joined across the gap.
                 "line of 4 from 0 40",
                 "line of 2 from 0 30",
+                // The composite surface's two polygons, one through its
+                // orientable wrapper; the composite curve's two members
+                // joined into the ring.
+                "polygon of [4] from 0 20",
+                "polygon of [4] from 2 20",
+                "polygon of [4] from 0 10",
             ]
         );
     }
