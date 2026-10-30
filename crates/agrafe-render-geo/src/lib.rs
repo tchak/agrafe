@@ -97,7 +97,11 @@ impl Crs {
     /// `http://www.opengis.net/gml/srs/epsg.xml#2154`. Which axis comes
     /// first is the reader's business: GeoJSON is always easting first.
     fn named(name: &str) -> Option<Crs> {
-        let name = name.trim().to_ascii_lowercase();
+        Crs::spelled(&name.trim().to_ascii_lowercase())
+    }
+
+    /// [`Crs::named`], for a name already trimmed and lowercased.
+    fn spelled(name: &str) -> Option<Crs> {
         if name.ends_with("crs84") {
             return Some(Crs::Degrees);
         }
@@ -278,15 +282,7 @@ fn geojson_shapes(bytes: &[u8], spec: &Spec) -> Option<Vec<(Shape, Style)>> {
 /// point, or has a coordinate off Earth.
 fn gpx_shapes(bytes: &[u8], spec: &Spec) -> Option<Vec<(Shape, Style)>> {
     let geometries = gpx::geometries(bytes)?;
-    let mut out = Vec::new();
-    for geometry in &geometries {
-        project_geometry(geometry, &Crs::Degrees, &mut out).ok()?;
-    }
-    Some(
-        out.into_iter()
-            .map(|shape| (shape, spec.style.clone()))
-            .collect(),
-    )
+    default_styled(geometries.iter().map(|g| (g, &Crs::Degrees)), spec)
 }
 
 /// The shapes of the KML document `bytes`, each in its placemark's style
@@ -312,16 +308,12 @@ fn kml_shapes(bytes: &[u8], spec: &Spec) -> Option<Vec<(Shape, Style)>> {
 /// layer is not a shapefile or has no `.prj` in a system that is
 /// handled, or a coordinate is off Earth in its layer's system.
 fn shapefile_shapes(bytes: &[u8], spec: &Spec) -> Option<Vec<(Shape, Style)>> {
-    let mut out = Vec::new();
-    for (geometries, crs) in shapefile::layers(bytes)? {
-        for geometry in &geometries {
-            project_geometry(geometry, &crs, &mut out).ok()?;
-        }
-    }
-    Some(
-        out.into_iter()
-            .map(|shape| (shape, spec.style.clone()))
-            .collect(),
+    let layers = shapefile::layers(bytes)?;
+    default_styled(
+        layers
+            .iter()
+            .flat_map(|(geometries, crs)| geometries.iter().map(move |g| (g, crs))),
+        spec,
     )
 }
 
@@ -330,9 +322,20 @@ fn shapefile_shapes(bytes: &[u8], spec: &Spec) -> Option<Vec<(Shape, Style)>> {
 /// `None` when the document holds no geometry, one has no `srsName` in a
 /// system that is handled, or a coordinate is off Earth in its system.
 fn gml_shapes(bytes: &[u8], spec: &Spec) -> Option<Vec<(Shape, Style)>> {
+    let geometries = gml::geometries(bytes)?;
+    default_styled(geometries.iter().map(|(g, crs)| (g, crs)), spec)
+}
+
+/// `geometries`, each projected from its system, all in the default
+/// style: what the formats without a style vocabulary draw. `None` when
+/// a coordinate is off Earth in its system.
+fn default_styled<'a>(
+    geometries: impl IntoIterator<Item = (&'a Geometry, &'a Crs)>,
+    spec: &Spec,
+) -> Option<Vec<(Shape, Style)>> {
     let mut out = Vec::new();
-    for (geometry, crs) in gml::geometries(bytes)? {
-        project_geometry(&geometry, &crs, &mut out).ok()?;
+    for (geometry, crs) in geometries {
+        project_geometry(geometry, crs, &mut out).ok()?;
     }
     Some(
         out.into_iter()

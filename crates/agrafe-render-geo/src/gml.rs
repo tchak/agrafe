@@ -88,8 +88,8 @@ pub(crate) fn geometries(bytes: &[u8]) -> Option<Vec<(Geometry, Crs)>> {
 
 /// The system `name` spells, and whether its axes are latitude first.
 fn system(name: &str) -> Option<(Crs, bool)> {
-    let crs = Crs::named(name)?;
     let name = name.trim().to_ascii_lowercase();
+    let crs = Crs::spelled(&name)?;
     let latitude_first = crs == Crs::Degrees
         && !name.ends_with("crs84")
         && (name.starts_with("urn:")
@@ -368,18 +368,22 @@ impl Parser {
             return;
         }
         let depth = self.depth;
+        // Values as written: a separator of `coordinates` may be a space.
         let attribute = |name: &str| {
             start
                 .attributes()
                 .flatten()
                 .find(|a| a.key.local_name().as_ref() == name)
-                .map(|a| a.value.trim().to_string())
+                .map(|a| a.value.to_string())
         };
-        if let Some(name) = attribute("srsName").filter(|name| !name.is_empty()) {
+        if let Some(name) = attribute("srsName")
+            .map(|name| name.trim().to_owned())
+            .filter(|name| !name.is_empty())
+        {
             let at = self.read.srs.intern(name);
             self.srs.push((depth, at));
         }
-        if let Some(dimension) = attribute("srsDimension").and_then(|d| d.parse().ok()) {
+        if let Some(dimension) = attribute("srsDimension").and_then(|d| d.trim().parse().ok()) {
             self.dimensions.push((depth, dimension));
         }
         let local = start.local_name();
@@ -437,18 +441,10 @@ impl Parser {
                         .filter(|v| !v.is_empty())
                         .unwrap_or_else(|| default.to_string())
                 };
-                // Separators are taken as written, spaces included.
-                let raw = |name: &str| {
-                    start
-                        .attributes()
-                        .flatten()
-                        .find(|a| a.key.local_name().as_ref() == name)
-                        .map(|a| a.value.to_string())
-                };
                 self.position(Leaf::Coordinates {
-                    ts: or(raw("ts"), " "),
-                    cs: or(raw("cs"), ","),
-                    decimal: or(raw("decimal"), "."),
+                    ts: or(attribute("ts"), " "),
+                    cs: or(attribute("cs"), ","),
+                    decimal: or(attribute("decimal"), "."),
                 });
             }
             "coord" => {
