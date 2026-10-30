@@ -2536,8 +2536,9 @@ on "has preview", never on category. Sources, in order:
    ordinates by `cs`, with its `decimal`; `coord` with its `X` and `Y`.
    A third ordinate is dropped.
 
-   The system is the `srsName` on the geometry, else the nearest
-   enclosing element's, where the envelope of a `boundedBy` (GML's or
+   The system is the `srsName` on the geometry, or on its `pos`,
+   `posList` or `coordinates`, where the schema allows one, else the
+   nearest enclosing element's, where the envelope of a `boundedBy` (GML's or
    WFS 2.0's, which wraps the same envelope) counts for the element it
    bounds, the collection's, which is where a WFS puts it, or a
    feature's own, for the geometries after it in that element; else,

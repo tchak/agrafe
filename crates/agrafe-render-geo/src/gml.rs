@@ -25,7 +25,8 @@
 //! its `decimal`) and `coord` with its `X` and `Y`; a third ordinate is
 //! dropped.
 //!
-//! The system is the `srsName` on the geometry, else the nearest
+//! The system is the `srsName` on the geometry, or on its positions,
+//! where the schema allows one, else the nearest
 //! enclosing element's, where the envelope of a `boundedBy` counts for
 //! the element it bounds: the collection's, which is where a WFS puts
 //! it, or a feature's own, for the geometries after it. GML has no
@@ -421,10 +422,10 @@ impl Parser {
                 self.skip = Some(depth);
             }
             _ if !in_geometry => {}
-            "pos" => self.text = Some((Leaf::Pos, String::new())),
+            "pos" => self.position(Leaf::Pos),
             "posList" => {
                 let dimension = self.dimensions.last().map_or(2, |&(_, d)| d);
-                self.text = Some((Leaf::PosList(dimension), String::new()));
+                self.position(Leaf::PosList(dimension));
             }
             "coordinates" => {
                 let or = |value: Option<String>, default: &str| {
@@ -440,14 +441,11 @@ impl Parser {
                         .find(|a| a.key.local_name().as_ref() == name)
                         .map(|a| a.value.to_string())
                 };
-                self.text = Some((
-                    Leaf::Coordinates {
-                        ts: or(raw("ts"), " "),
-                        cs: or(raw("cs"), ","),
-                        decimal: or(raw("decimal"), "."),
-                    },
-                    String::new(),
-                ));
+                self.position(Leaf::Coordinates {
+                    ts: or(raw("ts"), " "),
+                    cs: or(raw("cs"), ","),
+                    decimal: or(raw("decimal"), "."),
+                });
             }
             "coord" => {
                 if let Some(node) = self.nodes.last_mut() {
@@ -463,6 +461,18 @@ impl Parser {
             // `Arc`, `Circle`, `Solid`, and whatever else a geometry
             // holds that is not drawn.
             _ => self.skip = Some(depth),
+        }
+    }
+
+    /// A position element opens: its text is read, and a `srsName` on
+    /// it, which the schema allows, is its geometry's when that has none
+    /// of its own or an enclosing element's.
+    fn position(&mut self, leaf: Leaf) {
+        self.text = Some((leaf, String::new()));
+        if let Some(node) = self.nodes.last_mut()
+            && node.srs.is_none()
+        {
+            node.srs = self.srs.last().map(|&(_, at)| at);
         }
     }
 
@@ -786,6 +796,23 @@ mod tests {
                 ("point 7 48".to_string(), lambert()),
                 ("point 8 49".to_string(), Crs::Degrees),
                 ("point 700000 6600000".to_string(), lambert()),
+            ]
+        );
+        // On the positions, where the schema allows one, when the
+        // geometry has none; the geometry's own wins.
+        let on_positions = gml32(
+            r#"<gml:Point><gml:pos srsName="EPSG:4326">4 45</gml:pos></gml:Point>
+<gml:LineString><gml:posList srsName="EPSG:4326">4 45 5 46</gml:posList></gml:LineString>
+<gml:Point srsName="EPSG:3857"><gml:pos srsName="EPSG:4326">6 47</gml:pos></gml:Point>
+<gml:Point xmlns:g="http://www.opengis.net/gml"><g:coordinates srsName="EPSG:4326">7,48</g:coordinates></gml:Point>"#,
+        );
+        assert_eq!(
+            kinds(&on_positions).unwrap(),
+            [
+                ("point 4 45".to_string(), Crs::Degrees),
+                ("line of 2 from 4 45".to_string(), Crs::Degrees),
+                ("point 6 47".to_string(), Crs::WebMercator),
+                ("point 7 48".to_string(), Crs::Degrees),
             ]
         );
         // With nothing enclosing it, a collection takes a member's.
