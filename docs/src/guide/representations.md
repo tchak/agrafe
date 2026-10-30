@@ -22,7 +22,7 @@ stripped.
 | Other PDF | none | the first page |
 | Other office files: Word, Excel and PowerPoint, their Office 97-2003, macro-enabled and template variants, RTF, OpenDocument texts, spreadsheets, presentations and drawings | none | the first page or slide, through [LibreOffice](deployment.md#libreoffice) when `media.office.command` is set; the icon otherwise |
 | Text, CSV and TSV | none | the first lines, in a monospace font |
-| GeoJSON, GPX, KML, KMZ | the geometry over a map, see [Maps](#maps) | the map |
+| GeoJSON, GPX, KML, KMZ, zipped shapefiles | the geometry over a map, see [Maps](#maps) | the map |
 | Anything else | none | the icon |
 
 A document "wraps a single image" when it is what users produce when asked
@@ -63,7 +63,8 @@ A user interface should key on whether a blob has a preview
 
 A GeoJSON file, `application/geo+json`, a GPX file,
 `application/gpx+xml`, a KML file, `application/vnd.google-earth.kml+xml`,
-or a KMZ file, `application/vnd.google-earth.kmz`, gets its geometry
+a KMZ file, `application/vnd.google-earth.kmz`, or a zipped shapefile,
+`application/x-shapefile`, gets its geometry
 drawn over a map as its preview, and that map fitted into the thumbnail
 box. A `.geojson` uploaded as
 `application/json` or `text/plain`, which is how they tend to arrive, is
@@ -77,9 +78,12 @@ thumbnail. Likewise a `.gpx` or a `.kml` uploaded as `application/xml`,
 `<gpx>` or `<kml>` becomes `application/gpx+xml` or
 `application/vnd.google-earth.kml+xml`, and a `.kmz` uploaded as
 `application/zip` whose first entry is a `.kml`, as Google Earth writes
-it, becomes `application/vnd.google-earth.kmz`. A file with no geometry
-has no map and gets the text thumbnail instead, or the archive icon for
-a KMZ.
+it, becomes `application/vnd.google-earth.kmz`; one whose first entry is
+a `.shp`, `.shx`, `.dbf` or `.prj`, as QGIS writes them, becomes
+`application/x-shapefile`. A ZIP that starts with another entry is not
+recognised, so a client that knows the file is a map declares its type.
+A file with no geometry has no map and gets the text thumbnail instead,
+or the archive icon for a KMZ or a shapefile.
 
 GeoJSON coordinates are longitude and latitude in degrees, as RFC 7946
 requires. A file that declares another system with the legacy `crs`
@@ -117,6 +121,17 @@ pair is taken) or written inline, are honoured over the default of
 
 The icon's `href` is not drawn, like `marker-symbol`, and a value that
 does not parse is ignored.
+
+A zipped shapefile is drawn from every `.shp` layer in it, in a folder or
+not: points, multipoints, polylines and polygons with their holes, with
+their `Z` and `M` variants; multipatches are skipped. Each layer is drawn
+in the coordinate system of the `.prj` beside it, recognised by its
+parameters whatever its name: WGS 84 (or RGF93, ETRS89) degrees,
+Lambert-93 or Web Mercator. A layer without a `.prj`, or with one in any
+other system, is nothing the renderer can place, and the archive gets the
+archive icon. The attributes in the `.dbf` are not drawn, and shapefiles
+have no style: the default of `[media.map.style]` applies. The layers are
+read up to 64 MiB in all, uncompressed.
 
 The map shows the geometry's bounding box, padded by `media.map.padding`
 (a tenth of its larger side) and at least `min_span` (200 m) wide, so a
@@ -217,7 +232,8 @@ that repair. Use `POST /blobs/:id/retry` (see [Jobs and retries](jobs.md)).
 No user file is decoded in the server process. `vips` renders images and
 PDF pages and composites maps, `agrafe-extract` pulls embedded images out
 of PDF and office files, `agrafe-render-text` rasterises text samples,
-`agrafe-render-geo` draws GeoJSON, GPX, KML and KMZ files, and LibreOffice, when
+`agrafe-render-geo` draws GeoJSON, GPX, KML and KMZ files and zipped
+shapefiles, and LibreOffice, when
 configured, converts office files to PDF, each as a subprocess with:
 
 - a clean environment, with no secrets;

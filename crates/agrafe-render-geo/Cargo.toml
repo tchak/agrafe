@@ -4,10 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Sandboxed helper: draws the geometry of a GeoJSON, GPX, KML or KMZ file as SVG paths over the map extent it chose"
+description = "Sandboxed helper: draws the geometry of a GeoJSON, GPX, KML or KMZ file or a zipped shapefile as SVG paths over the map extent it chose"
 repository.workspace = true
 homepage.workspace = true
-keywords = ["geojson", "gpx", "kml", "map", "svg"]
+keywords = ["geojson", "gpx", "kml", "shapefile", "map"]
 categories = ["science::geo", "rendering"]
 
 [lints]

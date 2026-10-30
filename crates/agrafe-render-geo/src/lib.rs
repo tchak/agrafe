@@ -1,5 +1,5 @@
-//! Maps for GeoJSON, GPX, KML and KMZ files: the geometry projected to
-//! Web Mercator, fitted into a pixel box with some margin, simplified to
+//! Maps for GeoJSON, GPX, KML, KMZ and zipped shapefiles: the geometry
+//! projected to Web Mercator, fitted into a pixel box with some margin, simplified to
 //! the pixel, and drawn as SVG paths in the simplestyle-spec colours of
 //! the file or the default. The file is untrusted, so this runs in the
 //! `agrafe-render-geo` helper, in the sandbox; the server never parses a
@@ -15,8 +15,10 @@
 //! The contract with the server, [`Spec`] in and [`Extent`] out, lives in
 //! `agrafe_types::map`, along with the style vocabulary.
 
+mod archive;
 mod gpx;
 mod kml;
+mod shapefile;
 
 use std::fmt::Write as _;
 
@@ -218,6 +220,7 @@ pub fn render(bytes: &[u8], spec: &Spec) -> Option<Rendered> {
         Format::Gpx => gpx_shapes(bytes, spec),
         Format::Kml => kml_shapes(bytes, spec),
         Format::Kmz => kml_shapes(&kml::document_of_kmz(bytes)?, spec),
+        Format::Shapefile => shapefile_shapes(bytes, spec),
     }?;
     if shapes.is_empty() {
         return None;
@@ -299,9 +302,25 @@ fn kml_shapes(bytes: &[u8], spec: &Spec) -> Option<Vec<(Shape, Style)>> {
     Some(shapes)
 }
 
-/// The style a feature's properties ask for. A value of the wrong type or
-/// out of the vocabulary is ignored, never an error: nothing from the file
-/// reaches the SVG as it came.
+/// The shapes of the zipped shapefile `bytes`, layer by layer, all in
+/// the default style, since the format has none, each layer in the
+/// system its `.prj` names. `None` when the archive holds no layer, a
+/// layer is not a shapefile or has no `.prj` in a system that is
+/// handled, or a coordinate is off Earth in its layer's system.
+fn shapefile_shapes(bytes: &[u8], spec: &Spec) -> Option<Vec<(Shape, Style)>> {
+    let mut out = Vec::new();
+    for (geometries, crs) in shapefile::layers(bytes)? {
+        for geometry in &geometries {
+            project_geometry(geometry, &crs, &mut out).ok()?;
+        }
+    }
+    Some(
+        out.into_iter()
+            .map(|shape| (shape, spec.style.clone()))
+            .collect(),
+    )
+}
+
 /// Whether `err`, from a reader `position` bytes into a document of `len`,
 /// is the input ending inside markup, a tag, a comment or an attribute
 /// value: the document was cut short there, which is how a byte-truncated
@@ -310,6 +329,9 @@ pub(crate) fn cut_short(err: &quick_xml::Error, position: u64, len: usize) -> bo
     matches!(err, quick_xml::Error::Syntax(_)) && position >= len as u64
 }
 
+/// The style a feature's properties ask for. A value of the wrong type or
+/// out of the vocabulary is ignored, never an error: nothing from the file
+/// reaches the SVG as it came.
 pub(crate) fn style_of(properties: &JsonObject) -> Style {
     let color = |key: &str| {
         properties
@@ -1326,6 +1348,70 @@ mod tests {
         .expect("rendered");
         let point = rendered("point.geojson", &self::spec());
         assert_eq!(one.extent, point.extent);
+    }
+
+    #[test]
+    fn a_zipped_shapefile_is_drawn_in_the_default_style() {
+        let spec = Spec {
+            format: Format::Shapefile,
+            ..spec()
+        };
+        let map = render(&fixture("parcels.zip"), &spec).expect("rendered");
+        // The survey point, the two paths and the parcel with its
+        // courtyard, layer by layer, all in the default style: a casing
+        // and a stroke for each path and for the parcel.
+        assert_eq!(map.svg.matches("<circle").count(), 1, "{}", map.svg);
+        assert!(map.svg.contains(r##"r="8" fill="#ffd400""##), "{}", map.svg);
+        let paths: Vec<&str> = map.svg.lines().filter(|l| l.starts_with("<path")).collect();
+        assert_eq!(paths.len(), 6, "{}", map.svg);
+        assert!(paths[1].contains(r##"fill="none" stroke="#ffd400" stroke-width="4""##));
+        assert!(paths[3].contains(r##"fill="none" stroke="#ffd400" stroke-width="4""##));
+        assert!(paths[4].contains(r##"fill="#ffd400" fill-opacity="0.35""##));
+        assert!(paths[4].contains(r#"fill-rule="evenodd""#));
+        // The paths of one record are two lines; the parcel's two rings
+        // are one path.
+        assert_eq!(paths[0].matches('M').count(), 1);
+        assert_eq!(paths[4].matches('Z').count(), 2);
+        // Nothing the attribute table names reaches the SVG.
+        for word in ["Borne", "Chemins", "AB 12", "parcelles", "Lambert"] {
+            assert!(!map.svg.contains(word), "{word}");
+        }
+        // Paris, from Lambert-93: the point lands where the GeoJSON one in
+        // degrees does, and the map is a few hundred metres across.
+        let point = project(&Position::from([2.3522, 48.8566]), &Crs::Degrees).unwrap();
+        let (cx, cy) = (
+            (map.extent.minx + map.extent.maxx) / 2.0,
+            (map.extent.miny + map.extent.maxy) / 2.0,
+        );
+        assert!(
+            (cx - point.x).abs() < 300.0 && (cy - point.y).abs() < 300.0,
+            "{cx} {cy}"
+        );
+        assert!(
+            (500.0..3000.0).contains(&map.extent.span()),
+            "{}",
+            map.extent.span()
+        );
+    }
+
+    #[test]
+    fn a_zipped_shapefile_declines_like_a_geojson_one() {
+        let spec = Spec {
+            format: Format::Shapefile,
+            ..spec()
+        };
+        // No `.prj`: nothing is guessed from the numbers.
+        assert_eq!(render(&fixture("parcels-no-prj.zip"), &spec), None);
+        // A file handed over in another format is not a document of it.
+        assert_eq!(render(&fixture("places.kmz"), &spec), None);
+        assert_eq!(render(&fixture("image.docx"), &spec), None);
+        assert_eq!(render(&fixture("lambert93.geojson"), &spec), None);
+        assert_eq!(render(&fixture("parcels.zip"), &self::spec()), None);
+        let kmz = Spec {
+            format: Format::Kmz,
+            ..spec.clone()
+        };
+        assert_eq!(render(&fixture("parcels.zip"), &kmz), None);
     }
 
     #[test]

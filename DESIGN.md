@@ -74,7 +74,7 @@ into a server process. Dependencies point downwards only.
 | `agrafe-extract` | The `agrafe-extract` helper: pulls the one image out of a PDF or a Writer package (DOCX, ODT and their variants). Library plus binary | `agrafe-types`, `lopdf`, `zip`, `quick-xml` |
 | `agrafe-render-text` | The `agrafe-render-text` helper: rasterises a text sample. Library plus binary | `agrafe-types`, `ab_glyph` |
 | `agrafe-render-document` | The `agrafe-render-document` helper: compiles a typst workspace into a PDF. Library plus binary | `typst`, `typst-pdf`, `typst-assets` |
-| `agrafe-render-geo` | The `agrafe-render-geo` helper: reads a GeoJSON, GPX, KML or KMZ file, projects, fits, simplifies and draws it as SVG paths, with the extent it chose. Library plus binary | `agrafe-types`, `geojson`, `quick-xml`, `zip`, `serde_json` |
+| `agrafe-render-geo` | The `agrafe-render-geo` helper: reads a GeoJSON, GPX, KML or KMZ file or a zipped shapefile, projects, fits, simplifies and draws it as SVG paths, with the extent it chose. Library plus binary | `agrafe-types`, `geojson`, `quick-xml`, `zip`, `serde_json` |
 | `agrafe-render` | Which files render and from what, `vips thumbnail` and `vips composite`, the icons, the drivers that spawn the helpers, the fetcher of map backgrounds, the startup probe, the `[media]` tool config | `agrafe-types`, `agrafe-sandbox`, `reqwest` |
 | `agrafe` | The library: config, database, blobs, upload pipeline, the fetch client, the webhook, encryption, signing, storage, ClamAV, jobs, metrics, URL minting, and the `Agrafe` handle whose methods are the private API | `agrafe-crypto`, `agrafe-types`, `agrafe-render`, `sqlx`, `object_store`, `reqwest` |
 | `agrafe-axum` | The two HTTP interfaces as axum routers, the extractors, `ApiError` and the mapping of the library's errors onto status codes | `agrafe`, `axum` |
@@ -959,14 +959,18 @@ GPX or a KML one, `application/gpx+xml` or
 `application/xml`, `text/xml` or `text/plain` is refined to it. The ZIP
 analogue: a ZIP whose first local file header names a `.kml` entry,
 `doc.kml` as Google Earth writes it first, is a KMZ,
-`application/vnd.google-earth.kmz`, and a declaration of
-`application/zip` is refined to it; entry order is the writer's, so an
-archive that starts with an icon is not recognised, and a client that
-knows the field is a map declares the type itself. The helper is never
-run on every ZIP to see whether it declines. These are the only cases
-where the bytes change the declaration, in the direction of precision
-only, and the category, `text` for the XML ones and `archive` for the
-KMZ, is the same either way. The row and the
+`application/vnd.google-earth.kmz`, and one whose first entry is a
+`.shp`, `.shx`, `.dbf` or `.prj`, in a folder or not, is a zipped
+shapefile, `application/x-shapefile` (nothing is registered; this is
+the spelling in use); a declaration of `application/zip` is refined to
+either. Entry order is the writer's, so an archive that starts with an
+icon, a `.cpg`, a folder entry or a `__MACOSX/` sidecar is not
+recognised, and a client that knows the field is a map declares the
+type itself. The helper is never run on every ZIP to see whether it
+declines. These are the only cases where the bytes change the
+declaration, in the direction of precision only, and the category,
+`text` for the XML ones and `archive` for the KMZ and the shapefile,
+is the same either way. The row and the
 `Content-Type` the original is served with carry the refined type. A
 refinement `upload.content_types` does not admit is not made: the blob
 keeps its declaration, which is in the list, so a list never ends up
@@ -2025,9 +2029,9 @@ Only files with a known source are attempted:
   drawings) when `media.office.command` names a LibreOffice to convert it
   (see "Thumbnail");
 - text files (the `text` category plus CSV and TSV), thumbnails only;
-- GeoJSON, GPX, KML and KMZ files, as a map (see "Preview"), with the
-  text thumbnail when the XML ones hold no geometry and the archive
-  icon when the KMZ does;
+- GeoJSON, GPX, KML and KMZ files and zipped shapefiles, as a map (see
+  "Preview"), with the text thumbnail when the XML ones hold no
+  geometry and the archive icon when the KMZ or the shapefile does;
 - originals at most `media.max_source_size` (default 64 MiB), except for
   the text thumbnail, which reads the first 8 KiB whatever the size. The
   default is low on purpose: the pictures and scans people want to see
@@ -2342,10 +2346,10 @@ on "has preview", never on category. Sources, in order:
    containing a screenshot. The parsing runs in the `agrafe-extract`
    helper, its own binary executed in the sandbox, never in a server
    process.
-3. **Map** (`preview_source = geojson`, `gpx` or `kml`, one value per
-   format, so the row says what was drawn; a KMZ is a KML document in a
-   ZIP, and what was drawn is that document): a GeoJSON, GPX, KML or
-   KMZ file's geometry drawn over a map background, the way a form's
+3. **Map** (`preview_source = geojson`, `gpx`, `kml` or `shapefile`,
+   one value per format, so the row says what was drawn; a KMZ is a KML
+   document in a ZIP, and what was drawn is that document): a GeoJSON,
+   GPX, KML or KMZ file's or a zipped shapefile's geometry drawn over a map background, the way a form's
    map field prints in a PDF export. Three steps, two of them in the
    sandbox. The
    `agrafe-render-geo` helper reads the file, in the format the spec
@@ -2444,6 +2448,49 @@ on "has preview", never on category. Sources, in order:
    rest; the icons and overlays beside it are ignored. The georust
    `kml` crate was passed over for the reason `gpx` was: it brings
    `geo-types` for a subset the reader covers in a few hundred lines.
+
+   A zipped shapefile has no style, and the work is in the packaging
+   and the coordinate system. Every `.shp` entry of the ZIP, in a folder
+   or not, the `__MACOSX/` sidecars aside, is a layer, drawn with the
+   others in archive order, each in the system of the `.prj` beside it
+   by stem, its name with the extension changed, in any case. The
+   `.shx` and `.dbf` are not read: the `.shp` is self-describing and the
+   attributes are not drawn. The archive is opened only with at most
+   10 000 entries, and the layers are read within 64 MiB inflated in
+   all, a `.prj` within 64 KiB, the sizes claimed by the entries' headers
+   being the writer's. The `.shp` reader is a 100-byte header, its file
+   code big-endian and its version little-endian, then records of a
+   big-endian number and length and a little-endian content: `Point`,
+   `MultiPoint`, `PolyLine` and `Polygon`, each with its `Z` and `M`
+   variants, the same layout with ranges and values after the points
+   that are not read; a null shape and a `MultiPatch` are skipped. A
+   polygon record is a flat list of rings, clockwise an outer and
+   anticlockwise a hole, without nesting: all its rings go into one
+   polygon and the even-odd fill keeps the holes, with no pairing of
+   rings. A part of a line with fewer than two points, a ring with
+   fewer than four, is dropped. A record that contradicts itself (parts
+   out of order or past its points, a count past its content, a type
+   the format does not define) declines the archive; a file cut short is
+   drawn to its last whole record, as an XML document cut short is.
+
+   The `.prj` is ESRI's WKT 1, parsed by a small recursive descent with
+   a bounded depth, and recognised by what defines the system, never by
+   its name, of which each system has several (ESRI's, EPSG's, the one
+   the exporting tool made up): a `GEOGCS` on the WGS 84 or the GRS 80
+   ellipsoid in degrees from Greenwich is degrees, so WGS 84, RGF93 and
+   ETRS89 alike, which a map preview cannot tell apart; a `PROJCS` in
+   metres over such a `GEOGCS`, a Lambert conformal conic (`1SP` or
+   `2SP` spelling) with standard parallels 44° and 49° in either order,
+   central meridian 3°, false origin (700 000, 6 600 000) and, when
+   given, latitude of origin 46.5° and scale 1, is Lambert-93, through
+   the inverse the GeoJSON `crs` uses; a Mercator on the auxiliary
+   sphere, centred, is Web Mercator. A parameter outside those lists is
+   a decline, as is any other system, a `COMPD_CS` included, and a layer
+   with no `.prj`: the rule the GeoJSON path applies, nothing is guessed
+   from the ranges of the numbers. One layer that declines declines the
+   archive, rather than drawing a map that leaves part of the file out.
+   The georust `shapefile` crate was passed over: it brings `dbase` for
+   a `.dbf` that is not read, for a reader of two hundred lines.
 
    The helper projects every coordinate to Web Mercator, clamping the
    latitude to the projection's edge. RFC 7946 allows only longitude and
@@ -2553,7 +2600,7 @@ on "has preview", never on category. Sources, in order:
    of gigabytes and vector tiles need a style-aware renderer that does not
    exist in Rust and would have to be written inside a sandboxed helper.
    Out of scope for now: XYZ and WMTS layers, caching backgrounds between
-   renders, and Shapefile, which would be another reader in this helper.
+   renders, and GML, which will be another reader in this helper.
 A document that is not one of these has no preview, whether PDF or office:
 the first page of a PDF is its thumbnail (see "Thumbnail"), not a preview.
 

@@ -91,7 +91,7 @@ CREATE TABLE blobs (
     preview_state     text NOT NULL DEFAULT 'pending'
                       CHECK (preview_state IN ('pending', 'ready', 'failed', 'unavailable', 'disabled')),
     preview_source    text
-                      CHECK (preview_source IN ('image', 'embedded_image', 'geojson', 'gpx', 'kml')),
+                      CHECK (preview_source IN ('image', 'embedded_image', 'geojson', 'gpx', 'kml', 'shapefile')),
     thumbnail_variant_version integer,
     preview_variant_version   integer,
     -- What was rendered: the SHA-256 and the size of the WebP, recorded

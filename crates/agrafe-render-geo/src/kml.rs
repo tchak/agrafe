@@ -28,18 +28,17 @@
 //! the document; the icons and overlays beside it are ignored.
 
 use std::collections::HashMap;
-use std::io::{Cursor, Read};
 
 use agrafe_types::map::{Color, MarkerSize, Style};
 use geojson::{Geometry, GeometryValue, Position};
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 
+use crate::archive;
+
 /// The KML document of a KMZ read at most, inflated: the size a bare
 /// document may be, and well under the sandbox's memory.
-const MAX_DOCUMENT: u64 = 64 * 1024 * 1024;
-/// Archives with more entries than this are not a map and its icons.
-const MAX_ENTRIES: usize = 10_000;
+const MAX_DOCUMENT: u64 = archive::MAX_INFLATED;
 /// How many `styleUrl` references are followed from a placemark to a
 /// style: a map pointing at a map pointing at a style is two.
 const MAX_STYLE_HOPS: usize = 8;
@@ -96,26 +95,11 @@ pub(crate) fn document_of_kmz(bytes: &[u8]) -> Option<Vec<u8>> {
 }
 
 fn document_of_kmz_within(bytes: &[u8], max_document: u64) -> Option<Vec<u8>> {
-    let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).ok()?;
-    if zip.len() > MAX_ENTRIES {
-        return None;
-    }
-    let index = (0..zip.len()).find(|&index| {
-        zip.name_for_index(index)
-            .and_then(Result::ok)
-            .is_some_and(|name| {
-                let lower = name.to_ascii_lowercase();
-                lower.ends_with(".kml") && !lower.starts_with("__macosx/")
-            })
-    })?;
-    let entry = zip.by_index(index).ok()?;
-    let mut document = Vec::new();
-    // The size in the entry header is a claim; the read is what is bounded.
-    entry
-        .take(max_document + 1)
-        .read_to_end(&mut document)
-        .ok()?;
-    (document.len() as u64 <= max_document).then_some(document)
+    let mut zip = archive::open(bytes)?;
+    let index = archive::names(&zip)
+        .find(|(_, name)| name.ends_with(".kml"))?
+        .0;
+    archive::read(&mut zip, index, max_document)
 }
 
 /// A style as a `<Style>` element spells it, every field optional: a
@@ -944,21 +928,9 @@ mod tests {
         }
     }
 
-    /// A ZIP of `entries`, stored, in that order.
-    fn zipped(entries: &[(&str, &[u8])]) -> Vec<u8> {
-        use std::io::Write as _;
-        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
-        let options = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Stored);
-        for (name, data) in entries {
-            writer.start_file(*name, options).unwrap();
-            writer.write_all(data).unwrap();
-        }
-        writer.finish().unwrap().into_inner()
-    }
-
     #[test]
     fn takes_the_first_kml_entry_of_a_kmz() {
+        use crate::archive::zipped;
         let doc =
             b"<kml><Placemark><Point><coordinates>4,45</coordinates></Point></Placemark></kml>";
         let kmz = zipped(&[("doc.kml", doc), ("files/icon.png", b"\x89PNG")]);
@@ -981,7 +953,9 @@ mod tests {
         assert_eq!(document_of_kmz(b""), None);
         // As many entries as allowed, the document last, is read; one more
         // and the archive is not looked through.
-        let names: Vec<String> = (1..MAX_ENTRIES).map(|i| format!("files/{i}.png")).collect();
+        let names: Vec<String> = (1..archive::MAX_ENTRIES)
+            .map(|i| format!("files/{i}.png"))
+            .collect();
         let mut entries: Vec<(&str, &[u8])> = names
             .iter()
             .map(|name| (name.as_str(), b"\x89PNG" as &[u8]))

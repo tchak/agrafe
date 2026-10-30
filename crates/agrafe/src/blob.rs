@@ -431,6 +431,9 @@ pub enum PreviewSource {
     /// The placemarks of a KML document, bare or zipped in a KMZ, drawn
     /// over a map background in their KML styles.
     Kml,
+    /// The layers of a zipped shapefile, each from its own system, drawn
+    /// over a map background.
+    Shapefile,
 }
 
 agrafe_types::str_enum!(PreviewSource {
@@ -439,6 +442,7 @@ agrafe_types::str_enum!(PreviewSource {
     GeoJson => "geojson",
     Gpx => "gpx",
     Kml => "kml",
+    Shapefile => "shapefile",
 });
 
 impl From<agrafe_types::map::Format> for PreviewSource {
@@ -451,6 +455,7 @@ impl From<agrafe_types::map::Format> for PreviewSource {
             Format::GeoJson => PreviewSource::GeoJson,
             Format::Gpx => PreviewSource::Gpx,
             Format::Kml | Format::Kmz => PreviewSource::Kml,
+            Format::Shapefile => PreviewSource::Shapefile,
         }
     }
 }

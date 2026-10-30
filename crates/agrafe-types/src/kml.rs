@@ -21,24 +21,7 @@ pub fn looks_like_kml(head: &[u8]) -> bool {
 /// entry is not recognised, and a client that knows the field is a map
 /// declares the type itself.
 pub fn looks_like_kmz(head: &[u8]) -> bool {
-    first_zip_entry(head)
-        .is_some_and(|name| name.len() > 4 && name[name.len() - 4..].eq_ignore_ascii_case(b".kml"))
-}
-
-/// The name in the first local file header of a ZIP, when `head` starts
-/// with one that fits in it.
-fn first_zip_entry(head: &[u8]) -> Option<&[u8]> {
-    const SIGNATURE: &[u8] = b"PK\x03\x04";
-    const NAME_LEN: usize = 26;
-    const NAME: usize = 30;
-    if !head.starts_with(SIGNATURE) {
-        return None;
-    }
-    let len = usize::from(u16::from_le_bytes([
-        *head.get(NAME_LEN)?,
-        *head.get(NAME_LEN + 1)?,
-    ]));
-    head.get(NAME..NAME + len)
+    crate::zip::first_entry_ends_with(head, &[b".kml"])
 }
 
 #[cfg(test)]

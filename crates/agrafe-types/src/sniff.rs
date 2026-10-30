@@ -11,6 +11,7 @@
 use crate::geojson::{self, GEOJSON};
 use crate::gpx::GPX;
 use crate::kml::{self, KML, KMZ};
+use crate::shapefile::{self, SHAPEFILE};
 
 /// Bytes needed before a verdict. PDF allows its magic anywhere in the first
 /// 1 KiB; ZIP-based office formats need a few local file headers.
@@ -34,7 +35,9 @@ const XML: &str = "text/xml";
 /// `.geojson` declared as JSON or text can be refined (see [`refine`]).
 /// XML has a text sniffer that fires on the declaration; an XML document
 /// whose root element is `<gpx>` or `<kml>` is a GPX or a KML one, for
-/// the same reason. A ZIP whose first entry is a `.kml` is a KMZ.
+/// the same reason. A ZIP whose first entry is a `.kml` is a KMZ, one
+/// whose first entry is a `.shp`, `.shx`, `.dbf` or `.prj` a zipped
+/// shapefile.
 ///
 /// An OLE compound file sniffs as the generic storage: without its `std`
 /// feature, which would parse the file's directory in-process, `infer`
@@ -51,6 +54,9 @@ pub fn sniff(head: &[u8]) -> Option<&'static str> {
             return Some(OLE);
         }
         Some("application/zip") if kml::looks_like_kmz(head) => return Some(KMZ),
+        Some("application/zip") if shapefile::looks_like_shapefile(head) => {
+            return Some(SHAPEFILE);
+        }
         Some("text/xml") | None => {}
         Some(other) => return Some(other),
     }
@@ -69,14 +75,15 @@ pub fn sniff(head: &[u8]) -> Option<&'static str> {
 /// sniffed as `sniffed`: the sniffed type when it is more precise than a
 /// declaration that covers it, as a GeoJSON file declared as JSON or plain
 /// text, a GPX or KML file declared as XML or plain text, or a KMZ file
-/// declared as a ZIP; `None` to keep the declaration. The category is the
-/// same either way.
+/// or a zipped shapefile declared as a ZIP; `None` to keep the
+/// declaration. The category is the same either way.
 pub fn refine(declared: &str, sniffed: &str) -> Option<&'static str> {
     match (canonical(declared), sniffed) {
         ("application/json" | "text/json" | "text/plain", GEOJSON) => Some(GEOJSON),
         ("text/xml" | "text/plain", GPX) => Some(GPX),
         ("text/xml" | "text/plain", KML) => Some(KML),
         ("application/zip", KMZ) => Some(KMZ),
+        ("application/zip", SHAPEFILE) => Some(SHAPEFILE),
         _ => None,
     }
 }
@@ -246,6 +253,7 @@ pub(crate) fn container(mime: &str) -> Option<&'static str> {
         | "application/vnd.ms-xpsdocument"
         | "application/oxps"
         | "application/vnd.google-earth.kmz"
+        | "application/x-shapefile"
         | "application/epub+zip"
         | "application/java-archive"
         | "application/vnd.android.package-archive"
@@ -371,6 +379,12 @@ mod tests {
         assert_eq!(sniff(b"<svg>"), None);
         assert_eq!(sniff(&zip_head(b"doc.kml")), Some(KMZ));
         assert_eq!(sniff(&zip_head(b"files/icon.png")), Some("application/zip"));
+        assert_eq!(
+            sniff(&zip_head(b"parcelles/parcelles.shp")),
+            Some(SHAPEFILE)
+        );
+        assert_eq!(sniff(&zip_head(b"parcelles.dbf")), Some(SHAPEFILE));
+        assert_eq!(sniff(&zip_head(b"parcelles.cpg")), Some("application/zip"));
     }
 
     /// A ZIP head whose first local file header names `name`.
@@ -465,6 +479,27 @@ mod tests {
         assert!(!compatible(KML, KMZ));
         assert!(!compatible("text/plain", KMZ));
         assert_eq!(refine(docx, KMZ), None);
+    }
+
+    #[test]
+    fn refines_zip_declarations_to_shapefile() {
+        for declared in ["application/zip", "application/x-zip-compressed"] {
+            assert!(compatible(declared, SHAPEFILE), "{declared}");
+            assert_eq!(refine(declared, SHAPEFILE), Some(SHAPEFILE), "{declared}");
+        }
+        assert!(compatible(SHAPEFILE, SHAPEFILE));
+        assert_eq!(refine(SHAPEFILE, SHAPEFILE), None);
+        // A declared shapefile whose first entry is a `.cpg` sniffs as a ZIP.
+        assert!(compatible(SHAPEFILE, "application/zip"));
+        assert_eq!(refine(SHAPEFILE, "application/zip"), None);
+        assert!(compatible("application/octet-stream", SHAPEFILE));
+        assert_eq!(refine("application/octet-stream", SHAPEFILE), None);
+        // A ZIP-packaged sibling is not a shapefile.
+        assert!(!compatible(KMZ, SHAPEFILE));
+        assert!(!compatible(SHAPEFILE, KMZ));
+        assert!(!compatible("application/pdf", SHAPEFILE));
+        assert!(!compatible("text/plain", SHAPEFILE));
+        assert_eq!(refine(KMZ, SHAPEFILE), None);
     }
 
     #[test]

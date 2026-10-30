@@ -4,7 +4,8 @@
 //! extent the helper writes back. The helper parses the file; the server
 //! never does. Both read this module, so the two sides of each file agree
 //! by construction. How a file is told to be in one of the formats is in
-//! [`crate::geojson`], [`crate::gpx`] and [`crate::kml`].
+//! [`crate::geojson`], [`crate::gpx`], [`crate::kml`] and
+//! [`crate::shapefile`].
 
 use std::fmt;
 use std::str::FromStr;
@@ -25,6 +26,9 @@ pub enum Format {
     /// KMZ, a KML document zipped with its icons and overlays,
     /// `application/vnd.google-earth.kmz`.
     Kmz,
+    /// A zipped shapefile, its `.shp` layers each in the system its
+    /// `.prj` names, `application/x-shapefile`.
+    Shapefile,
 }
 
 crate::str_enum!(Format {
@@ -32,6 +36,7 @@ crate::str_enum!(Format {
     Gpx => "gpx",
     Kml => "kml",
     Kmz => "kmz",
+    Shapefile => "shapefile",
 });
 
 /// An sRGB colour, parsed from the hex spelling simplestyle uses and
@@ -319,7 +324,8 @@ mod tests {
         }
         assert_eq!(Format::Gpx.as_str(), "gpx");
         assert_eq!(Format::Kmz.as_str(), "kmz");
-        assert!("shapefile".parse::<Format>().is_err());
+        assert_eq!(Format::Shapefile.as_str(), "shapefile");
+        assert!("gml".parse::<Format>().is_err());
     }
 
     #[test]

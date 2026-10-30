@@ -20,7 +20,7 @@ pub enum Category {
     /// PowerPoint and ODP.
     Presentation,
     /// ZIP, gzip, tar, 7z, RAR, bzip2, zstd, xz, lzip, lz4 and compress,
-    /// and the ZIPs that are a KMZ, a JAR or an APK.
+    /// and the ZIPs that are a KMZ, a zipped shapefile, a JAR or an APK.
     Archive,
     /// Any `audio/*` type.
     Audio,
@@ -99,7 +99,8 @@ pub fn classify(content_type: &str) -> Category {
         | "application/x-compress"
         | "application/vnd.android.package-archive"
         | "application/java-archive"
-        | crate::kml::KMZ => Some(Category::Archive),
+        | crate::kml::KMZ
+        | crate::shapefile::SHAPEFILE => Some(Category::Archive),
 
         "application/json"
         | "application/x-ndjson"
@@ -148,6 +149,7 @@ mod tests {
         assert_eq!(classify(crate::gpx::GPX), Category::Text);
         assert_eq!(classify(crate::kml::KML), Category::Text);
         assert_eq!(classify(crate::kml::KMZ), Category::Archive);
+        assert_eq!(classify(crate::shapefile::SHAPEFILE), Category::Archive);
         assert_eq!(classify("video/mp4"), Category::Video);
         assert_eq!(classify("application/octet-stream"), Category::Other);
     }

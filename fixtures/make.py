@@ -3,7 +3,7 @@
 files under crates/agrafe-render/assets/probe. Needs Pillow. The outputs are
 committed; run this only to change them. The XML map fixtures (`.gpx`,
 `.kml`) are hand-written and edited directly; the `.kmz` ones are built
-here from them.
+here from them, and the zipped shapefiles are written here.
 
 The Office 97-2003 fixtures (`letter.doc`, `table.xls`, `slides.ppt`)
 cannot be written by hand: they are converted from the ZIP ones by
@@ -151,6 +151,84 @@ def kmz(document, icon=None):
         zip_entry(z, "doc.kml", document)
         if icon is not None:
             zip_entry(z, "files/icon.png", icon)
+    return out.getvalue()
+
+
+# The shape types a `.shp` record may hold, of those the fixtures use.
+SHP_POINT_Z, SHP_POLYLINE, SHP_POLYGON = 11, 3, 5
+
+# Lambert-93 as ArcGIS and QGIS write it in a `.prj`.
+LAMBERT93_PRJ = (
+    'PROJCS["RGF_1993_Lambert_93",GEOGCS["GCS_RGF_1993",DATUM["D_RGF_1993",'
+    'SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],'
+    'UNIT["Degree",0.0174532925199433]],PROJECTION["Lambert_Conformal_Conic"],'
+    'PARAMETER["False_Easting",700000.0],PARAMETER["False_Northing",6600000.0],'
+    'PARAMETER["Central_Meridian",3.0],PARAMETER["Standard_Parallel_1",49.0],'
+    'PARAMETER["Standard_Parallel_2",44.0],PARAMETER["Latitude_Of_Origin",46.5],'
+    'UNIT["Meter",1.0]]'
+)
+
+
+def shp_header(kind, words, points):
+    """The 100-byte header of a `.shp` or `.shx` of `words` 16-bit words,
+    over the bounding box of `points`."""
+    xs, ys = [p[0] for p in points], [p[1] for p in points]
+    return (struct.pack(">7i", 9994, 0, 0, 0, 0, 0, words)
+            + struct.pack("<2i8d", 1000, kind, min(xs), min(ys), max(xs), max(ys), 0, 0, 0, 0))
+
+
+def shp_content(kind, parts):
+    """A record's content: a PointZ of the one point of the one part, else
+    the parts of a PolyLine or a Polygon."""
+    points = [p for part in parts for p in part]
+    if kind == SHP_POINT_Z:
+        x, y = parts[0][0]
+        return struct.pack("<i4d", kind, x, y, 35.0, 0.0)
+    xs, ys = [p[0] for p in points], [p[1] for p in points]
+    starts = [sum(len(part) for part in parts[:i]) for i in range(len(parts))]
+    return (struct.pack("<i4d2i", kind, min(xs), min(ys), max(xs), max(ys), len(parts), len(points))
+            + struct.pack(f"<{len(parts)}i", *starts)
+            + b"".join(struct.pack("<2d", *p) for p in points))
+
+
+def dbf(names):
+    """A dBase III table of one `NAME` text column, a row per name."""
+    width = 32
+    header = struct.pack("<B3BIHH20x", 3, 80, 1, 1, len(names), 32 + 32 + 1, 1 + width)
+    field = struct.pack("<11sc4xBB14x", b"NAME", b"C", width, 0)
+    rows = b"".join(b" " + name.encode().ljust(width) for name in names)
+    return header + field + b"\r" + rows + b"\x1a"
+
+
+def shapefile(kind, records):
+    """The `.shp`, `.shx` and `.dbf` of one layer of `kind`: `records` is a
+    list of (name, parts), each part a list of (x, y)."""
+    contents = [shp_content(kind, parts) for _, parts in records]
+    points = [p for _, parts in records for part in parts for p in part]
+    shp, shx, offset = b"", b"", 50
+    for number, content in enumerate(contents, 1):
+        words = len(content) // 2
+        shp += struct.pack(">2i", number, words) + content
+        shx += struct.pack(">2i", offset, words)
+        offset += 4 + words
+    shp = shp_header(kind, 50 + len(shp) // 2, points) + shp
+    shx = shp_header(kind, 50 + len(shx) // 2, points) + shx
+    return shp, shx, dbf([name for name, _ in records])
+
+
+def zipped_shapefile(layers, prj=LAMBERT93_PRJ):
+    """A ZIP of `layers`, {path stem: (kind, records)}, each with its `.shx`
+    and `.dbf`, and its `.prj` unless `prj` is None, the `.shp` first as
+    QGIS writes them."""
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        for stem, (kind, records) in layers.items():
+            shp, shx, table = shapefile(kind, records)
+            zip_entry(z, f"{stem}.shp", shp)
+            zip_entry(z, f"{stem}.shx", shx)
+            zip_entry(z, f"{stem}.dbf", table)
+            if prj is not None:
+                zip_entry(z, f"{stem}.prj", prj)
     return out.getvalue()
 
 
@@ -405,6 +483,26 @@ PARIS = [2.3522, 48.8566]
 PARIS_L93 = [652469.023, 6862035.259]
 LYON = [4.8357, 45.7640]
 
+def l93(dx, dy):
+    """A point `dx`, `dy` metres from Paris in Lambert-93."""
+    return (PARIS_L93[0] + dx, PARIS_L93[1] + dy)
+
+
+# Three layers of a Lambert-93 export under a folder: a survey point with
+# its altitude, two paths of one record, and a parcel with a courtyard,
+# its outer ring clockwise and its hole anticlockwise.
+PARCELS = {
+    "export/points": (SHP_POINT_Z, [("Borne", [[l93(0, 0)]])]),
+    "export/chemins": (SHP_POLYLINE, [("Chemins", [
+        [l93(-400, -300), l93(-200, -250), l93(0, -300)],
+        [l93(-400, 300), l93(0, 300)],
+    ])]),
+    "export/parcelles": (SHP_POLYGON, [("AB 12", [
+        [l93(-100, -100), l93(-100, 100), l93(100, 100), l93(100, -100), l93(-100, -100)],
+        [l93(-30, -30), l93(30, -30), l93(30, 30), l93(-30, 30), l93(-30, -30)],
+    ])]),
+}
+
 GEOJSON = {
     "point.geojson": feature({"type": "Point", "coordinates": PARIS}, {"name": "Paris"}),
     # A parcel-sized square with a square hole: the hole must stay a hole.
@@ -507,6 +605,8 @@ def main():
     files.update({name: geojson(value) for name, value in GEOJSON.items()})
     files["places.kmz"] = kmz((HERE / "places.kml").read_bytes(), small_png)
     files["empty.kmz"] = kmz((HERE / "empty.kml").read_bytes())
+    files["parcels.zip"] = zipped_shapefile(PARCELS)
+    files["parcels-no-prj.zip"] = zipped_shapefile(PARCELS, prj=None)
     for name, data in files.items():
         (HERE / name).write_bytes(data)
         print(f"{name}: {len(data)} bytes")

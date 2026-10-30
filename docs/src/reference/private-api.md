@@ -135,7 +135,7 @@ Every blob route answers with the full metadata, the same object the
 | `scanned_at` | timestamp or null | |
 | `scan_signature` | string or null | What `clamd` found, for an infected blob |
 | `thumbnail_state`, `preview_state` | string | `pending`, `ready`, `failed`, `unavailable`, `disabled` |
-| `preview_source` | string or null | `image`, `embedded_image`, `geojson`, `gpx` or `kml` (a KMZ's document too) once a preview is rendered |
+| `preview_source` | string or null | `image`, `embedded_image`, `geojson`, `gpx`, `kml` (a KMZ's document too) or `shapefile` once a preview is rendered |
 | `source_parts`, `source_rows`, `source_size` | integer or null | For generated blobs: parts accepted, lines and bytes across them. Null otherwise |
 | `archive_entries`, `archive_errors` | integer or null | For a built archive: members written and members skipped |
 | `created_at`, `updated_at` | timestamp | |

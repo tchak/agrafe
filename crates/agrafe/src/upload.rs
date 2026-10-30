@@ -652,7 +652,7 @@ struct Checks {
     sniffed: bool,
     /// A content type more precise than the declared one, read off the
     /// bytes: a GeoJSON file declared as JSON, a GPX or KML file declared
-    /// as XML, a KMZ file declared as a ZIP.
+    /// as XML, a KMZ file or a zipped shapefile declared as a ZIP.
     refined: Option<&'static str>,
     scanner: Scanner,
 }
@@ -871,5 +871,20 @@ mod tests {
             None
         );
         assert!(check_type("application/pdf", &kmz, &any).is_err());
+        // A ZIP whose first entry is a layer's `.shp`, under a folder.
+        let mut shapefile = b"PK\x03\x04\x14\x00\x00\x00\x08\x00".to_vec();
+        shapefile.extend_from_slice(&[0; 16]);
+        shapefile.extend_from_slice(&17u16.to_le_bytes());
+        shapefile.extend_from_slice(&0u16.to_le_bytes());
+        shapefile.extend_from_slice(b"export/points.shp\x00\x00\x27\x0a");
+        assert_eq!(
+            check_type("application/zip", &shapefile, &any).unwrap(),
+            Some("application/x-shapefile")
+        );
+        assert_eq!(
+            check_type("application/x-zip-compressed", &shapefile, &any).unwrap(),
+            Some("application/x-shapefile")
+        );
+        assert!(check_type("application/vnd.google-earth.kmz", &shapefile, &any).is_err());
     }
 }

@@ -1,8 +1,9 @@
-//! Maps for GeoJSON, GPX, KML and KMZ files: the geometry over a flat
-//! background or over the layers of a WMS, here a local stub; a provider
-//! that fails; the JSON upload that turns out to be GeoJSON, the XML one
-//! that turns out to be GPX or KML and the ZIP one that turns out to be
-//! KMZ; the files that hold no map.
+//! Maps for GeoJSON, GPX, KML and KMZ files and zipped shapefiles: the
+//! geometry over a flat background or over the layers of a WMS, here a
+//! local stub; a provider that fails; the JSON upload that turns out to
+//! be GeoJSON, the XML one that turns out to be GPX or KML and the ZIP
+//! ones that turn out to be KMZ or a shapefile; the files that hold no
+//! map.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -699,6 +700,51 @@ async fn a_kml_declared_as_xml_or_text_and_a_kmz_declared_as_zip_are_refined() {
     }
 }
 
+#[tokio::test]
+async fn a_zipped_shapefile_gets_a_map_preview_and_thumbnail() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let declared = map_blob(&app, "parcels.zip", "application/x-shapefile").await;
+    // A ZIP whose first entry is a `.shp` is refined on upload.
+    let as_zip = map_blob(&app, "parcels.zip", "application/zip").await;
+    assert_eq!(as_zip["content_type"], "application/x-shapefile");
+    render_all(&app).await;
+    for blob in [&declared, &as_zip] {
+        let id = id_of(blob);
+        let blob = get_blob(&app, id).await;
+        assert_eq!(blob["content_type"], "application/x-shapefile");
+        assert_eq!(blob["category"], "archive");
+        assert_eq!(blob["preview_state"], "ready");
+        assert_eq!(blob["preview_source"], "shapefile");
+        assert_eq!(blob["thumbnail_state"], "ready");
+        let size = rendered(&app, &format!("/blobs/{id}/preview/parcels.zip")).await;
+        assert_eq!(size, (400, 400));
+        let size = rendered(&app, &format!("/blobs/{id}/thumbnail/parcels.zip")).await;
+        assert_eq!(size, (256, 256));
+        assert_eq!(jobs_for(&app, id).await, Vec::<String>::new());
+        let (status, headers, _) = fetch(
+            &app.private,
+            get_with(&format!("/blobs/{id}/original/parcels.zip"), &[]),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers["content-type"], "application/x-shapefile");
+    }
+
+    // Declared as something a zipped shapefile is not.
+    let bytes = fixture("parcels.zip");
+    let declared = "application/vnd.google-earth.kmz";
+    let mut blob = blob_for(&bytes, declared, "raw");
+    blob["skip_virus_scan"] = serde_json::json!(true);
+    let created = create(&app, blob).await;
+    let (status, body) = put_private(&app, id_of(&created), bytes).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(
+        body["error"]["message"],
+        format!("content looks like `application/x-shapefile`, not `{declared}`")
+    );
+}
+
 /// A ZIP whose first entry is an icon, not a KMZ to the sniffer.
 fn zip_of_icon() -> Vec<u8> {
     use std::io::Write as _;
@@ -725,22 +771,28 @@ async fn files_without_a_map_get_what_a_text_file_gets() {
     // The same document zipped: an archive, so the icon rather than the
     // text thumbnail.
     let zipped = map_blob(&app, "empty.kmz", "application/vnd.google-earth.kmz").await;
+    // A shapefile without its `.prj`, in no system the helper may
+    // assume: an archive too.
+    let no_prj = map_blob(&app, "parcels-no-prj.zip", "application/x-shapefile").await;
     render_all(&app).await;
-    let id = id_of(&zipped);
-    let blob = get_blob(&app, id).await;
-    assert_eq!(blob["preview_state"], "unavailable");
-    assert_eq!(blob["preview_source"], Value::Null);
-    assert_eq!(blob["thumbnail_state"], "unavailable");
-    let (status, headers, body) = fetch(
-        &app.private,
-        get_with(&format!("/blobs/{id}/thumbnail/empty.kmz"), &[]),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(headers["content-type"], "image/webp");
-    assert_eq!(headers["x-representation-state"], "unavailable");
-    assert_eq!(webp_size(&body), (256, 256));
-    assert_eq!(jobs_for(&app, id).await, Vec::<String>::new());
+    for blob in [&zipped, &no_prj] {
+        let id = id_of(blob);
+        let name = blob["filename"].as_str().unwrap();
+        let blob = get_blob(&app, id).await;
+        assert_eq!(blob["preview_state"], "unavailable", "{name}");
+        assert_eq!(blob["preview_source"], Value::Null, "{name}");
+        assert_eq!(blob["thumbnail_state"], "unavailable", "{name}");
+        let (status, headers, body) = fetch(
+            &app.private,
+            get_with(&format!("/blobs/{id}/thumbnail/{name}"), &[]),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{name}");
+        assert_eq!(headers["content-type"], "image/webp", "{name}");
+        assert_eq!(headers["x-representation-state"], "unavailable", "{name}");
+        assert_eq!(webp_size(&body), (256, 256), "{name}");
+        assert_eq!(jobs_for(&app, id).await, Vec::<String>::new(), "{name}");
+    }
     for (blob, preview) in [
         (&empty, "unavailable"),
         (&off, "unavailable"),
