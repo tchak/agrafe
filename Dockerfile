@@ -30,11 +30,12 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 
 FROM debian:trixie-slim AS runtime-default
 # vips for every render, with SVG (rsvg) for the maps; the fonts for PDFs
-# that do not embed theirs; the CA roots for the fetches, the webhook and
-# the map layers. coreutils, which the startup probe runs, is in the base.
+# that do not embed theirs; pandoc, about 150 MB, for the DOCX and ODT
+# documents; the CA roots for the fetches, the webhook and the map
+# layers. coreutils, which the startup probe runs, is in the base.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      libvips-tools ca-certificates fontconfig fonts-dejavu-core fonts-liberation \
+      libvips-tools pandoc ca-certificates fontconfig fonts-dejavu-core fonts-liberation \
  && rm -rf /var/lib/apt/lists/* \
  # The sandbox cannot keep a font cache of its own between jobs.
  && fc-cache -f \

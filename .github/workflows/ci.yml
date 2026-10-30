@@ -68,7 +68,8 @@ jobs:
       AGRAFE_SANDBOX_REQUIRED: 1
     steps:
       # LibreOffice for the office thumbnail tests, which skip without it;
-      # bubblewrap for the sandbox's bubblewrap tests, likewise. The runner's
+      # bubblewrap for the sandbox's bubblewrap tests, likewise; pandoc for
+      # the DOCX and ODT documents, whose tests and probe need it. The runner's
       # mirror serves the 113 MB of packages at under 1 MB/s, so the .debs
       # are cached, keyed on the exact URIs apt resolves: an updated package
       # misses the key, restores the previous set and downloads only itself.
@@ -77,7 +78,7 @@ jobs:
         env:
           PACKAGES: >-
             libvips-tools libheif-plugin-libde265 bubblewrap libreoffice-writer-nogui libreoffice-calc-nogui
-            unzip libarchive-tools
+            unzip libarchive-tools pandoc
             libreoffice-impress-nogui libreoffice-draw-nogui fonts-dejavu-core
             fonts-liberation
         run: |

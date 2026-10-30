@@ -1,4 +1,4 @@
-//! Compiling a typst workspace into a PDF: a directory holding the template,
+//! Compiling a typst workspace into a PDF or into HTML: a directory holding the template,
 //! its includes, its images and fonts, and the data of the one document,
 //! all written there by the `document` build job. The compiler runs in the
 //! `agrafe-render-document` helper, in the sandbox, never in the server,
@@ -13,6 +13,18 @@
 //! embedded ones, so a template works with nothing declared. A compile
 //! error is reported as `file:line:column: message`, one per line, which
 //! the job records as its error.
+//!
+//! The HTML is typst's HTML export, still experimental upstream and
+//! behind its `html` feature, which the library here always enables, so
+//! that a template is the same program for both targets: `target()`
+//! tells them apart, and the `html` module exists under either. It is one
+//! self-contained file, images inline as data URIs, which pandoc turns
+//! into a DOCX or an ODT. It is written for pandoc, not a browser: the
+//! footnotes are reshaped into the markup pandoc reads as notes, and
+//! nothing in it refers to a resource outside it. Typst inlines the
+//! images it places; an element a template writes itself with
+//! `html.elem` that would load something else, a file or a URL, is
+//! removed, since pandoc would fetch it into the office file.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -25,9 +37,12 @@ use typst::foundations::{Bytes, Datetime, Duration};
 use typst::syntax::{FileId, RootedPath, Source, VirtualPath, VirtualRoot};
 use typst::text::{Font, FontBook};
 use typst::utils::LazyHash;
+use typst::{Feature, Features};
 use typst::{Library, LibraryExt, World, WorldExt};
+use typst_html::{
+    HtmlAttr, HtmlAttrs, HtmlDocument, HtmlElement, HtmlNode, HtmlOptions, HtmlTag, attr, tag,
+};
 use typst_layout::PagedDocument;
-
 use typst_pdf::PdfOptions;
 
 /// The exit code of the helper for a document that does not compile,
@@ -36,6 +51,15 @@ use typst_pdf::PdfOptions;
 /// helper's, retried. Mirrored as `DOCUMENT_REJECTED_EXIT` in
 /// `agrafe-render`, which cannot link this crate.
 pub const REJECTED_EXIT: u8 = 2;
+
+/// What a workspace compiles to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    /// Pages, laid out: a PDF.
+    Pdf,
+    /// Flow: one HTML file, its images inline.
+    Html,
+}
 
 /// Why a workspace could not be opened: its root or its main file is not
 /// usable before the compiler has looked at anything.
@@ -141,7 +165,11 @@ impl Workspace {
         Ok(Self {
             root: root.to_path_buf(),
             main,
-            library: LazyHash::new(Library::default()),
+            library: LazyHash::new(
+                Library::builder()
+                    .with_features(Features::from_iter([Feature::Html]))
+                    .build(),
+            ),
             book: LazyHash::new(book),
             fonts,
             files: Mutex::new(HashMap::new()),
@@ -155,12 +183,24 @@ impl Workspace {
         self.fonts.len()
     }
 
-    /// Compile the main file and export the PDF.
-    pub fn compile(&self) -> Result<Vec<u8>, CompileError> {
-        let Warned { output, warnings } = typst::compile::<PagedDocument>(self);
-        let document = output.map_err(|errors| self.diagnostics(&warnings, &errors))?;
-        typst_pdf::pdf(&document, &PdfOptions::default())
-            .map_err(|errors| self.diagnostics(&warnings, &errors))
+    /// Compile the main file and export it in `format`.
+    pub fn compile(&self, format: Format) -> Result<Vec<u8>, CompileError> {
+        match format {
+            Format::Pdf => {
+                let Warned { output, warnings } = typst::compile::<PagedDocument>(self);
+                let document = output.map_err(|errors| self.diagnostics(&warnings, &errors))?;
+                typst_pdf::pdf(&document, &PdfOptions::default())
+                    .map_err(|errors| self.diagnostics(&warnings, &errors))
+            }
+            Format::Html => {
+                let Warned { output, warnings } = typst::compile::<HtmlDocument>(self);
+                let mut document = output.map_err(|errors| self.diagnostics(&warnings, &errors))?;
+                for_pandoc(document.root_mut());
+                typst_html::html(&document, &HtmlOptions::default())
+                    .map(String::into_bytes)
+                    .map_err(|errors| self.diagnostics(&warnings, &errors))
+            }
+        }
     }
 
     /// Warnings first, errors last: the sandbox keeps the tail of what the
@@ -278,6 +318,141 @@ impl World for Workspace {
     }
 }
 
+/// The HTML as pandoc is to read it, below `element`: no reference to a
+/// resource outside it, and the notes in pandoc's shape.
+///
+/// Typst marks a footnote's reference, and the backlink in front of its
+/// text, with a role on a `sup` around the link; pandoc's HTML reader
+/// makes a note of them when the role is on a link around the `sup`, the
+/// shape its own writer emits. Otherwise the reference is a superscript
+/// link and the text of the note is lost.
+fn for_pandoc(element: &mut HtmlElement) {
+    if element
+        .children
+        .iter()
+        .any(|child| matches!(child, HtmlNode::Element(e) if loads_elsewhere(e)))
+    {
+        element.children = element
+            .children
+            .iter()
+            .filter(|child| !matches!(child, HtmlNode::Element(e) if loads_elsewhere(e)))
+            .cloned()
+            .collect();
+    }
+    for child in element.children.make_mut() {
+        if let HtmlNode::Element(child) = child {
+            child.attrs = HtmlAttrs(
+                child
+                    .attrs
+                    .0
+                    .iter()
+                    .filter(|(name, value)| !refers_elsewhere(child.tag, *name, value))
+                    .cloned()
+                    .collect(),
+            );
+            match swapped_note_link(child) {
+                Some(link) => *child = link,
+                None => for_pandoc(child),
+            }
+        }
+    }
+}
+
+/// Elements whose purpose is to load something, which pandoc would
+/// fetch: removed whatever they point at, as are media that point
+/// anywhere but at bytes of their own, a `data:` URI.
+fn loads_elsewhere(element: &HtmlElement) -> bool {
+    const LOADERS: [HtmlTag; 12] = [
+        tag::iframe,
+        tag::object,
+        tag::embed,
+        tag::link,
+        tag::script,
+        tag::base,
+        tag::area,
+        HtmlTag::constant("frame"),
+        HtmlTag::constant("frameset"),
+        HtmlTag::constant("portal"),
+        HtmlTag::constant("applet"),
+        HtmlTag::constant("image"),
+    ];
+    const MEDIA: [HtmlTag; 6] = [
+        tag::img,
+        tag::video,
+        tag::audio,
+        tag::source,
+        tag::track,
+        tag::input,
+    ];
+    if LOADERS.contains(&element.tag) {
+        return true;
+    }
+    MEDIA.contains(&element.tag)
+        && element
+            .attrs
+            .get(attr::src)
+            .is_some_and(|src| !is_data_uri(src))
+}
+
+/// Whether the attribute `name` of a `tag` element points outside the
+/// HTML: any URL attribute but a link's own target, which pandoc keeps
+/// as a link and never fetches.
+fn refers_elsewhere(tag: HtmlTag, name: HtmlAttr, value: &str) -> bool {
+    const URLS: [HtmlAttr; 6] = [
+        attr::src,
+        attr::srcset,
+        attr::poster,
+        attr::data,
+        HtmlAttr::constant("background"),
+        HtmlAttr::constant("lowsrc"),
+    ];
+    let url = URLS.contains(&name) || (name == attr::href && tag != tag::a);
+    url && !is_data_uri(value)
+}
+
+fn is_data_uri(value: &str) -> bool {
+    value
+        .trim_start()
+        .get(..5)
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("data:"))
+}
+
+/// `<sup role="doc-noteref" id><a href>1</a></sup>` as
+/// `<a href role="doc-noteref" id><sup>1</sup></a>`, and the same for
+/// `doc-backlink`; `None` for any other element.
+fn swapped_note_link(sup: &HtmlElement) -> Option<HtmlElement> {
+    if sup.tag != tag::sup {
+        return None;
+    }
+    let role = sup.attrs.get(attr::role)?;
+    if role != "doc-noteref" && role != "doc-backlink" {
+        return None;
+    }
+    let mut elements = sup.children.iter().filter_map(|node| match node {
+        HtmlNode::Element(element) => Some(element),
+        _ => None,
+    });
+    let link = elements.next().filter(|element| element.tag == tag::a)?;
+    if elements.next().is_some() {
+        return None;
+    }
+    let (moved, kept): (Vec<_>, Vec<_>) = sup
+        .attrs
+        .0
+        .iter()
+        .cloned()
+        .partition(|(name, _)| *name == attr::role || *name == attr::id);
+    let mut inner = sup.clone();
+    inner.attrs = HtmlAttrs(kept.into_iter().collect());
+    inner.children = link.children.clone();
+    let mut outer = link.clone();
+    for (name, value) in moved {
+        outer.attrs.push(name, value);
+    }
+    outer.children = std::iter::once(HtmlNode::Element(inner)).collect();
+    Some(outer)
+}
+
 /// Every `.ttf` and `.otf` under `root`, in path order so the font book is
 /// the same whatever the directory listing order.
 fn collect_fonts(root: &Path, fonts: &mut Vec<Font>) -> std::io::Result<()> {
@@ -314,6 +489,15 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
+    /// A one-pixel PNG.
+    const PNG: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90,
+        0x77, 0x53, 0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x08, 0xd7, 0x63, 0xf8,
+        0xcf, 0xc0, 0x00, 0x00, 0x03, 0x01, 0x01, 0x00, 0x18, 0xdd, 0x8d, 0xb0, 0x00, 0x00, 0x00,
+        0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+
     fn open(files: &[(&str, &[u8])]) -> (tempfile::TempDir, Workspace) {
         let dir = tempfile::tempdir().unwrap();
         for (path, bytes) in files {
@@ -327,14 +511,6 @@ mod tests {
 
     #[test]
     fn compiles_a_workspace_of_includes_data_and_images() {
-        // A one-pixel PNG.
-        let png: &[u8] = &[
-            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
-            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00,
-            0x00, 0x90, 0x77, 0x53, 0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x08,
-            0xd7, 0x63, 0xf8, 0xcf, 0xc0, 0x00, 0x00, 0x03, 0x01, 0x01, 0x00, 0x18, 0xdd, 0x8d,
-            0xb0, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
-        ];
         let (_dir, workspace) = open(&[
             (
                 "main.typ",
@@ -342,16 +518,94 @@ mod tests {
             ),
             ("lib/header.typ", b"#let title(t) = heading(t)"),
             ("data.json", br#"{"nom": "Facture n\u00b0 12"}"#),
-            ("img/logo.png", png),
+            ("img/logo.png", PNG),
         ]);
-        let pdf = workspace.compile().unwrap();
+        let pdf = workspace.compile(Format::Pdf).unwrap();
         assert!(pdf.starts_with(b"%PDF-"), "{:?}", &pdf[..8]);
+    }
+
+    #[test]
+    fn compiles_to_one_html_file_of_structure() {
+        let (_dir, workspace) = open(&[
+            (
+                "main.typ",
+                b"#set page(width: 10cm)\n= Titre\n- un\n- deux\n\n#table(columns: 2, [a], [b])\n#image(\"pixel.png\", alt: \"point\")\n$ x^2 $\n#context if target() == \"html\" [flow] else [pages]#footnote[note]",
+            ),
+            ("pixel.png", PNG),
+        ]);
+        let html = String::from_utf8(workspace.compile(Format::Html).unwrap()).unwrap();
+        for element in [
+            "<h2>Titre</h2>",
+            "<ul>",
+            "<li>un</li>",
+            "<table>",
+            "<img src=\"data:image/png;base64,",
+            "<math",
+            "flow",
+            // A note in the markup pandoc's reader knows.
+            "role=\"doc-noteref\"><sup>1</sup></a>",
+            "role=\"doc-backlink\"><sup>1</sup></a>",
+        ] {
+            assert!(html.contains(element), "{element} in {html}");
+        }
+        assert!(!html.contains("pages"), "{html}");
+        // The same template as pages, where `target()` says so.
+        let pdf = workspace.compile(Format::Pdf).unwrap();
+        assert!(pdf.starts_with(b"%PDF-"));
+    }
+
+    /// What a template writes with `html.elem` loads nothing pandoc
+    /// would fetch: a file of the worker's, a URL.
+    #[test]
+    fn html_refers_to_nothing_outside_it() {
+        let (_dir, workspace) = open(&[
+            (
+                "main.typ",
+                br#"#html.elem("img", attrs: (src: "/etc/passwd"))
+#html.elem("img", attrs: (src: " DATA:image/png;base64,AA=="))
+#html.elem("iframe", attrs: (src: "file:///etc/passwd"))
+#html.elem("video", attrs: (src: "https://example.org/v.mp4", poster: "/etc/hosts"))
+#html.elem("div", attrs: (background: "/etc/hosts"))[kept]
+#html.elem("object", attrs: (data: "/etc/passwd"))
+#html.elem("span", attrs: (href: "/etc/passwd"))[span]
+#link("file:///etc/passwd")[link]
+#image("pixel.png")"#,
+            ),
+            ("pixel.png", PNG),
+        ]);
+        let html = String::from_utf8(workspace.compile(Format::Html).unwrap()).unwrap();
+        for gone in [
+            "iframe",
+            "video",
+            "object",
+            "/etc/hosts",
+            "src=\"/etc/passwd\"",
+        ] {
+            assert!(!html.contains(gone), "{gone} in {html}");
+        }
+        for kept in [
+            "src=\" DATA:image/png;base64,AA==\"",
+            "<div>kept</div>",
+            "<span>span</span>",
+            // A link is a link: pandoc keeps it and fetches nothing.
+            "<a href=\"file:///etc/passwd\">link</a>",
+            "<img src=\"data:image/png;base64,",
+        ] {
+            assert!(html.contains(kept), "{kept} in {html}");
+        }
+    }
+
+    #[test]
+    fn html_errors_are_located() {
+        let (_dir, workspace) = open(&[("main.typ", b"= Titre\n#nope")]);
+        let text = workspace.compile(Format::Html).unwrap_err().to_string();
+        assert!(text.contains("main.typ:2:"), "{text}");
     }
 
     #[test]
     fn errors_are_located() {
         let (_dir, workspace) = open(&[("main.typ", b"= Titre\n#let x = \n#nope")]);
-        let err = workspace.compile().unwrap_err();
+        let err = workspace.compile(Format::Pdf).unwrap_err();
         let text = err.to_string();
         assert!(text.contains("main.typ:2:"), "{text}");
         assert!(text.contains("error:"), "{text}");
@@ -360,7 +614,7 @@ mod tests {
     #[test]
     fn missing_main_is_reported() {
         let (_dir, workspace) = open(&[("other.typ", b"")]);
-        let text = workspace.compile().unwrap_err().to_string();
+        let text = workspace.compile(Format::Pdf).unwrap_err().to_string();
         assert!(text.contains("main.typ"), "{text}");
         assert!(text.contains("not found"), "{text}");
     }
@@ -369,7 +623,7 @@ mod tests {
     fn packages_are_refused() {
         let (_dir, workspace) =
             open(&[("main.typ", b"#import \"@preview/example:0.1.0\": *\nhello")]);
-        let text = workspace.compile().unwrap_err().to_string();
+        let text = workspace.compile(Format::Pdf).unwrap_err().to_string();
         assert!(text.contains("packages are not available"), "{text}");
     }
 
@@ -381,7 +635,7 @@ mod tests {
         std::fs::create_dir(&root).unwrap();
         std::fs::write(root.join("main.typ"), b"#include \"../secret.typ\"").unwrap();
         let workspace = Workspace::open(&root, "main.typ").unwrap();
-        let text = workspace.compile().unwrap_err().to_string();
+        let text = workspace.compile(Format::Pdf).unwrap_err().to_string();
         assert!(
             text.contains("not found") || text.contains("escape"),
             "{text}"
@@ -408,7 +662,7 @@ mod tests {
         std::fs::create_dir(dir.path().join("src")).unwrap();
         std::fs::write(dir.path().join("src/doc.typ"), b"= Hi").unwrap();
         let workspace = Workspace::open(dir.path(), "src/doc.typ").unwrap();
-        assert!(workspace.compile().is_ok());
+        assert!(workspace.compile(Format::Pdf).is_ok());
         assert!(Workspace::open(dir.path(), "a\\b.typ").is_err());
     }
 }

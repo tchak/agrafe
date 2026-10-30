@@ -189,6 +189,7 @@ above `max_inline_scans` plus `jobs.concurrency.scan`.
 | `render_text_command` | `"agrafe-render-text"` | The text thumbnail helper |
 | `render_document_command` | `"agrafe-render-document"` | The typst helper |
 | `render_geo_command` | `"agrafe-render-geo"` | The map helper, for GeoJSON, GPX, KML, KMZ and GML files and zipped shapefiles |
+| `pandoc_command` | `"pandoc"` | pandoc 3 or later, which writes DOCX and ODT documents from the HTML their template compiles to |
 | `max_source_size` | `"64 MiB"` | Larger originals get the icon and no preview; text thumbnails still render |
 | `tmp_dir` | the system temporary directory | Where workers unpack originals and document workspaces; an absolute path |
 

@@ -42,8 +42,11 @@ The first release.
   images, text, maps of GeoJSON, GPX, KML, KMZ and GML files and zipped
   shapefiles, and, with
   LibreOffice, office documents; category icons for the rest.
-- **Generated files**: spreadsheets, ZIP archives and PDF documents
-  compiled from typst, built by jobs from parts sent in pieces.
+- **Generated files**: spreadsheets, ZIP archives and documents compiled
+  from typst, built by jobs from parts sent in pieces. A document is a
+  PDF, or from the same template a DOCX or an ODT, which pandoc writes
+  from typst's HTML with the styles of the workspace's `reference.docx`
+  or `reference.odt`.
 - **Operations**: a Postgres job queue with per-kind worker pools, split
   API and worker roles, the audit of objects against the database, a
   signed webhook, Prometheus metrics, request-to-job tracing, the jobs

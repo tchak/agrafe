@@ -2,8 +2,9 @@
 //! tools that do it. Decoding and rendering never happen in the calling
 //! process: `vips` and the `agrafe-extract`, `agrafe-render-text`,
 //! `agrafe-render-document` and `agrafe-render-geo` helpers run as
-//! subprocesses through `agrafe_sandbox`, and this crate links none of
-//! their parsers. The one thing it does itself is fetch the background
+//! subprocesses through `agrafe_sandbox`, as does pandoc, which turns
+//! documents from one format into another (`pandoc`), and this crate
+//! links none of their parsers. The one thing it does itself is fetch the background
 //! layers of a map (`geo`), which is trusted code talking to a configured
 //! provider.
 
@@ -11,6 +12,7 @@ pub mod geo;
 pub mod helpers;
 pub mod icons;
 pub mod office;
+pub mod pandoc;
 pub mod probe;
 pub mod vips;
 
@@ -48,14 +50,18 @@ pub struct Config {
     /// The helper that rasterises text samples, found on `PATH` by default.
     #[serde(default = "default_render_text_command")]
     pub render_text_command: String,
-    /// The helper that compiles a typst workspace into a PDF, found on
-    /// `PATH` by default.
+    /// The helper that compiles a typst workspace into a PDF or into HTML,
+    /// found on `PATH` by default.
     #[serde(default = "default_render_document_command")]
     pub render_document_command: String,
     /// The helper that draws a GeoJSON, GPX, KML, KMZ or GML file or a
     /// zipped shapefile as SVG, found on `PATH` by default.
     #[serde(default = "default_render_geo_command")]
     pub render_geo_command: String,
+    /// pandoc, which turns a document compiled to HTML into a DOCX or an
+    /// ODT, found on `PATH` by default.
+    #[serde(default = "default_pandoc_command")]
+    pub pandoc_command: String,
     /// The thumbnail box and quality, the `[media.thumbnail]` table.
     #[serde(default)]
     pub thumbnail: Thumbnail,
@@ -96,6 +102,9 @@ fn default_render_document_command() -> String {
 fn default_render_geo_command() -> String {
     "agrafe-render-geo".to_string()
 }
+fn default_pandoc_command() -> String {
+    "pandoc".to_string()
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -105,6 +114,7 @@ impl Default for Config {
             render_text_command: default_render_text_command(),
             render_document_command: default_render_document_command(),
             render_geo_command: default_render_geo_command(),
+            pandoc_command: default_pandoc_command(),
             thumbnail: Thumbnail::default(),
             preview: Preview::default(),
             embedded_image: EmbeddedImage::default(),
@@ -247,6 +257,10 @@ pub enum Rejection {
     /// The tool was killed at `media.sandbox.timeout`.
     #[error("the tool exceeded the time limit")]
     TimedOut,
+    /// The tool was killed for writing a file past its sandbox's
+    /// `max_output_size`.
+    #[error("the tool wrote more than the sandbox's max_output_size allows")]
+    TooLarge,
     /// A helper ran to completion and wrote something other than what it
     /// was asked for: it is the untrusted side, and what drove it off
     /// course is the file.
@@ -270,6 +284,7 @@ impl Rejection {
                 stderr: stderr.clone(),
             }),
             agrafe_sandbox::Outcome::TimedOut => Some(Rejection::TimedOut),
+            agrafe_sandbox::Outcome::TooLarge => Some(Rejection::TooLarge),
         }
     }
 }

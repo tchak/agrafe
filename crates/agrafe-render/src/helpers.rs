@@ -1,6 +1,6 @@
 //! The sandboxed helpers: `agrafe-extract` pulls the embedded image out of
 //! a document, `agrafe-render-text` rasterises a text sample,
-//! `agrafe-render-document` compiles a typst workspace into a PDF,
+//! `agrafe-render-document` compiles a typst workspace into a PDF or HTML,
 //! `agrafe-render-geo` draws a map file as SVG. Each is a separate
 //! binary with its own parsers, so none of that code is linked into the
 //! process that calls it. Each declares what it reads and the one
@@ -69,14 +69,33 @@ pub async fn render_text(
 /// Mirrored in the helper crate, which the server does not link.
 pub const DOCUMENT_REJECTED_EXIT: i32 = 2;
 
+/// What `agrafe-render-document` compiles a workspace to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocumentFormat {
+    /// The pages, as a PDF.
+    Pdf,
+    /// The flow, as one self-contained HTML file for pandoc.
+    Html,
+}
+
+impl DocumentFormat {
+    fn as_arg(self) -> &'static str {
+        match self {
+            DocumentFormat::Pdf => "pdf",
+            DocumentFormat::Html => "html",
+        }
+    }
+}
+
 /// Run `agrafe-render-document` on the `workspace` directory, compiling
-/// `main`, a path relative to it, into the PDF at `output`. A document
+/// `main`, a path relative to it, into `format` at `output`. A document
 /// that does not compile is a `Rejected` with [`DOCUMENT_REJECTED_EXIT`]
 /// whose stderr holds the diagnostics.
 pub async fn render_document(
     config: &Config,
     workspace: &Path,
     main: &str,
+    format: DocumentFormat,
     output: &Path,
 ) -> Result<Verdict<()>, Error> {
     let mut command = sandbox::Command::new(&config.render_document_command);
@@ -89,6 +108,8 @@ pub async fn render_document(
         .arg(format!("--main={main}"))
         .arg("--output")
         .arg(output)
+        .arg("--format")
+        .arg(format.as_arg())
         // Checked before the write: past the file size limit, the sandbox
         // would kill the helper with a signal, which reads as its own
         // failure and is retried, where the template would do the same

@@ -4,10 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Sandboxed helper: compiles a typst workspace into a PDF"
+description = "Sandboxed helper: compiles a typst workspace into a PDF or into HTML"
 repository.workspace = true
 homepage.workspace = true
-keywords = ["typst", "pdf", "document", "render"]
+keywords = ["typst", "pdf", "html", "document", "render"]
 categories = ["text-processing", "rendering"]
 
 [lints]
@@ -19,6 +19,7 @@ jiff = "0.2.38"
 thiserror = "2.0.21"
 typst = "0.15.1"
 typst-assets = { version = "0.15.1", features = ["fonts"] }
+typst-html = "0.15.1"
 typst-layout = "0.15.1"
 typst-pdf = "0.15.1"
 

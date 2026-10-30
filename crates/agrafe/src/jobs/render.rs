@@ -100,9 +100,10 @@ impl NoPicture {
     fn rejected(rejection: &Rejection) -> Self {
         match rejection {
             Rejection::TimedOut => NoPicture::TimedOut,
-            Rejection::Unsupported | Rejection::Failed { .. } | Rejection::Output(_) => {
-                NoPicture::Rejected
-            }
+            Rejection::Unsupported
+            | Rejection::Failed { .. }
+            | Rejection::TooLarge
+            | Rejection::Output(_) => NoPicture::Rejected,
         }
     }
 

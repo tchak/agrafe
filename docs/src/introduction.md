@@ -15,8 +15,8 @@ again:
 - it serves everything through **signed, expiring URLs**, so a browser never
   needs credentials and a leaked link dies on its own;
 - it **generates files** server side: CSV, XLSX and ODS spreadsheets from
-  rows, ZIP archives from existing files, and PDF documents compiled from
-  [typst](https://typst.app) templates.
+  rows, ZIP archives from existing files, and PDF, DOCX and ODT documents
+  compiled from [typst](https://typst.app) templates.
 
 It is written in Rust, keeps its metadata and its job queue in Postgres, and
 stores bytes on the local filesystem, in any S3-compatible bucket, or on

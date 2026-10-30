@@ -230,7 +230,7 @@ on the job, and, for a job that was to finish its blob, on the blob as
 | `reading the object: …`, `blob …: …`, `reading the … of blob …`, `writing the … of blob …` | The bucket, or an object that fails to decrypt |
 | `database: …` | Postgres |
 | `fetch: …` | A `url` blob's download; the URL itself is never included |
-| `build: …` | A `rows`, `archive` or `document` build, including a document's compiler diagnostics as `path:line:column: error: message` |
+| `build: …` | A `rows`, `archive` or `document` build, including a document's compiler diagnostics as `path:line:column: error: message`, and what pandoc said for a DOCX or ODT that `does not convert` |
 | `webhook: …` | A delivery, with the receiver's status and the head of its body |
 | `purge: …` | Deleting objects |
 | `temporary files: …` | The worker's `media.tmp_dir` |

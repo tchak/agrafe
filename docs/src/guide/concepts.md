@@ -27,7 +27,7 @@ Every blob has:
 | `url` | Downloaded by the service from a URL given at creation | The file | private only |
 | `rows` | JSONL rows against declared columns | CSV, XLSX or ODS | private only |
 | `archive` | A JSONL manifest of paths and blob ids | ZIP | private only |
-| `document` | A JSONL typst workspace manifest | PDF | private only |
+| `document` | A JSONL typst workspace manifest | PDF, DOCX or ODT | private only |
 
 `rows`, `archive` and `document` blobs are **generated**: agrafe builds the
 file in a job after the request. `url`, `rows`, `archive` and `document`

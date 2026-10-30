@@ -73,9 +73,9 @@ into a server process. Dependencies point downwards only.
 | `agrafe-sandbox` | Running a subprocess with `setrlimit` bounds and a timeout, confined by Landlock and seccomp on Linux, and by bubblewrap where configured; the `Command` builder that declares what it reads and writes; the `[media.sandbox]` config and the startup probe | `tokio`, `libc`, `landlock`, `seccompiler` |
 | `agrafe-extract` | The `agrafe-extract` helper: pulls the one image out of a PDF or a Writer package (DOCX, ODT and their variants). Library plus binary | `agrafe-types`, `lopdf`, `zip`, `quick-xml` |
 | `agrafe-render-text` | The `agrafe-render-text` helper: rasterises a text sample. Library plus binary | `agrafe-types`, `ab_glyph` |
-| `agrafe-render-document` | The `agrafe-render-document` helper: compiles a typst workspace into a PDF. Library plus binary | `typst`, `typst-pdf`, `typst-assets` |
+| `agrafe-render-document` | The `agrafe-render-document` helper: compiles a typst workspace into a PDF, or into HTML for pandoc. Library plus binary | `typst`, `typst-pdf`, `typst-html`, `typst-assets` |
 | `agrafe-render-geo` | The `agrafe-render-geo` helper: reads a GeoJSON, GPX, KML, KMZ or GML file or a zipped shapefile, projects, fits, simplifies and draws it as SVG paths, with the extent it chose. Library plus binary | `agrafe-types`, `geojson`, `quick-xml`, `zip`, `serde_json` |
-| `agrafe-render` | Which files render and from what, `vips thumbnail` and `vips composite`, the icons, the drivers that spawn the helpers, the fetcher of map backgrounds, the startup probe, the `[media]` tool config | `agrafe-types`, `agrafe-sandbox`, `reqwest` |
+| `agrafe-render` | Which files render and from what, `vips thumbnail` and `vips composite`, the icons, the drivers that spawn the helpers and pandoc, the fetcher of map backgrounds, the startup probe, the `[media]` tool config | `agrafe-types`, `agrafe-sandbox`, `reqwest` |
 | `agrafe` | The library: config, database, blobs, upload pipeline, the fetch client, the webhook, encryption, signing, storage, ClamAV, jobs, metrics, URL minting, and the `Agrafe` handle whose methods are the private API | `agrafe-crypto`, `agrafe-types`, `agrafe-render`, `sqlx`, `object_store`, `reqwest` |
 | `agrafe-axum` | The two HTTP interfaces as axum routers, the extractors, `ApiError` and the mapping of the library's errors onto status codes | `agrafe`, `axum` |
 | `agrafe-dashboard` | The HTML dashboard as an axum router: the queue census, the listings and details of jobs, blobs and attachments, the retry and discard forms; compiled templates and a vendored stylesheet | `agrafe`, `agrafe-axum` (the origin check), `axum`, `askama` |
@@ -555,7 +555,7 @@ is none.
 | `url` | No `PUT`: the service downloads the bytes from the `url` given at creation, in a job (see "Fetched blobs") | The file |
 | `rows` | JSONL, one array of cell values per line, positional against the columns of the current sheet; an object line `{"sheet": "..."}` switches to a later sheet | CSV, XLSX or ODS per the blob content type, built by a job after the request (see "Generated blobs") |
 | `archive` | JSONL, one `{"path": "...", "blob_id": "..."}` per line | ZIP containing the referenced blobs, built by a job after the request (see "Generated blobs") |
-| `document` | JSONL, one workspace file per line: `{"path": "...", "blob_id": "..."}` for a file taken from a blob, `{"path": "...", "json": ...}` or `{"path": "...", "text": "..."}` for one given inline | PDF compiled by typst from the workspace, built by a job after the request (see "Documents") |
+| `document` | JSONL, one workspace file per line: `{"path": "...", "blob_id": "..."}` for a file taken from a blob, `{"path": "...", "json": ...}` or `{"path": "...", "text": "..."}` for one given inline | PDF compiled by typst from the workspace, or DOCX or ODT written by pandoc from typst's HTML, per the blob content type, built by a job after the request (see "Documents") |
 
 `url`, `rows`, `archive` and `document` are **private-only**. An `archive`
 or `document` upload reads other blobs, so letting a browser drive it
@@ -1521,13 +1521,16 @@ error of ours.
 
 ### Documents
 
-A `document` blob is declared `application/pdf`; anything else is refused
-at creation. It is a PDF compiled by [typst](https://typst.app) from a
-workspace of files: a template, its includes, its images and its fonts,
+A `document` blob is declared `application/pdf`, DOCX or ODT; anything
+else is refused at creation. It is a document compiled by
+[typst](https://typst.app) from a workspace of files: a template, its includes, its images and its fonts,
 most of them blobs the backend already holds, plus the data of the one
 document, inline. An optional `main` at creation names the entry file,
 `main.typ` by default, as a path under the manifest's rules below; the row
-keeps it as `source_main` for the build.
+keeps it as `source_main` for the build. The declared content type picks
+the output: a PDF is typst's own, a DOCX or an ODT is typst's HTML
+written by pandoc (below), from the same workspace, manifest and
+template.
 
 **Templates are blobs, registration is attachment.** No template registry,
 no configuration entry, no `template` flag on blobs. A backend uploads
@@ -1580,9 +1583,9 @@ Per line, at accept:
   many files and directories on disk. Lines bound the files and not the
   directories their paths make, a directory per component, so a path is
   at most 32 components deep at accept, and the build refuses a
-  workspace whose directories run past `document.max_files` as well. The PDF's size is unknown until it
-  is built, so unlike an archive's, a document's `size` is null until it
-  is `ready`.
+  workspace whose directories run past `document.max_files` as well. The
+  file's size is unknown until it is built, so unlike an archive's, a
+  document's `size` is null until it is `ready`.
 - Nothing checks that the manifest holds the main file: it may come in a
   later part, and a workspace without it fails to compile with the
   compiler's own "file not found".
@@ -1624,13 +1627,90 @@ parsers, exactly what "nothing decodes user files in the API process"
 forbids.
 
 The plumbing matches the other helpers: `agrafe-render-document --workspace
-<dir> --main <path> --output <file>`, stdin null, a clean environment, no
+<dir> --main <path> --output <file> --format pdf|html`, stdin null, a clean environment, no
 configuration and no logs; what it writes on stderr is the compiler's
 diagnostics. The job writes the workspace into a fresh directory under
 `media.tmp_dir`, inline files as they are and members decrypted through
-the usual reader, runs the helper on it, and streams the PDF it wrote
+the usual reader, runs the helper on it, and streams the file it wrote
 through the same encryptor and multipart upload as the other builds. This
 is the one build that touches local disk; the directory goes with the job.
+
+**DOCX and ODT: typst's HTML, then pandoc.** A backend that generates
+letters and reports as PDF gets the editable version of the same
+document by changing the content type at creation, and a template
+written once serves both. For a DOCX or an ODT the helper compiles the
+workspace with `--format html`, and pandoc, in a second sandboxed run,
+writes the HTML as the office file:
+
+```
+pandoc --from html --to docx --shift-heading-level-by=-1 \
+  [--reference-doc=<workspace>/reference.docx] --output document.docx -- document.html
+```
+
+`--to odt` and `reference.odt` for an ODT. Why this pipeline:
+
+- Not pandoc's typst reader: it parses typst markup and does not
+  evaluate the language, so `#let`, `#show`, loops, `json()` and every
+  piece of template logic fail or come out as text. Our workspaces are
+  programs, not markup.
+- Not LibreOffice from HTML: Writer/Web imports HTML as direct
+  formatting and hard spacing, which looks right and edits badly. Pandoc
+  builds a document model and writes named styles (Heading 1, List
+  Paragraph, Table, Footnote Text), so the DOCX restyles from a reference
+  document and survives a round trip through Word; it writes ODT from the
+  same model, and neither output needs LibreOffice in the image.
+- Not typst to PDF to anything: a PDF has no structure to recover.
+
+Typst's HTML export runs the whole language and emits semantic HTML,
+equations as MathML, which pandoc reads as math and writes as OMML in a
+DOCX. It is still flagged experimental upstream (typst/typst#5512): the
+helper's library always enables the `html` feature, for both targets, so
+that a template is the same program either way and `target()` tells
+them apart. The HTML is one self-contained file, images inline as data
+URIs, and refers to nothing outside it: an element a template writes
+itself with `html.elem` that would load a file or a URL (`iframe`,
+`object`, `embed`, `link`, `script`, media whose `src` is not a `data:`
+URI, any URL attribute but a link's target) is removed by the helper,
+since pandoc fetches images and frames into the office file. That is
+what keeps pandoc to its input, not pandoc's own `--sandbox`: pandoc
+assembles a DOCX or an ODT from data files, which Debian's build reads
+from `/usr/share/pandoc` rather than embeds, and `--sandbox` refuses
+those reads too ("Could not find data file"), so the write runs without
+it. `agrafe_sandbox` confines pandoc as any tool: on Linux it reads the
+system set and its declared files and opens no socket. The driver keeps
+`--sandbox` for every other conversion, the probe's read-back included.
+The HTML is written for pandoc and not for a browser. Two adaptations
+make typst's shape pandoc's: typst gives the title the `h1` and `= Heading`
+an `h2`, so the conversion shifts headings up one level, making the
+title the document's and `= Heading` Heading 1; and typst marks a
+footnote's reference and its backlink with a role on a `sup` around the
+link, where pandoc's reader makes a note only of a role on a link around
+the `sup`, so the helper swaps the two before writing the HTML, without
+which the note's text is lost.
+
+**The reference document is part of the workspace.** Pandoc's built-in
+reference bakes in its own fonts and spacing. A workspace may carry
+`reference.docx` or `reference.odt` at its root, a file like every other
+member, and when it is there pandoc takes its styles; without one,
+pandoc's defaults apply. A convention on a path rather than a manifest
+role or a configuration entry, for the reason templates are blobs: the
+house style changes with the product, not the deployment. The reference
+is user content read by pandoc inside the sandbox, nothing more.
+
+What a template can expect, documented in the book's templates page:
+headings, paragraphs, lists, emphasis, links, tables with spans, figures
+with captions, footnotes and equations cross as structure, and images
+as media parts at their stored resolution. Fonts, colours, sizes and
+spacing do not: pandoc reads no CSS, and the reference document's styles
+decide. Page furniture (page breaks, headers, footers, page numbers,
+`place`, `columns`) has no HTML meaning; typst drops it or renders it as
+an inline SVG frame, which pandoc embeds as a picture. A template keeps
+it under `context if target() != "html"`.
+
+Pandoc is `media.pandoc_command`, a tool of `agrafe-render` like
+`vips_command`, found on `PATH`; its limits are `media.sandbox`'s, as the
+compile's are. The Markdown representation (#24) will read with the same
+binary and driver.
 
 **Build semantics** follow `rows` and `archive`: a `document` job kind with
 its own worker pool, `jobs.concurrency.document` (default two: a compile
@@ -1649,25 +1729,43 @@ kernel kill it with `SIGXFSZ`, a signal that would read as its own failure
 and be retried. A compile that runs out of memory still dies by a signal
 and is retried. The helper tells the two apart by its exit code:
 2 is the compiler's verdict, with the diagnostics on stderr; anything else
-(a full disk, a crash) is the helper's own failure. Retried: those, the
-sandbox failing to start the helper, the temporary directory, the bucket,
-the database. Out of
+(a full disk, a crash) is the helper's own failure. For a DOCX or an ODT,
+dead at once too: a template that compiles to pages and not to HTML,
+with the compiler's diagnostics; pandoc exiting non-zero, its stderr as
+the message, since the same HTML or the same unreadable reference
+document gives the same result tomorrow; pandoc killed at the time limit
+or at the output limit, `SIGXFSZ`, which the sandbox reports as such
+(pandoc cannot be handed the limit the way the helper is). Retried:
+pandoc's heap running out, GHC's exit 251, or any other signal. Retried
+in every case: those, the sandbox failing to start the helper or pandoc,
+the temporary directory, the bucket, the database. Out of
 attempts, the blob is stuck in `uploaded` with `failed_at` and
-`last_error`, like any build. Once `ready` the PDF gets its preview and
-thumbnail through the existing PDF path: the first page as its thumbnail,
-no preview unless it is a wrapped image.
+`last_error`, like any build. Once `ready` the file gets its preview and
+thumbnail through the path of its type: a PDF its first page as its
+thumbnail, no preview unless it is a wrapped image; a DOCX or an ODT is
+an office file like any uploaded one.
 
 **Probe.** A worker that handles `document` jobs compiles a probe workspace
 through the exact command line the job uses before it starts, as the
 renderer probes vips and the text helper: a template importing a file,
-reading JSON and placing an image. Templates are written against a
-compiler version, pinned in the helper (typst 0.15), and a
+reading JSON, placing an image and a footnote. Templates are written
+against a compiler version, pinned in the helper (typst 0.15), and a
 `render_document_command` that is not the helper, or a helper that cannot
 read its workspace, must fail the deployment rather than every document.
+The probe compiles the workspace to HTML too, and pandoc writes it as a
+DOCX and as an ODT through the job's command line; the server has no ZIP
+parser to open the result, so pandoc reads each back as Markdown, and
+the heading at level one, the note and the image must be there. A pandoc
+missing, too old, or whose HTML reader does not make
+typst's notes notes fails the deployment rather than every DOCX.
 
 Out of scope for now: a template registry or schema validation, typst
-packages, PNG or SVG output (which the content type could select later),
-a shared fonts directory.
+packages, PNG or SVG output, a shared fonts directory. A `text/html`
+output, although the HTML is there: it is typst's experimental export,
+and offering it would make its shape a compatibility promise of ours;
+when the export stabilises it is one more content type. DOC, RTF or
+PPTX outputs, which pandoc does not write; fonts or CSS carried into an
+office file, whose styling is the reference document's.
 
 ## Fetched blobs
 
@@ -2718,7 +2816,10 @@ is why every tool is kept narrow (two threads for vips and LibreOffice):
 a process spread over sixteen cores would exhaust it in a tenth of the
 time. Its soft limit sends `SIGXCPU` and the hard one, a second later,
 `SIGKILL`; a tool that died of `SIGXCPU` timed out, and is reported as
-such rather than as a fault of the file. LibreOffice is the exception:
+such rather than as a fault of the file. A tool that died of `SIGXFSZ`,
+writing past `max_output_size`, is reported as such too
+(`Outcome::TooLarge`), rather than as a crash: the output's fault, which
+the `document` build needs to tell from pandoc's own failures. LibreOffice is the exception:
 the process that spends the CPU is `soffice.bin`, two launchers down,
 which catches `SIGXCPU` and aborts, and `oosplash` exits 134 for it, the
 code of any crash; the limit there is a plain rejection of the file.
@@ -2923,7 +3024,8 @@ host matter, so the job is retried rather than the blob marked failed;
 `bwrap: execvp <program>: ...` alone is reported as the spawn failure it
 is without bubblewrap. `bwrap`, the init of its pid namespace, reports a
 child the kernel killed as an exit of 128 plus the signal, so the CPU
-limit's `SIGXCPU` is read back from 152 and still a timeout; the office
+limit's `SIGXCPU` is read back from 152 and still a timeout, and the file
+size limit's `SIGXFSZ` from 153; the office
 driver's pipe sweep finds nothing, since the pipe was in the sandbox's
 own `/tmp`. Asked for and
 impossible, the sandbox is an error in every mode short of `off`:
@@ -2962,7 +3064,7 @@ sandbox could not tell an input from an output. `agrafe_sandbox::Command`
 replaces the bare `tokio::process::Command`: `arg`, `env`, `current_dir`
 as before, plus `readable(path)` for a file the child reads and
 `writable(dir)` for the one directory it writes. Every caller
-(`vips::to_webp`, `composite`, `fit_layer`, the four helpers, the probe)
+(`vips::to_webp`, `composite`, `fit_layer`, the four helpers, pandoc, the probe)
 has one input and one work directory, and the input lives in that
 directory, so each declares `writable(workdir)` and the argv falls under
 it; the declaration stays explicit because the confinement is the

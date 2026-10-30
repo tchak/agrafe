@@ -234,6 +234,7 @@ dependencies = [
  "thiserror",
  "typst",
  "typst-assets",
+ "typst-html",
  "typst-layout",
  "typst-pdf",
 ]

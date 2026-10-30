@@ -1140,8 +1140,9 @@ pub struct MediaConfig {
     /// The tools, boxes and sandbox limits, owned by the render crate and
     /// read from the same `[media]` table: `vips_command`,
     /// `extract_command`, `render_text_command`,
-    /// `render_document_command`, `render_geo_command`, `thumbnail`,
-    /// `preview`, `embedded_image`, `map`, `sandbox`.
+    /// `render_document_command`, `render_geo_command`, `pandoc_command`,
+    /// `thumbnail`, `preview`, `embedded_image`, `map`, `office`,
+    /// `sandbox`.
     pub render: agrafe_render::Config,
 }
 

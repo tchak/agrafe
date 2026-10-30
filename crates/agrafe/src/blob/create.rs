@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use agrafe_types::office;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use jiff::{SignedDuration, Timestamp};
@@ -498,7 +499,7 @@ fn validate_generated_content_type(
     let ok = match input_type {
         InputType::Rows => matches!(content_type, classify::CSV | classify::XLSX | classify::ODS),
         InputType::Archive => content_type == classify::ZIP,
-        InputType::Document => content_type == classify::PDF,
+        InputType::Document => matches!(content_type, classify::PDF | office::DOCX | office::ODT),
         InputType::Raw | InputType::Multipart | InputType::Url => true,
     };
     if ok {
@@ -654,7 +655,7 @@ mod tests {
     }
 
     #[test]
-    fn documents_are_pdfs_with_a_main_file() {
+    fn documents_are_pdfs_docx_or_odt_with_a_main_file() {
         let now = Timestamp::now();
         let b = validate(
             req(InputType::Document, classify::PDF),
@@ -676,7 +677,25 @@ mod tests {
             let err = validate(r, &cfg(), &blobs(), &fetch(), now).unwrap_err();
             assert!(err.to_string().starts_with("main:"), "{bad:?}: {err}");
         }
-        for other in ["image/png", classify::ZIP, "text/plain"] {
+        for office in [office::DOCX, office::ODT] {
+            let b = validate(
+                req(InputType::Document, office),
+                &cfg(),
+                &blobs(),
+                &fetch(),
+                now,
+            )
+            .unwrap();
+            assert_eq!(b.content_type, office);
+        }
+        for other in [
+            "image/png",
+            classify::ZIP,
+            "text/plain",
+            "text/html",
+            office::DOC,
+            office::RTF,
+        ] {
             assert!(
                 validate(
                     req(InputType::Document, other),

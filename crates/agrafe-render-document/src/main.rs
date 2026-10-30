@@ -8,13 +8,13 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use agrafe_render_document::{CompileError, OpenError, REJECTED_EXIT, Workspace};
-use clap::Parser;
+use agrafe_render_document::{CompileError, Format, OpenError, REJECTED_EXIT, Workspace};
+use clap::{Parser, ValueEnum};
 
-/// Compile a typst workspace into a PDF. Exits 2, with the diagnostics on
-/// stderr, when the document does not compile or compiles past
-/// `--max-output`; 1 when the helper could not read the workspace or write
-/// the output.
+/// Compile a typst workspace into a PDF or into one HTML file. Exits 2,
+/// with the diagnostics on stderr, when the document does not compile or
+/// compiles past `--max-output`; 1 when the helper could not read the
+/// workspace or write the output.
 #[derive(Parser)]
 #[command(name = "agrafe-render-document")]
 struct Args {
@@ -26,7 +26,10 @@ struct Args {
     main: String,
     #[arg(long)]
     output: PathBuf,
-    /// The largest PDF written, the sandbox's file size limit: a larger
+    /// What to write: the pages as a PDF, or the flow as HTML for pandoc.
+    #[arg(long, value_enum, default_value_t = Target::Pdf)]
+    format: Target,
+    /// The largest file written, the sandbox's file size limit: a larger
     /// one is the document's verdict, not a write the kernel kills.
     #[arg(long)]
     max_output: u64,
@@ -58,32 +61,49 @@ fn main() -> ExitCode {
     }
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum Target {
+    Pdf,
+    Html,
+}
+
+impl From<Target> for Format {
+    fn from(target: Target) -> Self {
+        match target {
+            Target::Pdf => Format::Pdf,
+            Target::Html => Format::Html,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 enum Failure {
     /// The document's: it does not compile.
     #[error(transparent)]
     Rejected(CompileError),
     /// The helper's: the workspace the job wrote cannot be read, or the
-    /// PDF cannot be written. The job validated the main path at creation.
+    /// output cannot be written. The job validated the main path at creation.
     #[error(transparent)]
     Open(OpenError),
-    #[error("writing the PDF: {0}")]
+    #[error("writing the output: {0}")]
     Write(std::io::Error),
     /// The document's: it compiles to more than the helper may write.
-    #[error("the PDF is {len} bytes, more than the {max} media.sandbox.max_output_size allows")]
+    #[error("the output is {len} bytes, more than the {max} media.sandbox.max_output_size allows")]
     TooLarge { len: u64, max: u64 },
 }
 
 fn run(args: &Args) -> Result<(), Failure> {
     let workspace = Workspace::open(&args.workspace, &args.main).map_err(Failure::Open)?;
-    let pdf = workspace.compile().map_err(Failure::Rejected)?;
-    let len = pdf.len() as u64;
+    let output = workspace
+        .compile(args.format.into())
+        .map_err(Failure::Rejected)?;
+    let len = output.len() as u64;
     if len > args.max_output {
         return Err(Failure::TooLarge {
             len,
             max: args.max_output,
         });
     }
-    std::fs::write(&args.output, pdf).map_err(Failure::Write)?;
+    std::fs::write(&args.output, output).map_err(Failure::Write)?;
     Ok(())
 }

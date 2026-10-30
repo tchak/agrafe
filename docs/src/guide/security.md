@@ -146,7 +146,7 @@ Blobs created with it cannot be uploaded through the public port.
 
 Decoders are the most attackable code in the service, so none runs in the
 server process. `vips`, `agrafe-extract`, `agrafe-render-text`,
-`agrafe-render-document` and `agrafe-render-geo` run as subprocesses with
+`agrafe-render-document`, `agrafe-render-geo` and pandoc run as subprocesses with
 a clean environment, memory, CPU, output size, process count and
 wall-clock limits. The
 file parsers they use, `lopdf`, `zip`, `quick-xml`, `ab_glyph`, `typst`

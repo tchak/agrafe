@@ -1,9 +1,17 @@
-# PDF documents
+# Documents: PDF, DOCX and ODT
 
-A `document` blob is a PDF compiled by [typst](https://typst.app) from a
-workspace of files: a template, its includes, its images and its fonts, plus
-the data of one document. The compiler runs in a sandboxed helper,
-`agrafe-render-document`, never in the server.
+A `document` blob is a document compiled by [typst](https://typst.app) from
+a workspace of files: a template, its includes, its images and its fonts,
+plus the data of one document. It is a PDF, or, from the same template, an
+editable DOCX or ODT: typst compiles the workspace to HTML and
+[pandoc](https://pandoc.org) writes the office file. The compiler and
+pandoc run sandboxed, never in the server.
+
+| `content_type` | Built as |
+|---|---|
+| `application/pdf` | typst's PDF |
+| `application/vnd.openxmlformats-officedocument.wordprocessingml.document` (DOCX) | typst's HTML, written as a DOCX by pandoc |
+| `application/vnd.oasis.opendocument.text` (ODT) | typst's HTML, written as an ODT by pandoc |
 
 ## Templates are blobs
 
@@ -42,7 +50,7 @@ printf '%s\n' \
 # "uploaded"
 ```
 
-A document is declared `application/pdf`; anything else is refused at
+A document is declared PDF, DOCX or ODT; anything else is refused at
 creation. The source is a workspace manifest in JSONL, one file per line:
 
 | Line | File |
@@ -90,6 +98,72 @@ A template is plain typst, with every path relative to the workspace root:
 There is no schema for the data. The backend owns both the template and the
 data, and typst fails loudly on a missing key.
 
+## DOCX and ODT
+
+Declare the blob DOCX or ODT instead of PDF, and send the same workspace:
+
+```json
+{"filename": "invoice-12.docx",
+ "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+ "input_type": "document"}
+```
+
+The file is built with named styles (Heading 1, List Paragraph, Table,
+Footnote Text), so it edits well in Word or LibreOffice and restyles as a
+whole.
+
+### The house style: `reference.docx`
+
+A workspace may carry `reference.docx` (for a DOCX) or `reference.odt`
+(for an ODT) at its root, a member like any other. When it is there, the
+built file takes its styles: fonts, sizes, colours, spacing, margins.
+Without one, pandoc's default styles apply. Start from pandoc's own and
+restyle it in Word or LibreOffice:
+
+```sh
+pandoc -o reference.docx --print-default-data-file reference.docx
+```
+
+Upload it as a blob, attach it next to the template, and add it to each
+manifest:
+
+```json
+{"path": "reference.docx", "blob_id": "..."}
+```
+
+### One template, both outputs
+
+`target()` is `"html"` when a DOCX or an ODT is being built and `"paged"`
+for a PDF, so a template branches where the two differ:
+
+```typst
+#show: body => context if target() == "html" { body } else {
+  set page(paper: "a4", margin: 2cm, header: [ACME])
+  body
+}
+```
+
+What crosses into the office file:
+
+- **As structure:** headings, paragraphs, lists, emphasis, links, tables
+  with merged cells, figures with captions, footnotes and equations
+  (editable equations in a DOCX). `= Heading` is Heading 1, and the
+  document's title (`#set document(title: ...)` with `#title()`) is the
+  file's title. Heading numbering crosses as text.
+- **As media:** images, at their stored resolution.
+- **Not at all:** fonts, colours, sizes and spacing. The reference
+  document's styles decide.
+- **As a picture, or dropped:** page furniture, which has no meaning in
+  a flowing document: page breaks, headers and footers, page numbers,
+  `place`, `columns`, and content laid out with `box` and `block`
+  geometry. Keep it under the PDF branch for clean text.
+- **Removed:** what a template writes itself with `html.elem` that would
+  load a file or a URL (an `iframe`, an `img` whose `src` is not a
+  `data:` URI, …). Images placed with `image()` are inlined and cross.
+
+typst's HTML export is experimental upstream: a template that compiles to
+a PDF may warn or fail under the HTML target, and the error says where.
+
 ## Paths
 
 Paths are NFC, `/` separated and relative, with no empty, `.` or `..`
@@ -122,20 +196,33 @@ main.typ:12:5: error: unknown variable: montnat
 
 The same happens when a referenced blob is gone by the time the build runs,
 since a template cannot do without a file, when the compile is killed at
-the sandbox's time limit, and when the PDF would be larger than
-`media.sandbox.max_output_size`. Fix the template or the data, then create a new
+the sandbox's time limit, and when the file would be larger than
+`media.sandbox.max_output_size`. For a DOCX or an ODT, it also happens when
+the template does not compile to HTML, and when pandoc refuses the
+conversion, `last_error` then holding what pandoc said:
+
+```text
+the document does not convert: Could not parse reference-doc "…/reference.docx": Did not find end of central directory signature
+```
+
+Fix the template, the data or the reference document, then create a new
 document blob.
 
-Failures of agrafe's own, such as the bucket, the database or the helper
-failing to start, are retried with the usual backoff.
+Failures of agrafe's own, such as the bucket, the database, the helper or
+pandoc failing to start, or pandoc running out of memory, are retried with
+the usual backoff.
 
 ## After the build
 
-The PDF is rendered like any other: its first page becomes its thumbnail,
-and it has no preview unless it wraps a single image. Builds have their own
+The file is rendered like any other of its type. A PDF's first page becomes
+its thumbnail, and it has no preview unless it wraps a single image; a DOCX
+or an ODT gets its first page through LibreOffice where one is configured,
+and its icon otherwise. Builds have their own
 worker pool, `jobs.concurrency.document`, two per process by default, and
 the blob's priority orders the queue.
 
 Before a worker that handles `document` jobs starts, it compiles a probe
-workspace through the exact command line the jobs use, so a missing or
-mismatched helper fails the deployment rather than every document.
+workspace through the exact command lines the jobs use, to a PDF, and to a
+DOCX and an ODT through pandoc, so a missing or mismatched helper, or a
+missing or too old pandoc, fails the deployment rather than every
+document.

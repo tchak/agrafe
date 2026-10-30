@@ -199,6 +199,8 @@ pub enum Outcome {
     },
     /// Killed at the wall-clock limit.
     TimedOut,
+    /// Killed for writing a file past `max_output_size` (`SIGXFSZ`).
+    TooLarge,
 }
 
 /// Variables the child inherits. A coverage build adds where the
@@ -414,6 +416,7 @@ pub async fn run(command: Command, config: &Config) -> Result<Outcome, Error> {
             Ok(Outcome::Success) => "success",
             Ok(Outcome::Failed { .. }) => "failed",
             Ok(Outcome::TimedOut) => "timed_out",
+            Ok(Outcome::TooLarge) => "too_large",
             Err(_) => "error",
         },
     );
@@ -459,6 +462,9 @@ async fn run_with(
         // tells a direct tool's; bubblewrap reports it as the shell does,
         // 128 plus the signal.
         Ok(Ok((status, _))) if cpu_exhausted(&status, layers.bubblewrap) => Outcome::TimedOut,
+        // The same for the file size limit, which is the output's fault
+        // and not a crash of the tool.
+        Ok(Ok((status, _))) if killed_by(&status, layers.bubblewrap, XFSZ) => Outcome::TooLarge,
         Ok(Ok((status, stderr))) => {
             let stderr = tail(&stderr);
             // `bwrap` failed before the program ran: a host matter.
@@ -569,15 +575,29 @@ async fn wait_group(_pid: Option<u32>, _limit: Duration) {}
 /// Whether the process died of `SIGXCPU`, the CPU time limit. `bwrap`,
 /// the init of its pid namespace, reports a child the kernel killed as an
 /// exit of 128 plus the signal, the shell's convention.
-#[cfg(unix)]
 fn cpu_exhausted(status: &std::process::ExitStatus, bubblewrap: bool) -> bool {
+    killed_by(status, bubblewrap, XCPU)
+}
+
+#[cfg(unix)]
+const XCPU: i32 = libc::SIGXCPU;
+#[cfg(unix)]
+const XFSZ: i32 = libc::SIGXFSZ;
+#[cfg(not(unix))]
+const XCPU: i32 = 0;
+#[cfg(not(unix))]
+const XFSZ: i32 = 0;
+
+/// Whether the process died of `signal`, directly or as `bwrap` reports
+/// it.
+#[cfg(unix)]
+fn killed_by(status: &std::process::ExitStatus, bubblewrap: bool, signal: i32) -> bool {
     use std::os::unix::process::ExitStatusExt;
-    status.signal() == Some(libc::SIGXCPU)
-        || (bubblewrap && status.code() == Some(128 + libc::SIGXCPU))
+    status.signal() == Some(signal) || (bubblewrap && status.code() == Some(128 + signal))
 }
 
 #[cfg(not(unix))]
-fn cpu_exhausted(_status: &std::process::ExitStatus, _bubblewrap: bool) -> bool {
+fn killed_by(_status: &std::process::ExitStatus, _bubblewrap: bool, _signal: i32) -> bool {
     false
 }
 
@@ -1017,6 +1037,11 @@ impl Fixture {
                 status: "timed out".to_string(),
                 stderr: String::new(),
             }),
+            Outcome::TooLarge => Err(ProbeError::Granted {
+                program: self.program(),
+                status: "wrote past the file size limit".to_string(),
+                stderr: String::new(),
+            }),
         }
     }
 
@@ -1302,11 +1327,13 @@ mod tests {
             ..config()
         };
 
-        let mut write = sh("head -c 1048576 /dev/zero > \"$1\"");
+        // `exec`, so that the writer is the child the signal kills, not
+        // a shell that reports it as an exit code.
+        let mut write = sh("exec head -c 1048576 /dev/zero > \"$1\"");
         write.arg("sh").arg(&file).writable(dir.path());
         let outcome = run(write, &config).await.unwrap();
         let written = std::fs::metadata(&file).unwrap().len();
-        assert!(matches!(outcome, Outcome::Failed { .. }), "{outcome:?}");
+        assert!(matches!(outcome, Outcome::TooLarge), "{outcome:?}");
         assert!(
             written <= ByteSize::kib(64).as_u64(),
             "{written} bytes written"

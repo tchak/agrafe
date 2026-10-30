@@ -2,23 +2,31 @@
 //! workspace it describes written to a temporary directory, inline files
 //! as they are and blob members decrypted into it; the
 //! `agrafe-render-document` helper run on that directory in the sandbox;
-//! and the PDF it wrote streamed into the bucket through the shared
-//! `build` sink. See [DESIGN.md, "Documents"].
+//! and the file it wrote streamed into the bucket through the shared
+//! `build` sink. The declared content type picks the file: a PDF is the
+//! helper's own; a DOCX or an ODT is the HTML the helper compiles to,
+//! turned into the office file by pandoc in a second sandboxed run, with
+//! the styles of the workspace's `reference.docx` or `reference.odt` when
+//! it has one. See [DESIGN.md, "Documents"].
 //!
 //! A document that does not compile is dead at once, the compiler's
 //! diagnostics as the error; so is a member gone since accept, since a
 //! template cannot do without a file the way an archive skips an entry,
-//! and a compile the sandbox killed at the time limit. A helper that
-//! failed any other way (a full disk, a crash), the sandbox, the
-//! temporary directory, the bucket and the database may come back, and
-//! fail the attempt only.
+//! a compile the sandbox killed at the time limit, and a pandoc that
+//! failed on the HTML, ran out of time or wrote past the output limit,
+//! since the same template would do the same again. A helper or a pandoc
+//! that failed any other way (a full disk, a crash, its memory), the
+//! sandbox, the temporary directory, the bucket and the database may come
+//! back, and fail the attempt only.
 //!
 //! [DESIGN.md, "Documents"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#documents
 
 use std::collections::HashSet;
 use std::path::Path;
 
-use agrafe_render::{Rejection, Verdict, helpers};
+use agrafe_render::helpers::{self, DocumentFormat};
+use agrafe_render::pandoc::{self, OfficeFormat};
+use agrafe_render::{Rejection, Verdict};
 use jiff::Timestamp;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use uuid::Uuid;
@@ -32,14 +40,15 @@ use crate::blob::{Blob, BlobState, InputType};
 use crate::source::Source;
 use crate::source::document::{Content, parse_line};
 
-/// Bytes of the PDF read at a time on their way to the sink.
+/// Bytes of the built file read at a time on their way to the sink.
 const CHUNK: usize = 256 * 1024;
 
 pub async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
     build::run::<Document>(state, job).await
 }
 
-/// The document build: the workspace compiled into a PDF.
+/// The document build: the workspace compiled into a PDF, a DOCX or an
+/// ODT.
 pub(crate) struct Document;
 
 impl Assemble for Document {
@@ -56,26 +65,29 @@ impl Assemble for Document {
             blob_id: blob.id,
             what: "main file",
         })?;
-        let output = workdir.path().join("document.pdf");
-        match helpers::render_document(&media.render, &root, main, &output).await? {
-            Verdict::Rendered(()) => {}
-            Verdict::Rejected(Rejection::Failed {
-                code: Some(helpers::DOCUMENT_REJECTED_EXIT),
-                stderr,
-                ..
-            }) => return Err(BuildError::Compile(stderr)),
-            Verdict::Rejected(Rejection::TimedOut) => {
-                return Err(BuildError::Compile(Rejection::TimedOut.to_string()));
+        let office = OfficeFormat::of(&blob.content_type);
+        let format = match office {
+            None => DocumentFormat::Pdf,
+            Some(_) => DocumentFormat::Html,
+        };
+        let compiled = workdir.path().join(match format {
+            DocumentFormat::Pdf => "document.pdf",
+            DocumentFormat::Html => "document.html",
+        });
+        compile(state, &root, main, format, &compiled).await?;
+        let output = match office {
+            None => compiled,
+            Some(office) => {
+                let output = workdir.path().join(format!("document.{}", office.name()));
+                let reference = root.join(office.reference());
+                let reference = tokio::fs::metadata(&reference)
+                    .await
+                    .is_ok_and(|meta| meta.is_file())
+                    .then_some(reference);
+                convert(state, office, &compiled, &output, reference.as_deref()).await?;
+                output
             }
-            Verdict::Rejected(rejection) => return Err(BuildError::Helper(rejection)),
-            Verdict::Declined => {
-                return Err(agrafe_render::Error::Output(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "the compiler helper exited cleanly without writing the PDF",
-                ))
-                .into());
-            }
-        }
+        };
 
         let mut file = tokio::fs::File::open(&output)
             .await
@@ -89,6 +101,66 @@ impl Assemble for Document {
             sink.write(&buf[..n]).await?;
         }
         Ok(Counts::default())
+    }
+}
+
+/// Compile the workspace at `root` into `format` at `output`.
+async fn compile(
+    state: &Agrafe,
+    root: &Path,
+    main: &str,
+    format: DocumentFormat,
+    output: &Path,
+) -> Result<(), BuildError> {
+    let media = &state.config().media;
+    match helpers::render_document(&media.render, root, main, format, output).await? {
+        Verdict::Rendered(()) => Ok(()),
+        Verdict::Rejected(Rejection::Failed {
+            code: Some(helpers::DOCUMENT_REJECTED_EXIT),
+            stderr,
+            ..
+        }) => Err(BuildError::Compile(stderr)),
+        Verdict::Rejected(rejection @ (Rejection::TimedOut | Rejection::TooLarge)) => {
+            Err(BuildError::Compile(rejection.to_string()))
+        }
+        Verdict::Rejected(rejection) => Err(BuildError::Helper(rejection)),
+        Verdict::Declined => Err(agrafe_render::Error::Output(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "the compiler helper exited cleanly without writing its output",
+        ))
+        .into()),
+    }
+}
+
+/// Turn the compiled `html` into `office` at `output` with pandoc. A
+/// failure on the HTML, the time limit or the output limit is the
+/// template's, and so is a `reference` pandoc cannot read; pandoc's heap
+/// running out, or a signal other than the output limit's, may not
+/// happen again.
+async fn convert(
+    state: &Agrafe,
+    office: OfficeFormat,
+    html: &Path,
+    output: &Path,
+    reference: Option<&Path>,
+) -> Result<(), BuildError> {
+    let media = &state.config().media;
+    let conversion = pandoc::from_html(office, html, output, reference);
+    match pandoc::convert(&media.render, &conversion).await? {
+        Verdict::Rendered(()) => Ok(()),
+        Verdict::Rejected(
+            rejection @ Rejection::Failed {
+                code: Some(pandoc::OUT_OF_MEMORY_EXIT) | None,
+                ..
+            },
+        ) => Err(BuildError::Pandoc(rejection)),
+        Verdict::Rejected(Rejection::Failed { stderr, .. }) => Err(BuildError::Convert(stderr)),
+        Verdict::Rejected(rejection) => Err(BuildError::Convert(rejection.to_string())),
+        Verdict::Declined => Err(agrafe_render::Error::Output(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "pandoc exited cleanly without writing the document",
+        ))
+        .into()),
     }
 }
 

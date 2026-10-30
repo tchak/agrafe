@@ -48,7 +48,7 @@ provision:
     apt-get update
     apt-get install -y --no-install-recommends \
       build-essential pkg-config curl ca-certificates \
-      libvips-tools libheif-plugin-libde265 bubblewrap postgresql unzip libarchive-tools \
+      libvips-tools libheif-plugin-libde265 bubblewrap postgresql unzip libarchive-tools pandoc \
       libreoffice-writer-nogui libreoffice-calc-nogui libreoffice-impress-nogui \
       libreoffice-draw-nogui fonts-dejavu-core fonts-liberation
     # The tests' default DATABASE_URL: agrafe_test as the OS user, over

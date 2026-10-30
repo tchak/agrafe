@@ -10,7 +10,7 @@ the `agrafe` binary with its four helpers next to it.
 | `agrafe` | The server: `serve` and `migrate` |
 | `agrafe-extract` | Pulls the embedded image out of a PDF, DOCX or ODT |
 | `agrafe-render-text` | Rasterises the first lines of a text file |
-| `agrafe-render-document` | Compiles a typst workspace into a PDF |
+| `agrafe-render-document` | Compiles a typst workspace into a PDF, or into HTML for pandoc |
 | `agrafe-render-geo` | Draws a GeoJSON, GPX, KML, KMZ or GML file or a zipped shapefile as SVG over the map extent it chose |
 
 The helpers are found on the `PATH`, or at the paths given by
@@ -21,8 +21,11 @@ logs and never touch the network, and the startup probe fails if one of
 them is not what the server expects.
 
 Workers also need the `vips` command line tool, built with SVG support
-(rsvg) for the maps, and, for office thumbnails, an optional
-[LibreOffice](#libreoffice). Run `agrafe migrate` once per release,
+(rsvg) for the maps; [pandoc](https://pandoc.org) 3 or later
+(`media.pandoc_command`), for the DOCX and ODT documents; and, for office
+thumbnails, an optional [LibreOffice](#libreoffice). pandoc is a static
+Haskell binary of about 150 MB, the largest addition to the image after
+LibreOffice; the release images carry it in both variants. Run `agrafe migrate` once per release,
 before the new processes start.
 
 Outbound connections: the fetch workers reach the URLs of `url` blobs, the

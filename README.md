@@ -8,7 +8,7 @@
 
 A file storage service: encrypted at rest, virus scanned, with WebP previews
 and thumbnails, and server-side generation of spreadsheets, ZIP archives and
-PDF documents. Rust, Postgres, and an object store: S3-compatible, Azure
+PDF, DOCX and ODT documents. Rust, Postgres, and an object store: S3-compatible, Azure
 Blob Storage or Google Cloud Storage.
 
 agrafe sits between your backend and a bucket. Your backend creates a blob,
@@ -43,7 +43,8 @@ decision.
   it, and expires on its own otherwise; `replace` swaps an owner's file
   in one request.
 - **Generated files**: spreadsheets (CSV, XLSX, ODS), ZIP archives and
-  [typst](https://typst.app) PDF documents, built by jobs.
+  [typst](https://typst.app) documents, as PDF, or as DOCX and ODT from the
+  same template through pandoc, built by jobs.
 - **Webhooks** when a blob is ready or failed, signed the Standard
   Webhooks way.
 - **Operations**: a Postgres job queue with per-kind workers, Prometheus

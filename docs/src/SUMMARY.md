@@ -14,7 +14,7 @@
 - [Minting signed URLs from another project](guide/signed-urls.md)
 - [Spreadsheets](guide/spreadsheets.md)
 - [ZIP archives](guide/archives.md)
-- [PDF documents](guide/documents.md)
+- [Documents: PDF, DOCX and ODT](guide/documents.md)
 - [Webhooks](guide/webhooks.md)
 - [Jobs and retries](guide/jobs.md)
 - [Security model](guide/security.md)

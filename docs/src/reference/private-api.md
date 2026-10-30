@@ -176,7 +176,7 @@ The content types a generated blob may declare:
 |---|---|
 | `rows` | `text/csv`, `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`, `application/vnd.oasis.opendocument.spreadsheet` |
 | `archive` | `application/zip` |
-| `document` | `application/pdf` |
+| `document` | `application/pdf`, `application/vnd.openxmlformats-officedocument.wordprocessingml.document`, `application/vnd.oasis.opendocument.text` |
 
 | Status | Code | When |
 |---|---|---|

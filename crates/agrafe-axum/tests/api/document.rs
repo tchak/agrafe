@@ -1,8 +1,13 @@
 //! Generated documents: a typst workspace accepted as a manifest, in
 //! parts, the finish, the build job compiling it in the sandbox into a
-//! PDF, and the ways a workspace or a template fails.
+//! PDF, or into HTML that pandoc writes as a DOCX or an ODT, and the ways
+//! a workspace or a template fails.
+
+use std::io::{Read, Write};
 
 use agrafe::jobs::JobKind;
+use agrafe_render::Verdict;
+use agrafe_render::pandoc::{self, Conversion, OfficeFormat};
 use axum::http::{Method, StatusCode};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -11,10 +16,17 @@ use sha2::{Digest, Sha256};
 
 use crate::support::*;
 
+const DOCX: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const ODT: &str = "application/vnd.oasis.opendocument.text";
+
 fn document_blob(filename: &str) -> Value {
+    typed_document_blob(filename, "application/pdf")
+}
+
+fn typed_document_blob(filename: &str, content_type: &str) -> Value {
     json!({
         "filename": filename,
-        "content_type": "application/pdf",
+        "content_type": content_type,
         "input_type": "document",
     })
 }
@@ -65,8 +77,127 @@ async fn download(app: &TestApp, blob: &Value) -> Vec<u8> {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(headers["content-type"], "application/pdf");
+    assert_eq!(
+        headers["content-type"],
+        blob["content_type"].as_str().unwrap()
+    );
     bytes
+}
+
+/// An office file read back as Markdown by pandoc in the sandbox, as the
+/// startup probe reads its own.
+async fn read_back(app: &TestApp, format: OfficeFormat, bytes: &[u8]) -> String {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join(format!("built.{}", format.name()));
+    std::fs::write(&input, bytes).unwrap();
+    let output = dir.path().join("built.md");
+    let conversion = Conversion::new(format.name(), "markdown", &input, &output);
+    let verdict = pandoc::convert(&app.state.config().media.render, &conversion)
+        .await
+        .unwrap();
+    assert_eq!(verdict, Verdict::Rendered(()));
+    std::fs::read_to_string(output).unwrap()
+}
+
+/// The entry `name` of a ZIP package, as text.
+fn zip_entry(bytes: &[u8], name: &str) -> String {
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    let mut text = String::new();
+    archive
+        .by_name(name)
+        .unwrap()
+        .read_to_string(&mut text)
+        .unwrap();
+    text
+}
+
+/// pandoc's own reference document for `format`, with a style named
+/// `marker` added to the stylesheet at `styles`, so that a file built
+/// from it can be told from one built without.
+fn reference_with(format: OfficeFormat, styles: &str, marker: &str) -> Vec<u8> {
+    let out = std::process::Command::new("pandoc")
+        .args(["--print-default-data-file", format.reference()])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let mut source = zip::ZipArchive::new(std::io::Cursor::new(out.stdout)).unwrap();
+    let mut target = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for i in 0..source.len() {
+        let mut entry = source.by_index(i).unwrap();
+        let name = entry.name().unwrap().to_string();
+        let mut data = Vec::new();
+        entry.read_to_end(&mut data).unwrap();
+        if name == styles {
+            let text = String::from_utf8(data).unwrap();
+            let style = match format {
+                OfficeFormat::Docx => format!(
+                    "<w:style w:type=\"paragraph\" w:customStyle=\"1\" w:styleId=\"{marker}\">\
+                     <w:name w:val=\"{marker}\"/></w:style></w:styles>"
+                ),
+                OfficeFormat::Odt => format!(
+                    "<style:style style:name=\"{marker}\" style:family=\"paragraph\"/>\
+                     </office:styles>"
+                ),
+            };
+            let end = match format {
+                OfficeFormat::Docx => "</w:styles>",
+                OfficeFormat::Odt => "</office:styles>",
+            };
+            assert!(text.contains(end), "{text}");
+            data = text.replacen(end, &style, 1).into_bytes();
+        }
+        // The ODT's `mimetype` comes first and stored, as the format asks.
+        let options =
+            zip::write::SimpleFileOptions::default().compression_method(if name == "mimetype" {
+                zip::CompressionMethod::Stored
+            } else {
+                zip::CompressionMethod::Deflated
+            });
+        target.start_file(name, options).unwrap();
+        target.write_all(&data).unwrap();
+    }
+    target.finish().unwrap().into_inner()
+}
+
+/// One template for every output: `target()` keeps the page setup and
+/// a line to the PDF, and gives the editable files their own.
+const SHARED_TEMPLATE: &str = r#"#set document(title: [Facture])
+#show: body => context if target() == "html" { body } else {
+  set page(width: 12cm, height: 8cm, margin: 1cm)
+  body
+}
+#let d = json("data.json")
+= #d.titre
+Le détail, #emph[ligne par ligne].#footnote[Montants hors taxes.]
+#for ligne in d.lignes [- #ligne.libelle]
+#context if target() == "html" [Version modifiable.] else [Version imprimable.]
+"#;
+
+/// The workspace of [`SHARED_TEMPLATE`], plus `extra` lines.
+fn shared_workspace(extra: &[Value]) -> Vec<u8> {
+    let mut lines = vec![
+        text("main.typ", SHARED_TEMPLATE),
+        json!({
+            "path": "data.json",
+            "json": {"titre": "Facture n° 12", "lignes": [
+                {"libelle": "Conseil"},
+                {"libelle": "Déplacement"},
+            ]},
+        }),
+    ];
+    lines.extend_from_slice(extra);
+    manifest(&lines)
+}
+
+/// Create a document blob of `content_type` from `workspace`, run its
+/// build, and return the blob.
+async fn build(app: &TestApp, filename: &str, content_type: &str, workspace: Vec<u8>) -> Value {
+    let created = create(app, typed_document_blob(filename, content_type)).await;
+    let id = id_of(&created);
+    let (status, body) = put_private(app, id, workspace).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(run_job(app, JobKind::Document).await);
+    get_blob(app, id).await
 }
 
 /// The one job of `kind` for the blob, as `(attempts, dead, last_error)`.
@@ -258,6 +389,198 @@ async fn a_document_past_the_output_limit_dies_at_once() {
     assert!(error.contains("media.sandbox.max_output_size"), "{error}");
 }
 
+/// A DOCX and an ODT are built from the template a PDF is built from:
+/// the structure crosses (the heading one level as written, the list, the
+/// emphasis, the note), and `target()` picks each one's line.
+#[tokio::test]
+async fn docx_and_odt_are_built_from_the_template_of_a_pdf() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let pdf = build(
+        &app,
+        "facture.pdf",
+        "application/pdf",
+        shared_workspace(&[]),
+    )
+    .await;
+    assert_eq!(pdf["state"], "ready", "{pdf}");
+    assert!(download(&app, &pdf).await.starts_with(b"%PDF-"));
+
+    for (format, content_type) in [(OfficeFormat::Docx, DOCX), (OfficeFormat::Odt, ODT)] {
+        let filename = format!("facture.{}", format.name());
+        let built = build(&app, &filename, content_type, shared_workspace(&[])).await;
+        assert_eq!(built["state"], "ready", "{built}");
+        let bytes = download(&app, &built).await;
+        assert!(bytes.starts_with(b"PK"), "{content_type}: a ZIP package");
+        assert_eq!(built["size"], bytes.len());
+        assert_eq!(built["checksum"], STANDARD.encode(Sha256::digest(&bytes)));
+        let markdown = read_back(&app, format, &bytes).await;
+        for expected in [
+            "Facture n° 12",
+            "*ligne par ligne*",
+            "[^1]",
+            "Montants hors taxes.",
+            "Version modifiable.",
+        ] {
+            assert!(
+                markdown.contains(expected),
+                "{content_type}: {expected} in {markdown}"
+            );
+        }
+        // List items, whatever the spacing this pandoc puts after `-`.
+        for item in ["Conseil", "Déplacement"] {
+            assert!(
+                markdown
+                    .lines()
+                    .any(|line| line.strip_prefix('-').map(str::trim) == Some(item)),
+                "{content_type}: {item} in {markdown}"
+            );
+        }
+        // `= Titre` is a level-one heading, the ODT's with an anchor.
+        assert!(
+            markdown
+                .lines()
+                .any(|line| line.starts_with("# ") && line.ends_with("Facture n° 12")),
+            "{content_type}: {markdown}"
+        );
+        assert!(
+            !markdown.contains("imprimable"),
+            "{content_type}: {markdown}"
+        );
+    }
+}
+
+/// `reference.docx` or `reference.odt` at the workspace's root styles the
+/// file it builds to: its stylesheet is the built file's.
+#[tokio::test]
+async fn a_reference_document_styles_the_built_file() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    for (format, content_type, styles) in [
+        (OfficeFormat::Docx, DOCX, "word/styles.xml"),
+        (OfficeFormat::Odt, ODT, "styles.xml"),
+    ] {
+        let reference = reference_with(format, styles, "AgrafeHouseStyle");
+        let member = ready_file(&app, format.reference(), content_type, &reference).await;
+        let workspace = shared_workspace(&[from_blob(format.reference(), id_of(&member))]);
+        let filename = format!("styled.{}", format.name());
+        let built = build(&app, &filename, content_type, workspace).await;
+        assert_eq!(built["state"], "ready", "{built}");
+        let bytes = download(&app, &built).await;
+        assert!(
+            zip_entry(&bytes, styles).contains("AgrafeHouseStyle"),
+            "{content_type}"
+        );
+
+        // Without one, pandoc's own styles.
+        let plain = build(&app, &filename, content_type, shared_workspace(&[])).await;
+        let bytes = download(&app, &plain).await;
+        assert!(
+            !zip_entry(&bytes, styles).contains("AgrafeHouseStyle"),
+            "{content_type}"
+        );
+    }
+}
+
+/// A reference document pandoc cannot read fails every attempt the same
+/// way: the build dies at once, with what pandoc said.
+#[tokio::test]
+async fn a_conversion_pandoc_refuses_dies_at_once() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let workspace = shared_workspace(&[text("reference.docx", "not a package")]);
+    let built = build(&app, "broken.docx", DOCX, workspace).await;
+    let (attempts, dead, error) = job_outcome(&app, id_of(&built)).await;
+    assert_eq!((attempts, dead), (1, true), "{error}");
+    assert!(error.contains("does not convert"), "{error}");
+    // Not a ZIP, in pandoc's words, which vary with its version.
+    assert!(error.contains("central directory"), "{error}");
+    assert_eq!(get_blob(&app, id_of(&built)).await["state"], "uploaded");
+}
+
+/// A template that compiles to pages and not to HTML is a template that
+/// does not compile, for the DOCX it is declared as.
+#[tokio::test]
+async fn a_template_failing_under_the_html_target_dies_at_once() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let template = "= Titre\n#context if target() == \"html\" { nope } else [Pages.]\n";
+    let pdf = build(
+        &app,
+        "ok.pdf",
+        "application/pdf",
+        manifest(&[text("main.typ", template)]),
+    )
+    .await;
+    assert_eq!(pdf["state"], "ready", "{pdf}");
+    let docx = build(
+        &app,
+        "ko.docx",
+        DOCX,
+        manifest(&[text("main.typ", template)]),
+    )
+    .await;
+    let (attempts, dead, error) = job_outcome(&app, id_of(&docx)).await;
+    assert_eq!((attempts, dead), (1, true), "{error}");
+    assert!(error.contains("does not compile"), "{error}");
+    assert!(error.contains("main.typ:2:"), "{error}");
+    assert!(error.contains("unknown variable: nope"), "{error}");
+}
+
+/// HTML within the sandbox's file size limit, a DOCX past it: the kernel
+/// stops pandoc, and the build dies at once rather than retrying a
+/// template that would be as large every time.
+#[tokio::test]
+async fn a_docx_past_the_output_limit_dies_at_once() {
+    let db = TestDatabase::new().await;
+    let app = setup_tuned(db, fake_clamd().await, |c| {
+        c.media.render.sandbox.max_output_size = bytesize::ByteSize::kib(4);
+    })
+    .await;
+    let built = build(
+        &app,
+        "big.docx",
+        DOCX,
+        manifest(&[text("main.typ", "= Hi\n")]),
+    )
+    .await;
+    let (attempts, dead, error) = job_outcome(&app, id_of(&built)).await;
+    assert_eq!((attempts, dead), (1, true), "{error}");
+    assert!(error.contains("does not convert"), "{error}");
+    assert!(error.contains("max_output_size"), "{error}");
+}
+
+/// A pandoc whose heap ran out may get through on the next attempt.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_pandoc_out_of_memory_is_retried() {
+    use std::os::unix::fs::PermissionsExt;
+    let db = TestDatabase::new().await;
+    let oom = std::env::temp_dir().join(format!("agrafe-oom-pandoc-{}", uuid::Uuid::now_v7()));
+    std::fs::write(
+        &oom,
+        "#!/bin/sh\necho 'pandoc: Heap exhausted;' >&2\nexit 251\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&oom, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let app = setup_tuned(db, fake_clamd().await, |c| {
+        c.media.render.pandoc_command = oom.to_string_lossy().into_owned();
+    })
+    .await;
+    let built = build(
+        &app,
+        "unlucky.odt",
+        ODT,
+        manifest(&[text("main.typ", "= Hi\n")]),
+    )
+    .await;
+    std::fs::remove_file(&oom).unwrap();
+    let (attempts, dead, error) = job_outcome(&app, id_of(&built)).await;
+    assert_eq!((attempts, dead), (1, false), "{error}");
+    assert!(error.contains("pandoc failed"), "{error}");
+    assert!(error.contains("Heap exhausted"), "{error}");
+}
+
 #[tokio::test]
 async fn creation_rules() {
     let db = TestDatabase::new().await;
@@ -266,6 +589,11 @@ async fn creation_rules() {
         (
             "not a PDF",
             json!({"filename": "a.zip", "content_type": "application/zip", "input_type": "document"}),
+            "cannot be produced",
+        ),
+        (
+            "HTML, which typst writes but is not offered",
+            json!({"filename": "a.html", "content_type": "text/html", "input_type": "document"}),
             "cannot be produced",
         ),
         (
@@ -541,7 +869,7 @@ async fn a_helper_writing_nothing_is_a_failed_attempt() {
     assert!(run_job(&app, JobKind::Document).await);
     let (attempts, dead, error) = job_outcome(&app, id).await;
     assert_eq!((attempts, dead), (1, false), "{error}");
-    assert!(error.contains("without writing the PDF"), "{error}");
+    assert!(error.contains("without writing its output"), "{error}");
     assert_eq!(get_blob(&app, id).await["state"], "uploaded");
 }
 
@@ -763,6 +1091,24 @@ async fn the_startup_probe_compiles_a_workspace() {
         ..media.render.clone()
     };
     let err = probe(&idle_binary).await.unwrap_err().to_string();
+    assert!(err.contains("wrote no probe.pdf"), "{err}");
+
+    let wrong_pandoc = agrafe_render::Config {
+        pandoc_command: "/usr/bin/false".into(),
+        ..media.render.clone()
+    };
+    let err = probe(&wrong_pandoc).await.unwrap_err().to_string();
+    assert!(
+        err.contains("failed on the probe template's HTML as docx"),
+        "{err}"
+    );
+    assert!(err.contains("media.pandoc_command"), "{err}");
+
+    let idle_pandoc = agrafe_render::Config {
+        pandoc_command: "/usr/bin/true".into(),
+        ..media.render.clone()
+    };
+    let err = probe(&idle_pandoc).await.unwrap_err().to_string();
     assert!(err.contains("wrote nothing"), "{err}");
 
     let app = setup_tuned(db, fake_clamd().await, |c| {

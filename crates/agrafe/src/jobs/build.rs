@@ -93,6 +93,14 @@ pub enum BuildError {
     /// a full disk, a crash. Retried.
     #[error("the compiler helper failed: {0}")]
     Helper(agrafe_render::Rejection),
+    /// pandoc refused the HTML the document compiled to, or the
+    /// workspace's reference document, ran out of time on it or wrote past
+    /// the output limit; what it said follows.
+    #[error("the document does not convert: {0}")]
+    Convert(String),
+    /// pandoc failed on its own account: its heap, a signal. Retried.
+    #[error("pandoc failed: {0}")]
+    Pandoc(agrafe_render::Rejection),
     /// The sandbox could not run the compiler.
     #[error(transparent)]
     Render(#[from] agrafe_render::Error),
@@ -105,8 +113,9 @@ impl BuildError {
     /// not parse, a row missing its key material, a key that does not
     /// unwrap, a stored object that is damaged, a package the writer
     /// refuses, a workspace file gone or a document that does not compile
-    /// are the blob's own; the bucket, the database, the sandbox, the
-    /// compiler helper and the temporary directory may come back.
+    /// or convert are the blob's own; the bucket, the database, the
+    /// sandbox, the compiler helper, pandoc and the temporary directory
+    /// may come back.
     pub fn is_permanent(&self) -> bool {
         match self {
             BuildError::Source { .. }
@@ -115,7 +124,8 @@ impl BuildError {
             | BuildError::Zip(_)
             | BuildError::Member { .. }
             | BuildError::Workspace(_)
-            | BuildError::Compile(_) => true,
+            | BuildError::Compile(_)
+            | BuildError::Convert(_) => true,
             BuildError::Read(err) => err.is_permanent(),
             _ => false,
         }

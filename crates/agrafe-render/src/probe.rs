@@ -7,6 +7,8 @@ use agrafe_types::office::{DOCX, ODG, ODT, PPTX, XLSX};
 use crate::vips::{self, Fit, Input};
 use agrafe_types::map::Format;
 
+use crate::helpers::DocumentFormat;
+use crate::pandoc::{self, Conversion, OfficeFormat};
 use crate::{Config, Error, Rejection, Verdict, geo, helpers, office};
 
 /// Why a worker may not start: its tools do not work on files known to be
@@ -86,6 +88,17 @@ pub enum ProbeError {
         tmp_dir: String,
         /// Where LibreOffice puts its pipe.
         pipe_dir: &'static str,
+    },
+    /// pandoc failed on the probe template's HTML, or what it wrote does
+    /// not read back as the template: it is not pandoc, or one too old
+    /// for the HTML typst writes or for `--sandbox`, which the read-back
+    /// runs under.
+    #[error("`{command}` {what}; is media.pandoc_command pandoc 3 or later?")]
+    Pandoc {
+        /// The configured `pandoc_command`.
+        command: String,
+        /// What it did instead of converting.
+        what: String,
     },
     /// A helper could not be run at all.
     #[error(transparent)]
@@ -467,11 +480,14 @@ pub async fn probe_office(config: &Config, tmp_dir: Option<&Path>) -> Result<(),
     Ok(())
 }
 
-/// Compile the probe workspace through the exact command line the
+/// Compile the probe workspace through the exact command lines the
 /// `document` build uses, before a worker takes documents: templates are
 /// written against a compiler version, and a `render_document_command`
-/// that is not the helper, or a helper that cannot read its workspace,
-/// would kill every document job instead of failing the deployment.
+/// that is not the helper, a helper that cannot read its workspace, or a
+/// `pandoc_command` that cannot write the HTML as a DOCX or an ODT, would
+/// kill every document job instead of failing the deployment. The office
+/// files are read back by pandoc, the server having no ZIP parser: the
+/// heading, the note and the image must be there.
 pub async fn probe_document(config: &Config, tmp_dir: Option<&Path>) -> Result<(), ProbeError> {
     let workdir = crate::workdir(tmp_dir)?;
     let workspace = workdir.path().join("workspace");
@@ -482,21 +498,87 @@ pub async fn probe_document(config: &Config, tmp_dir: Option<&Path>) -> Result<(
         }
         tokio::fs::write(&path, bytes).await?;
     }
-    let output = workdir.path().join("probe.pdf");
-    let what = match helpers::render_document(config, &workspace, "main.typ", &output).await? {
-        Verdict::Rendered(()) => None,
-        Verdict::Declined => Some("wrote nothing for the probe template".to_string()),
-        Verdict::Rejected(rejection) => Some(format!("failed on the probe template: {rejection}")),
-    };
-    if let Some(what) = what {
-        return Err(ProbeError::Helper {
-            command: config.render_document_command.clone(),
-            setting: "render_document_command",
-            helper: "agrafe-render-document",
+    for (format, name) in [
+        (DocumentFormat::Pdf, "probe.pdf"),
+        (DocumentFormat::Html, "probe.html"),
+    ] {
+        let output = workdir.path().join(name);
+        let what = match helpers::render_document(config, &workspace, "main.typ", format, &output)
+            .await?
+        {
+            Verdict::Rendered(()) => None,
+            Verdict::Declined => Some(format!("wrote no {name} for the probe template")),
+            Verdict::Rejected(rejection) => Some(format!(
+                "failed on the probe template ({name}): {rejection}"
+            )),
+        };
+        if let Some(what) = what {
+            return Err(ProbeError::Helper {
+                command: config.render_document_command.clone(),
+                setting: "render_document_command",
+                helper: "agrafe-render-document",
+                what,
+            });
+        }
+    }
+    let html = workdir.path().join("probe.html");
+    for format in [OfficeFormat::Docx, OfficeFormat::Odt] {
+        let office = workdir.path().join(format!("probe.{}", format.name()));
+        let markdown = workdir.path().join(format!("probe.{}.md", format.name()));
+        let failed = |what: String| ProbeError::Pandoc {
+            command: config.pandoc_command.clone(),
             what,
-        });
+        };
+        let to = pandoc::from_html(format, &html, &office, None);
+        let back = Conversion::new(format.name(), "markdown", &office, &markdown);
+        for (conversion, what) in [
+            (to, "the probe template's HTML"),
+            (back, "the probe's file"),
+        ] {
+            match pandoc::convert(config, &conversion).await? {
+                Verdict::Rendered(()) => {}
+                Verdict::Declined => {
+                    return Err(failed(format!(
+                        "wrote nothing for {what} as {}",
+                        format.name()
+                    )));
+                }
+                Verdict::Rejected(rejection) => {
+                    return Err(failed(format!(
+                        "failed on {what} as {}: {rejection}",
+                        format.name()
+                    )));
+                }
+            }
+        }
+        let text = tokio::fs::read_to_string(&markdown).await?;
+        if let Some(missing) = missing_from_probe(&text) {
+            return Err(failed(format!(
+                "lost the probe's {missing} writing it as {}: {text:?}",
+                format.name()
+            )));
+        }
     }
     Ok(())
+}
+
+/// What of the probe template its office file, read back as Markdown,
+/// lacks: the level-one heading, the footnote, the image.
+fn missing_from_probe(markdown: &str) -> Option<&'static str> {
+    // The ODT reader puts an anchor in front of the heading's text.
+    if !markdown
+        .lines()
+        .any(|line| line.starts_with("# ") && line.ends_with("agrafe"))
+    {
+        return Some("heading");
+    }
+    if !markdown.contains("[^1]") {
+        return Some("footnote");
+    }
+    if !markdown.contains("![") {
+        return Some("image");
+    }
+    None
 }
 
 #[cfg(test)]
@@ -525,6 +607,15 @@ mod tests {
             bubblewrap: None,
             rlimits_only: None,
         }
+    }
+
+    #[test]
+    fn the_probe_document_reads_back_whole() {
+        let whole = "# []{#anchor}agrafe\n\nBuilt by the probe.[^1]\n\n![](media/rId9.png)\n\n[^1]: A note.\n";
+        assert_eq!(missing_from_probe(whole), None);
+        assert_eq!(missing_from_probe("## agrafe\n[^1] ![]"), Some("heading"));
+        assert_eq!(missing_from_probe("# agrafe\n![]"), Some("footnote"));
+        assert_eq!(missing_from_probe("# agrafe\n[^1]"), Some("image"));
     }
 
     #[test]
