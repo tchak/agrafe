@@ -337,6 +337,11 @@ impl Parser {
                         buffer.push_str(&text);
                     }
                 }
+                Event::GeneralRef(reference) => {
+                    if let Some((_, buffer)) = &mut self.text {
+                        crate::push_reference(buffer, &reference);
+                    }
+                }
                 Event::End(_) => self.close(false),
                 Event::Eof => break,
                 _ => {}
@@ -904,6 +909,21 @@ mod tests {
             .unwrap(),
             ["point 4 45"]
         );
+    }
+
+    #[test]
+    fn resolves_character_references_in_positions() {
+        let point = |pos: &str| {
+            shapes(&gml32(&format!(
+                r#"<gml:Point srsName="EPSG:4326"><gml:pos>{pos}</gml:pos></gml:Point>"#
+            )))
+        };
+        assert_eq!(point("&#50;.35 48.85").unwrap(), ["point 2.35 48.85"]);
+        assert_eq!(point("2.35&#x20;48.85").unwrap(), ["point 2.35 48.85"]);
+        // An entity the document defines itself is not followed, and the
+        // number it sat in is not one; nor is one around a predefined one.
+        assert_eq!(point("&two;.35 48.85"), None);
+        assert_eq!(point("2.35&amp;48.85"), None);
     }
 
     #[test]

@@ -349,6 +349,22 @@ pub(crate) fn cut_short(err: &quick_xml::Error, position: u64, len: usize) -> bo
     matches!(err, quick_xml::Error::Syntax(_)) && position >= len as u64
 }
 
+/// `reference`, a character or entity reference met in the text of a
+/// leaf, appended to `buffer` as what it stands for: the character a
+/// `&#52;` names, the text of one of XML's five predefined entities. An
+/// entity the document defines itself is not followed: it leaves a
+/// replacement character, so that the number it sat in is not one and
+/// the position goes the way of any number that is not.
+pub(crate) fn push_reference(buffer: &mut String, reference: &quick_xml::events::BytesRef<'_>) {
+    match reference.resolve_char_ref() {
+        Ok(Some(c)) => buffer.push(c),
+        Ok(None) => buffer.push_str(
+            quick_xml::escape::resolve_predefined_entity(reference).unwrap_or("\u{fffd}"),
+        ),
+        Err(_) => buffer.push('\u{fffd}'),
+    }
+}
+
 /// The style a feature's properties ask for. A value of the wrong type or
 /// out of the vocabulary is ignored, never an error: nothing from the file
 /// reaches the SVG as it came.

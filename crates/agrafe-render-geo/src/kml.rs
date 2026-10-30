@@ -331,6 +331,11 @@ impl Parser {
                         buffer.push_str(&text);
                     }
                 }
+                Event::GeneralRef(reference) => {
+                    if let Some(buffer) = &mut self.text {
+                        crate::push_reference(buffer, &reference);
+                    }
+                }
                 Event::End(end) => self.close(end.local_name().as_ref()),
                 Event::Eof => break,
                 _ => {}
@@ -909,6 +914,24 @@ mod tests {
   <Placemark><styleUrl>#empty</styleUrl><Point><coordinates>4,45</coordinates></Point></Placemark>
 </kml>"##;
         assert_eq!(styles(circular), [Style::default(), Style::default()]);
+    }
+
+    #[test]
+    fn resolves_character_references_in_coordinates() {
+        let point = |coordinates: &str| {
+            kinds(
+                format!(
+                    "<kml><Placemark><Point><coordinates>{coordinates}</coordinates></Point></Placemark></kml>"
+                )
+                .as_bytes(),
+            )
+        };
+        assert_eq!(point("&#52;.5,45.5").unwrap(), ["point [4.5, 45.5]"]);
+        assert_eq!(point("4.5,&#x34;5.5").unwrap(), ["point [4.5, 45.5]"]);
+        // An entity the document defines itself is not followed, and the
+        // number it sat in is not one; nor is one around a predefined one.
+        assert_eq!(point("&four;.5,45.5"), None);
+        assert_eq!(point("4.5&amp;45.5"), None);
     }
 
     #[test]
