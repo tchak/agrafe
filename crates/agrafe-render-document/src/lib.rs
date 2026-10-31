@@ -350,10 +350,10 @@ fn for_pandoc(element: &mut HtmlElement) {
                     .cloned()
                     .collect(),
             );
-            match swapped_note_link(child) {
-                Some(link) => *child = link,
-                None => for_pandoc(child),
+            if let Some(link) = swapped_note_link(child) {
+                *child = link;
             }
+            for_pandoc(child);
         }
     }
 }
@@ -561,7 +561,7 @@ mod tests {
         let (_dir, workspace) = open(&[
             (
                 "main.typ",
-                br#"#html.elem("img", attrs: (src: "/etc/passwd"))
+                br##"#html.elem("img", attrs: (src: "/etc/passwd"))
 #html.elem("img", attrs: (src: " DATA:image/png;base64,AA=="))
 #html.elem("iframe", attrs: (src: "file:///etc/passwd"))
 #html.elem("video", attrs: (src: "https://example.org/v.mp4", poster: "/etc/hosts"))
@@ -569,7 +569,8 @@ mod tests {
 #html.elem("object", attrs: (data: "/etc/passwd"))
 #html.elem("span", attrs: (href: "/etc/passwd"))[span]
 #link("file:///etc/passwd")[link]
-#image("pixel.png")"#,
+#html.elem("sup", attrs: (role: "doc-noteref"))[#html.elem("a", attrs: (href: "#n"))[#html.elem("img", attrs: (src: "/etc/shadow"))]]
+#image("pixel.png")"##,
             ),
             ("pixel.png", PNG),
         ]);
@@ -579,6 +580,7 @@ mod tests {
             "video",
             "object",
             "/etc/hosts",
+            "/etc/shadow",
             "src=\"/etc/passwd\"",
         ] {
             assert!(!html.contains(gone), "{gone} in {html}");
