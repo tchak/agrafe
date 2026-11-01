@@ -1682,7 +1682,10 @@ system set and its declared files and opens no socket. The driver keeps
 The HTML is written for pandoc and not for a browser. Two adaptations
 make typst's shape pandoc's: typst gives the title the `h1` and `= Heading`
 an `h2`, so the conversion shifts headings up one level, making the
-title the document's and `= Heading` Heading 1; and typst marks a
+title the document's and `= Heading` Heading 1 (pandoc promotes the
+first block alone: a `#title()` after other content comes out as a
+paragraph, and the file's title is `<title>`'s, which `#set document`
+gives; the templates page says so); and typst marks a
 footnote's reference and its backlink with a role on a `sup` around the
 link, where pandoc's reader makes a note only of a role on a link around
 the `sup`, so the helper swaps the two before writing the HTML, without

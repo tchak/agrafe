@@ -148,8 +148,12 @@ What crosses into the office file:
 - **As structure:** headings, paragraphs, lists, emphasis, links, tables
   with merged cells, figures with captions, footnotes and equations
   (editable equations in a DOCX). `= Heading` is Heading 1, and the
-  document's title (`#set document(title: ...)` with `#title()`) is the
-  file's title. Heading numbering crosses as text.
+  document's title (`#set document(title: ...)`) is the file's title.
+  `#title()` is the file's title too, when it comes first: pandoc
+  promotes the first block alone, and a `#title()` after anything else, a
+  logo, an address block, comes out as a plain paragraph, while the file's
+  title stays the one `#set document` gave. Heading numbering crosses as
+  text.
 - **As media:** images, at their stored resolution.
 - **Not at all:** fonts, colours, sizes and spacing. The reference
   document's styles decide.
