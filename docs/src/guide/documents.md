@@ -224,5 +224,5 @@ the blob's priority orders the queue.
 Before a worker that handles `document` jobs starts, it compiles a probe
 workspace through the exact command lines the jobs use, to a PDF, and to a
 DOCX and an ODT through pandoc, so a missing or mismatched helper, or a
-missing or too old pandoc, fails the deployment rather than every
-document.
+missing or too old pandoc (before 3.6 its reader loses the footnotes),
+fails the deployment rather than every document.

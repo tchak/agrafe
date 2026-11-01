@@ -15,6 +15,11 @@ ARG RUST_VERSION=1.98
 # `default` or `office`: the runtime stage the image starts from, and the
 # file under docker/ that becomes its configuration.
 ARG VARIANT=default
+# pandoc's own release, not trixie's package: Debian's 3.1.11 predates the
+# HTML reader's footnotes by ARIA role (pandoc 3.6), the markup typst
+# writes, so its DOCX would lose every note and the startup probe would
+# refuse every document worker. A new version changes the digests below.
+ARG PANDOC_VERSION=3.13
 
 FROM rust:${RUST_VERSION}-slim-trixie AS build
 WORKDIR /src
@@ -28,15 +33,29 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
  && cp agrafe agrafe-extract agrafe-render-text agrafe-render-document \
       agrafe-render-geo /out/
 
+# The pandoc package for the target architecture, checked against the
+# digest of the release asset before anything installs it.
+FROM debian:trixie-slim AS pandoc
+ARG PANDOC_VERSION
+ARG TARGETARCH
+ADD https://github.com/jgm/pandoc/releases/download/${PANDOC_VERSION}/pandoc-${PANDOC_VERSION}-1-${TARGETARCH}.deb /pandoc.deb
+RUN case "${TARGETARCH}" in \
+      amd64) sum=7e3736f255090296ca5d1a14291a76b9b3c43cd385011b1621a4d0c16091a70f ;; \
+      arm64) sum=e55b480eb76997812b44c3f65f641c84214e623bc40b70a6b6d16ee00bfcca23 ;; \
+      *) echo "no pandoc digest for ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+ && echo "${sum}  /pandoc.deb" | sha256sum -c -
+
 FROM debian:trixie-slim AS runtime-default
 # vips for every render, with SVG (rsvg) for the maps; the fonts for PDFs
-# that do not embed theirs; pandoc, about 150 MB, for the DOCX and ODT
-# documents; the CA roots for the fetches, the webhook and the map
+# that do not embed theirs; pandoc, about 180 MB installed, for the DOCX
+# and ODT documents; the CA roots for the fetches, the webhook and the map
 # layers. coreutils, which the startup probe runs, is in the base.
+COPY --from=pandoc /pandoc.deb /tmp/pandoc.deb
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      libvips-tools pandoc ca-certificates fontconfig fonts-dejavu-core fonts-liberation \
- && rm -rf /var/lib/apt/lists/* \
+      libvips-tools /tmp/pandoc.deb ca-certificates fontconfig fonts-dejavu-core fonts-liberation \
+ && rm -rf /var/lib/apt/lists/* /tmp/pandoc.deb \
  # The sandbox cannot keep a font cache of its own between jobs.
  && fc-cache -f \
  && useradd --system --create-home --home-dir /var/lib/agrafe \

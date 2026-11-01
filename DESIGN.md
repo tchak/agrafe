@@ -1756,8 +1756,11 @@ The probe compiles the workspace to HTML too, and pandoc writes it as a
 DOCX and as an ODT through the job's command line; the server has no ZIP
 parser to open the result, so pandoc reads each back as Markdown, and
 the heading at level one, the note and the image must be there. A pandoc
-missing, too old, or whose HTML reader does not make
-typst's notes notes fails the deployment rather than every DOCX.
+missing, too old, or whose HTML reader does not make typst's notes notes
+fails the deployment rather than every DOCX. The reader learnt the notes'
+ARIA roles in pandoc 3.6, which is the version floor: Debian trixie's
+package is 3.1.11, so the release images install pandoc's own `.deb`,
+checked against its digest, rather than the distribution's.
 
 Out of scope for now: a template registry or schema validation, typst
 packages, PNG or SVG output, a shared fonts directory. A `text/html`

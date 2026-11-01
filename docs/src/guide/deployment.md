@@ -21,12 +21,17 @@ logs and never touch the network, and the startup probe fails if one of
 them is not what the server expects.
 
 Workers also need the `vips` command line tool, built with SVG support
-(rsvg) for the maps; [pandoc](https://pandoc.org) 3 or later
+(rsvg) for the maps; [pandoc](https://pandoc.org) 3.6 or later
 (`media.pandoc_command`), for the DOCX and ODT documents; and, for office
-thumbnails, an optional [LibreOffice](#libreoffice). pandoc is a static
-Haskell binary of about 150 MB, the largest addition to the image after
-LibreOffice; the release images carry it in both variants. Run `agrafe migrate` once per release,
-before the new processes start.
+thumbnails, an optional [LibreOffice](#libreoffice). pandoc 3.6 is where
+its HTML reader learnt the footnotes typst writes (marked by ARIA role);
+Debian trixie's package is 3.1.11 and too old, so take pandoc's own
+release `.deb`, as the release images do (Ubuntu 26.04's package is
+recent enough). The startup probe refuses a document worker whose pandoc
+loses the probe's note. pandoc is a static Haskell binary of about 180 MB
+installed, the largest addition to the image after LibreOffice; the
+release images carry it in both variants. Run `agrafe migrate` once per
+release, before the new processes start.
 
 Outbound connections: the fetch workers reach the URLs of `url` blobs, the
 notify workers reach `webhook.url`, and the render workers reach the hosts

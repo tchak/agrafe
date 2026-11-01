@@ -91,9 +91,10 @@ pub enum ProbeError {
     },
     /// pandoc failed on the probe template's HTML, or what it wrote does
     /// not read back as the template: it is not pandoc, or one too old
-    /// for the HTML typst writes or for `--sandbox`, which the read-back
-    /// runs under.
-    #[error("`{command}` {what}; is media.pandoc_command pandoc 3 or later?")]
+    /// for the HTML typst writes (its reader makes notes of the ARIA
+    /// roles since 3.6) or for `--sandbox`, which the read-back runs
+    /// under.
+    #[error("`{command}` {what}; is media.pandoc_command pandoc 3.6 or later?")]
     Pandoc {
         /// The configured `pandoc_command`.
         command: String,
