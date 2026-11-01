@@ -94,11 +94,13 @@ pub enum BuildError {
     #[error("the compiler helper failed: {0}")]
     Helper(agrafe_render::Rejection),
     /// pandoc refused the HTML the document compiled to, or the
-    /// workspace's reference document, ran out of time on it or wrote past
-    /// the output limit; what it said follows.
+    /// workspace's reference document, with one of its own error codes,
+    /// ran out of time on it or wrote past the output limit; what it said
+    /// follows.
     #[error("the document does not convert: {0}")]
     Convert(String),
-    /// pandoc failed on its own account: its heap, a signal. Retried.
+    /// pandoc failed on its own account: an uncaught exception (a full
+    /// disk, its runtime), its heap, a signal. Retried.
     #[error("pandoc failed: {0}")]
     Pandoc(agrafe_render::Rejection),
     /// The sandbox could not run the compiler.

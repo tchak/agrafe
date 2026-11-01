@@ -21,10 +21,18 @@ use agrafe_types::office::{DOCX, ODT};
 
 use crate::{Config, Error, Rejection, Verdict};
 
-/// The exit code of a pandoc whose heap ran out, GHC's: the sandbox's
-/// memory limit, which a later attempt on a less busy host may not meet,
-/// unlike pandoc's other failures, which are about the input.
-pub const OUT_OF_MEMORY_EXIT: i32 = 251;
+/// Whether `code`, pandoc's exit code, is its verdict on the input, which
+/// the same input gets again. pandoc's own errors exit between 3 and 99
+/// (64 a parse error, a reference document it cannot open among them
+/// since pandoc 3.12; 21 an unknown reader; 97 and 99 a data file or a
+/// resource not found). 1 is an uncaught exception: an IO error such as
+/// a full disk, the GHC runtime unable to start a thread, or, before
+/// 3.12, that reference document; 251 is GHC's heap running out; above
+/// 128 a signal, as bubblewrap reports a child the kernel killed. None of
+/// those says anything about the input, and a later attempt may do.
+pub fn is_input_error(code: Option<i32>) -> bool {
+    matches!(code, Some(3..=99))
+}
 
 /// One run of pandoc: `input` read as `from`, written as `to` to `output`,
 /// in `output`'s directory, the one it may write.
@@ -185,5 +193,23 @@ pub fn from_html<'a>(
     match reference {
         Some(reference) => conversion.reference_doc(reference),
         None => conversion,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// pandoc's own codes are its verdict; an uncaught exception, GHC's
+    /// heap, a signal (as such, or as bubblewrap's 128 plus the signal)
+    /// are not.
+    #[test]
+    fn only_pandocs_own_error_codes_judge_the_input() {
+        for code in [3, 21, 64, 97, 99] {
+            assert!(is_input_error(Some(code)), "{code}");
+        }
+        for code in [Some(1), Some(137), Some(139), Some(251), None] {
+            assert!(!is_input_error(code), "{code:?}");
+        }
     }
 }

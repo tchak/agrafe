@@ -13,9 +13,10 @@
 //! diagnostics as the error; so is a member gone since accept, since a
 //! template cannot do without a file the way an archive skips an entry,
 //! a compile the sandbox killed at the time limit, and a pandoc that
-//! failed on the HTML, ran out of time or wrote past the output limit,
-//! since the same template would do the same again. A helper or a pandoc
-//! that failed any other way (a full disk, a crash, its memory), the
+//! gave its verdict on the HTML or the reference document (its own exit
+//! codes), ran out of time or wrote past the output limit, since the same
+//! template would do the same again. A helper or a pandoc that failed any
+//! other way (a full disk, a crash, its memory, its runtime), the
 //! sandbox, the temporary directory, the bucket and the database may come
 //! back, and fail the attempt only.
 //!
@@ -132,11 +133,12 @@ async fn compile(
     }
 }
 
-/// Turn the compiled `html` into `office` at `output` with pandoc. A
-/// failure on the HTML, the time limit or the output limit is the
-/// template's, and so is a `reference` pandoc cannot read; pandoc's heap
-/// running out, or a signal other than the output limit's, may not
-/// happen again.
+/// Turn the compiled `html` into `office` at `output` with pandoc. An
+/// error pandoc reports as its own verdict on the input, the time limit
+/// and the output limit are the template's, and so is a `reference`
+/// pandoc cannot read; an uncaught exception (a full disk, its runtime),
+/// its heap running out or a signal other than the output limit's may
+/// not happen again.
 async fn convert(
     state: &Agrafe,
     office: OfficeFormat,
@@ -148,13 +150,14 @@ async fn convert(
     let conversion = pandoc::from_html(office, html, output, reference);
     match pandoc::convert(&media.render, &conversion).await? {
         Verdict::Rendered(()) => Ok(()),
-        Verdict::Rejected(
-            rejection @ Rejection::Failed {
-                code: Some(pandoc::OUT_OF_MEMORY_EXIT) | None,
-                ..
-            },
-        ) => Err(BuildError::Pandoc(rejection)),
-        Verdict::Rejected(Rejection::Failed { stderr, .. }) => Err(BuildError::Convert(stderr)),
+        Verdict::Rejected(Rejection::Failed { code, stderr, .. })
+            if pandoc::is_input_error(code) =>
+        {
+            Err(BuildError::Convert(stderr))
+        }
+        Verdict::Rejected(rejection @ Rejection::Failed { .. }) => {
+            Err(BuildError::Pandoc(rejection))
+        }
         Verdict::Rejected(rejection) => Err(BuildError::Convert(rejection.to_string())),
         Verdict::Declined => Err(agrafe_render::Error::Output(std::io::Error::new(
             std::io::ErrorKind::NotFound,

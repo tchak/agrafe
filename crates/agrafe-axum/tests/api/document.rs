@@ -482,8 +482,28 @@ async fn a_reference_document_styles_the_built_file() {
     }
 }
 
+/// The installed pandoc's version, as `(major, minor)`.
+fn pandoc_version() -> (u32, u32) {
+    let out = std::process::Command::new("pandoc")
+        .arg("--version")
+        .output()
+        .unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    let version = text
+        .lines()
+        .next()
+        .unwrap()
+        .strip_prefix("pandoc ")
+        .unwrap();
+    let mut parts = version.split('.').map(|part| part.parse::<u32>().unwrap());
+    (parts.next().unwrap(), parts.next().unwrap())
+}
+
 /// A reference document pandoc cannot read fails every attempt the same
-/// way: the build dies at once, with what pandoc said.
+/// way: the build dies at once, with what pandoc said. Before pandoc
+/// 3.12 the unreadable package was an uncaught exception, exit 1, which
+/// the job cannot tell from a host failure, so it is retried there, with
+/// the same words.
 #[tokio::test]
 async fn a_conversion_pandoc_refuses_dies_at_once() {
     let db = TestDatabase::new().await;
@@ -491,8 +511,13 @@ async fn a_conversion_pandoc_refuses_dies_at_once() {
     let workspace = shared_workspace(&[text("reference.docx", "not a package")]);
     let built = build(&app, "broken.docx", DOCX, workspace).await;
     let (attempts, dead, error) = job_outcome(&app, id_of(&built)).await;
-    assert_eq!((attempts, dead), (1, true), "{error}");
-    assert!(error.contains("does not convert"), "{error}");
+    if pandoc_version() >= (3, 12) {
+        assert_eq!((attempts, dead), (1, true), "{error}");
+        assert!(error.contains("does not convert"), "{error}");
+    } else {
+        assert_eq!((attempts, dead), (1, false), "{error}");
+        assert!(error.contains("pandoc failed"), "{error}");
+    }
     // Not a ZIP, in pandoc's words, which vary with its version.
     assert!(error.contains("central directory"), "{error}");
     assert_eq!(get_blob(&app, id_of(&built)).await["state"], "uploaded");
@@ -550,35 +575,49 @@ async fn a_docx_past_the_output_limit_dies_at_once() {
     assert!(error.contains("max_output_size"), "{error}");
 }
 
-/// A pandoc whose heap ran out may get through on the next attempt.
+/// A pandoc that failed on its own account may get through on the next
+/// attempt: its heap running out (GHC's exit 251), an uncaught exception
+/// (exit 1: a full disk, its runtime unable to start a thread), a signal
+/// as bubblewrap reports one (128 plus the signal). Only pandoc's own
+/// error codes are a verdict on the template.
 #[cfg(unix)]
 #[tokio::test]
-async fn a_pandoc_out_of_memory_is_retried() {
+async fn a_pandoc_failing_on_its_own_account_is_retried() {
     use std::os::unix::fs::PermissionsExt;
-    let db = TestDatabase::new().await;
-    let oom = std::env::temp_dir().join(format!("agrafe-oom-pandoc-{}", uuid::Uuid::now_v7()));
-    std::fs::write(
-        &oom,
-        "#!/bin/sh\necho 'pandoc: Heap exhausted;' >&2\nexit 251\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&oom, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let app = setup_tuned(db, fake_clamd().await, |c| {
-        c.media.render.pandoc_command = oom.to_string_lossy().into_owned();
-    })
-    .await;
-    let built = build(
-        &app,
-        "unlucky.odt",
-        ODT,
-        manifest(&[text("main.typ", "= Hi\n")]),
-    )
-    .await;
-    std::fs::remove_file(&oom).unwrap();
-    let (attempts, dead, error) = job_outcome(&app, id_of(&built)).await;
-    assert_eq!((attempts, dead), (1, false), "{error}");
-    assert!(error.contains("pandoc failed"), "{error}");
-    assert!(error.contains("Heap exhausted"), "{error}");
+    for (code, message) in [
+        (251, "pandoc: Heap exhausted;"),
+        (
+            1,
+            "document.odt: withBinaryFile: resource exhausted (No space left on device)",
+        ),
+        (137, ""),
+    ] {
+        let db = TestDatabase::new().await;
+        let fake =
+            std::env::temp_dir().join(format!("agrafe-fake-pandoc-{}", uuid::Uuid::now_v7()));
+        std::fs::write(
+            &fake,
+            format!("#!/bin/sh\necho '{message}' >&2\nexit {code}\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let app = setup_tuned(db, fake_clamd().await, |c| {
+            c.media.render.pandoc_command = fake.to_string_lossy().into_owned();
+        })
+        .await;
+        let built = build(
+            &app,
+            "unlucky.odt",
+            ODT,
+            manifest(&[text("main.typ", "= Hi\n")]),
+        )
+        .await;
+        std::fs::remove_file(&fake).unwrap();
+        let (attempts, dead, error) = job_outcome(&app, id_of(&built)).await;
+        assert_eq!((attempts, dead), (1, false), "exit {code}: {error}");
+        assert!(error.contains("pandoc failed"), "exit {code}: {error}");
+        assert!(error.contains(message), "exit {code}: {error}");
+    }
 }
 
 #[tokio::test]

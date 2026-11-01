@@ -206,11 +206,13 @@ the document does not convert: Could not parse reference-doc "…/reference.docx
 ```
 
 Fix the template, the data or the reference document, then create a new
-document blob.
+document blob. (Before pandoc 3.12 an unreadable reference document is an
+uncaught exception rather than a parse error, so the build is retried
+until its attempts run out and stops with the same message.)
 
 Failures of agrafe's own, such as the bucket, the database, the helper or
-pandoc failing to start, or pandoc running out of memory, are retried with
-the usual backoff.
+pandoc failing to start, pandoc running out of memory or hitting an IO
+error such as a full disk, are retried with the usual backoff.
 
 ## After the build
 

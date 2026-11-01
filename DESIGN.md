@@ -1731,12 +1731,19 @@ and is retried. The helper tells the two apart by its exit code:
 2 is the compiler's verdict, with the diagnostics on stderr; anything else
 (a full disk, a crash) is the helper's own failure. For a DOCX or an ODT,
 dead at once too: a template that compiles to pages and not to HTML,
-with the compiler's diagnostics; pandoc exiting non-zero, its stderr as
-the message, since the same HTML or the same unreadable reference
-document gives the same result tomorrow; pandoc killed at the time limit
-or at the output limit, `SIGXFSZ`, which the sandbox reports as such
-(pandoc cannot be handed the limit the way the helper is). Retried:
-pandoc's heap running out, GHC's exit 251, or any other signal. Retried
+with the compiler's diagnostics; pandoc exiting with one of its own error
+codes, 3 to 99 (64 a parse error, which a reference document it cannot
+open is since pandoc 3.12; before that an uncaught exception, exit 1,
+retried below until the attempts run out, with the same message), its
+stderr as the message, since the same HTML or the same unreadable
+reference document gives the same result tomorrow; pandoc killed at the
+time limit or at the output limit, `SIGXFSZ`, which the sandbox reports
+as such (pandoc cannot be handed the limit the way the helper is).
+Retried: pandoc exiting 1, an uncaught exception, which is an IO error
+such as a full disk or its runtime failing to start a thread, never a
+verdict on the input; its heap running out, GHC's exit 251; any other
+signal, which under bubblewrap arrives as an exit of 128 plus the signal
+rather than a signal, so the exit code decides, not its absence. Retried
 in every case: those, the sandbox failing to start the helper or pandoc,
 the temporary directory, the bucket, the database. Out of
 attempts, the blob is stuck in `uploaded` with `failed_at` and
