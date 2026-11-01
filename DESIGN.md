@@ -2833,7 +2833,16 @@ sizes every thread's stack by it, and all of it counts against the
 address space: under a runner image or a service manager that raised it
 to 256 MiB, the threads openjpeg starts to decode a JPEG 2000 left vips
 short of its 1 GiB and it died of `SIGSEGV`. The address space limit is enforced by Linux and ignored by
-macOS, so development machines get only the timeout. The child's stderr
+macOS, so development machines get only the timeout. pandoc is the one
+tool without it (`Command::reserves_address_space`): GHC's runtime maps
+a heap region of up to a terabyte at start, halving it until the kernel
+agrees, and commits pages into it as the heap grows, so under a 1 GiB
+address space the region takes what the limit leaves and the runtime's
+thread stacks then find no room, at random with the layout ("failed to
+create OS thread: Cannot allocate memory", seen on one CI run in three).
+Its memory is bounded by `RLIMIT_DATA` alone, which Linux counts on the
+committed private mappings, the heap, the stacks and the pages the
+runtime commits: what the limit means. The child's stderr
 is a pipe, which no rlimit bounds: the worker reads it as it is written
 and keeps the last 4 KiB, so a decoder that prints an error per broken
 object of a hostile file costs the worker 4 KiB, not the flood. A test

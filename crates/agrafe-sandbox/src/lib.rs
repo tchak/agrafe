@@ -227,6 +227,7 @@ pub struct Command {
     readable: Vec<PathBuf>,
     writable: Option<PathBuf>,
     unix_sockets: Option<PathBuf>,
+    reserves_address_space: bool,
 }
 
 impl Command {
@@ -247,6 +248,7 @@ impl Command {
             readable: Vec::new(),
             writable: None,
             unix_sockets: None,
+            reserves_address_space: false,
         }
     }
 
@@ -308,6 +310,22 @@ impl Command {
     /// whatever `dir` says: nothing of the host is bound for them.
     pub fn unix_sockets(&mut self, dir: impl Into<PathBuf>) -> &mut Self {
         self.unix_sockets = Some(dir.into());
+        self
+    }
+
+    /// The program reserves address space it never commits, so its
+    /// memory is bounded by `RLIMIT_DATA` alone and `RLIMIT_AS` stays as
+    /// inherited. A GHC runtime (pandoc) maps a region of up to a terabyte
+    /// at start, halving it until the kernel agrees, and commits pages
+    /// into it as its heap grows: under the address space limit the
+    /// region takes whatever the limit leaves, and the thread stacks the
+    /// runtime then needs find no room, at random with the layout
+    /// ("failed to create OS thread: Cannot allocate memory"). Linux
+    /// counts the committed private mappings, the heap, the stacks and
+    /// the pages the runtime commits, against `RLIMIT_DATA`, which is the
+    /// bound the memory limit means.
+    pub fn reserves_address_space(&mut self) -> &mut Self {
+        self.reserves_address_space = true;
         self
     }
 
@@ -636,8 +654,12 @@ const CPU_GRACE: u64 = 1;
 #[cfg(unix)]
 const STACK: u64 = 8 << 20;
 
+/// The rlimits of `command`'s child, set between `fork` and `exec`. The
+/// address space limit is skipped for a program that
+/// [reserves address space](Command::reserves_address_space).
 #[cfg(unix)]
-fn apply_limits(command: &mut tokio::process::Command, config: &Config) {
+fn apply_limits(inner: &mut tokio::process::Command, command: &Command, config: &Config) {
+    let address_space = !command.reserves_address_space;
     let memory = config.memory.as_u64();
     let cpu = config.timeout.as_secs().saturating_add(1);
     let output = config.max_output_size.as_u64();
@@ -657,8 +679,10 @@ fn apply_limits(command: &mut tokio::process::Command, config: &Config) {
     // with the parent. A limit the hard limit forbids is left as inherited,
     // which is stricter.
     unsafe {
-        command.pre_exec(move || {
-            libc::setrlimit(libc::RLIMIT_AS, &limit(memory));
+        inner.pre_exec(move || {
+            if address_space {
+                libc::setrlimit(libc::RLIMIT_AS, &limit(memory));
+            }
             libc::setrlimit(libc::RLIMIT_DATA, &limit(memory));
             libc::setrlimit(libc::RLIMIT_STACK, &limit(STACK));
             libc::setrlimit(libc::RLIMIT_CPU, &cpu);
@@ -671,7 +695,7 @@ fn apply_limits(command: &mut tokio::process::Command, config: &Config) {
 }
 
 #[cfg(not(unix))]
-fn apply_limits(_command: &mut tokio::process::Command, _config: &Config) {}
+fn apply_limits(_inner: &mut tokio::process::Command, _command: &Command, _config: &Config) {}
 
 /// The process to spawn for `command`: the program with its arguments,
 /// environment and limits, confined as `layers` say. The limits go first
@@ -686,7 +710,7 @@ fn prepare(
         return prepare_bubblewrap(command, config, layers);
     }
     let mut inner = plain(command);
-    apply_limits(&mut inner, config);
+    apply_limits(&mut inner, command, config);
     let planned = apply_confinement(command, &mut inner, config, layers)?;
     Ok((inner, planned))
 }
@@ -701,7 +725,7 @@ fn prepare(
         return Err(linux_only());
     }
     let mut inner = plain(command);
-    apply_limits(&mut inner, config);
+    apply_limits(&mut inner, command, config);
     Ok((
         inner,
         Layers {
@@ -789,7 +813,7 @@ fn prepare_bubblewrap(
     inner.args(&wrapped.args);
     inner.envs(command.envs.iter().map(|(name, value)| (name, value)));
     home_in_workdir(command, &mut inner);
-    apply_limits(&mut inner, config);
+    apply_limits(&mut inner, command, config);
     let descriptors = wrapped.descriptors;
     // SAFETY: clearing close-on-exec on descriptors this process opened
     // is one `fcntl` each, with nothing shared touched.
@@ -1440,6 +1464,44 @@ mod tests {
             run(small, &config).await.unwrap(),
             Outcome::Success
         ));
+    }
+
+    /// A program that reserves address space, as a GHC runtime does, may
+    /// map far more than the memory limit as long as it commits less: the
+    /// reservation is refused under the address space limit and allowed
+    /// without it, and the memory it writes stays bounded by the data
+    /// limit either way.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_reservation_of_address_space_is_allowed_on_request() {
+        if Command::new("python3").program().is_relative() {
+            eprintln!("skipped: no python3");
+            return;
+        }
+        let config = Config {
+            memory: ByteSize::mib(128),
+            ..config()
+        };
+        // Four gigabytes mapped, none of them written.
+        const RESERVE: &str = "import mmap\n\
+            mmap.mmap(-1, 4 << 30, flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS, prot=mmap.PROT_READ)\n";
+        let mut bounded = Command::new("python3");
+        bounded.args(["-I", "-c", RESERVE]);
+        let outcome = run(bounded, &config).await.unwrap();
+        assert!(matches!(outcome, Outcome::Failed { .. }), "{outcome:?}");
+
+        let mut reserving = Command::new("python3");
+        reserving
+            .args(["-I", "-c", RESERVE])
+            .reserves_address_space();
+        let outcome = run(reserving, &config).await.unwrap();
+        assert!(matches!(outcome, Outcome::Success), "{outcome:?}");
+
+        let mut hog = Command::new("python3");
+        hog.args(["-I", "-c", "b = bytearray(512 << 20)\n"])
+            .reserves_address_space();
+        let outcome = run(hog, &config).await.unwrap();
+        assert!(matches!(outcome, Outcome::Failed { .. }), "{outcome:?}");
     }
 
     #[tokio::test]

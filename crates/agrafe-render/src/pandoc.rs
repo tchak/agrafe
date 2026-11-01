@@ -86,6 +86,10 @@ pub async fn convert(config: &Config, conversion: &Conversion<'_>) -> Result<Ver
         .current_dir(dir)
         .writable(dir)
         .readable(conversion.input)
+        // GHC's runtime maps a large heap region at start and commits
+        // into it; under the address space limit it fails to start its
+        // threads, at random. `RLIMIT_DATA` bounds what it commits.
+        .reserves_address_space()
         // pandoc looks for its user data directory under `HOME`.
         .env("HOME", dir)
         .env("XDG_CACHE_HOME", dir);
