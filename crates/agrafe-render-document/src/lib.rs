@@ -341,17 +341,27 @@ fn for_pandoc(element: &mut HtmlElement) {
     }
     for child in element.children.make_mut() {
         if let HtmlNode::Element(child) = child {
-            child.attrs = HtmlAttrs(
-                child
-                    .attrs
-                    .0
-                    .iter()
-                    .filter(|(name, value)| !refers_elsewhere(child.tag, *name, value))
-                    .cloned()
-                    .collect(),
-            );
+            // The swap first, so that the link it brings up is filtered
+            // like any element; the `sup` it moves down is a child then.
             if let Some(link) = swapped_note_link(child) {
                 *child = link;
+            }
+            let tag = child.tag;
+            if child
+                .attrs
+                .0
+                .iter()
+                .any(|(name, value)| refers_elsewhere(tag, *name, value))
+            {
+                child.attrs = HtmlAttrs(
+                    child
+                        .attrs
+                        .0
+                        .iter()
+                        .filter(|(name, value)| !refers_elsewhere(tag, *name, value))
+                        .cloned()
+                        .collect(),
+                );
             }
             for_pandoc(child);
         }
@@ -396,7 +406,8 @@ fn loads_elsewhere(element: &HtmlElement) -> bool {
 
 /// Whether the attribute `name` of a `tag` element points outside the
 /// HTML: any URL attribute but a link's own target, which pandoc keeps
-/// as a link and never fetches.
+/// as a link and never fetches. `xlink:href` is SVG's, on an `image` or a
+/// `use` a template writes inline.
 fn refers_elsewhere(tag: HtmlTag, name: HtmlAttr, value: &str) -> bool {
     const URLS: [HtmlAttr; 6] = [
         attr::src,
@@ -406,15 +417,20 @@ fn refers_elsewhere(tag: HtmlTag, name: HtmlAttr, value: &str) -> bool {
         HtmlAttr::constant("background"),
         HtmlAttr::constant("lowsrc"),
     ];
-    let url = URLS.contains(&name) || (name == attr::href && tag != tag::a);
+    // Not a constant: typst interns at compile time only names of
+    // lowercase letters and hyphens.
+    let url = URLS.contains(&name)
+        || name.resolve().as_str() == "xlink:href"
+        || (name == attr::href && tag != tag::a);
     url && !is_data_uri(value)
 }
 
+/// Whether `value` is bytes of its own to pandoc, which takes a `data:`
+/// prefix, exactly that, as inline data and anything else as something
+/// to fetch: a leading space or `DATA:` is a resource to it, so it is
+/// one here.
 fn is_data_uri(value: &str) -> bool {
-    value
-        .trim_start()
-        .get(..5)
-        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("data:"))
+    value.starts_with("data:")
 }
 
 /// `<sup role="doc-noteref" id><a href>1</a></sup>` as
@@ -562,14 +578,16 @@ mod tests {
             (
                 "main.typ",
                 br##"#html.elem("img", attrs: (src: "/etc/passwd"))
+#html.elem("img", attrs: (src: "data:image/png;base64,AA=="))
 #html.elem("img", attrs: (src: " DATA:image/png;base64,AA=="))
 #html.elem("iframe", attrs: (src: "file:///etc/passwd"))
 #html.elem("video", attrs: (src: "https://example.org/v.mp4", poster: "/etc/hosts"))
 #html.elem("div", attrs: (background: "/etc/hosts"))[kept]
 #html.elem("object", attrs: (data: "/etc/passwd"))
 #html.elem("span", attrs: (href: "/etc/passwd"))[span]
+#html.elem("svg")[#html.elem("use", attrs: ("xlink:href": "/etc/group"))]
 #link("file:///etc/passwd")[link]
-#html.elem("sup", attrs: (role: "doc-noteref"))[#html.elem("a", attrs: (href: "#n"))[#html.elem("img", attrs: (src: "/etc/shadow"))]]
+#html.elem("sup", attrs: (role: "doc-noteref"))[#html.elem("a", attrs: (href: "#n", background: "/etc/motd"))[#html.elem("img", attrs: (src: "/etc/shadow"))]]
 #image("pixel.png")"##,
             ),
             ("pixel.png", PNG),
@@ -581,16 +599,24 @@ mod tests {
             "object",
             "/etc/hosts",
             "/etc/shadow",
+            "/etc/group",
+            // The link a note's swap brings up is filtered like any element.
+            "/etc/motd",
             "src=\"/etc/passwd\"",
+            // Only an exact `data:` is inline data to pandoc; this is a
+            // resource it would try to fetch.
+            "DATA:",
         ] {
             assert!(!html.contains(gone), "{gone} in {html}");
         }
         for kept in [
-            "src=\" DATA:image/png;base64,AA==\"",
+            "<img src=\"data:image/png;base64,AA==\"",
             "<div>kept</div>",
             "<span>span</span>",
+            "<use></use>",
             // A link is a link: pandoc keeps it and fetches nothing.
             "<a href=\"file:///etc/passwd\">link</a>",
+            "<a href=\"#n\" role=\"doc-noteref\"><sup>",
             "<img src=\"data:image/png;base64,",
         ] {
             assert!(html.contains(kept), "{kept} in {html}");
