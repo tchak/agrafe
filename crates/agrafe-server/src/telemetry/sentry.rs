@@ -14,7 +14,7 @@ use std::time::Duration;
 use agrafe::config::{ExportLevel, SentryConfig};
 use agrafe::trace::TraceContext;
 use sentry::integrations::tracing::{BreadcrumbLayer, ErrorLayer, SpanLayer};
-use sentry::protocol::{Envelope, EnvelopeItem, Event, Transaction};
+use sentry::protocol::{Context, Envelope, EnvelopeItem, Event, Transaction};
 use sentry::transports::DefaultTransportFactory;
 use sentry::{ClientInitGuard, ClientOptions, Transport, TransportFactory};
 use serde::Serialize;
@@ -150,22 +150,56 @@ impl Transport for Scrubbed {
 /// sending: an item it does not know is not one it can vouch for.
 fn scrub_item(item: EnvelopeItem) -> Option<EnvelopeItem> {
     match item {
-        EnvelopeItem::Event(event) => Some(scrub_json::<Event<'static>>(&event)?.into()),
-        EnvelopeItem::Transaction(transaction) => {
-            Some(scrub_json::<Transaction<'static>>(&transaction)?.into())
+        EnvelopeItem::Event(event) => scrub_json::<Event<'static>>(&event).map(Into::into),
+        EnvelopeItem::Transaction(mut transaction) => {
+            named(&mut transaction);
+            scrub_json::<Transaction<'static>>(&transaction).map(Into::into)
         }
         item @ EnvelopeItem::ClientReport(_) => Some(item),
         _ => None,
     }
 }
 
+/// What Sentry groups by. The span layer names a transaction after its
+/// span, `request` or `job`: one transaction for every request there is.
+/// The template and the kind instead, as the OTel side does; neither holds
+/// user data, and the `path` goes with the rest of the scrub.
+fn named(transaction: &mut Transaction<'static>) {
+    let Some(Context::Trace(trace)) = transaction.contexts.get("trace") else {
+        return;
+    };
+    let data = |key: &str| trace.data.get(key).and_then(Value::as_str);
+    let name = match transaction.name.as_deref() {
+        Some("request") => match (data("method"), data("http.route")) {
+            (Some(method), Some(route)) => format!("{method} {route}"),
+            _ => return,
+        },
+        Some("job") => match data("kind") {
+            Some(kind) => format!("job {kind}"),
+            None => return,
+        },
+        _ => return,
+    };
+    transaction.name = Some(name);
+}
+
 /// Through JSON, which reaches every string of a protocol type with many
 /// without naming them. Off the hot path: events are rare, and spans come
-/// here only at a non-zero `traces_sample_rate`.
+/// here only at a non-zero `traces_sample_rate`. An item that does not
+/// come back from JSON is not sent, and stderr says so: silently losing
+/// every event of one shape is what the exporters must not do.
 fn scrub_json<T: Serialize + DeserializeOwned>(item: &T) -> Option<T> {
-    let mut value = serde_json::to_value(item).ok()?;
-    scrub_value(&mut value);
-    serde_json::from_value(value).ok()
+    let scrubbed = serde_json::to_value(item).and_then(|mut value| {
+        scrub_value(&mut value);
+        serde_json::from_value(value)
+    });
+    match scrubbed {
+        Ok(item) => Some(item),
+        Err(err) => {
+            eprintln!("a Sentry item could not be scrubbed and was not sent: {err}");
+            None
+        }
+    }
 }
 
 fn scrub_value(value: &mut Value) {
@@ -262,15 +296,26 @@ mod tests {
         };
         let path = format!("/blobs/{TOKEN}/abc/original/secret.pdf");
         let captured = with_sentry(&config, || {
-            let span =
-                tracing::info_span!("request", path = %path, query = %format!("/x?e={ENVELOPE}"));
+            let span = tracing::info_span!(
+                "request",
+                method = "GET",
+                path = %path,
+                "http.route" = "/blobs/{token}/{id}/original/{filename}",
+                query = %format!("/x?e={ENVELOPE}"),
+            );
             span.in_scope(|| tracing::info_span!("storage", op = "get").in_scope(|| {}));
+            tracing::info_span!("job", kind = "scan").in_scope(|| {});
+            tracing::info_span!("job").in_scope(|| {});
         });
         let wire = captured.wire();
+        // Named after the template and the kind, not the span: what Sentry
+        // groups by. A span without them keeps its name.
         assert!(
-            wire.contains("\"transaction\""),
-            "the span was sent: {wire}"
+            wire.contains("\"transaction\":\"GET /blobs/{token}/{id}/original/{filename}\""),
+            "{wire}"
         );
+        assert!(wire.contains("\"transaction\":\"job scan\""), "{wire}");
+        assert!(wire.contains("\"transaction\":\"job\""), "{wire}");
         for secret in [TOKEN, ENVELOPE, "secret.pdf"] {
             assert!(!wire.contains(secret), "{secret} in {wire}");
         }

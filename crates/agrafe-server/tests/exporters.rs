@@ -469,6 +469,12 @@ async fn otlp_over_http_and_sentry_send_what_they_should_and_no_more() {
         "{sentry}"
     );
     assert!(sentry.contains("\"type\":\"transaction\""), "{sentry}");
+    // Named as the OTel spans are, for the grouping.
+    assert!(
+        sentry.contains("\"transaction\":\"PUT /blobs/{token}"),
+        "{sentry}"
+    );
+    assert!(sentry.contains("\"transaction\":\"job scan\""), "{sentry}");
 }
 
 #[tokio::test]

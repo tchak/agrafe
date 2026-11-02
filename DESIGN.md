@@ -3808,7 +3808,10 @@ segment is a user's filename. A collector's or Sentry's own scrubbing is a
 second line: by then the data has left.
 
 - The `request` span records `http.route`, axum's `MatchedPath`, whose template
-  holds none of the three, and a span's exported name is built from it. `path`
+  holds none of the three, and a span's exported name is built from it on both
+  sides: the OTel span processor and the Sentry transport name a `request`
+  `GET /blobs/{token}/…` and a `job` `job scan`, which is what a backend groups
+  by, where the layers would name every one `request`. `path`
   stays for the logs, is dropped from what is exported, and nothing records
   `url.full` or the like: no `sentry-tower`, no OTel HTTP layer.
 - Everything is scrubbed on the way out: `telemetry::scrub` replaces the token
