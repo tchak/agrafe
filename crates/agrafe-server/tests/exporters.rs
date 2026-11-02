@@ -184,9 +184,13 @@ impl Server {
         std::fs::write(&config, toml).unwrap();
         let log = dir.path().join("server.log");
         let mut command = Command::new(env!("CARGO_BIN_EXE_agrafe"));
+        // Neither agrafe's own variables nor the OTel SDK's, which it reads
+        // for what the configuration does not set: a traces endpoint in a
+        // developer's shell would take the exports away from the fake.
         for (name, _) in std::env::vars_os() {
-            if name.to_string_lossy().starts_with("AGRAFE_") {
-                command.env_remove(name);
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with("AGRAFE_") || name_str.starts_with("OTEL_") {
+                command.env_remove(&name);
             }
         }
         let child = command

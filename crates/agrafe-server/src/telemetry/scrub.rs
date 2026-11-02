@@ -83,8 +83,10 @@ fn scrub_word(word: &str) -> Cow<'_, str> {
 
 /// Where a token starts in a word, alone or as a value, `token=v1.…`: it is
 /// `v1.<key_id>.<expires_unix>.<signature>`, see `agrafe::signing`, and its
-/// signature ends the word. A version number shaped the same goes too,
-/// which costs nothing.
+/// signature, base64url of a MAC, ends the word. A MAC of ours is 32
+/// bytes, 43 characters; 22, 16 bytes, is the floor, so that a version
+/// number shaped like a token, `v1.2.20250101.abc` as a Sentry release,
+/// is not one.
 fn token_start(word: &str) -> Option<usize> {
     word.match_indices("v1.").map(|(at, _)| at).find(|&at| {
         let at_boundary = word[..at]
@@ -98,8 +100,16 @@ fn token_start(word: &str) -> Option<usize> {
             && expires.is_some_and(|expires| {
                 !expires.is_empty() && expires.bytes().all(|b| b.is_ascii_digit())
             })
-            && signature.is_some_and(|signature| !signature.is_empty())
+            && signature.is_some_and(is_signature)
     })
+}
+
+/// At least 16 bytes of base64url, unpadded.
+fn is_signature(text: &str) -> bool {
+    text.len() >= 22
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 fn is_uuid(segment: &str) -> bool {
@@ -114,7 +124,8 @@ fn is_uuid(segment: &str) -> bool {
 mod tests {
     use super::*;
 
-    const TOKEN: &str = "v1.k1.2000000000.c2lnbmF0dXJl";
+    /// Shaped as `agrafe::signing` mints one: a 32-byte MAC, 43 characters.
+    const TOKEN: &str = "v1.k1.2000000000.c2lnbmF0dXJlc2lnbmF0dXJlc2lnbmF0dXJlc2lnbmF";
     const ID: &str = "0190b5a2-1c3d-7e4f-8a9b-0c1d2e3f4a5b";
 
     #[test]
@@ -170,6 +181,9 @@ mod tests {
             "/healthz",
             "what now? nothing",
             "the database: connection refused",
+            // Version numbers shaped like a token, a Sentry release for one.
+            "release v1.2.20250101.abc",
+            "v1.2.3.4",
             "",
         ] {
             assert!(matches!(scrub(text), Cow::Borrowed(_)), "{text}");

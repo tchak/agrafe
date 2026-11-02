@@ -275,7 +275,7 @@ mod tests {
 
     use super::*;
 
-    const TOKEN: &str = "v1.k1.2000000000.c2lnbmF0dXJl";
+    const TOKEN: &str = "v1.k1.2000000000.c2lnbmF0dXJlc2lnbmF0dXJlc2lnbmF0dXJlc2lnbmF";
     const ENVELOPE: &str = "d3JhcHBlZC1kYXRhLWtleQ";
 
     /// What reaches the batch.
