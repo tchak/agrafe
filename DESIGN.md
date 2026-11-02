@@ -3719,8 +3719,9 @@ and expiry webhook any of them enqueued. `reap::schedule` and
 sets no context, so each run is a root and its own fan-out is its trace.
 That fan-out is large by nature, thousands of purges from one reap on a
 big table, which is right for the logs, one id for one sweep's
-consequences, and heavy for an exporter; span links are the answer when
-one lands.
+consequences, and heavy for an exporter. The exporter's queue is bounded and
+drops what does not fit, and `otel.sample_ratio` decides per sweep; span links
+are the answer if that proves too coarse.
 
 The context is ambient rather than a parameter because the enqueues sit
 deep under the handle's methods, a dozen call sites, and every one of them
@@ -3743,7 +3744,7 @@ the client could merge unrelated work or flood one trace. Roots are marked
 sampled: the sampling decision is an exporter's, and a parent marked
 unsampled would make a parent-based sampler drop the jobs.
 
-**Spans.** `request` (method, path, `trace_id`) and `job` (id, kind, blob,
+**Spans.** `request` (method, path, `http.route`, `trace_id`) and `job` (id, kind, blob,
 attempt, `trace_id`) are at `info`, so every log line inside one carries
 the trace id. The public span records the path with the token redacted, the
 private one the path without its query string. Inside them, `storage`
@@ -3757,13 +3758,79 @@ which are paths of user files. `clamav` covers the connection and the wait
 for the verdict. The fetch and webhook calls are not spanned apart: each is
 the whole of its job.
 
-**No exporter yet.** The spans and the stored context are what an
-OpenTelemetry or Sentry layer needs: the job span's parent comes from
-`Job::trace_context`, the request span's from the middleware's context.
-Until then the trace id ties log lines together, and the jobs API and the
-dashboard show it on each job. When an exporter lands, the context should
-come from its span instead of being generated here, so that the stored
-parent ids name spans the backend has.
+**Exporters.** Sentry takes errors, as issues with their breadcrumbs, and
+OpenTelemetry takes spans over OTLP. Neither takes metrics, which stay on
+`/metrics`, nor logs, which stay on stderr. Each is optional, off until
+`[sentry] dsn` or `[otel] endpoint` is set, and independent of the other.
+
+They are subscriber layers in the binary, `agrafe-server`'s `telemetry`: the
+library and the routers know neither, and a host brings its own. The `[sentry]`
+and `[otel]` sections are plain data in `Config`, with the rest of the
+validation, so a typo is refused like any other. Each is a cargo feature, on by
+default: the runtime cost of a configured-off exporter is nothing, and a release
+image an operator cannot turn this on in would be the worse default.
+`--no-default-features` leaves the SDKs out, and a build asked for what it left
+out refuses to start, as does one whose exporter cannot be set up: a process
+told to report that silently does not is found out at the outage.
+
+Only `AGRAFE_` variables turn one on, like every other key, so that what a
+process does is in one place. Once on, the SDKs still read their own variables
+for what agrafe does not set.
+
+**Each output has its own filter.** `RUST_LOG` is the logs': raising it to read
+something on a terminal does not send more anywhere, and lowering it does not
+blind the exporters. The exporters' filters cap the HTTP crates at `info`
+unconditionally, where the logs let an operator who names one lift the cap, and
+leave out the crates that do the exporting, whose own events would feed the
+exporter. OTLP takes `info`, where every span of the library is.
+
+**With OTel on, a unit's context is its span's.** The trace context is set by
+`TraceContext::start`, given the unit's span and parent: `trace::set_span_source`
+plugs in a function that sets the span's parent and answers with the ids the
+provider gave it. The library has no OpenTelemetry dependency, so this is a
+function pointer, set once per process. The stored `traceparent` then names a
+span the backend has, and the job's span is its child. The sampling decision
+comes back with the ids, so the row stores it and the parent-based sampler
+follows it through the jobs: a trace is kept whole or not at all, across
+processes. Roots are no longer always marked sampled then, which is what the
+sampler is for. A span the exporter's filter left out has no ids, and the unit
+falls back on generated ones, as without an exporter.
+
+**Signatures and personal data stay in.** A public URL's first path segment is a
+bearer token, its query can hold a sealed read's wrapped data key, and its last
+segment is a user's filename. A collector's or Sentry's own scrubbing is a
+second line: by then the data has left.
+
+- The `request` span records `http.route`, axum's `MatchedPath`, whose template
+  holds none of the three, and a span's exported name is built from it. `path`
+  stays for the logs, is dropped from what is exported, and nothing records
+  `url.full` or the like: no `sentry-tower`, no OTel HTTP layer.
+- Everything is scrubbed on the way out: `telemetry::scrub` replaces the token
+  segment and what follows it with `<token>`, a bare token too, and drops query
+  strings, in any text. On the OTel side a span processor goes over the name,
+  attributes, events and status; on Sentry's the transport does, wrapping the
+  real one, over every string of every item as JSON. The transport rather than
+  `before_send` and `before_breadcrumb`, which would miss transactions, for
+  which the SDK has no hook, and anything added later. An item it does not know,
+  an attachment for instance, is dropped rather than vouched for.
+- A job's failure is logged as `last_error` and dropped by name. It can quote a
+  user's file (a compiler's diagnostics, a tool's stderr) or a host's manifest,
+  which no pattern finds, and the message is part of what `last_error` is for, so
+  it stays in the logs and on the row. A Sentry event gets the `job_kind` tag and
+  the current `trace_id`, which lead to it. `ZipError` lost its entry names for
+  the same reason, there being no use for them.
+- Sentry's event fields are its own: span fields are not merged in. No local
+  variables exist to capture in Rust, and `attach_stacktrace` adds frames.
+  `send_default_pii` is exposed and off; agrafe uses none of the integrations it
+  feeds, so it adds nothing.
+
+Other `error` lines keep their message, which is what makes the event useful:
+an `internal error` inlines a database or object store error, which names ids
+and not content, and `last_error` is the one field known to carry more. A new
+error line whose message quotes user data has to use that field, or stay out.
+
+`tests/exporters.rs` runs the binary against a fake collector and a fake Sentry
+and reads every byte they receive.
 
 ## Webhooks
 

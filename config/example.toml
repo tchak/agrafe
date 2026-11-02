@@ -497,3 +497,46 @@ enabled = false
 # Show the retry and discard buttons. Off: the dashboard is read-only and
 # the action routes answer 404.
 actions = false
+
+# Optional exporters, both off until configured and independent of each other.
+# Tokens, query strings, filenames and a job's last_error are taken out before
+# anything leaves the process. See "Exporting errors and traces" in the
+# monitoring guide. Only the AGRAFE_ variables below turn them on, not
+# SENTRY_DSN or OTEL_EXPORTER_OTLP_ENDPOINT.
+[sentry]
+# The project's DSN. Off when unset. Prefer AGRAFE_SENTRY__DSN.
+# dsn = "https://key@sentry.example/12"
+# environment = "production"
+# The crate's version when unset.
+# release = "0.1.0"
+# The share of error events sent.
+sample_rate = 1.0
+# The share of traces sent to Sentry. At 0, spans are not sent to it at all;
+# they are [otel]'s job.
+traces_sample_rate = 0.0
+# The SDK's option for default personal data. agrafe uses none of the SDK's
+# HTTP integrations, so it adds nothing today. Leave it off.
+send_default_pii = false
+# The trail kept before each event.
+max_breadcrumbs = 50
+# Attach the stack's frames, never its variables, to every event.
+attach_stacktrace = false
+# The tracing level and above that become an event, and a breadcrumb. The HTTP
+# client crates stay at info at most whatever these say.
+event_level = "error"
+breadcrumb_level = "info"
+
+[otel]
+# The collector. Off when unset. Spans only: metrics stay on /metrics and logs
+# on stderr.
+# endpoint = "http://collector:4317"
+# "grpc", usually port 4317, or "http/protobuf", usually port 4318, where a
+# URL without a path gets /v1/traces.
+protocol = "grpc"
+service_name = "agrafe"
+# The share of traces kept, decided where a trace starts, and followed by its
+# jobs and by the private port's callers' decision when they send one.
+sample_ratio = 1.0
+# Headers on every export. Secrets: prefer AGRAFE_OTEL__HEADERS__AUTHORIZATION.
+# [otel.headers]
+# authorization = "Bearer ..."

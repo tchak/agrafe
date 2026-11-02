@@ -76,6 +76,14 @@ pub struct Config {
     /// `[webhook]`: where state changes are posted, none by default.
     #[serde(default)]
     pub webhook: WebhookConfig,
+    /// `[sentry]`: errors sent to Sentry, off by default. Read by the
+    /// `agrafe` binary, which holds the SDK; the library ignores it.
+    #[serde(default)]
+    pub sentry: SentryConfig,
+    /// `[otel]`: spans exported over OTLP, off by default. Read by the
+    /// `agrafe` binary, like `sentry`.
+    #[serde(default)]
+    pub otel: OtelConfig,
 }
 
 /// The environment's share of the configuration: `AGRAFE_<SECTION>__<KEY>`
@@ -166,6 +174,8 @@ impl Config {
         self.server.cors.validate()?;
         self.database.validate()?;
         self.webhook.validate()?;
+        self.sentry.validate()?;
+        self.otel.validate()?;
         self.media
             .render
             .map
@@ -937,6 +947,188 @@ impl Default for FetchConfig {
     }
 }
 
+/// The errors sent to Sentry. See [DESIGN.md, "Tracing"].
+///
+/// [DESIGN.md, "Tracing"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#tracing
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SentryConfig {
+    /// The project's DSN. Off when unset or empty.
+    pub dsn: Option<Secret>,
+    /// The environment events are filed under.
+    pub environment: Option<String>,
+    /// The release events are filed under, for resolve and regress
+    /// tracking; the crate's version when unset.
+    pub release: Option<String>,
+    /// The share of error events sent, from 0 to 1.
+    pub sample_rate: f32,
+    /// The share of traces sent to Sentry, from 0 to 1. At 0, spans are
+    /// not sent to it at all.
+    pub traces_sample_rate: f32,
+    /// The SDK's option for default personal data. agrafe uses none of the
+    /// SDK's HTTP integrations, so it adds nothing today.
+    pub send_default_pii: bool,
+    /// The trail kept before each event.
+    pub max_breadcrumbs: usize,
+    /// Attach the stack's frames, never its variables, to every event.
+    pub attach_stacktrace: bool,
+    /// The tracing level and above that become an event.
+    pub event_level: ExportLevel,
+    /// The tracing level and above that become a breadcrumb.
+    pub breadcrumb_level: ExportLevel,
+}
+
+impl Default for SentryConfig {
+    fn default() -> Self {
+        Self {
+            dsn: None,
+            environment: None,
+            release: None,
+            sample_rate: 1.0,
+            traces_sample_rate: 0.0,
+            send_default_pii: false,
+            max_breadcrumbs: 50,
+            attach_stacktrace: false,
+            event_level: ExportLevel::Error,
+            breadcrumb_level: ExportLevel::Info,
+        }
+    }
+}
+
+impl SentryConfig {
+    /// The DSN when set: an empty one, as a template renders an absent
+    /// value, is off.
+    pub fn dsn(&self) -> Option<&str> {
+        self.dsn
+            .as_ref()
+            .map(Secret::expose)
+            .filter(|dsn| !dsn.is_empty())
+    }
+
+    fn validate(&self) -> Result<(), ConfigError> {
+        for (key, rate) in [
+            ("sentry.sample_rate", self.sample_rate),
+            ("sentry.traces_sample_rate", self.traces_sample_rate),
+        ] {
+            if !(0.0..=1.0).contains(&rate) {
+                return Err(ConfigError::Invalid(format!(
+                    "{key} must be between 0 and 1"
+                )));
+            }
+        }
+        // The message does not quote the value, which holds a key.
+        if let Some(dsn) = self.dsn() {
+            let usable = url::Url::parse(dsn).is_ok_and(|url| {
+                matches!(url.scheme(), "http" | "https")
+                    && !url.username().is_empty()
+                    && url.host().is_some()
+                    && url
+                        .path()
+                        .rsplit('/')
+                        .next()
+                        .is_some_and(|id| !id.is_empty())
+            });
+            if !usable {
+                return Err(ConfigError::Invalid(
+                    "sentry.dsn must be a DSN, like https://key@sentry.example/12".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A tracing level, as `[sentry]` names one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExportLevel {
+    /// `error`.
+    Error,
+    /// `warn`.
+    Warn,
+    /// `info`.
+    Info,
+    /// `debug`.
+    Debug,
+    /// `trace`.
+    Trace,
+}
+
+/// The spans exported over OTLP. See [DESIGN.md, "Tracing"].
+///
+/// [DESIGN.md, "Tracing"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#tracing
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct OtelConfig {
+    /// The collector's URL, `http` or `https`. Off when unset or empty.
+    pub endpoint: Option<String>,
+    /// How to talk to it.
+    pub protocol: OtelProtocol,
+    /// The `service.name` of the spans.
+    pub service_name: String,
+    /// The share of traces kept, from 0 to 1, decided where a trace
+    /// starts and followed by the rest of it.
+    pub sample_ratio: f64,
+    /// Headers on every export, an API key for instance.
+    pub headers: HashMap<String, Secret>,
+}
+
+impl Default for OtelConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: None,
+            protocol: OtelProtocol::Grpc,
+            service_name: "agrafe".into(),
+            sample_ratio: 1.0,
+            headers: HashMap::new(),
+        }
+    }
+}
+
+impl OtelConfig {
+    /// The endpoint when set: an empty one is off, as for the DSN.
+    pub fn endpoint(&self) -> Option<&str> {
+        self.endpoint.as_deref().filter(|url| !url.is_empty())
+    }
+
+    fn validate(&self) -> Result<(), ConfigError> {
+        if !(0.0..=1.0).contains(&self.sample_ratio) {
+            return Err(ConfigError::Invalid(
+                "otel.sample_ratio must be between 0 and 1".into(),
+            ));
+        }
+        if let Some(endpoint) = self.endpoint()
+            && !url::Url::parse(endpoint)
+                .is_ok_and(|url| matches!(url.scheme(), "http" | "https") && url.host().is_some())
+        {
+            return Err(ConfigError::Invalid(format!(
+                "otel.endpoint: {endpoint:?} is not an http or https URL"
+            )));
+        }
+        for (name, value) in &self.headers {
+            if http::HeaderName::try_from(name.as_str()).is_err()
+                || http::HeaderValue::try_from(value.expose()).is_err()
+            {
+                return Err(ConfigError::Invalid(format!(
+                    "otel.headers: {name:?} is not a valid header"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// How spans reach the collector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub enum OtelProtocol {
+    /// OTLP over gRPC, usually port 4317.
+    #[serde(rename = "grpc")]
+    Grpc,
+    /// OTLP as protobuf over HTTP, usually port 4318.
+    #[serde(rename = "http/protobuf")]
+    HttpProtobuf,
+}
+
 /// Where state changes are posted. See [DESIGN.md, "Webhooks"].
 ///
 /// [DESIGN.md, "Webhooks"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#webhooks
@@ -1644,6 +1836,58 @@ mod tests {
 
     fn jobs(toml: &str) -> Option<JobsConfig> {
         Figment::from(Toml::string(toml)).extract().ok()
+    }
+
+    #[test]
+    fn the_exporters_are_off_until_configured_and_checked_when_they_are() {
+        let sentry =
+            |toml: &str| -> SentryConfig { Figment::from(Toml::string(toml)).extract().unwrap() };
+        let otel =
+            |toml: &str| -> OtelConfig { Figment::from(Toml::string(toml)).extract().unwrap() };
+
+        assert_eq!(SentryConfig::default().dsn(), None);
+        assert!(!SentryConfig::default().send_default_pii);
+        assert_eq!(sentry(r#"dsn = """#).dsn(), None);
+        assert!(sentry(r#"dsn = """#).validate().is_ok());
+        assert!(
+            sentry(r#"dsn = "https://key@sentry.example/12""#)
+                .validate()
+                .is_ok()
+        );
+        for bad in [
+            r#"dsn = "https://sentry.example/12""#,
+            r#"dsn = "ftp://s3cret@sentry.example/12""#,
+            r#"dsn = "https://s3cret@sentry.example/""#,
+            r#"dsn = "not a url""#,
+            "sample_rate = 1.5",
+            "traces_sample_rate = -0.1",
+            "sample_rate = nan",
+        ] {
+            let err = sentry(bad).validate().unwrap_err().to_string();
+            assert!(!err.contains("s3cret"), "the DSN's key in {err}");
+        }
+
+        assert_eq!(OtelConfig::default().endpoint(), None);
+        assert_eq!(otel(r#"endpoint = """#).endpoint(), None);
+        assert_eq!(
+            otel(r#"protocol = "http/protobuf""#).protocol,
+            OtelProtocol::HttpProtobuf
+        );
+        assert!(
+            otel(r#"endpoint = "http://collector:4317""#)
+                .validate()
+                .is_ok()
+        );
+        for bad in [
+            r#"endpoint = "collector:4317""#,
+            "sample_ratio = 2.0",
+            r#"headers = { "bad name" = "x" }"#,
+            r#"headers = { good = "line\nbreak" }"#,
+        ] {
+            assert!(otel(bad).validate().is_err(), "{bad}");
+        }
+        let debug = format!("{:?}", otel(r#"headers = { authorization = "hunter2" }"#));
+        assert!(!debug.contains("hunter2"), "{debug}");
     }
 
     #[test]

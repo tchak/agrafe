@@ -332,6 +332,36 @@ Workers per kind, per process. An unknown kind is a configuration error.
 | `enabled` | `false` | Serve the dashboard under `/dashboard` on the private port, on `api` and `all` processes |
 | `actions` | `false` | Show the retry and discard buttons. Off, the action routes answer `404` |
 
+## `[sentry]`
+
+Errors sent to Sentry, off until `dsn` is set. See [Exporting errors and
+traces](../guide/monitoring.md#exporting-errors-and-traces).
+
+| Key | Default | Description |
+|---|---|---|
+| `dsn` | none | The project's DSN. A secret. Off when unset or empty |
+| `environment` | the SDK's: `SENTRY_ENVIRONMENT`, else `production` or `development` | What events are filed under |
+| `release` | the crate's version | The release events are filed under, for resolve and regress tracking |
+| `sample_rate` | `1.0` | The share of error events sent |
+| `traces_sample_rate` | `0.0` | The share of traces sent to Sentry. At `0`, no spans reach it |
+| `send_default_pii` | `false` | The SDK's option for default personal data. agrafe uses none of its HTTP integrations, so it adds nothing today |
+| `max_breadcrumbs` | `50` | The trail kept before each event |
+| `attach_stacktrace` | `false` | Attach the stack's frames, never its variables, to every event |
+| `event_level` | `"error"` | The tracing level and above that become an event: `error`, `warn`, `info`, `debug` or `trace` |
+| `breadcrumb_level` | `"info"` | The tracing level and above that become a breadcrumb. The HTTP client crates stay at `info` at most |
+
+## `[otel]`
+
+Spans exported over OTLP, off until `endpoint` is set.
+
+| Key | Default | Description |
+|---|---|---|
+| `endpoint` | none | The collector's `http` or `https` URL. Off when unset or empty. With `http/protobuf`, a URL without a path gets `/v1/traces` |
+| `protocol` | `"grpc"` | `grpc` or `http/protobuf` |
+| `service_name` | `"agrafe"` | The spans' `service.name` |
+| `sample_ratio` | `1.0` | The share of traces kept, decided where a trace starts and followed by the rest of it |
+| `headers` | none | Headers on every export, an API key for instance. Secrets |
+
 ## Validation at startup
 
 The process refuses to start when the configuration is inconsistent, with a

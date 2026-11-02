@@ -147,17 +147,15 @@ pub async fn run_one(state: &Agrafe, kind: JobKind, worker: &str) -> sqlx::Resul
     // Each attempt is a unit of the trace that enqueued the job, or the
     // first of its own for a job nothing traced (the periodic ones): the
     // jobs it enqueues in turn join that trace.
-    let context = job
-        .trace_context()
-        .map_or_else(TraceContext::root, |parent| parent.child());
     let span = tracing::info_span!(
         "job",
         id = job.id,
         kind = %job.kind,
         blob = ?job.blob_id,
         attempt = job.attempts,
-        trace_id = %context.trace_id(),
+        trace_id = tracing::field::Empty,
     );
+    let context = TraceContext::start(&span, job.trace_context());
     // The span is attached to the future rather than entered on the
     // thread: a guard held across an await would tag whatever else the
     // thread polls meanwhile.
@@ -216,22 +214,29 @@ async fn run_claimed(state: &Agrafe, job: &Job, worker: &str) -> sqlx::Result<()
             )
             .await?;
             tx.commit().await?;
+            // As `last_error`, the column's name, and for what the exporters
+            // key on: it may quote what a user's file or a host's manifest
+            // says, and stays in the logs and the row. See DESIGN.md, "Tracing".
             match failure {
                 Failure::Retry(at) => {
-                    tracing::warn!(error, retry_at = %at, "job failed");
+                    tracing::warn!(last_error = error, retry_at = %at, "job failed");
                     Outcome::Retry
                 }
                 Failure::Dead => {
-                    tracing::error!(error, "job failed for the last time");
+                    tracing::error!(
+                        last_error = error,
+                        tags.job_kind = %job.kind,
+                        "job failed for the last time"
+                    );
                     Outcome::Dead
                 }
                 Failure::Superseded => {
-                    tracing::warn!(error, "job failed and was superseded");
+                    tracing::warn!(last_error = error, "job failed and was superseded");
                     Outcome::Superseded
                 }
                 Failure::Lost => {
                     tracing::warn!(
-                        error,
+                        last_error = error,
                         "job failed after its lease was lost: the job was reclaimed or removed, row left alone"
                     );
                     return Ok(());

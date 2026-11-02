@@ -240,6 +240,51 @@ async fn public_request_spans_never_record_the_token() {
     assert!(fields.iter().all(|f| !f.contains(&token)), "{fields:?}");
 }
 
+/// `http.route` is the template, for an exporter: neither the token nor
+/// the filename, the mount prefix included, and none on what no route
+/// answers.
+#[tokio::test]
+async fn request_spans_record_the_route_template() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let blob = ready_blob(&app, &png_bytes(1500)).await;
+    let original = public_url(&blob, "original");
+    let nested = axum::Router::new().nest("/files", agrafe_axum::public_router(app.state.clone()));
+
+    let fields = Fields::default();
+    let _default =
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(fields.clone()));
+    let (status, _) = call(&app.public, req(Method::GET, &original)).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = call(&nested, req(Method::GET, &format!("/files{original}"))).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = call(&app.public, req(Method::GET, "/nothing/here")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = call(
+        &app.private,
+        req(Method::GET, &format!("/blobs/{}", id_of(&blob))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let fields = fields.all();
+    let routes: Vec<&str> = fields
+        .iter()
+        .filter_map(|f| f.strip_prefix("http.route="))
+        .collect();
+    assert_eq!(
+        routes,
+        [
+            "\"/blobs/{token}/{id}/original/{filename}\"",
+            "\"/files/blobs/{token}/{id}/original/{filename}\"",
+            "\"/blobs/{id}\"",
+        ],
+        "{fields:?}"
+    );
+}
+
 const OTHER: &str = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
 
 /// A retry leaves the stored context alone: the job runs again in the

@@ -32,7 +32,8 @@ See "Crates" in `DESIGN.md` for the dependency graph.
   its own integration tests under `tests/`. No `ApiError`: it renders
   `DashboardError` as a page.
 - `crates/agrafe-server` — the clap entry point; its binary is named
-  `agrafe`.
+  `agrafe`. It alone holds the Sentry and OpenTelemetry exporters
+  (`telemetry`), behind cargo features.
 - `crates/agrafe-crypto` — streaming AEAD and key wrapping, reviewed in
   isolation; no dependency on the server crate.
 - `crates/agrafe-types` — content types, classification, sniffing, the

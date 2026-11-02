@@ -7,6 +7,8 @@
 //! that does not serve the private API answers `/healthz` and `/metrics`
 //! on it alone.
 
+mod telemetry;
+
 use std::net::SocketAddr;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
@@ -22,7 +24,6 @@ use clap::{Parser, Subcommand};
 use futures::FutureExt;
 use tokio::net::TcpListener;
 use tracing::Instrument as _;
-use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 #[command(
@@ -99,6 +100,8 @@ enum Error {
     ConfigNotFound(PathBuf),
     #[error(transparent)]
     Config(#[from] ConfigError),
+    #[error(transparent)]
+    Telemetry(#[from] telemetry::Error),
     #[error("connecting to the database: {0}")]
     Connect(#[from] sqlx::Error),
     #[error("running migrations: {0}")]
@@ -137,62 +140,19 @@ impl std::fmt::Debug for Error {
     }
 }
 
-/// The crates under the fetch client, which log request targets at debug
-/// and trace. A fetched URL is a presigned secret.
-const HTTP_TARGETS: [&str; 4] = ["hyper", "hyper_util", "h2", "reqwest"];
-
-/// Hold the HTTP stack at `info` whatever the global level says, unless
-/// the filter names one of those crates itself: then the operator asked
-/// and gets it. The check is on the filter string, since a directive added
-/// on a target replaces the one the filter already had on it; a directive
-/// on a module below, `hyper::proto=trace`, is more specific and wins over
-/// the cap on its own.
-/// The filter `env`, the value of `RUST_LOG`, spells, `info` when it is
-/// empty or names nothing valid. A directive it cannot parse is reported on stderr and
-/// left out, the others kept: one typo must not silently turn the debug
-/// lines an operator asked for back into `info`.
-fn env_filter(env: &str) -> EnvFilter {
-    EnvFilter::builder()
-        .with_default_directive(tracing_subscriber::filter::LevelFilter::INFO.into())
-        .parse_lossy(env)
-}
-
-fn cap_http_targets(filter: EnvFilter, env: &str) -> EnvFilter {
-    HTTP_TARGETS
-        .into_iter()
-        .filter(|target| !names_target(env, target))
-        .fold(filter, |filter, target| {
-            filter.add_directive(format!("{target}=info").parse().expect("a valid directive"))
-        })
-}
-
-/// Whether a filter string has a directive on exactly `target`:
-/// `hyper=debug`, `hyper[span]=trace`, or a bare `hyper`.
-fn names_target(env: &str, target: &str) -> bool {
-    env.split(',')
-        .map(str::trim)
-        .any(|directive| directive.split(['=', '[']).next() == Some(target))
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     let cli = Cli::parse();
-    let env = std::env::var(EnvFilter::DEFAULT_ENV).unwrap_or_default();
-    let filter = cap_http_targets(env_filter(&env), &env);
-    // Logs on stderr: stdout is the audit's report, to keep or pipe apart.
-    // Coloured on a terminal only, not in a log collector's input.
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
-        .init();
-
     if let Some(path) = &cli.config
         && !path.exists()
     {
         return Err(Error::ConfigNotFound(path.clone()));
     }
     let mut config = Config::load(cli.config.as_deref())?;
+    // After the configuration, which says where spans go; held to the end
+    // of `main`, whose return flushes them.
+    let env = std::env::var(tracing_subscriber::EnvFilter::DEFAULT_ENV).unwrap_or_default();
+    let _telemetry = telemetry::init(&config, &env)?;
 
     match cli.command {
         Command::Migrate => {
@@ -234,8 +194,8 @@ async fn main() -> Result<(), Error> {
             };
             // One trace for the sweep, as the weekly job has: the renders it
             // requests join it, and its log lines carry the id.
-            let context = agrafe::trace::TraceContext::root();
-            let span = tracing::info_span!("audit", trace_id = %context.trace_id());
+            let span = tracing::info_span!("audit", trace_id = tracing::field::Empty);
+            let context = agrafe::trace::TraceContext::start(&span, None);
             let sweep = async {
                 match progress {
                     Some(path) => state.audit_resumable(options, &path).await,
@@ -362,41 +322,4 @@ async fn shutdown_signal() {
         let _ = ctrl_c.await;
     }
     tracing::info!("shutdown signal received");
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_http_stack_is_capped_unless_named() {
-        assert!(!names_target("debug", "hyper"));
-        assert!(!names_target("hyper_util=trace", "hyper"), "another crate");
-        assert!(
-            !names_target("hyper::proto=trace", "hyper"),
-            "a module below"
-        );
-        assert!(names_target("info,hyper=debug", "hyper"));
-        assert!(names_target("hyper[span]=trace", "hyper"));
-        assert!(names_target(" hyper ", "hyper"));
-
-        let capped = cap_http_targets(EnvFilter::new("debug"), "debug").to_string();
-        assert!(capped.contains("hyper=info"), "{capped}");
-        assert!(capped.contains("reqwest=info"), "{capped}");
-        let asked = cap_http_targets(EnvFilter::new("hyper=trace"), "hyper=trace").to_string();
-        assert!(asked.contains("hyper=trace"), "{asked}");
-        assert!(!asked.contains("hyper=info"), "{asked}");
-        assert!(asked.contains("hyper_util=info"), "{asked}");
-    }
-
-    #[test]
-    fn a_bad_directive_leaves_the_others() {
-        let filter = env_filter("debug,hyper=trce").to_string();
-        assert!(filter.contains("debug"), "{filter}");
-        assert!(!filter.contains("trce"), "{filter}");
-        let unset = env_filter("").to_string();
-        assert!(unset.contains("info"), "{unset}");
-        let targeted = env_filter("agrafe=debug").to_string();
-        assert!(targeted.contains("agrafe=debug"), "{targeted}");
-    }
 }

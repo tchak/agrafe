@@ -2,7 +2,9 @@
 
 agrafe exposes four things to watch it by: Prometheus metrics, the jobs API,
 the failure markers on blobs, and an HTML dashboard. All of them are on the
-private port.
+private port. It can also send its errors to Sentry and its spans to an
+OpenTelemetry collector; see [Exporting errors and
+traces](#exporting-errors-and-traces).
 
 ## Metrics
 
@@ -266,3 +268,74 @@ for the connection and the wait for the verdict. They show in a log line's
 context when something is logged inside them. Nothing is exported yet; the
 spans and the stored trace context are what an OpenTelemetry or Sentry
 exporter will build on.
+
+## Exporting errors and traces
+
+Two optional exporters, independent of each other and both off until
+configured, in `[sentry]` and `[otel]`; see the [configuration
+reference](../reference/configuration.md#sentry). They are in the `agrafe`
+binary and the release images, not in the library: a host embedding agrafe
+brings its own.
+
+**Sentry** gets errors: each `error` log line becomes an event, grouped into
+issues with alerting and resolve and regress tracking per release, the `info`
+and `warn` lines before it as breadcrumbs, and panics, which here fail one job
+attempt or drop one connection rather than crash the process.
+
+```toml
+[sentry]
+dsn = "https://key@sentry.example/12"
+environment = "production"
+```
+
+**OpenTelemetry** gets spans, over OTLP to Tempo, Jaeger, SigNoz or anything
+else that speaks it, Sentry included. Metrics stay on `/metrics` and logs on
+standard error.
+
+```toml
+[otel]
+endpoint = "http://collector:4317"
+sample_ratio = 0.1
+```
+
+A request and the jobs it leads to are one trace, the job's span the child of
+the request's or job's span that enqueued it, and the `trace_id` in the logs,
+on a job in the jobs API and on a Sentry event as a tag is the backend's. The
+sampling decision is made where a trace starts and goes down it, through the
+stored job, so a trace is kept whole or not at all. A span's name is the route
+template, `GET /blobs/{token}/{id}/original/{filename}`, or `job scan`.
+
+A failing collector costs requests nothing: spans wait in a bounded queue, and
+what does not fit is dropped. On a stop, the process gives what is left five
+seconds. A periodic reap or audit is one trace with everything it enqueues,
+thousands of spans on a large table; lower `sample_ratio` if the backend
+minds.
+
+### What stays in the process
+
+- **Signatures.** The token of a public URL and the query string, where a
+  sealed read's envelope is, are taken out of every string of every span,
+  event and breadcrumb before it leaves, whichever field they landed in. A
+  span records `http.route`, the template, and not the path.
+- **Filenames.** The template has a placeholder where a path has the name, and
+  the `path` field is not exported.
+- **What a job's failure quotes.** `last_error` can hold a compiler's
+  diagnostics about a user's document or a tool's standard error. It is not
+  exported: the event says that a job of that kind died, and its `trace_id`
+  leads to the logs and the job's page, which have the message.
+- **Presigned URLs.** The HTTP client crates are capped at `info` for the
+  exporters, unconditionally: `RUST_LOG=hyper=debug` opens them for the logs
+  alone.
+- **Addresses and variables.** No client IP or user is attached, nor any
+  stack variable; `attach_stacktrace` adds frames only.
+
+Other `error` lines, an `internal error` above all, keep their message, which
+holds the cause: a database or object store error, naming ids rather than
+content.
+
+`RUST_LOG` is the logs' filter alone, so `RUST_LOG=warn` does not thin the
+exporters. Only `AGRAFE_SENTRY__DSN` and `AGRAFE_OTEL__ENDPOINT` turn an
+exporter on, as everywhere else in the configuration; `SENTRY_DSN` and
+`OTEL_EXPORTER_OTLP_ENDPOINT` do not. Once on, the SDKs still read their other
+variables for what agrafe does not set, such as `OTEL_EXPORTER_OTLP_HEADERS`.
+

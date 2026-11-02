@@ -9,18 +9,36 @@
 //! [`TraceContext::current`] and stores it on the row, so the job's id
 //! names the unit that enqueued it as its parent. Nothing here exports
 //! anything: the trace id is a field of the `request` and `job` spans,
-//! which ties their log lines together, and the stored `traceparent` is
-//! what an exporter will set the job span's parent from.
+//! which ties their log lines together, and an exporter plugged in with
+//! [`set_span_source`] makes those contexts the ids of its own spans.
 
 use std::fmt;
 use std::future::Future;
+use std::sync::OnceLock;
 
-use tracing::Instrument as _;
+use tracing::field::display;
+use tracing::{Instrument as _, Span};
 
 tokio::task_local! {
     // `None` inside `detached`: a unit that must not be the parent of what
     // it enqueues, under a scope that would otherwise make it so.
     static CURRENT: Option<TraceContext>;
+}
+
+/// Where a unit's ids come from when an exporter is plugged in: makes
+/// `parent` the parent of `span`, and answers with the ids the exporter
+/// gave the span, so that what enqueue stores names a span the backend
+/// has. `None`, for a span the exporter's filter left out, and the unit
+/// has generated ids as it does without an exporter.
+pub type SpanSource = fn(&Span, Option<TraceContext>) -> Option<TraceContext>;
+
+static SPAN_SOURCE: OnceLock<SpanSource> = OnceLock::new();
+
+/// Plug in an exporter's ids, once per process, before the first unit
+/// starts; a second call is ignored. `agrafe serve` does when `[otel]` is
+/// configured, and a host with its own OpenTelemetry layer can too.
+pub fn set_span_source(source: SpanSource) {
+    let _ = SPAN_SOURCE.set(source);
 }
 
 /// The `traceparent` of the running unit of work: a request or a job.
@@ -41,6 +59,19 @@ impl TraceContext {
             span_id: random(),
             sampled: true,
         }
+    }
+
+    /// The context of a unit starting under `span`, child of `parent` or
+    /// the first of a trace, recorded in the span's `trace_id` field. The
+    /// ids are the exporter's if one is plugged in, generated if not; the
+    /// sampling decision likewise, which then passes down the trace.
+    pub fn start(span: &Span, parent: Option<Self>) -> Self {
+        let context = SPAN_SOURCE
+            .get()
+            .and_then(|source| source(span, parent))
+            .unwrap_or_else(|| parent.map_or_else(Self::root, |parent| parent.child()));
+        span.record("trace_id", display(context.trace_id()));
+        context
     }
 
     /// A unit of work whose parent is `traceparent`: its trace and

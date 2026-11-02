@@ -22,6 +22,12 @@ The first release.
   (blobs, uploads, attachments, signed URL minting, jobs, metrics) and a
   public port for browsers on which every URL carries an HMAC signature,
   with key rotation, rounded expiries and a ceiling on their lifetime.
+- **Sentry and OpenTelemetry exporters** in the `agrafe` binary, `[sentry]`
+  and `[otel]`, off until configured and behind default cargo features:
+  errors, breadcrumbs and panics to Sentry, spans over OTLP (gRPC or HTTP) with
+  a job's span the child of what enqueued it. Tokens, query strings, filenames
+  and a job's `last_error` stay in the process. The `request` span records
+  `http.route`, `agrafe::trace::set_span_source` plugs in an embedder's own.
 - **CORS** on the public port, `[server.cors]`: the origins allowed to
   upload and read from a page, or any, never with credentials. Off by
   default.

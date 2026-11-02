@@ -502,8 +502,20 @@ needed: the read cache is per process and short-lived.
 
 ## Logs
 
-Logs go to standard output, filtered by `RUST_LOG` (`info` by default).
+Logs go to standard error, filtered by `RUST_LOG` (`info` by default).
 The HTTP client crates are capped at `info` whatever the level, since they
 log request targets, and fetched URLs are presigned secrets; naming one of
 them explicitly in `RUST_LOG` lifts the cap. Public request spans record the
 path with the token redacted.
+
+## Sentry and OpenTelemetry
+
+Set `AGRAFE_SENTRY__DSN` or `[otel] endpoint` to send errors or spans out; see
+[Exporting errors and
+traces](monitoring.md#exporting-errors-and-traces). Both are built into the
+release images and off until configured. A build without them, `cargo build
+-p agrafe-server --no-default-features`, or with one, `--features otel`, does
+not compile them in, and refuses to start if the configuration asks for what
+it left out. Every process, API or worker, exports for itself, so give them
+all the same configuration: a trace crosses them.
+

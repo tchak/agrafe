@@ -785,4 +785,10 @@ async fn a_page_runs_in_one_request_span_without_its_query() {
         "{fields:?}"
     );
     assert!(fields.iter().all(|f| !f.starts_with("uri=")), "{fields:?}");
+    assert!(
+        fields
+            .iter()
+            .any(|f| f.starts_with("http.route=") && f.contains("/dashboard/jobs")),
+        "the route with its mount prefix: {fields:?}"
+    );
 }

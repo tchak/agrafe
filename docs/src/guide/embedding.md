@@ -84,6 +84,17 @@ their kinds, schedules the reaper, and starts the pools of `jobs.kinds`. It
 returns once the shutdown future completes and the jobs in flight have
 finished.
 
+## Tracing
+
+The library and the routers open spans and set no subscriber: the host's
+applies. To export them, add its OpenTelemetry layer and tell agrafe to take a
+request's or a job's ids from their span, so that what a job row stores names a
+span the backend has, with `agrafe::trace::set_span_source`; the `agrafe`
+binary's `telemetry/otel.rs` is an example. Keep what the [monitoring
+guide](monitoring.md#what-stays-in-the-process) lists in the process: the
+`path` span field holds filenames, and `last_error` what a job's failure
+quotes. `http.route` is there to use instead.
+
 ## Calling the private API in Rust
 
 Every private route is a method on the handle, returning its own error

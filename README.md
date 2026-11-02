@@ -48,7 +48,9 @@ decision.
 - **Webhooks** when a blob is ready or failed, signed the Standard
   Webhooks way.
 - **Operations**: a Postgres job queue with per-kind workers, Prometheus
-  metrics, tracing, a bucket audit and an optional HTML dashboard.
+  metrics, tracing with optional Sentry and OpenTelemetry exporters that keep
+  signatures and filenames in the process, a bucket audit and an optional HTML
+  dashboard.
 
 ## Quick start
 

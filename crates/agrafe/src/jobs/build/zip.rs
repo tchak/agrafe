@@ -51,14 +51,12 @@ const FIELD_LIMIT_16: u64 = 0xFFFF;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ZipError {
-    #[error("entry name `{0}` is longer than 65535 bytes")]
-    NameTooLong(String),
-    #[error("entry `{name}` was declared {declared} bytes and received {written}")]
-    SizeMismatch {
-        name: String,
-        declared: u64,
-        written: u64,
-    },
+    // No entry's name in these: it is a user's filename, and the message
+    // goes to `last_error`, the logs and Sentry.
+    #[error("an entry's name is longer than 65535 bytes")]
+    NameTooLong,
+    #[error("an entry was declared {declared} bytes and received {written}")]
+    SizeMismatch { declared: u64, written: u64 },
     #[error("an entry is still open")]
     EntryOpen,
     #[error("no entry is open")]
@@ -231,7 +229,7 @@ impl ZipWriter {
             return Err(ZipError::EntryOpen);
         }
         if name.len() > FIELD_LIMIT_16 as usize {
-            return Err(ZipError::NameTooLong(name.to_string()));
+            return Err(ZipError::NameTooLong);
         }
         let mut out = Vec::with_capacity(30 + name.len() + 20);
         put_u32(&mut out, LOCAL_HEADER);
@@ -305,7 +303,6 @@ impl ZipWriter {
             && open.written != declared
         {
             return Err(ZipError::SizeMismatch {
-                name: String::from_utf8_lossy(&open.name).into_owned(),
                 declared,
                 written: open.written,
             });
@@ -685,7 +682,7 @@ mod tests {
         let long = "n".repeat(65_536);
         assert!(matches!(
             ZipWriter::new().begin_entry(&long, 0, t),
-            Err(ZipError::NameTooLong(_))
+            Err(ZipError::NameTooLong)
         ));
         // A deflated entry has no size ceiling of its own.
         let mut zip = ZipWriter::new();
