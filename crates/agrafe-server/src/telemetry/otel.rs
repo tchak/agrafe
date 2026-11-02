@@ -5,6 +5,7 @@
 //! span's ids are the unit's trace context, by [`span_source`], so that the
 //! `traceparent` a job row stores names a span the backend has.
 
+use std::borrow::Cow;
 use std::time::Duration;
 
 use agrafe::config::{OtelConfig, OtelProtocol};
@@ -26,7 +27,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 use tracing_subscriber::Layer;
 use tracing_subscriber::filter::LevelFilter;
 
-use super::scrub::{LAST_ERROR, scrub};
+use super::scrub::{LAST_ERROR, PATH, scrub};
 use super::{Error, Output, exporter_filter};
 
 /// How long the last batch has to leave once the process is stopping.
@@ -150,8 +151,8 @@ fn layer(provider: &SdkTracerProvider) -> Output {
 fn span_source(span: &tracing::Span, parent: Option<TraceContext>) -> Option<TraceContext> {
     let parent_context = match parent {
         Some(parent) => Context::new().with_remote_span_context(SpanContext::new(
-            TraceId::from_hex(&parent.trace_id().to_string()).ok()?,
-            SpanId::from_hex(&parent.span_id().to_string()).ok()?,
+            TraceId::from_bytes(parent.trace_id_bytes()),
+            SpanId::from_bytes(parent.span_id_bytes()),
             if parent.sampled() {
                 TraceFlags::SAMPLED
             } else {
@@ -166,15 +167,12 @@ fn span_source(span: &tracing::Span, parent: Option<TraceContext>) -> Option<Tra
     let context = span.context();
     let span = context.span();
     let ids = span.span_context();
-    if !ids.is_valid() {
-        return None;
-    }
-    TraceContext::parse(&format!(
-        "00-{}-{}-{:02x}",
-        ids.trace_id(),
-        ids.span_id(),
-        ids.trace_flags().to_u8()
-    ))
+    // `None` for the invalid, all-zero ids of a span the layer did not take.
+    TraceContext::from_ids(
+        ids.trace_id().to_bytes(),
+        ids.span_id().to_bytes(),
+        ids.is_sampled(),
+    )
 }
 
 /// Every string of a finished span, on its way to the batch. The tracing
@@ -204,25 +202,27 @@ impl<P: SpanProcessor> SpanProcessor for Scrubbing<P> {
     }
 }
 
+/// On every span's end, so it writes nothing it does not have to: a clean
+/// string stays where it is.
 fn scrubbed(mut span: SpanData) -> SpanData {
     named(&mut span);
     scrub_attributes(&mut span.attributes);
-    if let Status::Error { description } = &mut span.status {
-        *description = scrub(description).into_owned().into();
+    if let Status::Error { description } = &mut span.status
+        && let Cow::Owned(clean) = scrub(description)
+    {
+        *description = clean.into();
     }
     for event in &mut span.events.events {
-        event.name = scrub(&event.name).into_owned().into();
-        event
-            .attributes
-            .retain(|attribute| attribute.key.as_str() != LAST_ERROR);
+        if let Cow::Owned(clean) = scrub(&event.name) {
+            event.name = clean.into();
+        }
         scrub_attributes(&mut event.attributes);
     }
     span
 }
 
-/// What a backend groups by, and the request's `path` left behind, which
-/// holds a filename where `http.route` has a placeholder. The names are
-/// the template and the kind: low cardinality, and no user data.
+/// What a backend groups by: the template and the kind, low cardinality
+/// and no user data.
 fn named(span: &mut SpanData) {
     fn value<'a>(span: &'a SpanData, key: &str) -> Option<&'a Value> {
         span.attributes
@@ -237,8 +237,6 @@ fn named(span: &mut SpanData) {
                 span.name = format!("{method} {route}").into();
             }
             span.span_kind = SpanKind::Server;
-            span.attributes
-                .retain(|attribute| attribute.key.as_str() != "path");
         }
         "job" => {
             if let Some(kind) = value(span, "kind") {
@@ -250,22 +248,23 @@ fn named(span: &mut SpanData) {
     }
 }
 
-fn scrub_attributes(attributes: &mut [KeyValue]) {
+/// `path` and `last_error` go by name, see [`super::scrub`]; the strings
+/// of the rest are scrubbed.
+fn scrub_attributes(attributes: &mut Vec<KeyValue>) {
+    attributes.retain(|attribute| !matches!(attribute.key.as_str(), PATH | LAST_ERROR));
     for attribute in attributes {
         match &mut attribute.value {
-            Value::String(text) => *text = scrub_string(text),
-            Value::Array(Array::String(texts)) => {
-                for text in texts {
-                    *text = scrub_string(text);
-                }
-            }
+            Value::String(text) => scrub_in_place(text),
+            Value::Array(Array::String(texts)) => texts.iter_mut().for_each(scrub_in_place),
             _ => {}
         }
     }
 }
 
-fn scrub_string(text: &StringValue) -> StringValue {
-    scrub(text.as_str()).into_owned().into()
+fn scrub_in_place(text: &mut StringValue) {
+    if let Cow::Owned(clean) = scrub(text.as_str()) {
+        *text = clean.into();
+    }
 }
 
 #[cfg(test)]
@@ -335,6 +334,7 @@ mod tests {
                 other = %url,
             );
             span.in_scope(|| {
+                tracing::info_span!("storage", op = "get", path = "abc/original").in_scope(|| {});
                 tracing::info!(url = %url, "reading {url}");
                 tracing::error!("reading {url} failed");
             });
@@ -352,6 +352,15 @@ mod tests {
                 .all(|attribute| attribute.key.as_str() != "path"),
             "{request:?}"
         );
+        // Every span's, and a clean attribute is left as it was.
+        let storage = captured.named("storage");
+        let keys: Vec<&str> = storage
+            .attributes
+            .iter()
+            .map(|attribute| attribute.key.as_str())
+            .collect();
+        assert!(!keys.contains(&"path"), "{storage:?}");
+        assert!(keys.contains(&"op"), "{storage:?}");
         assert!(
             matches!(request.status, Status::Error { .. }),
             "{request:?}"

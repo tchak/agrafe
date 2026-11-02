@@ -211,11 +211,8 @@ fn scrub_value(value: &mut Value) {
         }
         Value::Array(items) => items.iter_mut().for_each(scrub_value),
         Value::Object(fields) => {
-            // The request span's `path` holds a filename, and `http.route`
-            // says the same without it; a storage span's goes too, which an
-            // object key's blob id does not miss here. A job's `last_error`
-            // may quote a user's file.
-            fields.remove("path");
+            // Wherever they landed: a span's data, an event's extra.
+            fields.remove(super::scrub::PATH);
             fields.remove(super::scrub::LAST_ERROR);
             fields.values_mut().for_each(scrub_value);
         }

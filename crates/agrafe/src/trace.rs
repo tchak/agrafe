@@ -99,14 +99,36 @@ impl TraceContext {
         let trace_id = hex::<16>(&fixed[3..35])?;
         let span_id = hex::<8>(&fixed[36..52])?;
         let flags = hex::<1>(&fixed[53..55])?[0];
+        Self::from_ids(trace_id, span_id, flags & 0x01 != 0)
+    }
+
+    /// The unit `trace_id` and `span_id` name: an exporter's own ids, for a
+    /// [`SpanSource`]. `None` when either is all zero, which W3C reserves
+    /// for "none" and an exporter gives a span it did not take.
+    pub fn from_ids(trace_id: [u8; 16], span_id: [u8; 8], sampled: bool) -> Option<Self> {
         if trace_id == [0; 16] || span_id == [0; 8] {
             return None;
         }
         Some(Self {
             trace_id,
             span_id,
-            sampled: flags & 0x01 != 0,
+            sampled,
         })
+    }
+
+    /// The trace id's bytes, for an exporter's own type; [`trace_id`] is
+    /// its hex.
+    ///
+    /// [`trace_id`]: Self::trace_id
+    pub fn trace_id_bytes(&self) -> [u8; 16] {
+        self.trace_id
+    }
+
+    /// The span id's bytes, as [`trace_id_bytes`].
+    ///
+    /// [`trace_id_bytes`]: Self::trace_id_bytes
+    pub fn span_id_bytes(&self) -> [u8; 8] {
+        self.span_id
     }
 
     /// The next unit in the same trace: a job run under the context its
@@ -242,6 +264,24 @@ mod tests {
         assert!(context.sampled());
         let unsampled = TraceContext::parse(&EXAMPLE.replace("-01", "-00")).unwrap();
         assert!(!unsampled.sampled());
+
+        // Through the bytes, as an exporter goes.
+        assert_eq!(
+            TraceContext::from_ids(
+                context.trace_id_bytes(),
+                context.span_id_bytes(),
+                context.sampled()
+            ),
+            Some(context)
+        );
+        assert_eq!(
+            TraceContext::from_ids([0; 16], context.span_id_bytes(), true),
+            None
+        );
+        assert_eq!(
+            TraceContext::from_ids(context.trace_id_bytes(), [0; 8], true),
+            None
+        );
     }
 
     #[test]

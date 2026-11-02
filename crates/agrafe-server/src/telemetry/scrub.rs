@@ -12,6 +12,12 @@ use std::borrow::Cow;
 /// the job's row, where the event's `trace_id` leads.
 pub const LAST_ERROR: &str = "last_error";
 
+/// The field of a span's path: the request's holds a filename where
+/// `http.route` has a placeholder, a storage span's an object key, which
+/// names a blob id that the span's parent has too. Dropped whole, on every
+/// span, one rule for both exporters.
+pub const PATH: &str = "path";
+
 /// What a word ends on in a message. Not `<`, `>`, `{` or `}`, which are in
 /// `/blobs/<token>` and `/blobs/{token}`, the forms that are clean already.
 fn is_separator(c: char) -> bool {
