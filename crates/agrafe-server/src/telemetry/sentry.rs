@@ -59,6 +59,7 @@ fn options(
     options.max_breadcrumbs = config.max_breadcrumbs;
     options.attach_stacktrace = config.attach_stacktrace;
     options.send_default_pii = config.send_default_pii;
+    options.debug = config.debug;
     options.in_app_include = vec!["agrafe"];
     options.shutdown_timeout = Duration::from_secs(5);
     // Runs on the thread that captured, in the unit's task: the id that

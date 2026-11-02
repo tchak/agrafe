@@ -976,6 +976,10 @@ pub struct SentryConfig {
     pub event_level: ExportLevel,
     /// The tracing level and above that become a breadcrumb.
     pub breadcrumb_level: ExportLevel,
+    /// Print the SDK's own diagnostics on stderr: a delivery that failed,
+    /// a response it could not read. The SDK is silent about them
+    /// otherwise.
+    pub debug: bool,
 }
 
 impl Default for SentryConfig {
@@ -991,6 +995,7 @@ impl Default for SentryConfig {
             attach_stacktrace: false,
             event_level: ExportLevel::Error,
             breadcrumb_level: ExportLevel::Info,
+            debug: false,
         }
     }
 }

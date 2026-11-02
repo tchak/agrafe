@@ -28,6 +28,7 @@ The first release.
   a job's span the child of what enqueued it. Tokens, query strings, filenames
   and a job's `last_error` stay in the process. The `request` span records
   `http.route`, `agrafe::trace::set_span_source` plugs in an embedder's own.
+  A failed export is a log line; `sentry.debug` prints the Sentry SDK's own.
 - **CORS** on the public port, `[server.cors]`: the origins allowed to
   upload and read from a page, or any, never with credentials. Off by
   default.

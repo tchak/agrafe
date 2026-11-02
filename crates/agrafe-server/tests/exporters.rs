@@ -510,9 +510,10 @@ async fn neither_configured_sends_nothing() {
 /// TLS to an endpoint that does not speak it, and to nothing at all. The
 /// three clients each set up rustls their own way, in a tree that has two
 /// of its providers: none may panic, a failing export costs the requests
-/// nothing, and the process still stops in time.
+/// nothing, the process still stops in time, and the log says what failed:
+/// the exporters connect lazily, so this is where a wrong endpoint shows.
 #[tokio::test]
-async fn a_collector_that_fails_costs_nothing() {
+async fn a_collector_that_fails_costs_nothing_and_is_logged() {
     for protocol in ["grpc", "http/protobuf"] {
         let db = TestDatabase::new().await;
         let (collector, received) = fake_endpoints().await;
@@ -524,6 +525,7 @@ async fn a_collector_that_fails_costs_nothing() {
                 protocol = "{protocol}"
                 [sentry]
                 dsn = "https://sentry-key@{addr}/1"
+                debug = true
                 "#
             )
         };
@@ -535,5 +537,13 @@ async fn a_collector_that_fails_costs_nothing() {
         assert!(!logged.contains("panicked"), "{logged}");
         assert!(started.elapsed() < Duration::from_secs(15), "{logged}");
         assert!(received.everything().is_empty());
+        assert!(
+            logged.contains("BatchSpanProcessor.ExportError"),
+            "{protocol}: the failed export is in the log: {logged}"
+        );
+        assert!(
+            logged.contains("[sentry] Failed to send envelope"),
+            "the failed delivery is in the log: {logged}"
+        );
     }
 }

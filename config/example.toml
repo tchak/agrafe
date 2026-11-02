@@ -525,6 +525,10 @@ attach_stacktrace = false
 # client crates stay at info at most whatever these say.
 event_level = "error"
 breadcrumb_level = "info"
+# Print the SDK's own diagnostics on stderr, a failed delivery above all; the
+# SDK says nothing about them otherwise. The OpenTelemetry SDK's are always
+# logged, as warn and error lines under `opentelemetry_sdk`.
+debug = false
 
 [otel]
 # The collector. Off when unset. Spans only: metrics stay on /metrics and logs

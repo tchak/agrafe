@@ -306,7 +306,12 @@ stored job, so a trace is kept whole or not at all. A span's name is the route
 template, `GET /blobs/{token}/{id}/original/{filename}`, or `job scan`.
 
 A failing collector costs requests nothing: spans wait in a bounded queue, and
-what does not fit is dropped. On a stop, the process gives what is left five
+what does not fit is dropped. Both are said in the logs, as `warn` and `error`
+lines under `opentelemetry_sdk` (`BatchSpanProcessor.ExportError`,
+`BatchSpanProcessor.SpanDroppingStarted`): the exporters connect lazily, so a
+wrong endpoint or key is found there, not at start. Sentry's SDK is silent
+about a failed delivery unless `sentry.debug` is on, which prints its
+diagnostics on standard error. On a stop, the process gives what is left five
 seconds. A periodic reap or audit is one trace with everything it enqueues,
 thousands of spans on a large table; lower `sample_ratio` if the backend
 minds.

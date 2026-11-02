@@ -3771,7 +3771,13 @@ default: the runtime cost of a configured-off exporter is nothing, and a release
 image an operator cannot turn this on in would be the worse default.
 `--no-default-features` leaves the SDKs out, and a build asked for what it left
 out refuses to start, as does one whose exporter cannot be set up: a process
-told to report that silently does not is found out at the outage.
+told to report that silently does not is found out at the outage. Setting up is
+not connecting, though: both SDKs connect lazily, and a wrong endpoint or key
+fails at the first export. The OpenTelemetry SDK's own diagnostics, a failed
+export, a full queue, are therefore built in (`internal-logs`) and reach stderr
+as `warn` and `error` lines under `opentelemetry_sdk`, never an exporter, whose
+filters leave that target out. Sentry's SDK says nothing unless `sentry.debug`
+prints its diagnostics on stderr.
 
 Only `AGRAFE_` variables turn one on, like every other key, so that what a
 process does is in one place. Once on, the SDKs still read their own variables
