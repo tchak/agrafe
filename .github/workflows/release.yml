@@ -44,7 +44,7 @@ jobs:
 
           \`\`\`sh
           docker pull $IMAGE:$version
-          docker pull $IMAGE:$version-office  # with LibreOffice
+          docker pull $IMAGE:$version-office  # with LibreOffice and pandoc
           \`\`\`
           EOF
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -86,7 +86,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       # Each variant is pushed by digest; the manifest job tags both
       # architectures together.
-      - name: Build without LibreOffice
+      - name: Build without LibreOffice or pandoc
         id: default
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -97,7 +97,7 @@ jobs:
             org.opencontainers.image.version=${{ needs.check.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
-      - name: Build with LibreOffice
+      - name: Build with LibreOffice and pandoc
         id: office
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:

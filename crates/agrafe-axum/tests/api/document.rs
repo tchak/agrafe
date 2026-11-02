@@ -602,7 +602,7 @@ async fn a_pandoc_failing_on_its_own_account_is_retried() {
         .unwrap();
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
         let app = setup_tuned(db, fake_clamd().await, |c| {
-            c.media.render.pandoc_command = fake.to_string_lossy().into_owned();
+            c.media.render.pandoc_command = Some(fake.to_string_lossy().into_owned());
         })
         .await;
         let built = build(
@@ -675,6 +675,40 @@ async fn creation_rules() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+}
+
+/// A deployment without pandoc builds PDFs: a DOCX or an ODT is refused
+/// at creation, naming the key, and the probe passes on the compiler
+/// alone.
+#[tokio::test]
+async fn documents_without_pandoc_are_pdfs_only() {
+    let db = TestDatabase::new().await;
+    let app = setup_tuned(db, fake_clamd().await, |c| {
+        c.media.render.pandoc_command = None;
+    })
+    .await;
+    for (filename, content_type) in [("a.docx", DOCX), ("a.odt", ODT)] {
+        let (status, body) = call(
+            &app.private,
+            json_req(
+                Method::POST,
+                "/blobs",
+                typed_document_blob(filename, content_type),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        let said = body["error"]["message"].as_str().unwrap();
+        assert!(said.contains("media.pandoc_command"), "{body}");
+    }
+    let media = &app.state.config().media;
+    agrafe_render::probe_document(&media.render, media.tmp_dir.as_deref())
+        .await
+        .unwrap();
+    let workspace = manifest(&[text("main.typ", "= Sans pandoc")]);
+    let built = build(&app, "a.pdf", "application/pdf", workspace).await;
+    assert_eq!(built["state"], "ready", "{built}");
+    assert!(download(&app, &built).await.starts_with(b"%PDF-"));
 }
 
 /// Every bad line answers 422 naming it, the part is discarded, the blob
@@ -1133,7 +1167,7 @@ async fn the_startup_probe_compiles_a_workspace() {
     assert!(err.contains("wrote no probe.pdf"), "{err}");
 
     let wrong_pandoc = agrafe_render::Config {
-        pandoc_command: "/usr/bin/false".into(),
+        pandoc_command: Some("/usr/bin/false".into()),
         ..media.render.clone()
     };
     let err = probe(&wrong_pandoc).await.unwrap_err().to_string();
@@ -1144,7 +1178,7 @@ async fn the_startup_probe_compiles_a_workspace() {
     assert!(err.contains("media.pandoc_command"), "{err}");
 
     let idle_pandoc = agrafe_render::Config {
-        pandoc_command: "/usr/bin/true".into(),
+        pandoc_command: Some("/usr/bin/true".into()),
         ..media.render.clone()
     };
     let err = probe(&idle_pandoc).await.unwrap_err().to_string();

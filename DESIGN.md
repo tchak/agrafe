@@ -1658,7 +1658,7 @@ pandoc --from html --to docx --shift-heading-level-by=-1 \
   builds a document model and writes named styles (Heading 1, List
   Paragraph, Table, Footnote Text), so the DOCX restyles from a reference
   document and survives a round trip through Word; it writes ODT from the
-  same model, and neither output needs LibreOffice in the image.
+  same model, and neither output needs LibreOffice to run.
 - Not typst to PDF to anything: a PDF has no structure to recover.
 
 Typst's HTML export runs the whole language and emits semantic HTML,
@@ -1711,9 +1711,16 @@ an inline SVG frame, which pandoc embeds as a picture. A template keeps
 it under `context if target() != "html"`.
 
 Pandoc is `media.pandoc_command`, a tool of `agrafe-render` like
-`vips_command`, found on `PATH`; its limits are `media.sandbox`'s, as the
-compile's are. The Markdown representation (#24) will read with the same
-binary and driver.
+`vips_command`; its limits are `media.sandbox`'s, as the compile's are.
+It is optional, like LibreOffice and for the same reason, its size
+(about 180 MB installed): unset by default, and only the `-office`
+image carries and sets it. Without it a deployment builds PDFs: a
+document declared DOCX or ODT is refused at creation (422, naming the
+key), which is why the API processes read the key too, and a build that
+meets one anyway, on a worker configured apart from the API, fails the
+attempt with `media.pandoc_command is not set` and is retried, a worker
+fault rather than the blob's. The Markdown representation (#24) will
+read with the same binary and driver, and be as optional.
 
 **Build semantics** follow `rows` and `archive`: a `document` job kind with
 its own worker pool, `jobs.concurrency.document` (default two: a compile
@@ -1766,10 +1773,11 @@ The probe compiles the workspace to HTML too, and pandoc writes it as a
 DOCX and as an ODT through the job's command line; the server has no ZIP
 parser to open the result, so pandoc reads each back as Markdown, and
 the heading at level one, the note and the image must be there. A pandoc
-missing, too old, or whose HTML reader does not make typst's notes notes
-fails the deployment rather than every DOCX. The reader learnt the notes'
+configured but missing, too old, or whose HTML reader does not make
+typst's notes notes fails the deployment rather than every DOCX; with no
+`pandoc_command`, the probe stops at the HTML. The reader learnt the notes'
 ARIA roles in pandoc 3.6, which is the version floor: Debian trixie's
-package is 3.1.11, so the release images install pandoc's own `.deb`,
+package is 3.1.11, so the `-office` image installs pandoc's own `.deb`,
 checked against its digest, rather than the distribution's.
 
 Out of scope for now: a template registry or schema validation, typst

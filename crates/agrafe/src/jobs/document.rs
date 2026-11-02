@@ -57,6 +57,13 @@ impl Assemble for Document {
 
     async fn assemble(state: &Agrafe, blob: &Blob, sink: &mut Sink) -> Result<Counts, BuildError> {
         let media = &state.config().media;
+        let office = OfficeFormat::of(&blob.content_type);
+        // Refused at creation without pandoc; a worker configured apart
+        // from the API that took the blob finds out before it writes the
+        // workspace, and the attempt fails until it is given one.
+        if office.is_some() && media.render.pandoc_command.is_none() {
+            return Err(agrafe_render::Error::Unconfigured("pandoc_command").into());
+        }
         let workdir = agrafe_render::workdir(media.tmp_dir.as_deref()).map_err(BuildError::Io)?;
         let root = workdir.path().join("workspace");
         tokio::fs::create_dir(&root).await.map_err(BuildError::Io)?;
@@ -66,7 +73,6 @@ impl Assemble for Document {
             blob_id: blob.id,
             what: "main file",
         })?;
-        let office = OfficeFormat::of(&blob.content_type);
         let format = match office {
             None => DocumentFormat::Pdf,
             Some(_) => DocumentFormat::Html,

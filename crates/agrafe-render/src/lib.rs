@@ -59,9 +59,10 @@ pub struct Config {
     #[serde(default = "default_render_geo_command")]
     pub render_geo_command: String,
     /// pandoc, which turns a document compiled to HTML into a DOCX or an
-    /// ODT, found on `PATH` by default.
-    #[serde(default = "default_pandoc_command")]
-    pub pandoc_command: String,
+    /// ODT, a bare name looked up on `PATH` or a path. Unset by default,
+    /// and a document blob declared DOCX or ODT is refused.
+    #[serde(default)]
+    pub pandoc_command: Option<String>,
     /// The thumbnail box and quality, the `[media.thumbnail]` table.
     #[serde(default)]
     pub thumbnail: Thumbnail,
@@ -102,9 +103,6 @@ fn default_render_document_command() -> String {
 fn default_render_geo_command() -> String {
     "agrafe-render-geo".to_string()
 }
-fn default_pandoc_command() -> String {
-    "pandoc".to_string()
-}
 
 impl Default for Config {
     fn default() -> Self {
@@ -114,7 +112,7 @@ impl Default for Config {
             render_text_command: default_render_text_command(),
             render_document_command: default_render_document_command(),
             render_geo_command: default_render_geo_command(),
-            pandoc_command: default_pandoc_command(),
+            pandoc_command: None,
             thumbnail: Thumbnail::default(),
             preview: Preview::default(),
             embedded_image: EmbeddedImage::default(),
@@ -202,6 +200,10 @@ pub enum Error {
     /// A background layer of a map could not be fetched or decoded.
     #[error("fetching a background layer: {0}")]
     Fetch(#[from] geo::FetchError),
+    /// An optional tool was asked for but this deployment does not
+    /// configure it; carries the `[media]` key.
+    #[error("media.{0} is not set")]
+    Unconfigured(&'static str),
 }
 
 /// How an attempt at rendering ended. Anything that is not a failure of

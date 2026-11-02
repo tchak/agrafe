@@ -21,17 +21,10 @@ logs and never touch the network, and the startup probe fails if one of
 them is not what the server expects.
 
 Workers also need the `vips` command line tool, built with SVG support
-(rsvg) for the maps; [pandoc](https://pandoc.org) 3.6 or later
-(`media.pandoc_command`), for the DOCX and ODT documents; and, for office
-thumbnails, an optional [LibreOffice](#libreoffice). pandoc 3.6 is where
-its HTML reader learnt the footnotes typst writes (marked by ARIA role);
-Debian trixie's package is 3.1.11 and too old, so take pandoc's own
-release `.deb`, as the release images do (Ubuntu 26.04's package is
-recent enough). The startup probe refuses a document worker whose pandoc
-loses the probe's note. pandoc is a static Haskell binary of about 180 MB
-installed, the largest addition to the image after LibreOffice; the
-release images carry it in both variants. Run `agrafe migrate` once per
-release, before the new processes start.
+(rsvg) for the maps; for DOCX and ODT documents, an optional
+[pandoc](#pandoc); and, for office thumbnails, an optional
+[LibreOffice](#libreoffice). Run `agrafe migrate` once per release,
+before the new processes start.
 
 Outbound connections: the fetch workers reach the URLs of `url` blobs, the
 notify workers reach `webhook.url`, and the render workers reach the hosts
@@ -46,19 +39,21 @@ Every release publishes two images to the GitHub Container Registry, for
 | Image | Contents |
 |---|---|
 | `ghcr.io/tchak/agrafe:0.1.0` | The five binaries, `vips` and fonts, on Debian trixie |
-| `ghcr.io/tchak/agrafe:0.1.0-office` | The same, with LibreOffice and a warmed profile, office thumbnails on |
+| `ghcr.io/tchak/agrafe:0.1.0-office` | The same, with LibreOffice and a warmed profile, office thumbnails on, and pandoc, DOCX and ODT documents on |
 
 `0.1` and `0.1-office` follow the latest patch release of `0.1`, `latest`
 and `latest-office` the latest release. Debian trixie is the base for
 its libvips (see [libvips](#libvips)). The images run as the unprivileged
 `agrafe` user, `agrafe serve` by default, and expose the private port,
 8080, and the public one, 8081. Use the `-office` image for the workers
-that handle `render`, and the plain one everywhere else.
+that handle `render` or `document`, and for the API processes when
+documents may be DOCX or ODT, since creation checks for pandoc; the
+plain one everywhere else.
 
 The image's settings for a container are in `/etc/agrafe/agrafe.toml`,
 which `AGRAFE_CONFIG` names: both addresses on `0.0.0.0`, local storage
 under `/var/lib/agrafe/data`, `media.tmp_dir` at `/var/tmp/agrafe` and,
-in the `-office` image, `media.office`. Configure the rest through
+in the `-office` image, `media.office` and `media.pandoc_command`. Configure the rest through
 `AGRAFE_*` variables, which override the file, or mount a file of your
 own over it, which replaces it whole:
 
@@ -209,6 +204,30 @@ features.
   for HEIC. The release images have both, and the startup probe renders
   one of each, so a missing plugin stops the workers rather than failing
   every photo from a phone.
+
+## pandoc
+
+Optional, for the DOCX and ODT [documents](documents.md): typst compiles
+the template to HTML and pandoc writes the office file. Without it,
+documents are PDFs only, and creating a DOCX or ODT one answers 422
+naming `media.pandoc_command`. The key is read where the blob is
+created and where it is built, so set it on the API processes and the
+`document` workers alike.
+
+```toml
+[media]
+pandoc_command = "pandoc"
+```
+
+pandoc 3.6 or later: 3.6 is where its HTML reader learnt the footnotes
+typst writes (marked by ARIA role). Debian trixie's package is 3.1.11
+and too old, so take pandoc's own release `.deb`, as the `-office` image
+does; Ubuntu 26.04's package is recent enough, and on macOS `brew
+install pandoc`. With the key set, the startup probe of a `document`
+worker writes its template as a DOCX and an ODT and refuses a pandoc
+that is missing or loses the probe's note. pandoc is a static Haskell
+binary of about 180 MB installed, which is why the plain image leaves
+it out.
 
 ## LibreOffice
 

@@ -5,7 +5,9 @@ a workspace of files: a template, its includes, its images and its fonts,
 plus the data of one document. It is a PDF, or, from the same template, an
 editable DOCX or ODT: typst compiles the workspace to HTML and
 [pandoc](https://pandoc.org) writes the office file. The compiler and
-pandoc run sandboxed, never in the server.
+pandoc run sandboxed, never in the server. pandoc is optional: a
+deployment without it (see [Deployment](deployment.md#pandoc)) builds
+PDFs only and answers 422 to a DOCX or ODT document.
 
 | `content_type` | Built as |
 |---|---|
@@ -229,6 +231,7 @@ the blob's priority orders the queue.
 
 Before a worker that handles `document` jobs starts, it compiles a probe
 workspace through the exact command lines the jobs use, to a PDF, and to a
-DOCX and an ODT through pandoc, so a missing or mismatched helper, or a
-missing or too old pandoc (before 3.6 its reader loses the footnotes),
-fails the deployment rather than every document.
+DOCX and an ODT through pandoc when `media.pandoc_command` is set, so a
+missing or mismatched helper, or a missing or too old pandoc (before 3.6
+its reader loses the footnotes), fails the deployment rather than every
+document.

@@ -44,9 +44,9 @@ The first release.
   LibreOffice, office documents; category icons for the rest.
 - **Generated files**: spreadsheets, ZIP archives and documents compiled
   from typst, built by jobs from parts sent in pieces. A document is a
-  PDF, or from the same template a DOCX or an ODT, which pandoc writes
-  from typst's HTML with the styles of the workspace's `reference.docx`
-  or `reference.odt`.
+  PDF, or from the same template a DOCX or an ODT, which an optional
+  pandoc writes from typst's HTML with the styles of the workspace's
+  `reference.docx` or `reference.odt`.
 - **Operations**: a Postgres job queue with per-kind worker pools, split
   API and worker roles, the audit of objects against the database, a
   signed webhook, Prometheus metrics, request-to-job tracing, the jobs
@@ -59,6 +59,6 @@ The first release.
   API, and its HTTP interfaces as axum routers (`agrafe-axum`,
   `agrafe-dashboard`).
 - **Docker images** on the GitHub Container Registry, with and without
-  LibreOffice.
+  LibreOffice and pandoc.
 
 [Unreleased]: https://github.com/tchak/agrafe/commits/main

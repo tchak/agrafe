@@ -1579,6 +1579,7 @@ mod tests {
             assert_eq!(config.media.render.sandbox.timeout.as_secs(), 60);
             assert_eq!(config.media.render.thumbnail.width, 256);
             assert_eq!(config.media.render.office.command, None);
+            assert_eq!(config.media.render.pandoc_command, None);
             assert_eq!(config.media.render.office.sandbox.timeout.as_secs(), 120);
 
             jail.set_env("AGRAFE_MEDIA__VIPS_COMMAND", "/opt/vips/bin/vips");
@@ -1586,6 +1587,7 @@ mod tests {
             jail.set_env("AGRAFE_MEDIA__MAX_SOURCE_SIZE", "1 MiB");
             jail.set_env("AGRAFE_MEDIA__OFFICE__COMMAND", "soffice");
             jail.set_env("AGRAFE_MEDIA__OFFICE__SANDBOX__MEMORY", "3 GiB");
+            jail.set_env("AGRAFE_MEDIA__PANDOC_COMMAND", "pandoc");
             let config = load(&example())?;
             assert_eq!(config.media.render.vips_command, "/opt/vips/bin/vips");
             assert_eq!(config.media.render.sandbox.timeout.as_secs(), 5);
@@ -1597,6 +1599,10 @@ mod tests {
             assert_eq!(
                 config.media.render.office.sandbox.memory,
                 bytesize::ByteSize::gib(3)
+            );
+            assert_eq!(
+                config.media.render.pandoc_command.as_deref(),
+                Some("pandoc")
             );
             Ok(())
         });

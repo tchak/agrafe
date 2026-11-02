@@ -13,6 +13,9 @@
 //! input there is HTML the helper wrote with no reference outside it,
 //! and `agrafe_sandbox` still confines pandoc: on Linux it reads the
 //! system set and its declared files, and opens no socket.
+//!
+//! Optional, like LibreOffice: a deployment without `pandoc_command`
+//! builds PDF documents only, and refuses a DOCX or an ODT at creation.
 
 use std::path::Path;
 
@@ -86,10 +89,15 @@ impl<'a> Conversion<'a> {
 
 /// Run `conversion` under `media.sandbox`. `Rendered` when pandoc wrote
 /// the output, `Rejected` when it failed, was killed or ran out of time,
-/// `Declined` when it exited cleanly without writing.
+/// `Declined` when it exited cleanly without writing;
+/// [`Error::Unconfigured`] without a `pandoc_command`.
 pub async fn convert(config: &Config, conversion: &Conversion<'_>) -> Result<Verdict<()>, Error> {
+    let pandoc = config
+        .pandoc_command
+        .as_deref()
+        .ok_or(Error::Unconfigured("pandoc_command"))?;
     let dir = conversion.output.parent().unwrap_or(Path::new("."));
-    let mut command = sandbox::Command::new(&config.pandoc_command);
+    let mut command = sandbox::Command::new(pandoc);
     command
         .current_dir(dir)
         .writable(dir)

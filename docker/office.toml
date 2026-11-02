@@ -1,5 +1,6 @@
 # What the agrafe-office image changes from the defaults, for a container:
-# docker/default.toml's, and LibreOffice for office thumbnails. The image
+# docker/default.toml's, LibreOffice for office thumbnails, and pandoc for
+# DOCX and ODT documents. The image
 # points AGRAFE_CONFIG here: mount a file of your own over it, or point
 # AGRAFE_CONFIG at another, to replace it; AGRAFE_* variables override
 # either. See config/example.toml for every key.
@@ -19,6 +20,7 @@ path = "/var/lib/agrafe/data"
 [media]
 # Outside /tmp, which LibreOffice's pipe needs to itself.
 tmp_dir = "/var/tmp/agrafe"
+pandoc_command = "pandoc"
 
 [media.office]
 command = "soffice"

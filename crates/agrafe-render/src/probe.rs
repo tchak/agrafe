@@ -488,7 +488,9 @@ pub async fn probe_office(config: &Config, tmp_dir: Option<&Path>) -> Result<(),
 /// `pandoc_command` that cannot write the HTML as a DOCX or an ODT, would
 /// kill every document job instead of failing the deployment. The office
 /// files are read back by pandoc, the server having no ZIP parser: the
-/// heading, the note and the image must be there.
+/// heading, the note and the image must be there. Without a
+/// `pandoc_command` the PDF alone is probed: DOCX and ODT documents are
+/// refused at creation.
 pub async fn probe_document(config: &Config, tmp_dir: Option<&Path>) -> Result<(), ProbeError> {
     let workdir = crate::workdir(tmp_dir)?;
     let workspace = workdir.path().join("workspace");
@@ -522,12 +524,15 @@ pub async fn probe_document(config: &Config, tmp_dir: Option<&Path>) -> Result<(
             });
         }
     }
+    let Some(command) = config.pandoc_command.as_deref() else {
+        return Ok(());
+    };
     let html = workdir.path().join("probe.html");
     for format in [OfficeFormat::Docx, OfficeFormat::Odt] {
         let office = workdir.path().join(format!("probe.{}", format.name()));
         let markdown = workdir.path().join(format!("probe.{}.md", format.name()));
         let failed = |what: String| ProbeError::Pandoc {
-            command: config.pandoc_command.clone(),
+            command: command.to_string(),
             what,
         };
         let to = pandoc::from_html(format, &html, &office, None);

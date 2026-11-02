@@ -43,8 +43,8 @@ decision.
   it, and expires on its own otherwise; `replace` swaps an owner's file
   in one request.
 - **Generated files**: spreadsheets (CSV, XLSX, ODS), ZIP archives and
-  [typst](https://typst.app) documents, as PDF, or as DOCX and ODT from the
-  same template through pandoc, built by jobs.
+  [typst](https://typst.app) documents, as PDF, or, with an optional
+  pandoc, as DOCX and ODT from the same template, built by jobs.
 - **Webhooks** when a blob is ready or failed, signed the Standard
   Webhooks way.
 - **Operations**: a Postgres job queue with per-kind workers, Prometheus

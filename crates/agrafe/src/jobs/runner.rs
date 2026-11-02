@@ -80,6 +80,9 @@ where
         let media = &state.config().media;
         agrafe_render::probe_document(&media.render, media.tmp_dir.as_deref()).await?;
         tracing::info!("document compiler probe passed");
+        if media.render.pandoc_command.is_none() {
+            tracing::info!("no pandoc configured, documents build to PDF only");
+        }
     }
     if handled.contains(&JobKind::Reap) {
         // The reaper reschedules itself from then on.

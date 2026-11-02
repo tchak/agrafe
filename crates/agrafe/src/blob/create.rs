@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use agrafe_render::pandoc::OfficeFormat;
 use agrafe_types::office;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -59,6 +60,7 @@ impl Agrafe {
             &config.fetch,
             Timestamp::now(),
         )?;
+        check_tools(&new, &config.media.render)?;
         if new.attachment.is_none() && new.url.is_none() {
             return Ok(repo::insert(self.pool(), &new).await?);
         }
@@ -511,6 +513,23 @@ fn validate_generated_content_type(
     }
 }
 
+/// Whether this deployment has the optional tool a generated blob's build
+/// needs: pandoc for a document declared DOCX or ODT. Refused at creation,
+/// rather than left for a build that cannot run.
+fn check_tools(new: &NewBlob, render: &agrafe_render::Config) -> Result<(), CreateError> {
+    if new.input_type == InputType::Document
+        && OfficeFormat::of(&new.content_type).is_some()
+        && render.pandoc_command.is_none()
+    {
+        return Err(unprocessable(format!(
+            "content_type `{}` needs pandoc, which this deployment does not configure \
+             (media.pandoc_command); `application/pdf` does not",
+            new.content_type
+        )));
+    }
+    Ok(())
+}
+
 fn unprocessable(msg: impl Into<String>) -> CreateError {
     CreateError::Invalid(msg.into())
 }
@@ -652,6 +671,38 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn office_documents_need_pandoc() {
+        let now = Timestamp::now();
+        let without = agrafe_render::Config::default();
+        let with = agrafe_render::Config {
+            pandoc_command: Some("pandoc".into()),
+            ..agrafe_render::Config::default()
+        };
+        for office in [office::DOCX, office::ODT] {
+            let new = validate(
+                req(InputType::Document, office),
+                &cfg(),
+                &blobs(),
+                &fetch(),
+                now,
+            )
+            .unwrap();
+            let err = check_tools(&new, &without).unwrap_err();
+            assert!(err.to_string().contains("media.pandoc_command"), "{err}");
+            assert!(check_tools(&new, &with).is_ok());
+        }
+        let pdf = validate(
+            req(InputType::Document, classify::PDF),
+            &cfg(),
+            &blobs(),
+            &fetch(),
+            now,
+        )
+        .unwrap();
+        assert!(check_tools(&pdf, &without).is_ok());
     }
 
     #[test]

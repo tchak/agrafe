@@ -4,8 +4,8 @@
 # libvips carries the security fixes (see docs/src/guide/deployment.md,
 # "libvips"). Two variants, chosen by VARIANT:
 #
-#   docker build .                              # without LibreOffice
-#   docker build --build-arg VARIANT=office .   # with LibreOffice
+#   docker build .                              # without LibreOffice or pandoc
+#   docker build --build-arg VARIANT=office .   # with LibreOffice and pandoc
 #
 # The build stage compiles with the toolchain and the runtime stages copy
 # the binaries alone; both are trixie, so the binaries run against the
@@ -18,7 +18,8 @@ ARG VARIANT=default
 # pandoc's own release, not trixie's package: Debian's 3.1.11 predates the
 # HTML reader's footnotes by ARIA role (pandoc 3.6), the markup typst
 # writes, so its DOCX would lose every note and the startup probe would
-# refuse every document worker. A new version changes the digests below.
+# refuse every document worker. In the office variant only, like
+# LibreOffice. A new version changes the digests below.
 ARG PANDOC_VERSION=3.13
 
 FROM rust:${RUST_VERSION}-slim-trixie AS build
@@ -48,14 +49,12 @@ RUN case "${TARGETARCH}" in \
 
 FROM debian:trixie-slim AS runtime-default
 # vips for every render, with SVG (rsvg) for the maps; the fonts for PDFs
-# that do not embed theirs; pandoc, about 180 MB installed, for the DOCX
-# and ODT documents; the CA roots for the fetches, the webhook and the map
-# layers. coreutils, which the startup probe runs, is in the base.
-COPY --from=pandoc /pandoc.deb /tmp/pandoc.deb
+# that do not embed theirs; the CA roots for the fetches, the webhook and
+# the map layers. coreutils, which the startup probe runs, is in the base.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      libvips-tools /tmp/pandoc.deb ca-certificates fontconfig fonts-dejavu-core fonts-liberation \
- && rm -rf /var/lib/apt/lists/* /tmp/pandoc.deb \
+      libvips-tools ca-certificates fontconfig fonts-dejavu-core fonts-liberation \
+ && rm -rf /var/lib/apt/lists/* \
  # The sandbox cannot keep a font cache of its own between jobs.
  && fc-cache -f \
  && useradd --system --create-home --home-dir /var/lib/agrafe \
@@ -63,13 +62,15 @@ RUN apt-get update \
  && install -d -o agrafe -g agrafe /var/lib/agrafe/data /var/tmp/agrafe
 
 FROM runtime-default AS runtime-office
-# About 400 MB. Writer, Calc, Impress and Draw: the startup probe converts
-# a file of each.
+# LibreOffice, about 400 MB: Writer, Calc, Impress and Draw, since the
+# startup probe converts a file of each. pandoc, about 180 MB, for the
+# DOCX and ODT documents.
+COPY --from=pandoc /pandoc.deb /tmp/pandoc.deb
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       libreoffice-writer-nogui libreoffice-calc-nogui \
-      libreoffice-impress-nogui libreoffice-draw-nogui \
- && rm -rf /var/lib/apt/lists/* \
+      libreoffice-impress-nogui libreoffice-draw-nogui /tmp/pandoc.deb \
+ && rm -rf /var/lib/apt/lists/* /tmp/pandoc.deb \
  && fc-cache -f
 # A profile warmed by a throwaway conversion, which media.office's
 # profile_template copies into each run's work directory.
