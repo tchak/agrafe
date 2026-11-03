@@ -3903,7 +3903,11 @@ Four events. `ready`: the original became readable, the scan passed or was
 skipped, or the build finished. `infected`: the scan failed; terminal.
 `failed`: the job that was to finish the blob died, `failed_at` set on the
 row by `jobs::fail`; retryable through `POST /blobs/:id/retry` or `POST
-/jobs/:id/retry`, after which a `ready` or a second `failed` follows.
+/jobs/:id/retry`, after which a `ready` or a second `failed` follows. A render
+is such a job, so `failed` also reaches a blob already `ready`, with
+`blob.state` and the representation states in the body to say so, and it can
+replace a `ready` still pending; the original is readable, and a retried
+render that succeeds reports nothing, since representations have no event.
 `expired`: the reaper recorded the blob `expired`. `infected` and `failed`
 are two events because they call for two actions, one is final and the
 other is retry or give up. `expired` fires when the reaper records it, not

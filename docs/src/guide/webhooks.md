@@ -19,7 +19,7 @@ Nothing is enqueued while `url` is unset.
 |---|---|---|
 | `ready` | The original became readable: scan passed or skipped, build finished, fetch done | Show the file, store the envelope |
 | `infected` | The scan found something. Terminal | Tell the user, detach |
-| `failed` | The job that was to finish the blob ran out of attempts | Retry with `POST /blobs/:id/retry`, or give up |
+| `failed` | The job that was to finish the blob ran out of attempts: a fetch, a scan or a build, or the render of a `ready` blob | Retry with `POST /blobs/:id/retry`, or give up. If `blob.state` is `ready`, the file is readable and only its thumbnail or preview is stuck |
 | `expired` | The reaper recorded the blob `expired` | In practice, an attached blob whose file never came |
 
 There is no event for `deleted`, which the backend caused, nor for
@@ -64,6 +64,12 @@ call.
 
 For example, a `failed` delivery that is retried after `POST
 /blobs/:id/retry` fixed the blob arrives with `blob.state` already `ready`.
+
+A dead render is the other `failed` with `blob.state` at `ready`: the original
+is there to show, and `thumbnail_state` or `preview_state` is still `pending`.
+It may even be the first you hear of the blob, when it replaces a `ready`
+still undelivered. A render that succeeds on retry sends no event, as
+representations have none.
 
 One `notify` job is pending per blob. A second event raised while the first
 is still undelivered replaces it, so the backend hears the newest news, not

@@ -312,6 +312,54 @@ async fn a_dead_job_reports_failed_and_its_retry_reports_ready() {
     receiver.quiet();
 }
 
+/// A dead render says `failed` of a blob that is `ready`: the state in the
+/// body tells the backend the file can be shown, and it may be the first
+/// news of the blob. Its retry ends in no event, representations having none.
+#[tokio::test]
+async fn a_dead_render_reports_failed_on_a_ready_blob() {
+    let db = TestDatabase::new().await;
+    let (app, mut receiver) = setup_receiving(db, Vec::new()).await;
+    let pool = app.state.pool();
+    let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
+    let id = id_of(&blob);
+    assert_eq!(notify_job(&app, id).await.unwrap().1["event"], "ready");
+
+    // The render's one attempt panics reading the original.
+    sqlx::query("UPDATE jobs SET max_attempts = 1 WHERE blob_id = $1 AND kind = 'render'")
+        .bind(parse_id(id))
+        .execute(pool)
+        .await
+        .unwrap();
+    app.gate.panic(At::Get, &object_key(id, "original"));
+    assert!(run_job(&app, JobKind::Render).await);
+
+    // It replaces the `ready` still undelivered.
+    assert_eq!(notify_job(&app, id).await.unwrap().1["event"], "failed");
+    assert!(run_job(&app, JobKind::Notify).await);
+    let hit = receiver.hit();
+    verify(&hit);
+    assert_eq!(hit.body["event"], "failed");
+    assert_eq!(hit.body["blob"]["state"], "ready");
+    assert_eq!(hit.body["blob"]["thumbnail_state"], "pending");
+    assert!(hit.body["blob"]["failed_at"].is_string(), "{}", hit.body);
+
+    let (status, body) = call(
+        &app.private,
+        req(Method::POST, &format!("/blobs/{id}/retry")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert!(run_job(&app, JobKind::Render).await);
+    let shown = get_blob(&app, id).await;
+    assert_eq!(shown["thumbnail_state"], "ready", "{shown}");
+    assert_eq!(shown["failed_at"], Value::Null, "{shown}");
+    assert!(
+        notify_job(&app, id).await.is_none(),
+        "no event for a render"
+    );
+    receiver.quiet();
+}
+
 #[tokio::test]
 async fn a_failing_receiver_leaves_a_dead_job_the_retry_revives() {
     let db = TestDatabase::new().await;
