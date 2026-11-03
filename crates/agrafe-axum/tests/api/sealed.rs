@@ -10,6 +10,7 @@ use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use object_store::ObjectStoreExt;
 use serde_json::json;
 
 use crate::support::*;
@@ -114,6 +115,52 @@ async fn sealed_urls_serve_without_the_row() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// A missing object is handed to the row. A purged blob is gone, where the
+/// envelope alone would have said `pending` for as long as the URL lives; a
+/// live one comes back through the row, which queues the repair.
+#[tokio::test]
+async fn a_sealed_representation_with_no_object_goes_to_the_row() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
+    let id = id_of(&blob);
+    while run_job(&app, JobKind::Render).await {}
+    let minted = get_blob(&app, id).await;
+    let thumbnail = public_url(&minted, "thumbnail");
+    let preview = public_url(&minted, "preview");
+
+    // Live: the icon and one render, however many requests ask.
+    app.state
+        .store()
+        .delete(&object_store::path::Path::from(object_key(id, "thumbnail")))
+        .await
+        .unwrap();
+    for _ in 0..2 {
+        let (status, headers, _) = fetch(&app.public, get_with(&thumbnail, &[])).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers["x-representation-state"], "pending");
+    }
+    assert_eq!(jobs_for(&app, id).await, ["render"]);
+    assert!(run_job(&app, JobKind::Render).await);
+    let (_, headers, _) = fetch(&app.public, get_with(&thumbnail, &[])).await;
+    assert_eq!(headers["x-representation-state"], "ready");
+
+    // Purged: both are 404, and the row is not written.
+    assert_eq!(delete(&app, id).await, StatusCode::NO_CONTENT);
+    sqlx::query("UPDATE jobs SET run_at = now() WHERE kind = 'purge'")
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+    assert!(run_job(&app, JobKind::Purge).await);
+    let before = get_blob(&app, id).await;
+    for url in [&thumbnail, &preview] {
+        let (status, _, _) = fetch(&app.public, get_with(url, &[])).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{url}");
+    }
+    assert_eq!(get_blob(&app, id).await["updated_at"], before["updated_at"]);
+    assert!(jobs_for(&app, id).await.is_empty());
 }
 
 #[tokio::test]

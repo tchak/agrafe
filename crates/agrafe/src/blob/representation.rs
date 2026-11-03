@@ -95,6 +95,17 @@ impl Agrafe {
         resolve(self, blob, kind).await
     }
 
+    /// The bytes of a `kind` an envelope records `ready`, or `None` when
+    /// the object is gone. Touches nothing else: the sealed path has not
+    /// looked at the row and hands a missing object over to it.
+    pub async fn read_representation(
+        &self,
+        blob: &BlobHead,
+        kind: Representation,
+    ) -> Result<Option<Bytes>, Error> {
+        load(self, &Stored::from_head(blob)?, kind).await
+    }
+
     /// The bytes of a `kind` that resolved `Ready`, or `None` when the
     /// object is gone: the representation is then set back to `pending`
     /// and queued again, and the caller serves the placeholder.

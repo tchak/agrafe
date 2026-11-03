@@ -95,17 +95,28 @@ pub async fn serve(
     let disposition = original::content_disposition(query.disposition.as_deref(), &name)?;
     match served {
         Resolved::Ready(rendered) => {
-            image(
+            let served = image(
                 state,
                 &blob,
                 kind,
                 rendered,
-                disposition,
+                disposition.clone(),
                 method,
                 headers,
                 Origin::Row,
             )
-            .await
+            .await?;
+            match served {
+                Some(response) => Ok(response),
+                // The object is gone and the repair is queued.
+                None => placeholder(
+                    kind,
+                    &blob,
+                    RepresentationState::Pending,
+                    disposition,
+                    method,
+                ),
+            }
         }
         Resolved::Placeholder(rep_state) => {
             placeholder(kind, &blob, rep_state, disposition, method)
@@ -128,8 +139,8 @@ pub async fn serve(
 
 /// Serve `kind` from the URL's envelope, with no row to look up, when
 /// the envelope has it rendered with the current variant version. `None`
-/// otherwise: a render was pending or the version has moved since the
-/// envelope was minted, and the row knows better.
+/// otherwise: a render was pending, the version has moved since the
+/// envelope was minted or the object is gone, and the row knows better.
 #[allow(clippy::too_many_arguments)]
 pub async fn serve_sealed(
     state: &Agrafe,
@@ -165,7 +176,6 @@ pub async fn serve_sealed(
         Origin::Envelope,
     )
     .await
-    .map(Some)
 }
 
 async fn refetch(state: &Agrafe, id: Uuid, port: Port) -> ApiResult<BlobHead> {
@@ -179,9 +189,12 @@ async fn refetch(state: &Agrafe, id: Uuid, port: Port) -> ApiResult<BlobHead> {
 /// The rendered representation, with the conditional request handling a
 /// cacheable image deserves. The `ETag` and the length come from the row,
 /// so a `304` and a `HEAD` never read the object; only a `GET` with a body
-/// to send does. On the sealed path a data key that does not unwrap under
-/// a known KEK is another blob's envelope, the minter's mistake, so it is
-/// `400` rather than the `500` a row that does not unwrap earns.
+/// to send does. `None` when the object is not in the bucket: from the row
+/// the repair is then queued, from the envelope nothing is, since the sealed
+/// path looks nothing up and the row decides. On the sealed path a data key
+/// that does not unwrap under a known KEK is another blob's envelope, the
+/// minter's mistake, so it is `400` rather than the `500` a row that does
+/// not unwrap earns.
 #[allow(clippy::too_many_arguments)]
 async fn image(
     state: &Agrafe,
@@ -192,7 +205,7 @@ async fn image(
     method: &Method,
     headers: &HeaderMap,
     origin: Origin,
-) -> ApiResult<Response> {
+) -> ApiResult<Option<Response>> {
     let etag = original::etag(&rendered.sha256);
     let mut response = Response::new(Body::empty());
     let h = response.headers_mut();
@@ -201,34 +214,29 @@ async fn image(
     h.insert(STATE_HEADER, state_value(RepresentationState::Ready));
     if original::none_match(headers, &etag) {
         *response.status_mut() = StatusCode::NOT_MODIFIED;
-        return Ok(response);
+        return Ok(Some(response));
     }
     if method == Method::HEAD {
         webp_headers(response.headers_mut(), rendered.size, disposition);
-        return Ok(response);
+        return Ok(Some(response));
     }
-    let loaded = state
-        .load_representation(blob, kind)
-        .await
-        .map_err(|e| match (origin, &e) {
-            (
-                Origin::Envelope,
-                representation::Error::Read(ReadError::Key(UnwrapError::Crypto { .. })),
-            ) => ApiError::BadRequest(format!("envelope: {e}")),
-            _ => ApiError::from(e),
-        })?;
+    let loaded = match origin {
+        Origin::Row => state.load_representation(blob, kind).await,
+        Origin::Envelope => state.read_representation(blob, kind).await,
+    };
+    let loaded = loaded.map_err(|e| match (origin, &e) {
+        (
+            Origin::Envelope,
+            representation::Error::Read(ReadError::Key(UnwrapError::Crypto { .. })),
+        ) => ApiError::BadRequest(format!("envelope: {e}")),
+        _ => ApiError::from(e),
+    })?;
     let Some(bytes) = loaded else {
-        return placeholder(
-            kind,
-            blob,
-            RepresentationState::Pending,
-            disposition,
-            method,
-        );
+        return Ok(None);
     };
     webp_headers(response.headers_mut(), bytes.len() as u64, disposition);
     *response.body_mut() = Body::from(bytes);
-    Ok(response)
+    Ok(Some(response))
 }
 
 /// What stands in for a representation that is not there: the icon for a
