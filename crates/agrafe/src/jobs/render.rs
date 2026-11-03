@@ -459,13 +459,21 @@ impl<'a> Render<'a> {
     }
 
     /// The stored preview, decrypted into the work directory; `None` when
-    /// the object is gone.
+    /// the object is gone or does not open, and the original can give it
+    /// again.
     async fn stored_preview(&self) -> Result<Option<PathBuf>, JobError> {
-        let loaded =
-            representation::load(self.state, &self.stored, Representation::Preview).await?;
-        let Some(bytes) = loaded else {
-            tracing::warn!("the stored preview is missing, rendering it again");
-            return Ok(None);
+        let loaded = representation::load(self.state, &self.stored, Representation::Preview).await;
+        let bytes = match loaded {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => {
+                tracing::warn!("the stored preview is missing, rendering it again");
+                return Ok(None);
+            }
+            Err(err @ representation::Error::Corrupt { .. }) => {
+                tracing::error!(error = %err, "rendering the stored preview again");
+                return Ok(None);
+            }
+            Err(err) => return Err(err.into()),
         };
         let path = self.path(PREVIEW);
         tokio::fs::write(&path, bytes).await?;

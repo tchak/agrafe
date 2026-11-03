@@ -96,33 +96,41 @@ impl Agrafe {
     }
 
     /// The bytes of a `kind` an envelope records `ready`, or `None` when
-    /// the object is gone. Touches nothing else: the sealed path has not
-    /// looked at the row and hands a missing object over to it.
+    /// the object is gone or does not open. Touches nothing else: the
+    /// sealed path has not looked at the row and hands that over to it.
     pub async fn read_representation(
         &self,
         blob: &BlobHead,
         kind: Representation,
     ) -> Result<Option<Bytes>, Error> {
-        load(self, &Stored::from_head(blob)?, kind).await
+        match load(self, &Stored::from_head(blob)?, kind).await {
+            Err(Error::Corrupt { .. }) => Ok(None),
+            loaded => loaded,
+        }
     }
 
     /// The bytes of a `kind` that resolved `Ready`, or `None` when the
-    /// object is gone: the representation is then set back to `pending`
-    /// and queued again, and the caller serves the placeholder.
+    /// object is gone or does not open: a representation can be rendered
+    /// again, so it is set back to `pending` and queued, and the caller
+    /// serves the placeholder.
     pub async fn load_representation(
         &self,
         blob: &BlobHead,
         kind: Representation,
     ) -> Result<Option<Bytes>, Error> {
-        match load(self, &Stored::from_head(blob)?, kind).await? {
-            Some(bytes) => Ok(Some(bytes)),
-            None => {
+        match load(self, &Stored::from_head(blob)?, kind).await {
+            Ok(Some(bytes)) => return Ok(Some(bytes)),
+            Ok(None) => {
                 tracing::warn!(blob = %blob.id, kind = %kind, "object is missing, regenerating");
-                repo::request_representation(self.pool(), blob.id, kind).await?;
-                self.heads().invalidate(blob.id);
-                Ok(None)
             }
+            Err(err @ Error::Corrupt { .. }) => {
+                tracing::error!(error = %err, "regenerating");
+            }
+            Err(err) => return Err(err),
         }
+        repo::request_representation(self.pool(), blob.id, kind).await?;
+        self.heads().invalidate(blob.id);
+        Ok(None)
     }
 }
 

@@ -147,6 +147,22 @@ async fn a_sealed_representation_with_no_object_goes_to_the_row() {
     let (_, headers, _) = fetch(&app.public, get_with(&thumbnail, &[])).await;
     assert_eq!(headers["x-representation-state"], "ready");
 
+    // An object that does not open goes the same way.
+    app.state
+        .store()
+        .put(
+            &object_store::path::Path::from(object_key(id, "thumbnail")),
+            vec![0u8; 512].into(),
+        )
+        .await
+        .unwrap();
+    let (status, headers, _) = fetch(&app.public, get_with(&thumbnail, &[])).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["x-representation-state"], "pending");
+    assert!(run_job(&app, JobKind::Render).await);
+    let (_, headers, _) = fetch(&app.public, get_with(&thumbnail, &[])).await;
+    assert_eq!(headers["x-representation-state"], "ready");
+
     // Purged: both are 404, and the row is not written.
     assert_eq!(delete(&app, id).await, StatusCode::NO_CONTENT);
     sqlx::query("UPDATE jobs SET run_at = now() WHERE kind = 'purge'")

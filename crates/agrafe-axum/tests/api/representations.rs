@@ -1089,22 +1089,37 @@ async fn a_corrupt_representation_is_an_internal_error() {
     let thumbnail = format!("/blobs/{id}/thumbnail/photo.jpg");
     rendered(&app, &thumbnail).await;
 
-    // An object that does not decrypt is not served, and not mistaken
-    // for a missing one: nothing is queued over it.
-    app.state
-        .store()
-        .put(
-            &object_store::path::Path::from(object_key(id, "thumbnail")),
-            vec![0u8; 512].into(),
-        )
-        .await
-        .unwrap();
-    let (status, _, body) = fetch(&app.private, get_with(&thumbnail, &[])).await;
-    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-    let body: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(body["error"]["code"], "internal");
-    assert_eq!(get_blob(&app, id).await["thumbnail_state"], "ready");
-    assert!(jobs_for(&app, id).await.is_empty());
+    // An object that does not decrypt is repaired like a missing one: an
+    // <img> keeps an image meanwhile.
+    let corrupt = async |name: &str| {
+        app.state
+            .store()
+            .put(
+                &object_store::path::Path::from(object_key(id, name)),
+                vec![0u8; 512].into(),
+            )
+            .await
+            .unwrap();
+    };
+    corrupt("thumbnail").await;
+    let (status, headers, _) = fetch(&app.private, get_with(&thumbnail, &[])).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(state_of(&headers), "pending");
+    assert_eq!(jobs_for(&app, id).await, ["render"]);
+    render_all(&app).await;
+    rendered(&app, &thumbnail).await;
+
+    // The thumbnail regenerated from a stored preview that does not decrypt:
+    // the job renders the preview again rather than die on it.
+    corrupt("preview").await;
+    corrupt("thumbnail").await;
+    let (_, headers, _) = fetch(&app.private, get_with(&thumbnail, &[])).await;
+    assert_eq!(state_of(&headers), "pending");
+    render_all(&app).await;
+    rendered(&app, &thumbnail).await;
+    let blob = get_blob(&app, id).await;
+    assert_eq!(blob["preview_state"], "ready");
+    assert_eq!(blob["failed_at"], Value::Null);
 }
 
 #[tokio::test]

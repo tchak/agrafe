@@ -479,8 +479,8 @@ the row up as before.
 - A representation is served from the envelope when it records it `ready`
   with the current variant version: `304` and `HEAD` from the digest and
   size, the bytes from the bucket. Anything else, a pending render, an
-  older version, a missing object, is handed to the row, which knows
-  better and does the repair.
+  older version, an object missing or that does not open, is handed to the
+  row, which knows better and does the repair.
 - Nothing on the sealed path reads the row, so a blob deleted or expired
   after the URL was minted stays readable until the purge takes its
   objects (the reaper's interval plus `upload.purge_delay`) or the URL
@@ -2204,8 +2204,8 @@ on it. A thumbnail rendered on its own, the preview disabled, follows the
 same rule from its own attempt at the picture. The exception is a
 timeout: a file that exhausted one tool's time limit is not handed to a
 second for as long again, and the thumbnail is `failed` with the
-preview. A preview from another version, or whose object is gone, is
-rendered again first. The thumbnail thus appears after the preview rather
+preview. A preview from another version, or whose object is gone or does
+not open, is rendered again first. The thumbnail thus appears after the preview rather
 than alongside it, a few seconds for a large image, which the icon
 placeholder and `wait` cover.
 

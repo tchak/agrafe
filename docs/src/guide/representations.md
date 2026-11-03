@@ -247,7 +247,8 @@ regenerated on its next request, `failed` and `unavailable` ones included,
 since a new renderer may do better. The request that notices the old
 version serves the placeholder and queues the render.
 
-A representation whose object has gone missing is repaired the same way.
+A representation whose object has gone missing, or no longer decrypts, is
+repaired the same way.
 
 A representation stuck `pending` because its render job died is not seen by
 that repair. Use `POST /blobs/:id/retry` (see [Jobs and retries](jobs.md)).
