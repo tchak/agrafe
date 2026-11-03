@@ -190,10 +190,18 @@ layer by default: the geometry is then drawn on a flat background and
 nothing leaves the worker. Every render with a layer configured sends the
 extent of a user's geometry to that provider, so the render workers'
 egress must allow those hosts, and nothing else needs it; a redirect to
-another host is not followed. A layer that
-cannot be fetched, times out or does not decode fails the render attempt,
-which is retried; the file is never marked `failed` for the provider's
-downtime. See [Configuration](../reference/configuration.md#mediamap).
+another host is not followed.
+
+A layer that cannot be fetched, answers an error, times out or does not
+decode fails the render attempt, which is retried; the representations stay
+`pending`, never `failed`, for what the provider did. A `4xx` is no
+exception, since a refusal cannot be told from a misconfigured layer, which
+must not settle every map as failed. When the attempts run out, after about
+eight minutes, the job is dead: the blob gets `failed_at` and a `failed`
+webhook event, and the representations stay `pending`. Fix the layer (its
+`max_span`, say, or `max_size` if it caps the image) or wait for the
+provider, then `POST /blobs/:id/retry`. See
+[Configuration](../reference/configuration.md#mediamap).
 
 ## States
 

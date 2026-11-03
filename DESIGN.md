@@ -2793,8 +2793,16 @@ on "has preview", never on category. Sources, in order:
    failure to fetch, a layer that does not decode included, which the
    fit of that one layer finds out, is not the file's fault: it is an
    `Error`, the job attempt fails and is retried
-   with the backoff, and the representations stay `pending` meanwhile. The
-   file never gets `failed` for the provider's downtime, and the provider's
+   with the backoff, and the representations stay `pending` meanwhile. A
+   provider's `4xx` is one too, unlike a fetched blob's: it may depend on
+   the request, but it cannot be told from a layer misconfigured or a
+   provider's bad hour, and a verdict there would settle every map of the
+   deployment as `failed` for good. The price is a box one provider always
+   refuses, which spends its attempts and dies: `failed_at` on the blob, a
+   `failed` event, the representations still `pending`, and `POST
+   /blobs/:id/retry` once the layer is fixed; `max_span` is the operator's
+   tool to keep requests within what a layer covers. The representations
+   never become `failed` for the provider, and the provider's
    URL, which carries the extent, never reaches a log line: errors name
    the layer and the host. The layer bytes are written to the work
    directory and never reach a client; the composite is re-encoded like
