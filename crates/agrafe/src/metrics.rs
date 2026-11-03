@@ -199,6 +199,10 @@ impl Metrics {
             ] {
                 job_runs.with_label_values(&[kind.as_str(), outcome.as_str()]);
             }
+            // At zero until this process starts workers of the kind, so that
+            // a kind no process handles sums to zero rather than to nothing,
+            // which `AgrafeNoWorkers` could not see.
+            workers.with_label_values(&[kind.as_str()]);
         }
         for result in ["hit", "miss"] {
             head_cache.with_label_values(&[result]);

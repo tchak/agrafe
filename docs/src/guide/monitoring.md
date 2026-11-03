@@ -41,7 +41,7 @@ These count what one process did, so sum them across processes.
 |---|---|---|
 | `agrafe_job_runs_total` | `kind`, `outcome` | Finished attempts. `outcome` is `ok`, `retry`, `dead` or `superseded` (dropped in favour of a newer twin) |
 | `agrafe_job_duration_seconds` | `kind` | Histogram of attempt wall time, buckets from 50 ms to one hour |
-| `agrafe_workers` | `kind` | Workers this process runs |
+| `agrafe_workers` | `kind` | Workers this process runs, zero for a kind it does not, so a kind no process handles sums to zero |
 | `agrafe_blob_head_cache_total` | `result` | Row lookups by the read routes, `hit` or `miss` |
 | `agrafe_webhook_deliveries_total` | `event`, `result` | Webhook attempts, `delivered` or `failed` |
 

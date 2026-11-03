@@ -3686,7 +3686,9 @@ counts), leaves the queue gauges at the last one's values with
 `agrafe_jobs_census_ok` at 0, and `/metrics` still answers with what the
 process knows of itself. Per process: `agrafe_job_runs_total{kind,outcome}` with `ok`, `retry`,
 `dead` and `superseded`, `agrafe_job_duration_seconds{kind}`,
-`agrafe_workers{kind}` and `agrafe_webhook_deliveries_total{event,result}`
+`agrafe_workers{kind}`, zero for a kind the process does not run so that a
+kind nobody handles sums to zero rather than to nothing, and
+`agrafe_webhook_deliveries_total{event,result}`
 with `delivered` or `failed`, see "Webhooks". The last audit this process
 ran, see "Audit": `agrafe_audit_findings{kind}` with `missing_original`,
 `damaged_original`, `missing_representation`, `missing_source`, `orphan`,
