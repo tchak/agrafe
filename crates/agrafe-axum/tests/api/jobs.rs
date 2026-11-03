@@ -749,6 +749,9 @@ async fn metrics_report_queue_depth_and_runs() {
         "{text}"
     );
     assert!(text.contains("agrafe_jobs_census_ok 1"), "{text}");
+    // No worker runs here, and the alert on a kind nobody handles needs to
+    // see that as a zero.
+    assert!(text.contains("agrafe_workers{kind=\"scan\"} 0"), "{text}");
 
     // Too big for an inline scan: the scan is a due job.
     let bytes = png_bytes(5000);
@@ -842,6 +845,38 @@ async fn metrics_pass_the_prometheus_linter() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
+}
+
+/// The alert rules are tested against made-up series, so a renamed metric
+/// would leave them green and silent in production. Every metric they name
+/// must be one a process exposes.
+#[tokio::test]
+async fn the_alert_rules_name_metrics_that_exist() {
+    use axum::http::Method;
+
+    let rules = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../config/alerts.yml"
+    ))
+    .unwrap();
+    let mut named: Vec<&str> = rules
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|word| word.starts_with("agrafe_"))
+        .collect();
+    named.sort_unstable();
+    named.dedup();
+    assert!(!named.is_empty(), "{rules}");
+
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let (status, body) = call(&app.private, req(Method::GET, "/metrics")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let text = body.as_str().unwrap();
+    let missing: Vec<&str> = named
+        .into_iter()
+        .filter(|name| !text.contains(&format!("# TYPE {name} ")))
+        .collect();
+    assert!(missing.is_empty(), "not exposed: {missing:?}\n{text}");
 }
 
 /// With no connection to be had, `/metrics` still answers within the
