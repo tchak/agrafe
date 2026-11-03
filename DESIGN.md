@@ -4026,7 +4026,11 @@ that keeps an irreversible step last but one:
 1. the tag against the workspace version and the changelog section;
 2. the CI suite, `ci.yml` called on the tagged commit;
 3. the Docker images, both variants built per architecture on native
-   runners, pushed by digest, then tagged together;
+   runners and pushed by digest, each run by `scripts/check-image.sh` as
+   a deployment would (`migrate`, a worker's startup probes under the
+   required sandbox, SIGTERM, against a Postgres of its own), since CI
+   tests Ubuntu's packages and the image ships Debian's, then tagged
+   together;
 4. the crates, `cargo publish --workspace`, which orders them and waits
    for the index between them. crates.io never takes a version back, so
    this waits for everything that can fail before it; re-running the
