@@ -57,7 +57,7 @@ The first release.
   `reference.odt`.
 - **Operations**: a Postgres job queue with per-kind worker pools, split
   API and worker roles, the audit of objects against the database, a
-  signed webhook, Prometheus metrics, request-to-job tracing, the jobs
+  signed webhook that honours `Retry-After`, Prometheus metrics, request-to-job tracing, the jobs
   API, the HTML dashboard and the reaper.
 - **Storage** on the local disk, S3-compatible stores, Azure Blob Storage
   and Google Cloud Storage, objects keyed `<shard>/<blob id>/<name>` with

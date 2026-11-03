@@ -194,9 +194,14 @@ pub enum WebhookError {
     /// the same thing.
     #[error("payload: {0}")]
     Payload(String),
-    /// Anything but a 2xx, with the head of the response body.
+    /// Anything but a 2xx, with the head of the response body and the
+    /// wait the receiver asked for, at most `MAX_RETRY_AFTER`.
     #[error("the receiver answered {status}: {body}")]
-    Status { status: u16, body: String },
+    Status {
+        status: u16,
+        body: String,
+        retry_after: Option<Duration>,
+    },
     /// A connection error or a timeout.
     #[error("request failed: {0}")]
     Request(String),
@@ -211,7 +216,22 @@ impl WebhookError {
     pub fn is_permanent(&self) -> bool {
         matches!(self, WebhookError::Payload(_) | WebhookError::NotConfigured)
     }
+
+    /// What the receiver asked to wait before the next attempt.
+    pub(crate) fn retry_after(&self) -> Option<Duration> {
+        match self {
+            WebhookError::Status { retry_after, .. } => *retry_after,
+            _ => None,
+        }
+    }
 }
+
+/// The longest `Retry-After` waited for. A longer one waits this long and
+/// tries again rather than killing the delivery, as a fetch's would: the
+/// receiver is the operator's own and only asked for time, and a lost event
+/// is not one the backend can ask for again. Ten attempts then span nine
+/// hours at most.
+const MAX_RETRY_AFTER: Duration = super::BACKOFF_MAX;
 
 /// Bytes of a non-2xx response kept in `last_error`.
 const MAX_ERROR_BODY: usize = 1000;
@@ -271,9 +291,12 @@ impl Client {
         if status.is_success() {
             return Ok(());
         }
+        let retry_after = super::fetch::retry_after(response.headers(), Timestamp::now())
+            .map(|asked| asked.min(MAX_RETRY_AFTER));
         Err(WebhookError::Status {
             status: status.as_u16(),
             body: head_of(response).await,
+            retry_after,
         })
     }
 }

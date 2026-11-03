@@ -458,7 +458,7 @@ fn find_in_chain<'a, T: std::error::Error + 'static>(
 
 /// `Retry-After` as a delay from `now`: delta seconds, or an HTTP date.
 /// A header that does not parse is ignored.
-fn retry_after(headers: &HeaderMap, now: Timestamp) -> Option<Duration> {
+pub(super) fn retry_after(headers: &HeaderMap, now: Timestamp) -> Option<Duration> {
     let value = headers.get(RETRY_AFTER)?.to_str().ok()?.trim();
     if let Ok(secs) = value.parse::<u64>() {
         return Some(Duration::from_secs(secs));

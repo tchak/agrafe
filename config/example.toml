@@ -201,7 +201,7 @@ read_timeout = "30s"
 timeout = "6h"
 # Redirects followed at most, each hop under the same checks as the first.
 max_redirects = 5
-# A 429 or 503 may say when to come back; a Retry-After beyond this is not
+# A 5xx, 408, 425 or 429 may say when to come back; a Retry-After beyond this is not
 # waited for and the fetch is dead at once.
 max_retry_after = "15m"
 # URLs must be https, without credentials, and must not lead to loopback,

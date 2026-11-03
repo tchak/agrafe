@@ -1903,7 +1903,7 @@ Errors are a `FetchError` with an `is_permanent`, like `BuildError`:
   whole-response timeouts; a reset; a body shorter than `Content-Length`;
   the row found `uploading`; a bucket or database error.
 
-`Retry-After` on 429 and 503 is honoured, as delta seconds or an HTTP
+`Retry-After` on a 5xx, 408, 425 or 429 is honoured, as delta seconds or an HTTP
 date: the job carries the requested delay and `fail` schedules the retry
 at `max(backoff, retry_after)`. A value past `fetch.max_retry_after`
 (default fifteen minutes) is treated as permanent rather than parking the
@@ -3944,6 +3944,16 @@ delivery gets ten attempts where other jobs get five, about three hours of
 the doubling backoff rather than seven and a half minutes, so a backend
 down for an hour drains its backlog with no new machinery, and an
 operator sees undelivered notifications where dead jobs already are. A
+`Retry-After` on any answer but a `2xx` delays that delivery's next
+attempt when longer than the backoff, clamped to an hour. A fetch past its
+`max_retry_after` is dead at once; a delivery past the hour waits the hour
+and tries again, because the receiver is the operator's and only asked for
+time, and a lost event cannot be asked for again. The wait is the job's,
+not the endpoint's: with one URL and a backlog, each job still makes its
+attempt, and spends it, before it waits, so this respects what the receiver
+said without relieving it. A pause per endpoint, charging no attempts,
+would, and is left until a receiver needs it. A newer event replacing the
+pending job due now ignores the wait, at most one early request per blob. A
 dead `notify` says nothing on the blob: it is the news of the blob, not
 its progress. When no URL is configured nothing is enqueued, so a
 deployment without a webhook has no idle jobs; `webhook.events` narrows

@@ -132,7 +132,11 @@ Failed attempts are retried through the job queue, 30 seconds after the
 first failure, doubling up to an hour, ten attempts over about three hours
 in all. The delivery is
 then a dead `notify` job, with the head of the receiver's answer in its
-`last_error`:
+`last_error`. A `Retry-After` on a failing answer, in seconds or as an HTTP
+date, puts the next attempt off when it is longer than the backoff, by an
+hour at most; a longer one waits the hour and tries again. It applies to
+that delivery alone, so a backlog still reaches a receiver shedding load, one
+attempt per delivery.
 
 ```sh
 curl -s 'localhost:8080/jobs?kind=notify&state=dead' \

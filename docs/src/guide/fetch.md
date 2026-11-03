@@ -94,7 +94,7 @@ Others are transient and retried with the usual backoff, 30 seconds doubling:
 - a body shorter than its `Content-Length`;
 - a bucket or database error.
 
-A `Retry-After` on 429 and 503 is honoured, up to `fetch.max_retry_after`
+A `Retry-After` on a 5xx, 408, 425 or 429 is honoured, up to `fetch.max_retry_after`
 (fifteen minutes); a longer one is treated as permanent. With five attempts,
 a fetch gives up after about eight minutes. That is intended: a presigned
 URL expires, and a long retry window would mostly retry dead links.

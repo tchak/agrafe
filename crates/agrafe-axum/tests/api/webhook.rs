@@ -2,8 +2,8 @@
 //! URL with a Standard Webhooks signature, retried through the queue.
 
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::{Arc, Mutex};
 
 use agrafe::config::Config;
 use agrafe::jobs::notify::Event;
@@ -33,12 +33,13 @@ struct Hit {
     raw: String,
 }
 
-/// A receiver on localhost answering every `POST` with `status`, and a
-/// file on `/file` for a fetch to pick up.
+/// A receiver on localhost answering every `POST` with `status` and, when
+/// set, `retry_after`, and a file on `/file` for a fetch to pick up.
 struct Receiver {
     url: String,
     file_url: String,
     status: Arc<AtomicU16>,
+    retry_after: Arc<Mutex<Option<&'static str>>>,
     file_status: Arc<AtomicU16>,
     hits: mpsc::UnboundedReceiver<Hit>,
 }
@@ -46,6 +47,7 @@ struct Receiver {
 #[derive(Clone)]
 struct ReceiverState {
     status: Arc<AtomicU16>,
+    retry_after: Arc<Mutex<Option<&'static str>>>,
     file_status: Arc<AtomicU16>,
     hits: mpsc::UnboundedSender<Hit>,
     file: Vec<u8>,
@@ -58,7 +60,7 @@ async fn receive(
     State(st): State<ReceiverState>,
     headers: HeaderMap,
     raw: String,
-) -> (StatusCode, String) {
+) -> (StatusCode, HeaderMap, String) {
     let body = serde_json::from_str(&raw).unwrap_or(Value::Null);
     let _ = st.hits.send(Hit { headers, body, raw });
     let status = StatusCode::from_u16(st.status.load(Ordering::SeqCst)).unwrap();
@@ -67,7 +69,11 @@ async fn receive(
     } else {
         "é".repeat(FAILURE_BODY_SIZE / 2)
     };
-    (status, body)
+    let mut answer = HeaderMap::new();
+    if let Some(value) = *st.retry_after.lock().unwrap() {
+        answer.insert("retry-after", value.parse().unwrap());
+    }
+    (status, answer, body)
 }
 
 async fn file(State(st): State<ReceiverState>) -> (StatusCode, Vec<u8>) {
@@ -83,6 +89,7 @@ async fn receiver(file: Vec<u8>) -> Receiver {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();
     let status = Arc::new(AtomicU16::new(200));
+    let retry_after = Arc::new(Mutex::new(None));
     let file_status = Arc::new(AtomicU16::new(200));
     let (tx, rx) = mpsc::unbounded_channel();
     let router = Router::new()
@@ -90,6 +97,7 @@ async fn receiver(file: Vec<u8>) -> Receiver {
         .route("/file", any(self::file))
         .with_state(ReceiverState {
             status: status.clone(),
+            retry_after: retry_after.clone(),
             file_status: file_status.clone(),
             hits: tx,
             file,
@@ -99,6 +107,7 @@ async fn receiver(file: Vec<u8>) -> Receiver {
         url: format!("http://{addr}/events"),
         file_url: format!("http://{addr}/file"),
         status,
+        retry_after,
         file_status,
         hits: rx,
     }
@@ -434,6 +443,45 @@ async fn a_failing_receiver_leaves_a_dead_job_the_retry_revives() {
     assert_eq!(hit.body["attempt"], 1, "the attempts started over");
     assert!(notify_job(&app, id).await.is_none());
     receiver.quiet();
+}
+
+/// A receiver's `Retry-After` delays the next attempt when longer than the
+/// backoff, up to an hour, and a longer one still leaves the delivery alive.
+#[tokio::test]
+async fn a_receivers_retry_after_is_honoured_up_to_an_hour() {
+    let db = TestDatabase::new().await;
+    let (app, mut receiver) = setup_receiving(db, Vec::new()).await;
+    receiver.status.store(503, Ordering::SeqCst);
+
+    for (asked, least, most) in [
+        (Some("120"), 115.0, 120.0),
+        (Some("1"), 25.0, 30.0),
+        (Some("soon"), 25.0, 30.0),
+        (None, 25.0, 30.0),
+        (Some("3600"), 3595.0, 3600.0),
+        (Some("99999999999999"), 3595.0, 3600.0),
+    ] {
+        *receiver.retry_after.lock().unwrap() = asked;
+        let blob = ready_blob(&app, &png_bytes(1024)).await;
+        let (job, _) = notify_job(&app, id_of(&blob)).await.unwrap();
+        assert!(run_job(&app, JobKind::Notify).await);
+        receiver.hit();
+
+        let shown = app.state.find_job(job).await.unwrap().unwrap();
+        assert_eq!(
+            app.state.job_state(&shown),
+            jobs::JobState::Scheduled,
+            "{asked:?}"
+        );
+        let due: f64 = sqlx::query_scalar(
+            "SELECT EXTRACT(EPOCH FROM run_at - now())::float8 FROM jobs WHERE id = $1",
+        )
+        .bind(job)
+        .fetch_one(app.state.pool())
+        .await
+        .unwrap();
+        assert!((least..=most).contains(&due), "{asked:?}: {due}");
+    }
 }
 
 #[tokio::test]

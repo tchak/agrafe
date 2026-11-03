@@ -158,6 +158,7 @@ impl JobError {
     pub(crate) fn retry_after(&self) -> Option<Duration> {
         match self {
             JobError::Fetch(err) => err.retry_after(),
+            JobError::Webhook(err) => err.retry_after(),
             _ => None,
         }
     }
