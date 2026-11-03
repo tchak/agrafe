@@ -61,8 +61,9 @@ expires = ceil(now / window) * window + ttl
 ```
 
 Every URL minted for a blob inside one window is therefore identical, so
-browsers and CDNs can cache them, and a page that lists a hundred
-thumbnails does not get a hundred new URLs on every render.
+browsers can cache them, and a page that lists a hundred thumbnails does
+not get a hundred new URLs on every render. Responses are `private`, so a
+CDN in front of the public port does not store them by default.
 
 ## Originals
 

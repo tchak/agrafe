@@ -428,7 +428,11 @@ message = METHOD "\n" expires_unix "\n" path_and_query_after_token
   `K1` in a file would get a second key `k1` beside it, silently.
 - Minted expiries are rounded: `expires = ceil(now / window) * window + ttl`.
   All URLs minted for the same blob inside one window are identical, so
-  browsers and CDNs can cache them. The window is one setting,
+  a browser's cache keeps working across renders of a page. Shared caches
+  are not meant to hold them: the read routes answer `private`, so a CDN
+  in front stores nothing unless told to override it, and the deleted or
+  expired blob the row-backed routes hide at once stays out of its copy.
+  The window is one setting,
   `signing.window`; the TTL is per operation (`signing.ttl.upload`,
   `metadata`, `read`), and `POST /blobs/:id/urls` may override the read and
   metadata TTLs with one `ttl`, up to `signing.ttl.max`.

@@ -128,8 +128,8 @@ expires = ceil(now / window) * window + ttl
 ```
 
 Do the same. All URLs minted for one blob inside a window are then
-identical, so browsers and CDNs cache them, and your URLs match the ones
-agrafe mints.
+identical, so browsers cache them, and your URLs match the ones agrafe
+mints.
 
 The public port refuses a token whose expiry lies further in the future
 than `window + signing.ttl.max` from now, with `403 signature not valid
