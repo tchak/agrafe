@@ -26,6 +26,9 @@ fail() {
   exit 1
 }
 
+user=$(docker image inspect --format '{{.Config.User}}' "$image")
+[[ $user == 10001:10001 ]] || fail "it runs as '$user', not 10001:10001"
+
 docker network create "$run" >/dev/null
 docker run --detach --name "$postgres" --network "$run" \
   --env POSTGRES_PASSWORD=check --env POSTGRES_DB=agrafe postgres:17 >/dev/null

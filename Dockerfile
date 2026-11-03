@@ -57,7 +57,8 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  # The sandbox cannot keep a font cache of its own between jobs.
  && fc-cache -f \
- && useradd --system --create-home --home-dir /var/lib/agrafe \
+ && groupadd --system --gid 10001 agrafe \
+ && useradd --system --uid 10001 --gid 10001 --create-home --home-dir /var/lib/agrafe \
       --shell /usr/sbin/nologin agrafe \
  && install -d -o agrafe -g agrafe /var/lib/agrafe/data /var/tmp/agrafe
 
@@ -89,7 +90,8 @@ LABEL org.opencontainers.image.source="https://github.com/tchak/agrafe" \
 COPY docker/${VARIANT}.toml /etc/agrafe/agrafe.toml
 COPY --from=build /out/ /usr/local/bin/
 ENV AGRAFE_CONFIG=/etc/agrafe/agrafe.toml
-USER agrafe
+# By number: Kubernetes' runAsNonRoot cannot verify a name.
+USER 10001:10001
 WORKDIR /var/lib/agrafe
 EXPOSE 8080 8081
 ENTRYPOINT ["agrafe"]

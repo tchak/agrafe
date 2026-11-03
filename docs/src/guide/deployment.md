@@ -44,8 +44,10 @@ Every release publishes two images to the GitHub Container Registry, for
 `0.1` and `0.1-office` follow the latest patch release of `0.1`, `latest`
 and `latest-office` the latest release. Debian trixie is the base for
 its libvips (see [libvips](#libvips)). The images run as the unprivileged
-`agrafe` user, `agrafe serve` by default, and expose the private port,
-8080, and the public one, 8081. Use the `-office` image for the workers
+`agrafe` user, uid and gid 10001 by number, so Kubernetes' `runAsNonRoot`
+accepts them and a volume needs `fsGroup: 10001` or that owner. They run
+`agrafe serve` by default, and expose the private port, 8080, and the public
+one, 8081. Use the `-office` image for the workers
 that handle `render` or `document`, and for the API processes when
 documents may be DOCX or ODT, since creation checks for pandoc; the
 plain one everywhere else.
