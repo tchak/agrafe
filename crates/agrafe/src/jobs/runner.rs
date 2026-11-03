@@ -341,8 +341,15 @@ where
         if (&mut shutdown).now_or_never().is_some() {
             return Ok(());
         }
-        // Drain what is due, then wait. The wakeup is best effort: a notify
-        // that lands between an empty claim and the wait costs one interval.
+        // Drain what is due, then wait. The wakeup is registered before the
+        // claim: `notify_waiters` wakes only the futures already enabled,
+        // and an enqueue that commits while the claim runs, after its
+        // snapshot, would otherwise be missed and cost one interval. A
+        // wakeup that lands between a claim that found a job and the next
+        // claim is moot, since the next claim runs anyway.
+        let notified = wakeup.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
         let wait = match turn(&state, kind, &worker, signal.clone()).await {
             Ok(true) => continue,
             Ok(false) => interval,
@@ -353,7 +360,7 @@ where
         };
         tokio::select! {
             _ = &mut shutdown => return Ok(()),
-            _ = wakeup.notified() => {}
+            _ = &mut notified => {}
             _ = tokio::time::sleep(wait) => {}
         }
     }

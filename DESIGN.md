@@ -3469,8 +3469,10 @@ enqueue rate, one per blob transition, that is nothing, and the sign it
 has become something is waits on the notification queue in
 `pg_stat_activity`, where the answer is River's: one notification per
 kind per hundred milliseconds. One listener per process wakes the pollers of that
-kind; `jobs.poll_interval` is the fallback for a missed wakeup, at least 100 ms
-since a zero is a tight loop of claims; `jobs.lease_timeout` is at least 10 s,
+kind, each registered for the wakeup before its claim, so that an enqueue
+committing while the claim runs is not missed; `jobs.poll_interval` is the
+fallback for a wakeup missed all the same, the listener's connection down,
+at least 100 ms since a zero is a tight loop of claims; `jobs.lease_timeout` is at least 10 s,
 `jobs.reap_interval` at least 1 s, and `jobs.shutdown_grace` is how long a
 stopping process lets a job run before handing it back, see "Observability"
 below. Concurrency is
