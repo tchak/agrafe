@@ -3690,6 +3690,13 @@ rate, and per process, since the one worker handling `audit` is the one
 that knows. A `worker` process has no API; it binds
 `server.private_addr` all the same, serving `/healthz` and `/metrics` only.
 
+`SIGTERM` or `SIGINT` closes the listeners and drains: open requests finish,
+workers finish the job they hold and claim no other. The drain has no
+deadline and a second signal changes nothing, since the deadline is the
+supervisor's `SIGKILL`, and a kill is what the design already survives: the
+lease lapses and the job is claimed again, the reaper resets a stale upload.
+A timer of our own would be one more setting to keep below the supervisor's.
+
 `GET /jobs` lists jobs newest first, cursor paginated on the id, filtered by
 `kind`, `state`, `priority` and `blob_id`; `due` and `scheduled` are listed
 in queue order instead, the soonest `run_at` first, paginated on `run_at`

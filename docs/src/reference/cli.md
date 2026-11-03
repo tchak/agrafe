@@ -24,7 +24,9 @@ agrafe --config agrafe.toml migrate
 ## `agrafe serve`
 
 Runs the HTTP interfaces, the workers, or both, until `SIGINT` or
-`SIGTERM`.
+`SIGTERM`, then drains what is in flight with no deadline; see
+[Deployment](../guide/deployment.md). A second signal changes nothing, only
+`SIGKILL` cuts the drain short.
 
 ```sh
 agrafe --config agrafe.toml serve [--role <ROLE>] [--interfaces <INTERFACE,...>] [--kinds <KIND,...>]

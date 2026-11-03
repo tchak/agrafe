@@ -501,8 +501,14 @@ needed: the read cache is per process and short-lived.
   `/healthz` has the schema it was written for.
 - **Shutdown:** `SIGTERM` or `SIGINT` stops accepting requests and lets
   in-flight ones finish; workers finish the job they hold and claim no new
-  one. A job cut short by a crash or a kill is claimed again once its lease,
-  `jobs.lease_timeout`, lapses.
+  one. The drain has no deadline of its own and a second signal does not
+  cut it short: a slow upload or an archive build can hold it for hours. The
+  deadline is your supervisor's `SIGKILL` (Kubernetes'
+  `terminationGracePeriodSeconds`, 30 s by default, systemd's
+  `TimeoutStopSec`, `docker stop --time`); by hand, send it yourself. Nothing
+  is lost to it: a job cut short by a crash or a kill is claimed again once
+  its lease, `jobs.lease_timeout`, lapses, and the client of an upload cut
+  short retries it, or the reaper resets it after `upload.stale_after`.
 
 ## Logs
 
