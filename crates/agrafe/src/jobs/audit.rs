@@ -489,7 +489,7 @@ async fn schedule_after(
     run_at: Timestamp,
     current: Option<i64>,
 ) -> sqlx::Result<bool> {
-    let result = sqlx::query(
+    let result = sqlx::query(concat!(
         "WITH inserted AS (\
              INSERT INTO jobs (kind, priority, payload, run_at) \
              SELECT $1, $2, '{}', $3 \
@@ -498,10 +498,12 @@ async fn schedule_after(
                  WHERE kind = $1 AND blob_id IS NULL AND failed_at IS NULL \
                    AND id IS DISTINCT FROM $4\
              ) \
-             ON CONFLICT DO NOTHING RETURNING kind\
+             ON CONFLICT DO NOTHING RETURNING kind, run_at\
          ) \
-         SELECT pg_notify($5, kind) FROM inserted",
-    )
+         SELECT CASE WHEN ",
+        super::due_now!(),
+        " THEN pg_notify($5, kind) END FROM inserted"
+    ))
     .bind(JobKind::Audit.as_str())
     .bind(Priority::Normal.rank())
     .bind(run_at.to_sqlx())

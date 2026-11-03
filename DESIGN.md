@@ -3457,7 +3457,18 @@ the other. `POST /jobs/:id/retry` stays for the operator looking at the
 dead jobs; the blob's retry is for the backend looking at its records.
 
 `enqueue` calls `pg_notify` in the same statement, so the notification
-travels with the commit. One listener per process wakes the pollers of that
+travels with the commit, and only for a row due now (within a second, for
+a process's clock a little ahead of the database's): a purge waiting out
+its delay or a reap scheduled an interval out would wake every idle worker
+of the kind to a claim that finds nothing, and the poll finds them once
+due. Postgres collapses identical notifications within a transaction, so
+a reaper's batch of ten thousand purges is one per kind. What remains is
+that every committing transaction that notified takes one server-wide
+lock for the length of its commit, which serializes them; at agrafe's
+enqueue rate, one per blob transition, that is nothing, and the sign it
+has become something is waits on the notification queue in
+`pg_stat_activity`, where the answer is River's: one notification per
+kind per hundred milliseconds. One listener per process wakes the pollers of that
 kind; `jobs.poll_interval` is the fallback for a missed wakeup, at least 100 ms
 since a zero is a tight loop of claims; `jobs.lease_timeout` is at least 10 s,
 `jobs.reap_interval` at least 1 s, and `jobs.shutdown_grace` is how long a

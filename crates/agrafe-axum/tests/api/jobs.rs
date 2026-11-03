@@ -1890,3 +1890,59 @@ async fn dead_jobs_are_retried_in_bulk() {
     let (status, body) = call(&app.private, req(Method::POST, "/jobs/retry?kind=nope")).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 }
+
+/// An enqueue notifies the workers only for a job due now: a purge
+/// waiting out its delay or a reap scheduled an interval out would wake
+/// every idle worker to a claim that finds nothing.
+#[tokio::test]
+async fn only_a_job_due_now_wakes_the_workers() {
+    let db = TestDatabase::new().await;
+    use agrafe::jobs::{self, JobKind, Priority};
+
+    let app = setup(db).await;
+    let pool = app.state.pool();
+    let mut listener = sqlx::postgres::PgListener::connect_with(pool)
+        .await
+        .unwrap();
+    listener.listen("agrafe_jobs").await.unwrap();
+    let now = jiff::Timestamp::now();
+
+    // Scheduled an hour out: a row, no notification.
+    assert!(
+        jobs::enqueue(
+            pool,
+            JobKind::Reap,
+            None,
+            Priority::Normal,
+            json!({}),
+            now + jiff::SignedDuration::from_secs(3600)
+        )
+        .await
+        .unwrap()
+    );
+    let quiet = tokio::time::timeout(Duration::from_millis(300), listener.recv()).await;
+    assert!(
+        quiet.is_err(),
+        "a notification for a scheduled job: {quiet:?}"
+    );
+
+    // Due now: the notification names the kind.
+    let created = create(&app, raw_blob()).await;
+    let blob = parse_id(id_of(&created));
+    assert!(
+        jobs::enqueue(
+            pool,
+            JobKind::Scan,
+            Some(blob),
+            Priority::Normal,
+            json!({}),
+            now
+        )
+        .await
+        .unwrap()
+    );
+    let woken = within("the scan's notification", listener.recv())
+        .await
+        .unwrap();
+    assert_eq!(woken.payload(), "scan");
+}

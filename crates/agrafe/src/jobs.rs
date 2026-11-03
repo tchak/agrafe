@@ -180,6 +180,22 @@ impl JobError {
 /// Channel every enqueue notifies; the payload is the job kind.
 pub(crate) const CHANNEL: &str = "agrafe_jobs";
 
+/// The condition on an inserted row for its enqueue to notify the
+/// workers: due now, as the server's clock sees it, or within a second,
+/// which covers a row stamped by the process's clock a little ahead of
+/// the database's. A purge waiting out its delay, a reap or an audit
+/// scheduled an interval out, would wake every idle worker of the kind to
+/// a claim that finds nothing; they are found by the poll once due. A
+/// `CASE`, so that the statement still returns a row per inserted job,
+/// which is the count the callers read, and only the due ones notify. A
+/// macro, so that the queries stay literals.
+macro_rules! due_now {
+    () => {
+        "run_at <= now() + interval '1 second'"
+    };
+}
+pub(crate) use due_now;
+
 /// Delay before the first retry; doubles with every failure.
 const BACKOFF_BASE: Duration = Duration::from_secs(30);
 const BACKOFF_MAX: Duration = Duration::from_secs(3600);
@@ -1047,19 +1063,21 @@ pub async fn enqueue(
     payload: serde_json::Value,
     run_at: Timestamp,
 ) -> sqlx::Result<bool> {
-    let result = sqlx::query(
+    let result = sqlx::query(concat!(
         "WITH inserted AS (\
              INSERT INTO jobs (kind, blob_id, priority, payload, run_at, traceparent, max_attempts) \
              VALUES ($1, $2, $3, $4, $5, $8, $10) \
-             ON CONFLICT DO NOTHING RETURNING kind, blob_id\
+             ON CONFLICT DO NOTHING RETURNING kind, blob_id, run_at\
          ), cleared AS (\
              UPDATE blobs SET failed_at = NULL, last_error = NULL \
              WHERE $7 AND failed_at IS NOT NULL \
                AND (last_error IS NULL OR last_error NOT LIKE $9) \
                AND id IN (SELECT blob_id FROM inserted)\
          ) \
-         SELECT pg_notify($6, kind) FROM inserted",
-    )
+         SELECT CASE WHEN ",
+        due_now!(),
+        " THEN pg_notify($6, kind) END FROM inserted"
+    ))
     .bind(kind.as_str())
     .bind(blob_id)
     .bind(priority.rank())

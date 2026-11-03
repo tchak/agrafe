@@ -56,7 +56,7 @@ pub(crate) async fn enqueue_each(
     if blob_ids.is_empty() {
         return Ok(0);
     }
-    let result = sqlx::query(
+    let result = sqlx::query(concat!(
         "WITH inserted AS (\
              INSERT INTO jobs (kind, blob_id, priority, run_at, traceparent, max_attempts) \
              SELECT $1, b.id, $3, $4, $6, $8 FROM blobs b \
@@ -65,10 +65,12 @@ pub(crate) async fn enqueue_each(
                     OR b.upload_started_at IS NOT NULL) \
                AND (b.state IN ('expired', 'deleted') \
                     OR (b.state = 'infected' AND b.expires_at <= $7)) \
-             ON CONFLICT DO NOTHING RETURNING kind\
+             ON CONFLICT DO NOTHING RETURNING kind, run_at\
          ) \
-         SELECT pg_notify($5, kind) FROM inserted",
-    )
+         SELECT CASE WHEN ",
+        super::due_now!(),
+        " THEN pg_notify($5, kind) END FROM inserted"
+    ))
     .bind(JobKind::Purge.as_str())
     .bind(blob_ids)
     .bind(Priority::Normal.rank())
