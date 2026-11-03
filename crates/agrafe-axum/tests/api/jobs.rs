@@ -1308,6 +1308,7 @@ async fn a_cross_site_form_post_is_refused() {
         format!("/blobs/{id}/finish"),
         format!("/blobs/{id}/urls"),
         "/jobs/1/retry".to_string(),
+        "/jobs/retry".to_string(),
     ] {
         for headers in [
             vec![("origin", "http://evil.test")],
@@ -1732,4 +1733,160 @@ async fn the_job_listing_walks_its_indexes() {
             }
         }
     }
+}
+
+/// After an outage that killed jobs by the thousand, every dead job goes
+/// back in the queue at once, or every dead job of a kind: one per kind
+/// and blob, the one that died last, none beside a pending twin, and no
+/// blob-less one, whose next run is pending already.
+#[tokio::test]
+async fn dead_jobs_are_retried_in_bulk() {
+    let db = TestDatabase::new().await;
+    use agrafe::jobs::{self, JobKind, Priority, Retried};
+    use axum::http::Method;
+
+    let app = setup(db).await;
+    let pool = app.state.pool();
+    let now = jiff::Timestamp::now();
+    let mut blobs = Vec::new();
+    for _ in 0..3 {
+        let created = create(&app, raw_blob()).await;
+        blobs.push(parse_id(id_of(&created)));
+    }
+    let kill = |kind: &'static str, blob: uuid::Uuid, ago: i32| async move {
+        sqlx::query(
+            "UPDATE jobs SET failed_at = now() - make_interval(secs => $3), locked_at = now(), \
+                             locked_by = 'w', attempts = max_attempts, last_error = 'boom' \
+             WHERE kind = $1 AND blob_id = $2 AND failed_at IS NULL",
+        )
+        .bind(kind)
+        .bind(blob)
+        .bind(f64::from(ago))
+        .execute(pool)
+        .await
+        .unwrap();
+    };
+    for blob in &blobs {
+        jobs::enqueue(
+            pool,
+            JobKind::Scan,
+            Some(*blob),
+            Priority::Normal,
+            json!({}),
+            now,
+        )
+        .await
+        .unwrap();
+        kill("scan", *blob, 10).await;
+    }
+    // The first blob's render died twice over; the second has a pending
+    // scan beside its dead one; an audit died, its successor pending.
+    for ago in [8, 6] {
+        jobs::enqueue(
+            pool,
+            JobKind::Render,
+            Some(blobs[0]),
+            Priority::Normal,
+            json!({}),
+            now,
+        )
+        .await
+        .unwrap();
+        kill("render", blobs[0], ago).await;
+    }
+    jobs::enqueue(
+        pool,
+        JobKind::Scan,
+        Some(blobs[1]),
+        Priority::Normal,
+        json!({}),
+        now,
+    )
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO jobs (kind, payload, run_at, failed_at, locked_at, locked_by, attempts) \
+         VALUES ('audit', '{}', now(), now() - interval '4 seconds', now(), 'w', 10)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO jobs (kind, payload, run_at) VALUES ('audit', '{}', now() + interval '1 hour')")
+        .execute(pool)
+        .await
+        .unwrap();
+    // The verdicts, stamped last: enqueuing the pending scan would have
+    // cleared the second blob's.
+    sqlx::query("UPDATE blobs SET failed_at = now(), last_error = 'boom' WHERE id = ANY($1)")
+        .bind(&blobs)
+        .execute(pool)
+        .await
+        .unwrap();
+    let dead = || async {
+        let rows: Vec<(String, Option<uuid::Uuid>)> = sqlx::query_as(
+            "SELECT kind, blob_id FROM jobs WHERE failed_at IS NOT NULL ORDER BY failed_at, id",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        rows
+    };
+    assert_eq!(dead().await.len(), 6);
+
+    // The scans, one dead job to a batch, so the walk crosses batches.
+    assert_eq!(
+        jobs::retry_dead(pool, Some(JobKind::Scan), 1)
+            .await
+            .unwrap(),
+        Retried {
+            retried: 2,
+            skipped: 1
+        }
+    );
+    let left = dead().await;
+    assert_eq!(left.len(), 4);
+    assert_eq!(
+        left.iter().filter(|(k, _)| k == "scan").count(),
+        1,
+        "the dead scan beside a pending one stays: {left:?}"
+    );
+    let verdicts: Vec<(uuid::Uuid, bool)> =
+        sqlx::query_as("SELECT id, failed_at IS NOT NULL FROM blobs WHERE id = ANY($1)")
+            .bind(&blobs)
+            .fetch_all(pool)
+            .await
+            .unwrap();
+    for (id, failed) in verdicts {
+        assert_eq!(
+            failed,
+            id == blobs[1],
+            "{id}: the verdict follows the retry"
+        );
+    }
+
+    // Everything else, through the API: the render that died last, and
+    // neither the older one, the scan beside its twin nor the audit.
+    let (status, body) = call(&app.private, req(Method::POST, "/jobs/retry")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, json!({"retried": 1, "skipped": 3}));
+    let left = dead().await;
+    assert_eq!(left.len(), 3, "{left:?}");
+    let renders: Vec<(i64, bool)> = sqlx::query_as(
+        "SELECT id, failed_at IS NOT NULL FROM jobs WHERE kind = 'render' ORDER BY id",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    assert_eq!(renders.len(), 2);
+    assert!(
+        renders[0].1 && !renders[1].1,
+        "the newer one runs: {renders:?}"
+    );
+
+    // Nothing more to do.
+    let (status, body) = call(&app.private, req(Method::POST, "/jobs/retry?kind=scan")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, json!({"retried": 0, "skipped": 1}));
+    let (status, body) = call(&app.private, req(Method::POST, "/jobs/retry?kind=nope")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 }

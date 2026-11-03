@@ -455,9 +455,10 @@ async fn a_receivers_retry_after_is_honoured_up_to_an_hour() {
 
     for (asked, least, most) in [
         (Some("120"), 115.0, 120.0),
-        (Some("1"), 25.0, 30.0),
-        (Some("soon"), 25.0, 30.0),
-        (None, 25.0, 30.0),
+        // The backoff alone: 30 seconds, moved up to a fifth either way.
+        (Some("1"), 23.0, 36.0),
+        (Some("soon"), 23.0, 36.0),
+        (None, 23.0, 36.0),
         (Some("3600"), 3595.0, 3600.0),
         (Some("99999999999999"), 3595.0, 3600.0),
     ] {

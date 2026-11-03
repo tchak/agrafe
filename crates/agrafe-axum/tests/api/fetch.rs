@@ -350,7 +350,8 @@ async fn a_server_error_is_retried_and_a_client_error_is_not() {
     assert_eq!((attempts, dead), (1, false), "{error}");
     assert!(error.contains("500"), "{error}");
     let due = fetch_due_in(&app, id).await;
-    assert!((25.0..=30.0).contains(&due), "the backoff: {due}");
+    // 30 seconds, moved up to a fifth either way, less the time spent.
+    assert!((23.0..=36.0).contains(&due), "the backoff: {due}");
     let got = get_blob(&app, id).await;
     assert_eq!(got["state"], "created");
     assert_eq!(got["failed_at"], json!(null), "not dead yet");
@@ -398,7 +399,7 @@ async fn retry_after_is_honoured_up_to_a_point() {
     let id = id_of(&created);
     assert!(run_job(&app, JobKind::Fetch).await);
     let due = fetch_due_in(&app, id).await;
-    assert!((25.0..=30.0).contains(&due), "the backoff alone: {due}");
+    assert!((23.0..=36.0).contains(&due), "the backoff alone: {due}");
 
     let created = create(&app, url_blob(&format!("{base}/later"))).await;
     let id = id_of(&created);

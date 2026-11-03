@@ -143,12 +143,17 @@ impl Server {
         let name = db.connect_options().get_database().unwrap().to_string();
         let sep = if url.contains('?') { '&' } else { '?' };
         // clamd cannot be reached, so the upload's scan is a job, and one
-        // attempt in this database, so its failure is the last: an `error`
-        // event.
-        sqlx::query("ALTER TABLE jobs ALTER COLUMN max_attempts SET DEFAULT 1")
-            .execute(db.pool())
-            .await
-            .unwrap();
+        // attempt in this database, whatever the enqueue asks for, so its
+        // failure is the last: an `error` event.
+        sqlx::raw_sql(
+            "CREATE FUNCTION one_attempt() RETURNS trigger LANGUAGE plpgsql AS $$ \
+             BEGIN NEW.max_attempts := 1; RETURN NEW; END $$; \
+             CREATE TRIGGER one_attempt BEFORE INSERT ON jobs \
+             FOR EACH ROW EXECUTE FUNCTION one_attempt()",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
         let toml = format!(
             r#"
             [server]

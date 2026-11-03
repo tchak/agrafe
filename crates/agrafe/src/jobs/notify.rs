@@ -99,13 +99,6 @@ macro_rules! on_conflict {
     };
 }
 
-/// Attempts a delivery gets, where other jobs get five: with the backoff
-/// doubling from 30 seconds to its hour, ten attempts span about three
-/// hours, so a receiver down for an hour, a deploy or a certificate gone
-/// stale, drains its backlog by itself once it is back. Five would give up
-/// after seven and a half minutes.
-pub const MAX_ATTEMPTS: i32 = 10;
-
 fn payload(event: Event, now: Timestamp) -> serde_json::Value {
     serde_json::to_value(Payload {
         id: Uuid::now_v7(),
@@ -143,7 +136,7 @@ pub async fn enqueue(
     .bind(now.to_sqlx())
     .bind(super::CHANNEL)
     .bind(super::current_traceparent())
-    .bind(MAX_ATTEMPTS)
+    .bind(JobKind::Notify.max_attempts())
     .execute(exec)
     .await?;
     Ok(())
@@ -179,7 +172,7 @@ pub(crate) async fn enqueue_each(
     .bind(now.to_sqlx())
     .bind(super::CHANNEL)
     .bind(super::current_traceparent())
-    .bind(MAX_ATTEMPTS)
+    .bind(JobKind::Notify.max_attempts())
     .execute(exec)
     .await?;
     Ok(())

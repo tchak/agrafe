@@ -19,6 +19,7 @@ use crate::error::{ApiError, ApiResult};
 pub fn routes() -> Router<Agrafe> {
     Router::new()
         .route("/jobs", get(list_jobs))
+        .route("/jobs/retry", post(retry_dead_jobs))
         .route("/jobs/{id}", get(get_job).delete(discard_job))
         .route("/jobs/{id}/retry", post(retry_job))
 }
@@ -125,6 +126,28 @@ async fn retry_job(
         ))),
         Action::Missing => Err(ApiError::NotFound),
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RetryDeadQuery {
+    pub kind: Option<JobKind>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RetriedResponse {
+    pub retried: u64,
+    pub skipped: u64,
+}
+
+async fn retry_dead_jobs(
+    State(state): State<Agrafe>,
+    Query(q): Query<RetryDeadQuery>,
+) -> ApiResult<Json<RetriedResponse>> {
+    let done = state.retry_dead_jobs(q.kind).await?;
+    Ok(Json(RetriedResponse {
+        retried: done.retried,
+        skipped: done.skipped,
+    }))
 }
 
 async fn discard_job(State(state): State<Agrafe>, Path(id): Path<i64>) -> ApiResult<StatusCode> {

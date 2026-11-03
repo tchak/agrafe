@@ -102,7 +102,7 @@ agree by construction.
 The library knows nothing of HTTP. Its operations are methods on the
 `Agrafe` handle (`create_blob`, `list_blobs`, `find_blob`, `delete_blob`,
 `upload`, `urls`, `mint_urls`, `representation`, `list_jobs`, `retry_job`,
-`discard_job`, ...), each returning its own `thiserror` enum
+`retry_dead_jobs`, `discard_job`, ...), each returning its own `thiserror` enum
 (`CreateError`, `UploadError`, `MintError`, `ListError`). `agrafe-axum`
 maps those onto `ApiError` in one place, its `error.rs`, and its handlers
 are a line or two each: parse the request, call the handle, shape the
@@ -146,6 +146,7 @@ No signature. Reachable only from trusted networks.
 | `GET` | `/blobs/:id/thumbnail/:filename` | WebP thumbnail, always 200 |
 | `GET` | `/jobs` | List jobs, cursor paginated, filterable by `kind`, `state`, `priority`, `blob_id` |
 | `GET` | `/jobs/:id` | One job, with its last error |
+| `POST` | `/jobs/retry` | Give every dead job, or every dead job of a `kind`, its attempts back and run it now |
 | `POST` | `/jobs/:id/retry` | Give a dead job its attempts back and run it now |
 | `DELETE` | `/jobs/:id` | Discard a dead job |
 | `GET` | `/metrics` | Prometheus text format, see "Jobs" |
@@ -3386,19 +3387,39 @@ costs the job an attempt. A statement the server refused is not retried;
 the write being conditional, a try that landed before its error reached
 the worker is harmless to repeat.
 Success deletes the row. Failure, a handler panic included, unlocks it with exponential backoff
-(30 s, doubling, capped at an hour, or longer when the failure asks for
-it: a remote's `Retry-After`) until `max_attempts` (5), then sets
-`failed_at` and leaves it locked: never run again, not holding the one
+(30 s, doubling, capped at an hour, moved up to a fifth either way at
+random, or longer when the failure asks for it: a remote's `Retry-After`)
+until `max_attempts`, then sets `failed_at` and leaves it locked: never run again, not holding the one
 pending slot per kind and blob, and still there to read. A failure another
 attempt would repeat (a job without its blob, a purge of a live blob, a
 build's permanent errors, see "Build") is dead at once, without the
 backoff. An attempt that takes its worker down, a process killed or out
 of memory, never reaches the failure: the claim does not take a job out
-of attempts, so the fifth such attempt is the last, and the reaper
+of attempts, so the last such attempt is the last, and the reaper
 declares the job dead once its lease has lapsed, with the blob's verdict
 and the `failed` event as for any other death. A failing
 job whose twin was enqueued while it was locked is dropped in favour of the
 newer one.
+
+`max_attempts` is set per kind where the job is enqueued
+(`JobKind::max_attempts`): ten for every kind but `fetch`, which gets
+five. Ten attempts at that backoff span about three hours, so a bucket,
+a clamd or a webhook receiver down for an hour, a deploy, a certificate
+gone stale, drains its backlog by itself once it is back; five would give
+up after seven and a half minutes and leave the operator thousands of
+dead jobs, which is what a reaper's batch of purges meeting a storage
+outage came to. A fetch keeps five because its URL is presigned and
+expires, see "Fetched blobs". The jitter is for the same batch: ten
+thousand purges that failed in the same second would otherwise retry in
+the same second, round after round, and hit the bucket back as one wave.
+Failures another attempt would repeat are dead at once whatever the
+count. The repair for a mass death is `POST /jobs/retry`, optionally
+`?kind=`, which walks the dead set once, in the order the jobs died, ten
+thousand rows a transaction, unlocking one dead job per kind and blob (the
+one that died last) unless the blob already has a pending job of the
+kind, clearing the blobs' verdicts and notifying the workers; a blob-less
+dead job is left, its next run being pending already. It answers how
+many it retried and how many it left.
 
 A dead job that was to finish its blob, a fetch, a scan, a build or a
 render, leaves its verdict on the blob as well: `failed_at` and `last_error` on

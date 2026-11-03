@@ -46,6 +46,7 @@ reachable only from a trusted network. Every operation of agrafe is here.
 | `DELETE` | [`/attachments/:id`](#delete-attachmentsid) | Detach |
 | `GET` | [`/jobs`](#get-jobs) | List jobs |
 | `GET` | [`/jobs/:id`](#get-jobsid) | One job |
+| `POST` | [`/jobs/retry`](#post-jobsretry) | Retry every dead job, or every dead job of a kind |
 | `POST` | [`/jobs/:id/retry`](#post-jobsidretry) | Retry a dead job |
 | `DELETE` | [`/jobs/:id`](#delete-jobsid) | Discard a dead job |
 | `GET` | [`/metrics`](#get-metrics) | Prometheus metrics |
@@ -479,6 +480,26 @@ the job.
 |---|---|---|
 | `404` | `not_found` | Unknown job |
 | `409` | `conflict` | The job is not dead, or its blob already has a pending job of that kind |
+
+### `POST /jobs/retry`
+
+Gives every dead job its attempts back and makes it due now, or every
+dead job of `?kind=`. Answers `200` with how many it retried and how many
+it left: a blob with several dead jobs of one kind gets the one that died
+last, a blob with a pending job of the kind already keeps it, and a job
+without a blob is left to the next run it has scheduled.
+
+```json
+{"retried": 9831, "skipped": 2}
+```
+
+Batched, ten thousand dead jobs to a transaction, so the request runs for
+as long as the dead set takes to walk, a few seconds per hundred
+thousand.
+
+| Status | Code | When |
+|---|---|---|
+| `400` | `bad_request` | `kind` is not a job kind |
 
 ### `DELETE /jobs/:id`
 

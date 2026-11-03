@@ -131,6 +131,9 @@ curl -s "localhost:8080/jobs?blob_id=$ID" | jq
 # Give a dead job its attempts back, or discard it
 curl -s -X POST "localhost:8080/jobs/$JOB_ID/retry"
 curl -s -X DELETE "localhost:8080/jobs/$JOB_ID"
+
+# After an outage: every dead job of a kind back in the queue
+curl -s -X POST 'localhost:8080/jobs/retry?kind=purge'
 ```
 
 Filters are `kind`, `state`, `priority` and `blob_id`. See the [private API

@@ -47,12 +47,15 @@ and the job is claimed again.
   `jobs.shutdown_grace`, twenty seconds, then unlocks it, due now, the
   attempt not counted, for another process to take.
 - **Failure** schedules a retry with exponential backoff: 30 seconds,
-  doubling, capped at an hour, or longer when a remote asked for it with
-  `Retry-After`.
-- After five attempts the job is **dead**: never run again, kept with its
-  last error for `jobs.keep_failed`, seven days by default. An attempt that
+  doubling, capped at an hour, moved up to a fifth either way at random so
+  that jobs which failed together do not retry as one wave, or longer when
+  a remote asked for it with `Retry-After`.
+- After ten attempts, about three hours, the job is **dead**: never run
+  again, kept with its last error for `jobs.keep_failed`, seven days by
+  default. A `fetch` gets five, about eight minutes, since its presigned
+  URL expires anyway (see [Fetched blobs](fetch.md)). An attempt that
   kills its process, out of memory or by a signal, counts too: the reaper
-  declares the job dead once the lease of its fifth attempt lapses.
+  declares the job dead once the lease of its last attempt lapses.
 
 A failure that another attempt would repeat kills the job at once: a
 template that does not compile, a fetch answered `404`, a source line that
@@ -115,6 +118,20 @@ when the blob already has a pending job of that kind. Discarding a dead
 `purge` schedules a new one for its blob, due at once: the objects still
 have to go.
 
+After an outage that killed jobs by the thousand, retry them all, or all
+of one kind:
+
+```sh
+curl -s -X POST 'localhost:8080/jobs/retry?kind=purge'   # {"retried": 9831, "skipped": 2}
+```
+
+It walks the dead jobs in the order they died, ten thousand to a
+transaction, so workers start on the first batch while the last is
+written. A blob with several dead jobs of one kind gets the one that died
+last; one with a pending job of the kind already, and a job without a blob
+(a `reap` or an `audit`, whose next run is always pending), are left as
+they are and counted as `skipped`.
+
 ## The reaper
 
 The `reap` job runs every `jobs.reap_interval`, one minute by default. Each
@@ -126,7 +143,7 @@ run, in one transaction:
    fetch died that long ago;
 3. schedules a purge, `upload.purge_delay` out, for the blobs it just
    expired and the infected blobs past their expiry that still hold objects;
-4. declares dead the jobs whose fifth attempt ended its process, and prunes
+4. declares dead the jobs whose last attempt ended its process, and prunes
    dead jobs older than `jobs.keep_failed`, scheduling a dead purge's blob
    anew;
 5. hands uploads stale for `upload.stale_after` back to `created`;

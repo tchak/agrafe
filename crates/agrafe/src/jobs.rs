@@ -17,6 +17,7 @@ pub(crate) mod rows;
 pub mod runner;
 pub(crate) mod scan;
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use jiff::{SignedDuration, Timestamp};
@@ -84,6 +85,18 @@ impl Agrafe {
     pub async fn discard_job(&self, id: i64) -> sqlx::Result<Action> {
         let mut conn = self.pool().acquire().await?;
         discard(&mut conn, id).await
+    }
+
+    /// Put every dead job back in the queue, or every dead job of `kind`:
+    /// the repair after an outage that killed jobs by the thousand. One
+    /// per kind and blob when several died in turn, and none whose blob
+    /// already has a pending job of its kind, nor a blob-less one, whose
+    /// next run is always pending; those are counted as skipped.
+    /// `RETRY_BATCH` rows a transaction, so a dead set of any size is
+    /// retried without one long transaction, and a worker may be running
+    /// the first batch while the last is written.
+    pub async fn retry_dead_jobs(&self, kind: Option<JobKind>) -> sqlx::Result<Retried> {
+        retry_dead(self.pool(), kind, RETRY_BATCH).await
     }
 
     /// The queue census: how many jobs of each kind and priority are in
@@ -235,6 +248,23 @@ agrafe_types::str_enum!(Priority {
 });
 
 impl JobKind {
+    /// Attempts a job of this kind gets before it is dead. Ten, which with
+    /// the backoff doubling from 30 seconds to its hour span about three
+    /// hours: a bucket, a clamd or a webhook receiver down for an hour, a
+    /// deploy or a certificate gone stale, and the backlog drains by
+    /// itself once it is back, where five would give up after seven and a
+    /// half minutes and leave the operator thousands of dead jobs to
+    /// retry. A fetch gets five: its URL is presigned and expires, and a
+    /// long retry window would mostly retry dead links, see "Fetched
+    /// blobs" in DESIGN.md. Failures another attempt would repeat are
+    /// dead at once whatever the count, see `JobError::is_permanent`.
+    pub fn max_attempts(self) -> i32 {
+        match self {
+            JobKind::Fetch => 5,
+            _ => 10,
+        }
+    }
+
     /// Whether a job of this kind is what moves its blob along: the fetch
     /// that takes a `url` blob out of `created`, the scan or the build that
     /// takes it out of `uploaded`, the render that fills its
@@ -868,6 +898,103 @@ async fn clear_failure(exec: impl PgExecutor<'_>, blob_id: Uuid) -> sqlx::Result
     Ok(())
 }
 
+/// What `retry_dead` did.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Retried {
+    /// Dead jobs put back in the queue.
+    pub retried: u64,
+    /// Dead jobs left as they were: a pending job of the kind exists for
+    /// the blob, a newer dead twin was retried instead, or the job has no
+    /// blob.
+    pub skipped: u64,
+}
+
+/// Dead jobs one transaction of `retry_dead` takes.
+pub const RETRY_BATCH: i64 = 10_000;
+
+/// `Agrafe::retry_dead_jobs`. The dead set is walked once on
+/// `jobs_dead_idx`, in the order the jobs died, keyed on `(failed_at,
+/// id)` across batches; a kind filter is applied on the walk, so the
+/// cost is the whole dead set either way, which `jobs.keep_failed` bounds
+/// to a week of deaths. Each batch is one transaction: the rows unlocked,
+/// their blobs' verdicts cleared, the workers of each kind notified.
+// Public for the integration tests, not part of the API.
+#[doc(hidden)]
+pub async fn retry_dead(
+    pool: &sqlx::PgPool,
+    kind: Option<JobKind>,
+    batch: i64,
+) -> sqlx::Result<Retried> {
+    let mut total = Retried::default();
+    let mut after: Option<(jiff_sqlx::Timestamp, i64)> = None;
+    loop {
+        let mut tx = pool.begin().await?;
+        let dead: Vec<(i64, String, Option<Uuid>, jiff_sqlx::Timestamp)> = sqlx::query_as(
+            "SELECT id, kind, blob_id, failed_at FROM jobs \
+             WHERE failed_at IS NOT NULL AND ($1::text IS NULL OR kind = $1) \
+               AND ($2::timestamptz IS NULL OR (failed_at, id) > ($2, $3)) \
+             ORDER BY failed_at, id LIMIT $4",
+        )
+        .bind(kind.map(JobKind::as_str))
+        .bind(after.map(|(at, _)| at))
+        .bind(after.map(|(_, id)| id))
+        .bind(batch)
+        .fetch_all(&mut *tx)
+        .await?;
+        if dead.is_empty() {
+            tx.commit().await?;
+            return Ok(total);
+        }
+        after = dead.last().map(|(id, _, _, at)| (*at, *id));
+        // One per kind and blob, the one that died last: two unlocked at
+        // once would be two pending jobs of the kind for the blob.
+        let mut chosen: std::collections::HashMap<(&str, Option<Uuid>), i64> = HashMap::new();
+        for (id, kind, blob_id, _) in &dead {
+            chosen.insert((kind.as_str(), *blob_id), *id);
+        }
+        let ids: Vec<i64> = chosen.into_values().collect();
+        let retried: Vec<(String, Uuid)> = sqlx::query_as(
+            "UPDATE jobs SET failed_at = NULL, locked_at = NULL, locked_by = NULL, \
+                             attempts = 0, run_at = now() \
+             WHERE id = ANY($1) AND failed_at IS NOT NULL AND blob_id IS NOT NULL \
+               AND NOT EXISTS (\
+                   SELECT 1 FROM jobs p \
+                   WHERE p.kind = jobs.kind AND p.blob_id = jobs.blob_id AND p.locked_at IS NULL\
+               ) \
+             RETURNING kind, blob_id",
+        )
+        .bind(&ids)
+        .fetch_all(&mut *tx)
+        .await?;
+        let finished: Vec<Uuid> = retried
+            .iter()
+            .filter(|(kind, _)| kind.parse::<JobKind>().is_ok_and(JobKind::finishes_blob))
+            .map(|(_, blob_id)| *blob_id)
+            .collect();
+        sqlx::query(
+            "UPDATE blobs SET failed_at = NULL, last_error = NULL \
+             WHERE id = ANY($1) AND failed_at IS NOT NULL",
+        )
+        .bind(&finished)
+        .execute(&mut *tx)
+        .await?;
+        let mut kinds: Vec<&str> = retried.iter().map(|(kind, _)| kind.as_str()).collect();
+        kinds.sort_unstable();
+        kinds.dedup();
+        sqlx::query("SELECT pg_notify($1, k) FROM unnest($2::text[]) AS k")
+            .bind(CHANNEL)
+            .bind(&kinds)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        total.retried += retried.len() as u64;
+        total.skipped += dead.len() as u64 - retried.len() as u64;
+        if (dead.len() as i64) < batch {
+            return Ok(total);
+        }
+    }
+}
+
 /// Remove a dead job. A live one is left alone: a pending job is the only
 /// thing that will finish its blob. A dead purge is scheduled again in the
 /// same transaction, due now: its blob's objects are still to go, and
@@ -922,8 +1049,8 @@ pub async fn enqueue(
 ) -> sqlx::Result<bool> {
     let result = sqlx::query(
         "WITH inserted AS (\
-             INSERT INTO jobs (kind, blob_id, priority, payload, run_at, traceparent) \
-             VALUES ($1, $2, $3, $4, $5, $8) \
+             INSERT INTO jobs (kind, blob_id, priority, payload, run_at, traceparent, max_attempts) \
+             VALUES ($1, $2, $3, $4, $5, $8, $10) \
              ON CONFLICT DO NOTHING RETURNING kind, blob_id\
          ), cleared AS (\
              UPDATE blobs SET failed_at = NULL, last_error = NULL \
@@ -942,6 +1069,7 @@ pub async fn enqueue(
     .bind(kind.finishes_blob())
     .bind(current_traceparent())
     .bind(format!("{}%", audit::STAMP))
+    .bind(kind.max_attempts())
     .execute(exec)
     .await?;
     Ok(result.rows_affected() == 1)
@@ -1274,11 +1402,10 @@ pub async fn fail(
         }
         return Ok(Failure::Dead);
     }
+    let wait = jitter(backoff(job.attempts));
     let wait = retry_after
         .and_then(|d| SignedDuration::try_from(d).ok())
-        .map_or(backoff(job.attempts), |asked| {
-            asked.max(backoff(job.attempts))
-        });
+        .map_or(wait, |asked| asked.max(wait));
     requeue(conn, job, now + wait, Some(&error), false).await
 }
 
@@ -1391,6 +1518,21 @@ fn backoff(attempts: i32) -> SignedDuration {
     SignedDuration::try_from(delay).unwrap_or(SignedDuration::from_secs(3600))
 }
 
+/// How far either side of the backoff a retry lands, as a fraction of it.
+const JITTER: f64 = 0.2;
+
+/// `wait` moved by up to `JITTER` either way, at random: the jobs that
+/// failed together, a reaper's batch of purges meeting a bucket outage,
+/// would otherwise retry together, round after round, and hit the bucket
+/// back as one wave.
+fn jitter(wait: SignedDuration) -> SignedDuration {
+    let mut bytes = [0u8; 4];
+    getrandom::fill(&mut bytes).expect("the OS entropy source, which blob ids draw on too");
+    let unit = f64::from(u32::from_le_bytes(bytes)) / f64::from(u32::MAX);
+    let factor = 1.0 + JITTER * (2.0 * unit - 1.0);
+    SignedDuration::try_from_secs_f64(wait.as_secs_f64() * factor).unwrap_or(wait)
+}
+
 fn is_unique_violation(err: &sqlx::Error) -> bool {
     err.as_database_error()
         .and_then(|e| e.code())
@@ -1418,6 +1560,18 @@ mod tests {
         assert_eq!(backoff(4), SignedDuration::from_secs(240));
         assert_eq!(backoff(40), SignedDuration::from_secs(3600));
         assert_eq!(backoff(0), SignedDuration::from_secs(30));
+    }
+
+    #[test]
+    fn jitter_stays_within_a_fifth() {
+        let wait = SignedDuration::from_secs(1000);
+        for _ in 0..1000 {
+            let moved = jitter(wait);
+            assert!(
+                (SignedDuration::from_secs(800)..=SignedDuration::from_secs(1200)).contains(&moved),
+                "{moved}"
+            );
+        }
     }
 
     #[test]

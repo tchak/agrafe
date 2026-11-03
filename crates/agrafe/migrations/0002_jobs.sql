@@ -11,7 +11,9 @@ CREATE TABLE jobs (
     payload      jsonb NOT NULL DEFAULT '{}'::jsonb,
     run_at       timestamptz NOT NULL DEFAULT now(),
     attempts     integer NOT NULL DEFAULT 0,
-    max_attempts integer NOT NULL DEFAULT 5,
+    -- Set per kind by `enqueue` (`JobKind::max_attempts`); the default is
+    -- the common value, for the inserts that do not say.
+    max_attempts integer NOT NULL DEFAULT 10,
     locked_at    timestamptz,
     locked_by    text,
     last_error   text,

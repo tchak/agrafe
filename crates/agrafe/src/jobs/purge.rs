@@ -58,8 +58,8 @@ pub(crate) async fn enqueue_each(
     }
     let result = sqlx::query(
         "WITH inserted AS (\
-             INSERT INTO jobs (kind, blob_id, priority, run_at, traceparent) \
-             SELECT $1, b.id, $3, $4, $6 FROM blobs b \
+             INSERT INTO jobs (kind, blob_id, priority, run_at, traceparent, max_attempts) \
+             SELECT $1, b.id, $3, $4, $6, $8 FROM blobs b \
              WHERE b.id = ANY($2) AND b.purged_at IS NULL \
                AND (b.storage_key IS NOT NULL OR b.source_parts > 0 \
                     OR b.upload_started_at IS NOT NULL) \
@@ -76,6 +76,7 @@ pub(crate) async fn enqueue_each(
     .bind(super::CHANNEL)
     .bind(super::current_traceparent())
     .bind(now.to_sqlx())
+    .bind(JobKind::Purge.max_attempts())
     .execute(exec)
     .await?;
     Ok(result.rows_affected())

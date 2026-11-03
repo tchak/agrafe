@@ -56,8 +56,9 @@ The first release.
   from typst's HTML with the styles of the workspace's `reference.docx` or
   `reference.odt`.
 - **Operations**: a Postgres job queue with per-kind worker pools that
-  hand their jobs back on shutdown (`jobs.shutdown_grace`), split
-  API and worker roles, the audit of objects against the database, a
+  hand their jobs back on shutdown (`jobs.shutdown_grace`), ten attempts
+  over about three hours with a jittered backoff, a bulk retry of the
+  dead jobs (`POST /jobs/retry`), split API and worker roles, the audit of objects against the database, a
   signed webhook that honours `Retry-After`, Prometheus metrics, request-to-job tracing, the jobs
   API, the HTML dashboard and the reaper.
 - **Storage** on the local disk, S3-compatible stores, Azure Blob Storage
