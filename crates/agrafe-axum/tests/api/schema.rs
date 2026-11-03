@@ -104,6 +104,32 @@ async fn check_constraints_match_the_enums() {
     assert_eq!(actual, expected);
 }
 
+/// The `jobs` table vacuums on a fixed count of dead rows, not a fraction
+/// of a table that holds only the backlog.
+#[tokio::test]
+async fn jobs_vacuum_on_a_fixed_count() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let options: Vec<String> = sqlx::query_scalar(
+        "SELECT unnest(reloptions)::text FROM pg_class \
+         WHERE relname = 'jobs' AND relnamespace = current_schema()::regnamespace",
+    )
+    .fetch_all(app.state.pool())
+    .await
+    .unwrap();
+    let options: BTreeSet<String> = options.into_iter().collect();
+    let expected: BTreeSet<String> = [
+        "autovacuum_vacuum_scale_factor=0",
+        "autovacuum_vacuum_threshold=1000",
+        "autovacuum_analyze_scale_factor=0",
+        "autovacuum_analyze_threshold=1000",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    assert_eq!(options, expected);
+}
+
 /// `Blob` reads every column of `blobs` but the column declaration, by
 /// name: a column added to the table and forgotten in the list would never
 /// reach the struct, and one dropped would fail every read.

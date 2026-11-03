@@ -3306,6 +3306,18 @@ workers, or dead-tuple churn on `jobs` that autovacuum settings do not
 absorb. The enqueue function stays the seam; the table would become the
 outbox.
 
+The churn is what the table costs. A job is an insert, a claim that
+rewrites the row (not HOT: `locked_at` sits in index predicates), a
+heartbeat or two, and a delete or a dead-marking update, each version in
+every one of the eight indexes, which is more indexes than River, Oban or
+graphile-worker carry and the price of listing a state among millions of
+purges without a walk. The migration sets the table's own autovacuum: a
+fixed thousand dead rows for vacuum and analyze, where the stock fifth of
+the table is never reached on a table holding only the backlog, or all
+at once after a mass expiry. All three references document index bloat on
+their job table and two reindex nightly; agrafe does not, the deployment
+guide says what to watch and `REINDEX CONCURRENTLY` is the operator's.
+
 Job kinds: `fetch` (download the bytes of a `url` blob, see "Fetched
 blobs"), `scan`, `render` (thumbnail and preview, whichever is pending),
 `rows`, `archive` and `document` (generate a blob of that input type from

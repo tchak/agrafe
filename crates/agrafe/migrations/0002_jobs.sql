@@ -25,6 +25,19 @@ CREATE TABLE jobs (
     -- that its run joins that trace. NULL when nothing was being traced.
     traceparent  text,
     created_at   timestamptz NOT NULL DEFAULT now()
+)
+-- A churn table: every job is an insert, a claim that rewrites the row
+-- outside its page (`locked_at` sits in index predicates, so the update
+-- is not HOT) and a delete, each version in every index below. The stock
+-- autovacuum waits for a fifth of the table to be dead, which on a table
+-- that holds only the backlog is never, or everything at once after a
+-- mass expiry. A fixed thousand dead rows instead, and the same for
+-- analyze, so the claim's plan sees the backlog it has.
+WITH (
+    autovacuum_vacuum_scale_factor = 0,
+    autovacuum_vacuum_threshold = 1000,
+    autovacuum_analyze_scale_factor = 0,
+    autovacuum_analyze_threshold = 1000
 );
 
 -- The claim: highest priority first, oldest within it, by kind, not dead.

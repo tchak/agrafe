@@ -351,6 +351,19 @@ sizes the pool of each process. Every job claim, upload and read without a
 sealed URL uses the database, so size the server's `max_connections` for
 the sum of the pools.
 
+The `jobs` table churns: every job is an insert, an update when claimed
+and a delete when done, and each version lands in its eight indexes. The
+migration sets the table to vacuum and analyze after a thousand dead rows
+rather than the stock fifth of the table, which on a table holding only
+the backlog is never, or everything at once after a mass expiry. Nothing
+else is needed at the volumes agrafe is built for. What to watch, after a
+mass expiry or a deployment with millions of blobs due at once:
+`n_dead_tup` for `jobs` in `pg_stat_user_tables` staying in the millions
+between vacuums, and the size of `jobs_claimable_idx` in
+`pg_relation_size` not coming back down once the backlog drained. A
+bloated index is rebuilt online with `REINDEX INDEX CONCURRENTLY`, which
+is what Oban and River schedule nightly and agrafe leaves to you.
+
 ## Object storage
 
 Local storage is for development:
