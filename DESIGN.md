@@ -3916,7 +3916,9 @@ the signature over the raw body, then rejects a stale timestamp. A
 `traceparent` header carries the trace the event belongs to (see
 "Tracing"). The
 secret, `webhook.secret`, is `whsec_` followed by base64 as the standard's
-libraries expect it, so a backend verifies with one of them and no code.
+libraries expect it, so a backend verifies with one of them and no code;
+fewer than 16 bytes once decoded refuses the start, since HMAC would sign
+with a key of any length, none included.
 It is its own secret, not a `[signing]` key: those mint URLs and should
 not double as a shared secret with the backend. A `2xx` within
 `webhook.timeout` (default ten seconds) is delivered. Anything else, a

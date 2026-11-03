@@ -1134,6 +1134,9 @@ pub enum OtelProtocol {
     HttpProtobuf,
 }
 
+/// The shortest key `webhook.secret` may decode to.
+const MIN_WEBHOOK_KEY_LEN: usize = 16;
+
 /// Where state changes are posted. See [DESIGN.md, "Webhooks"].
 ///
 /// [DESIGN.md, "Webhooks"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#webhooks
@@ -1188,9 +1191,20 @@ impl WebhookConfig {
                     .into(),
             )
         })?;
-        base64::engine::general_purpose::STANDARD
+        let key = base64::engine::general_purpose::STANDARD
             .decode(encoded.trim())
-            .map_err(|err| ConfigError::Invalid(format!("webhook.secret is not base64: {err}")))
+            .map_err(|err| ConfigError::Invalid(format!("webhook.secret is not base64: {err}")))?;
+        // HMAC takes a key of any length, none included, and a receiver
+        // would verify what it signs: a secret cut at its prefix is only
+        // noticed here.
+        if key.len() < MIN_WEBHOOK_KEY_LEN {
+            return Err(ConfigError::Invalid(format!(
+                "webhook.secret is {} bytes once decoded, at least {MIN_WEBHOOK_KEY_LEN} are \
+                 needed: whsec_ and the output of openssl rand -base64 24",
+                key.len()
+            )));
+        }
+        Ok(key)
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
@@ -1619,6 +1633,12 @@ mod tests {
             jail.set_env("AGRAFE_WEBHOOK__SECRET", "hunter2");
             let err = load(&example()).unwrap_err().to_string();
             assert!(err.contains("must be whsec_"), "{err}");
+
+            for short in ["whsec_", "whsec_AA==", "whsec_MfKQ9r8GKYqrTwjUPD8I"] {
+                jail.set_env("AGRAFE_WEBHOOK__SECRET", short);
+                let err = load(&example()).unwrap_err().to_string();
+                assert!(err.contains("at least 16 are needed"), "{short}: {err}");
+            }
 
             jail.set_env(
                 "AGRAFE_WEBHOOK__SECRET",

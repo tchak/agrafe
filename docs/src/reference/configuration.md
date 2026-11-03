@@ -320,7 +320,7 @@ Workers per kind, per process. An unknown kind is a configuration error.
 | Key | Default | Description |
 |---|---|---|
 | `url` | none | Where events are posted. No webhook, and nothing enqueued, when unset |
-| `secret` | none, **required** with `url` | `whsec_` followed by base64. A secret |
+| `secret` | none, **required** with `url` | `whsec_` followed by base64, at least 16 bytes once decoded. A secret |
 | `timeout` | `"10s"` | The whole request; anything but a `2xx` within it fails the attempt |
 | `events` | every event | Which of `ready`, `infected`, `failed` and `expired` to send |
 | `allow_insecure` | `false` | Accept an `http` URL |
@@ -391,6 +391,7 @@ message naming the key:
 | `jobs.kinds must name at least one kind, or be omitted for all` | Remove the empty list |
 | `webhook.secret is required with webhook.url` | Set the secret |
 | `webhook.secret must be whsec_ followed by base64: …` | Generate it with `echo "whsec_$(openssl rand -base64 24)"` |
+| `webhook.secret is … bytes once decoded, at least 16 are needed: …` | The value was cut short: generate it again with the same command |
 | `webhook.url must be https: the body carries secrets; …` | Use `https`, or set `allow_insecure` for development |
 | `webhook.events must name at least one event, or be omitted for all` | Remove the empty list |
 | `invalid configuration: …` | A missing required key, an unknown variant or a malformed value |
