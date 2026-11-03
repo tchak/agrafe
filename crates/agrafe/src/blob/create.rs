@@ -15,7 +15,7 @@ use super::{Blob, InputType, Representation, repo};
 use crate::app::Agrafe;
 use crate::attachment::{self, AttachmentRequest, NewAttachment, ReplaceError};
 use crate::classify::{self, Category};
-use crate::config::{BlobsConfig, FetchConfig, UploadConfig};
+use crate::config::{BlobsConfig, DocumentConfig, FetchConfig, UploadConfig};
 use crate::jobs::{self, JobKind, Priority, fetch};
 use crate::source::document;
 use crate::source::rows::{self, Column, Sheet};
@@ -60,7 +60,7 @@ impl Agrafe {
             &config.fetch,
             Timestamp::now(),
         )?;
-        check_tools(&new, &config.media.render)?;
+        check_office_formats(&new, &config.document)?;
         if new.attachment.is_none() && new.url.is_none() {
             return Ok(repo::insert(self.pool(), &new).await?);
         }
@@ -513,17 +513,18 @@ fn validate_generated_content_type(
     }
 }
 
-/// Whether this deployment has the optional tool a generated blob's build
-/// needs: pandoc for a document declared DOCX or ODT. Refused at creation,
-/// rather than left for a build that cannot run.
-fn check_tools(new: &NewBlob, render: &agrafe_render::Config) -> Result<(), CreateError> {
+/// Whether this deployment offers a document declared DOCX or ODT. Refused
+/// at creation, rather than left for a build that cannot run. The policy
+/// and not the tool: the process taking the blob never runs pandoc, and
+/// need not have it.
+fn check_office_formats(new: &NewBlob, document: &DocumentConfig) -> Result<(), CreateError> {
     if new.input_type == InputType::Document
         && OfficeFormat::of(&new.content_type).is_some()
-        && render.pandoc_command.is_none()
+        && !document.office_formats
     {
         return Err(unprocessable(format!(
-            "content_type `{}` needs pandoc, which this deployment does not configure \
-             (media.pandoc_command); `application/pdf` does not",
+            "content_type `{}` is not offered by this deployment \
+             (document.office_formats); `application/pdf` is",
             new.content_type
         )));
     }
@@ -674,12 +675,12 @@ mod tests {
     }
 
     #[test]
-    fn office_documents_need_pandoc() {
+    fn office_documents_are_a_policy_of_the_deployment() {
         let now = Timestamp::now();
-        let without = agrafe_render::Config::default();
-        let with = agrafe_render::Config {
-            pandoc_command: Some("pandoc".into()),
-            ..agrafe_render::Config::default()
+        let without = DocumentConfig::default();
+        let with = DocumentConfig {
+            office_formats: true,
+            ..DocumentConfig::default()
         };
         for office in [office::DOCX, office::ODT] {
             let new = validate(
@@ -690,9 +691,9 @@ mod tests {
                 now,
             )
             .unwrap();
-            let err = check_tools(&new, &without).unwrap_err();
-            assert!(err.to_string().contains("media.pandoc_command"), "{err}");
-            assert!(check_tools(&new, &with).is_ok());
+            let err = check_office_formats(&new, &without).unwrap_err();
+            assert!(err.to_string().contains("document.office_formats"), "{err}");
+            assert!(check_office_formats(&new, &with).is_ok());
         }
         let pdf = validate(
             req(InputType::Document, classify::PDF),
@@ -702,7 +703,7 @@ mod tests {
             now,
         )
         .unwrap();
-        assert!(check_tools(&pdf, &without).is_ok());
+        assert!(check_office_formats(&pdf, &without).is_ok());
     }
 
     #[test]

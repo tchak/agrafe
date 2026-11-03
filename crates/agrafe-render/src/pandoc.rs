@@ -14,8 +14,9 @@
 //! and `agrafe_sandbox` still confines pandoc: on Linux it reads the
 //! system set and its declared files, and opens no socket.
 //!
-//! Optional, like LibreOffice: a deployment without `pandoc_command`
-//! builds PDF documents only, and refuses a DOCX or an ODT at creation.
+//! Optional, like LibreOffice: a worker without `pandoc_command` builds
+//! PDF documents only. What a deployment accepts at creation is its
+//! `document.office_formats`, which the API reads without running pandoc.
 
 use std::path::Path;
 

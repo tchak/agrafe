@@ -852,6 +852,13 @@ pub struct DocumentConfig {
     /// on disk. 10 000 by default.
     #[serde(default = "default_document_max_files")]
     pub max_files: u64,
+    /// Whether this deployment offers documents declared DOCX or ODT: off,
+    /// creating one is refused. A policy read where the blob is created,
+    /// and not a tool: an API process needs no pandoc to accept one, only
+    /// the `document` workers do, in `media.pandoc_command`, and one
+    /// handling that kind refuses to start without it.
+    #[serde(default)]
+    pub office_formats: bool,
 }
 
 fn default_document_max_workspace_size() -> ByteSize {
@@ -867,6 +874,7 @@ impl Default for DocumentConfig {
         Self {
             max_workspace_size: default_document_max_workspace_size(),
             max_files: default_document_max_files(),
+            office_formats: false,
         }
     }
 }
@@ -1633,6 +1641,15 @@ mod tests {
                 let config = load(file)?;
                 assert!(
                     matches!(config.storage, StorageConfig::Local { .. }),
+                    "{file}"
+                );
+                // Only the image that carries pandoc offers what it writes,
+                // or its own document workers would refuse to start.
+                let office = file == "office.toml";
+                assert_eq!(config.document.office_formats, office, "{file}");
+                assert_eq!(
+                    config.media.render.pandoc_command.is_some(),
+                    office,
                     "{file}"
                 );
             }

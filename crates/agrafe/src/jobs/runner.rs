@@ -43,6 +43,13 @@ pub enum Error {
     /// run.
     #[error("the renderer failed its startup probe: {0}")]
     Probe(#[from] agrafe_render::ProbeError),
+    /// The deployment offers DOCX and ODT documents and this process
+    /// handles `document` jobs with no pandoc to write them.
+    #[error(
+        "document.office_formats is on and this worker handles document jobs, \
+         but media.pandoc_command is not set"
+    )]
+    NoPandoc,
     /// The first reap or audit could not be enqueued, for a process
     /// handling `reap` or `audit`.
     #[error("scheduling the periodic jobs: {0}")]
@@ -56,6 +63,12 @@ where
     F: Future<Output = ()> + Clone + Send + 'static,
 {
     let handled = state.config().jobs.kinds();
+    if handled.contains(&JobKind::Document)
+        && state.config().document.office_formats
+        && state.config().media.render.pandoc_command.is_none()
+    {
+        return Err(Error::NoPandoc);
+    }
     if handled.contains(&JobKind::Render) || handled.contains(&JobKind::Document) {
         // What confines the tools, checked before any of them runs: a
         // kernel that cannot refuse is a startup error under `required`,

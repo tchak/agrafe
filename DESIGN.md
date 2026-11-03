@@ -1724,12 +1724,21 @@ Pandoc is `media.pandoc_command`, a tool of `agrafe-render` like
 `vips_command`; its limits are `media.sandbox`'s, as the compile's are.
 It is optional, like LibreOffice and for the same reason, its size
 (about 180 MB installed): unset by default, and only the `-office`
-image carries and sets it. Without it a deployment builds PDFs: a
-document declared DOCX or ODT is refused at creation (422, naming the
-key), which is why the API processes read the key too, and a build that
-meets one anyway, on a worker configured apart from the API, fails the
-attempt with `media.pandoc_command is not set` and is retried, a worker
-fault rather than the blob's. The Markdown representation (#24) will
+image carries and sets it.
+
+**What a deployment offers is a key of its own**, `document.office_formats`,
+off by default and on in the `-office` image. Off, a document declared
+DOCX or ODT is refused at creation (422, naming the key). The API process
+taking the blob never runs pandoc, so it reads the policy and not the
+tool: it can run the plain image, without 580 MB of tools it never starts,
+and that is the recommended split. A worker handling `document` with the
+policy on and no `pandoc_command` refuses to start, so the common
+misconfiguration is loud. The API and the workers can still disagree: a
+worker with neither key, behind an API with the policy on, fails the
+attempt with `media.pandoc_command is not set` and retries, a worker fault
+rather than the blob's. Closing that would take workers advertising what
+they can do in the database, and a false 422 whenever none is up, which is
+not worth it for one optional tool. The Markdown representation (#24) will
 read with the same binary and driver, and be as optional.
 
 **Build semantics** follow `rows` and `archive`: a `document` job kind with

@@ -59,8 +59,9 @@ pub struct Config {
     #[serde(default = "default_render_geo_command")]
     pub render_geo_command: String,
     /// pandoc, which turns a document compiled to HTML into a DOCX or an
-    /// ODT, a bare name looked up on `PATH` or a path. Unset by default,
-    /// and a document blob declared DOCX or ODT is refused.
+    /// ODT, a bare name looked up on `PATH` or a path. Unset by default;
+    /// only what builds documents reads it, the deployment's offer being
+    /// `document.office_formats`.
     #[serde(default)]
     pub pandoc_command: Option<String>,
     /// The thumbnail box and quality, the `[media.thumbnail]` table.

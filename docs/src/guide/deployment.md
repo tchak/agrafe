@@ -50,14 +50,16 @@ its libvips (see [libvips](#libvips)). The images run as the unprivileged
 accepts them and a volume needs `fsGroup: 10001` or that owner. They run
 `agrafe serve` by default, and expose the private port, 8080, and the public
 one, 8081. Use the `-office` image for the workers
-that handle `render` or `document`, and for the API processes when
-documents may be DOCX or ODT, since creation checks for pandoc; the
-plain one everywhere else.
+that handle `render` or `document`, and the plain one everywhere else:
+API processes run none of these tools, so they do not need to carry
+them, whatever the deployment offers. To accept DOCX and ODT documents
+on the plain image, see [pandoc](#pandoc).
 
 The image's settings for a container are in `/etc/agrafe/agrafe.toml`,
 which `AGRAFE_CONFIG` names: both addresses on `0.0.0.0`, local storage
 under `/var/lib/agrafe/data`, `media.tmp_dir` at `/var/tmp/agrafe` and,
-in the `-office` image, `media.office` and `media.pandoc_command`. Configure the rest through
+in the `-office` image, `media.office`, `media.pandoc_command` and
+`document.office_formats`. Configure the rest through
 `AGRAFE_*` variables, which override the file, or mount a file of your
 own over it, which replaces it whole:
 
@@ -212,16 +214,37 @@ features.
 ## pandoc
 
 Optional, for the DOCX and ODT [documents](documents.md): typst compiles
-the template to HTML and pandoc writes the office file. Without it,
-documents are PDFs only, and creating a DOCX or ODT one answers 422
-naming `media.pandoc_command`. The key is read where the blob is
-created and where it is built, so set it on the API processes and the
-`document` workers alike.
+the template to HTML and pandoc writes the office file. Two keys say
+so, because two kinds of process ask two questions. Whether the
+deployment offers these formats is `document.office_formats`, read where
+the blob is created: off, documents are PDFs only, and creating a DOCX
+or ODT one answers 422 naming the key. Which binary writes them is
+`media.pandoc_command`, read where the blob is built.
 
 ```toml
+[document]
+office_formats = true
+
 [media]
 pandoc_command = "pandoc"
 ```
+
+Set `document.office_formats` on the API processes and the `document`
+workers alike; only those workers need pandoc. A split deployment runs
+its API on the plain image, which never runs pandoc, and its `document`
+workers on `-office`, which sets both keys:
+
+```sh
+# ghcr.io/tchak/agrafe:0.1.0
+AGRAFE_DOCUMENT__OFFICE_FORMATS=true agrafe serve --role api
+# ghcr.io/tchak/agrafe:0.1.0-office
+agrafe serve --role worker --kinds render,document
+```
+
+A worker handling `document` with the first key on and no pandoc refuses
+to start, so an environment shared by both is safe. An API with the key
+on and `document` workers with neither key is the one mismatch nothing
+catches at startup: their builds fail and retry until they get a pandoc.
 
 pandoc 3.6 or later: 3.6 is where its HTML reader learnt the footnotes
 typst writes (marked by ARIA role). Debian trixie's package is 3.1.11

@@ -5,9 +5,10 @@ a workspace of files: a template, its includes, its images and its fonts,
 plus the data of one document. It is a PDF, or, from the same template, an
 editable DOCX or ODT: typst compiles the workspace to HTML and
 [pandoc](https://pandoc.org) writes the office file. The compiler and
-pandoc run sandboxed, never in the server. pandoc is optional: a
-deployment without it (see [Deployment](deployment.md#pandoc)) builds
-PDFs only and answers 422 to a DOCX or ODT document.
+pandoc run sandboxed, never in the server. These formats are optional:
+a deployment without `document.office_formats` (see
+[Deployment](deployment.md#pandoc)) builds PDFs only and answers 422 to
+a DOCX or ODT document.
 
 | `content_type` | Built as |
 |---|---|

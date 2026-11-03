@@ -151,6 +151,7 @@ The bucket needs an `AbortIncompleteMultipartUpload` lifecycle rule.
 |---|---|---|
 | `max_workspace_size` | `"256 MiB"` | Largest workspace, members plus inline files |
 | `max_files` | `10000` | Most files in a workspace, across its parts |
+| `office_formats` | `false` | Whether documents may be declared DOCX or ODT; off, creating one answers 422. API processes need no pandoc for it; `document` workers refuse to start without `media.pandoc_command` |
 
 ## `[fetch]`
 
@@ -198,7 +199,7 @@ above `max_inline_scans` plus `jobs.concurrency.scan`.
 | `render_text_command` | `"agrafe-render-text"` | The text thumbnail helper |
 | `render_document_command` | `"agrafe-render-document"` | The typst helper |
 | `render_geo_command` | `"agrafe-render-geo"` | The map helper, for GeoJSON, GPX, KML, KMZ and GML files and zipped shapefiles |
-| `pandoc_command` | unset | pandoc 3.6 or later, which writes DOCX and ODT documents from the HTML their template compiles to. Unset, documents are PDFs only and a DOCX or ODT one is refused at creation |
+| `pandoc_command` | unset | pandoc 3.6 or later, which writes DOCX and ODT documents from the HTML their template compiles to. Read by `document` workers only; what a deployment accepts is `document.office_formats` |
 | `max_source_size` | `"64 MiB"` | Larger originals get the icon and no preview; text thumbnails still render |
 | `tmp_dir` | the system temporary directory | Where workers unpack originals and document workspaces; an absolute path |
 
@@ -413,6 +414,10 @@ message naming the key:
 
 Workers also probe `vips` and the helpers before starting, and exit with
 `the renderer failed its startup probe: …` when one of them does not work.
+One handling `document` jobs exits with `document.office_formats is on and
+this worker handles document jobs, but media.pandoc_command is not set`
+when it has no pandoc for what the deployment offers: use the `-office`
+image, or set the key.
 
 ## Annotated example
 

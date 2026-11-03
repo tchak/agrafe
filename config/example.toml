@@ -178,6 +178,11 @@ max_workspace_size = "256 MiB"
 # parts, and on the directories their paths make: bytes alone do not bound
 # what an empty file costs the worker's disk.
 max_files = 10000
+# Whether documents may be declared DOCX or ODT; off, creating one answers
+# 422 and documents are PDFs only. Read where the blob is created: an API
+# process runs no pandoc and needs none. Every process handling `document`
+# jobs needs media.pandoc_command, and refuses to start without it.
+office_formats = false
 
 [fetch]
 # How `url` blobs are fetched: the service downloads the file from the URL
@@ -264,8 +269,9 @@ vips_command = "vips"
 # render_geo_command = "/usr/local/bin/agrafe-render-geo"
 # pandoc, which writes a document blob declared DOCX or ODT from the HTML
 # its template compiles to, run sandboxed like the helpers, under
-# [media.sandbox]. Off by default: unset, documents build to PDF only and
-# a DOCX or ODT one is refused at creation. A bare name is looked up on the
+# [media.sandbox]. Off by default: unset, this worker builds PDFs only. Set
+# it on the document workers with document.office_formats on; API processes
+# do not read it. A bare name is looked up on the
 # PATH. pandoc 3.6 or later, whose HTML reader knows typst's footnotes; the
 # startup probe of a document worker fails on an older one. Debian
 # trixie's package (3.1.11) is too old: use pandoc's release .deb, as the

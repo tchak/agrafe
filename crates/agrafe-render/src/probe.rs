@@ -489,8 +489,8 @@ pub async fn probe_office(config: &Config, tmp_dir: Option<&Path>) -> Result<(),
 /// kill every document job instead of failing the deployment. The office
 /// files are read back by pandoc, the server having no ZIP parser: the
 /// heading, the note and the image must be there. Without a
-/// `pandoc_command` the PDF alone is probed: DOCX and ODT documents are
-/// refused at creation.
+/// `pandoc_command` the PDF alone is probed: this worker builds no DOCX
+/// or ODT.
 pub async fn probe_document(config: &Config, tmp_dir: Option<&Path>) -> Result<(), ProbeError> {
     let workdir = crate::workdir(tmp_dir)?;
     let workspace = workdir.path().join("workspace");

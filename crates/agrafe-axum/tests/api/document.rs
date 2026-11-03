@@ -677,13 +677,14 @@ async fn creation_rules() {
     assert_eq!(status, StatusCode::OK);
 }
 
-/// A deployment without pandoc builds PDFs: a DOCX or an ODT is refused
-/// at creation, naming the key, and the probe passes on the compiler
-/// alone.
+/// A deployment that does not offer them builds PDFs: a DOCX or an ODT is
+/// refused at creation, naming the key, and the probe passes on the
+/// compiler alone.
 #[tokio::test]
-async fn documents_without_pandoc_are_pdfs_only() {
+async fn documents_without_office_formats_are_pdfs_only() {
     let db = TestDatabase::new().await;
     let app = setup_tuned(db, fake_clamd().await, |c| {
+        c.document.office_formats = false;
         c.media.render.pandoc_command = None;
     })
     .await;
@@ -699,7 +700,7 @@ async fn documents_without_pandoc_are_pdfs_only() {
         .await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
         let said = body["error"]["message"].as_str().unwrap();
-        assert!(said.contains("media.pandoc_command"), "{body}");
+        assert!(said.contains("document.office_formats"), "{body}");
     }
     let media = &app.state.config().media;
     agrafe_render::probe_document(&media.render, media.tmp_dir.as_deref())
@@ -709,6 +710,40 @@ async fn documents_without_pandoc_are_pdfs_only() {
     let built = build(&app, "a.pdf", "application/pdf", workspace).await;
     assert_eq!(built["state"], "ready", "{built}");
     assert!(download(&app, &built).await.starts_with(b"%PDF-"));
+}
+
+/// The API runs no pandoc, so it needs none to accept a DOCX or an ODT:
+/// the plain image serves them. A process that also handles `document`
+/// jobs refuses to start without it, before it claims one it cannot build.
+#[tokio::test]
+async fn office_formats_need_pandoc_on_the_document_workers_only() {
+    let db = TestDatabase::new().await;
+    let app = setup_tuned(db, fake_clamd().await, |c| {
+        c.media.render.pandoc_command = None;
+    })
+    .await;
+    for (filename, content_type) in [("a.docx", DOCX), ("a.odt", ODT)] {
+        let (status, body) = call(
+            &app.private,
+            json_req(
+                Method::POST,
+                "/blobs",
+                typed_document_blob(filename, content_type),
+            ),
+        )
+        .await;
+        assert!(status.is_success(), "{status}: {body}");
+    }
+    let err = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        agrafe::jobs::runner::run(app.state.clone(), std::future::pending::<()>()),
+    )
+    .await
+    .expect("the workers give up at once")
+    .unwrap_err();
+    let said = err.to_string();
+    assert!(said.contains("document.office_formats"), "{said}");
+    assert!(said.contains("media.pandoc_command"), "{said}");
 }
 
 /// Every bad line answers 422 naming it, the part is discarded, the blob

@@ -269,7 +269,8 @@ pub async fn setup_tuned(
     config.media.render.render_document_command = helper("agrafe-render-document");
     config.media.render.render_geo_command = helper("agrafe-render-geo");
     // Optional in a deployment, on the PATH of every machine the suite
-    // runs on; `documents_without_pandoc_are_pdfs_only` unsets it.
+    // runs on; `documents_without_office_formats_are_pdfs_only` unsets it.
+    config.document.office_formats = true;
     config.media.render.pandoc_command = Some("pandoc".into());
     config.media.render.preview.max_dimension = 400;
     // Set to the packaged `/usr/bin/bwrap` on a Linux host that grants it

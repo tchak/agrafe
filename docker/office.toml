@@ -17,6 +17,9 @@ backend = "local"
 [storage.local]
 path = "/var/lib/agrafe/data"
 
+[document]
+office_formats = true
+
 [media]
 # Outside /tmp, which LibreOffice's pipe needs to itself.
 tmp_dir = "/var/tmp/agrafe"
