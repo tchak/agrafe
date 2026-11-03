@@ -3954,7 +3954,11 @@ libraries expect it, so a backend verifies with one of them and no code;
 fewer than 16 bytes once decoded refuses the start, since HMAC would sign
 with a key of any length, none included.
 It is its own secret, not a `[signing]` key: those mint URLs and should
-not double as a shared secret with the backend. A `2xx` within
+not double as a shared secret with the backend. There is one secret and one
+signature, unlike `[signing]`'s keyring: the header could carry two, as the
+standard allows, but the receiver accepting both during a rotation avoids
+the outage just as well, at no configuration here (the procedure is in the
+webhooks guide). A `2xx` within
 `webhook.timeout` (default ten seconds) is delivered. Anything else, a
 timeout or a connection error fails the attempt and goes through the
 backoff, the head of a non-`2xx` body in `last_error`. No redirect is

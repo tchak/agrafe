@@ -100,6 +100,22 @@ end
 The webhook secret is its own secret, not a signing key: URL signing keys
 should not double as a secret shared with a receiver.
 
+### Rotating the secret
+
+agrafe holds one secret and sends one signature, so the receiver carries the
+overlap:
+
+1. Make the receiver accept a signature under either the old or the new
+   secret: verify with one, and on failure with the other.
+2. Set `webhook.secret` to the new secret on every process that runs
+   `notify`, and restart them. A delivery is signed when it is sent, so a
+   retried one takes the new secret too.
+3. Remove the old secret from the receiver.
+
+No delivery fails along the way, whatever the order the workers restart in.
+After a leak, keep the overlap as short as the restart allows, since the old
+secret can forge deliveries until step 3.
+
 ## Delivery and retries
 
 A `2xx` answer within `webhook.timeout`, ten seconds by default, is a
