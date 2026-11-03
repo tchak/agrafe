@@ -101,10 +101,29 @@ groups:
           summary: "the last agrafe audit found {{ $labels.kind }} mismatches: GET /blobs?failed=true, or the audit log lines"
 
       - alert: AgrafeAuditStale
-        expr: time() - max(agrafe_audit_last_run_timestamp_seconds) > 8 * 86400
+        expr: |
+          time() - max(max_over_time(agrafe_audit_last_run_timestamp_seconds[15d])) > 14 * 86400
+          and count(agrafe_audit_last_run_timestamp_seconds offset 14d) > 0
         annotations:
-          summary: "no agrafe audit has run for over eight days"
+          summary: "no agrafe audit has finished for over two weeks: GET /jobs?kind=audit"
 ```
+
+The audit gauges are per process and start at zero, so these two rules read
+them with that in mind:
+
+- `AgrafeAuditStale` looks over the past 15 days, so a restart does not fire
+  it, and stays quiet until the deployment has been scraped for two weeks,
+  since the first sweep starts a week after the first start. It needs that
+  much retention, which is Prometheus' default. A run starts a week after the
+  last one ended and the gauge moves when it finishes, so the threshold is a
+  week plus the longest sweep you expect: raise it if yours take over a week.
+- `AgrafeAuditFindings` resolves when the process that ran the audit restarts,
+  though nothing was repaired. The stamped blobs stay in `GET
+  /blobs?failed=true`, which is where to check.
+
+A sweep that dies does not wait for either: it is a dead `audit` job, which
+`AgrafeDeadJobs` reports. A dead job does not end the weekly cadence, so
+`AgrafeAuditStale` catches what is left, sweeps that never finish.
 
 A missing original is an incident: the bytes cannot be recovered from
 agrafe's side, and the blob is listed under `GET /blobs?failed=true` with

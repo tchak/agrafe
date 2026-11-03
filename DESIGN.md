@@ -3691,10 +3691,14 @@ with `delivered` or `failed`, see "Webhooks". The last audit this process
 ran, see "Audit": `agrafe_audit_findings{kind}` with `missing_original`,
 `damaged_original`, `missing_representation`, `missing_source`, `orphan`,
 `unknown` and `foreign`, `agrafe_audit_objects` and `agrafe_audit_blobs` for what
-it listed and checked, and `agrafe_audit_last_run_timestamp_seconds`,
+it listed and checked, `agrafe_audit_errors` for the findings it could not
+act on, and `agrafe_audit_last_run_timestamp_seconds`,
 zero until one has run; gauges, since a sweep is a census and not a
 rate, and per process, since the one worker handling `audit` is the one
-that knows. A `worker` process has no API; it binds
+that knows. They do not survive a restart: persisting a report to answer a
+weekly question is not worth a table, and the alerts in the monitoring guide
+read them through `max_over_time`, past a deploy, with a threshold of the
+interval plus a sweep, since the gauge moves only when one finishes. A `worker` process has no API; it binds
 `server.private_addr` all the same, serving `/healthz` and `/metrics` only.
 
 `SIGTERM` or `SIGINT` closes the listeners and drains: open requests finish,
