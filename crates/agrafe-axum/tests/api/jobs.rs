@@ -789,6 +789,61 @@ async fn metrics_report_queue_depth_and_runs() {
     );
 }
 
+/// What `/metrics` exposes after some work, every family with series in it,
+/// passes Prometheus' own linter. Runs when `AGRAFE_TEST_PROMTOOL` names the
+/// binary, as CI does.
+#[tokio::test]
+async fn metrics_pass_the_prometheus_linter() {
+    use axum::http::Method;
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+
+    let Some(promtool) = std::env::var_os("AGRAFE_TEST_PROMTOOL") else {
+        eprintln!("AGRAFE_TEST_PROMTOOL is not set: skipping");
+        return;
+    };
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
+    assert!(run_job(&app, agrafe::jobs::JobKind::Render).await);
+    let (status, _) = call(
+        &app.private,
+        req(Method::GET, &format!("/blobs/{}", id_of(&blob))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    sqlx::query("INSERT INTO jobs (kind, payload, run_at) VALUES ('audit', '{}', now())")
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+    assert!(run_job(&app, agrafe::jobs::JobKind::Audit).await);
+    let (status, body) = call(&app.private, req(Method::GET, "/metrics")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let text = body.as_str().unwrap();
+    assert!(text.contains("agrafe_audit_findings{"), "{text}");
+
+    let mut child = Command::new(promtool)
+        .args(["check", "metrics"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(text.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
 /// With no connection to be had, `/metrics` still answers within the
 /// census's timeout, with what the process knows of itself and the census
 /// flagged as missing.

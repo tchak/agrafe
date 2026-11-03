@@ -125,6 +125,17 @@ jobs:
           path: ~/apt-archives/*.deb
           key: ${{ steps.apt-cache.outputs.cache-primary-key }}
       - uses: actions/checkout@v5
+      - name: Install promtool
+        env:
+          PROMETHEUS_VERSION: 3.5.0
+          PROMETHEUS_SHA256: e811827af26d822afb09a4f28314f61b618b12cff5369835a67f674d8b46f39a
+        run: |
+          name="prometheus-$PROMETHEUS_VERSION.linux-amd64"
+          curl -sSfL -o /tmp/prometheus.tar.gz \
+            "https://github.com/prometheus/prometheus/releases/download/v$PROMETHEUS_VERSION/$name.tar.gz"
+          echo "$PROMETHEUS_SHA256  /tmp/prometheus.tar.gz" | sha256sum -c -
+          sudo tar -xzf /tmp/prometheus.tar.gz -C /usr/local/bin --strip-components=1 "$name/promtool"
+          promtool --version
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@v2
         with:
@@ -135,6 +146,9 @@ jobs:
       # No doctests in the workspace: nextest runs everything there is.
       - name: Test
         run: cargo nextest run --workspace --profile ci
+        env:
+          # The metrics test lints what /metrics exposes; it skips without this.
+          AGRAFE_TEST_PROMTOOL: /usr/local/bin/promtool
       # The real tools through bubblewrap: the probe, vips, the helpers
       # and LibreOffice. A mount namespace checks the system set harder
       # than Landlock does (a path Landlock lets `stat` does not exist

@@ -97,6 +97,9 @@ See "Crates" in `DESIGN.md` for the dependency graph.
   (Pillow), the thumbnail icons from `scripts/icons.sh`; regenerate rather
   than edit the outputs. The probe's typst workspace under
   `probe/document` is hand-written text and is edited directly.
+- `AGRAFE_TEST_PROMTOOL=$(which promtool)` runs the test that lints
+  `/metrics` with Prometheus' linter; it skips without the variable, and CI
+  sets it.
 - `cargo coverage` (an alias in `.cargo/config.toml`, needs cargo-llvm-cov)
   reports line coverage; add `--show-missing-lines` to see what is uncovered.
 - Linux-only code (the `agrafe-sandbox` confinement, bubblewrap) runs
