@@ -163,8 +163,11 @@ impl Keks {
 /// The KEK `secret` stands for, or why it is not one.
 fn parse_kek(id: &str, secret: &Base64Secret) -> Result<Kek, ConfigError> {
     let invalid = ConfigError::Invalid;
-    if id.is_empty() {
-        return Err(invalid("encryption KEK ids must not be empty".into()));
+    if !crate::config::is_key_id(id) {
+        return Err(invalid(format!(
+            "encryption KEK id `{id}` must be non-empty and use only [a-z0-9_], which is what an \
+             AGRAFE_ variable can name"
+        )));
     }
     if id.len() > MAX_KEK_ID_LEN {
         return Err(invalid(format!(
@@ -347,6 +350,12 @@ mod tests {
             err(&config),
             "encryption KEK `a` is given both in encryption.keks and in encryption.keks_file"
         );
+
+        for id in ["C", "c-1", ""] {
+            let file = keks_file(&format!("\"{id}\" = \"{}\"\n", STANDARD.encode([9u8; 32])));
+            config.keks_file = Some(file.path().to_path_buf());
+            assert!(err(&config).contains("use only [a-z0-9_]"), "{id}");
+        }
 
         let file = keks_file(&format!("c = \"{}\"\n", STANDARD.encode([9u8; 16])));
         config.keks_file = Some(file.path().to_path_buf());

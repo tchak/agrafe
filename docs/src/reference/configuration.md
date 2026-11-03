@@ -98,7 +98,7 @@ The bucket needs an `AbortIncompleteMultipartUpload` lifecycle rule.
 |---|---|---|
 | `current_key` | **required** | Id of the key agrafe mints with. Must be in `keys` |
 | `window` | `"1h"` | Minted expiries are rounded up to a multiple of this before the TTL is added |
-| `keys` | **required** | Table of key id to key. Ids use `[A-Za-z0-9_-]`; keys are at least 32 bytes. Every key verifies |
+| `keys` | **required** | Table of key id to key. Ids use `[a-z0-9_]`; keys are at least 32 bytes. Every key verifies |
 
 ### `[signing.ttl]`
 
@@ -161,7 +161,7 @@ The bucket needs an `AbortIncompleteMultipartUpload` lifecycle rule.
 |---|---|---|
 | `current_kek` | **required** | Id of the KEK that wraps new data keys. Must be in `keks` or in the `keks_file` |
 | `chunk_size` | `"256 KiB"` | Segment size of the streaming encryption, at most 16 MiB. Stored per blob, so it can change |
-| `keks` | | Table of KEK id to key, each exactly 32 bytes. Keep every KEK that still wraps a key |
+| `keks` | | Table of KEK id to key, each exactly 32 bytes. Ids use `[a-z0-9_]`, at most 64 bytes. Keep every KEK that still wraps a key |
 | `keks_file` | | A file of `id = "…"` lines, the body of `[encryption.keks]`, read once at startup. May be a FIFO or a systemd credential, so the KEKs stay off the disk; see [Keeping the KEKs off the host](../guide/security.md#keeping-the-keks-off-the-host). An id in both places is an error |
 
 One of `keks` and `keks_file` must hold `current_kek`.
@@ -372,7 +372,8 @@ message naming the key:
 | `server.public_base_url must not end with a slash` | Remove the trailing slash |
 | `server.private_hosts: "…" is not a host and port, like agrafe.internal:8080` | List bare `host:port` names, no scheme or path |
 | `` signing.current_key `…` is not present in signing.keys `` | Add the key or fix the id |
-| `` signing key id `…` must be non-empty and use only [A-Za-z0-9_-] `` | Rename the key |
+| `` signing key id `…` must be non-empty and use only [a-z0-9_], … `` | Rename the key |
+| `` encryption KEK id `…` must be non-empty and use only [a-z0-9_], … `` | Rename the KEK, then rewrap what it wraps |
 | `` signing key `…` must be at least 32 bytes `` | Generate it with `openssl rand -base64 32` |
 | `signing.window must be positive`, `signing.ttl.max must be positive` | Set a non-zero duration |
 | `signing.ttl.read (…) exceeds signing.ttl.max (…)` | Lower the TTL or raise the cap |

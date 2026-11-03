@@ -86,6 +86,17 @@ pub struct Config {
     pub otel: OtelConfig,
 }
 
+/// Whether `id` can name a signing key or a KEK. Lowercase, since the
+/// environment names one by `AGRAFE_SIGNING__KEYS__K1` and figment lowers
+/// that to `k1`: beside a file's `K1` it would add a second key, not replace
+/// the first, and say nothing. No `-`, which a variable cannot spell.
+pub(crate) fn is_key_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
 /// The environment's share of the configuration: `AGRAFE_<SECTION>__<KEY>`
 /// only. Every key lives in a section, and the variables without one,
 /// `AGRAFE_CONFIG` or the tests' `AGRAFE_SANDBOX_REQUIRED`, are not
@@ -1592,6 +1603,33 @@ mod tests {
             for file in ["default.toml", "office.toml"] {
                 let config = load(file)?;
                 assert!(matches!(config.storage, StorageConfig::S3 { .. }), "{file}");
+            }
+            Ok(())
+        });
+    }
+
+    /// `AGRAFE_SIGNING__KEYS__K1` reaches the file's `k1`. A file's `K1`,
+    /// beside which it could only have added a second key, is refused.
+    #[test]
+    fn a_key_id_is_one_the_environment_can_name() {
+        use base64::Engine;
+        let key = base64::engine::general_purpose::STANDARD.encode([7u8; 32]);
+        Jail::expect_with(|jail| {
+            jail.set_env("AGRAFE_SIGNING__KEYS__K1", &key);
+            let mut config = load(&example())?;
+            assert_eq!(config.signing.keys.len(), 1);
+            assert!(config.signing.keys.contains_key("k1"));
+            assert!(crate::signing::Signer::from_config(&config.signing).is_ok());
+
+            for id in ["K1", "backend-1", ""] {
+                config.signing.current_key = id.to_string();
+                config.signing.keys =
+                    HashMap::from([(id.to_string(), Base64Secret::from(key.clone()))]);
+                let err = crate::signing::Signer::from_config(&config.signing)
+                    .err()
+                    .unwrap()
+                    .to_string();
+                assert!(err.contains("use only [a-z0-9_]"), "{id}: {err}");
             }
             Ok(())
         });

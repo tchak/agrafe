@@ -36,7 +36,7 @@ backend1 = "…"  # the backend's minter, from AGRAFE_SIGNING__KEYS__BACKEND1
 ```
 
 Keys are at least 32 random bytes, standard base64. Key ids use only
-letters, digits, `-` and `_`.
+lowercase letters, digits and `_`, what an `AGRAFE_` variable can name.
 
 ## The scheme
 

@@ -78,13 +78,10 @@ impl Signer {
         for (id, secret) in &config.keys {
             // The id travels inside the URL token, so it must be a safe path
             // segment and must not contain the token separator `.`.
-            if id.is_empty()
-                || !id
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-            {
+            if !crate::config::is_key_id(id) {
                 return Err(invalid(format!(
-                    "signing key id `{id}` must be non-empty and use only [A-Za-z0-9_-]"
+                    "signing key id `{id}` must be non-empty and use only [a-z0-9_], which is \
+                     what an AGRAFE_ variable can name"
                 )));
             }
             let key = secret

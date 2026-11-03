@@ -89,7 +89,7 @@ current_key = "k1"
 window = "1h"
 
 [signing.keys]
-# Key ids appear in URL tokens: letters, digits, `-` and `_` only.
+# Key ids appear in URL tokens: lowercase letters, digits and `_` only.
 # Values are 32 random bytes, base64. Generate with: openssl rand -base64 32
 k1 = "REPLACE_ME_WITH_32_RANDOM_BYTES_IN_BASE64_____"
 
@@ -221,7 +221,8 @@ chunk_size = "256 KiB"
 
 [encryption.keks]
 # 32 random bytes, base64. Generate with: openssl rand -base64 32
-# Ids are at most 64 bytes: each row and each sealed URL carries one.
+# Ids use the same characters as signing keys, at most 64 bytes: each row and
+# each sealed URL carries one.
 kek1 = "REPLACE_ME_WITH_32_RANDOM_BYTES_IN_BASE64_____"
 
 [clamav]
