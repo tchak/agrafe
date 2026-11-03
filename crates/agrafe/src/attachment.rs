@@ -101,6 +101,9 @@ impl Agrafe {
         let attached = insert(&mut tx, blob_id, &new).await?;
         clear_expiry(&mut tx, blob_id).await?;
         tx.commit().await?;
+        // A cached head would still expire. The blobs a replace let go of
+        // can stay: their new expiry is further off than any cache's TTL.
+        self.heads().invalidate(blob_id);
         Ok(AttachOutcome { attached, detached })
     }
 
@@ -128,6 +131,7 @@ impl Agrafe {
             set_expiry(&mut tx, attachment.blob_id, expires_at).await?;
         }
         tx.commit().await?;
+        self.heads().invalidate(attachment.blob_id);
         Ok(true)
     }
 

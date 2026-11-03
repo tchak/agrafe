@@ -2294,13 +2294,16 @@ served lately,
 `blobs.read_cache_ttl` (default thirty seconds), so a blob read many times
 costs one query per process per period. Only a settled row is kept: `ready`
 or terminal, with no representation pending. Such a row changes only by
-going terminal, which another process shows late by at most the TTL, and
-the objects are gone only once the purge ran anyway; the process that
-deleted the blob stops serving it at once. A row in flux, an upload or a
+going terminal or by an attachment moving its expiry, which another process
+shows late by at most the TTL, and the objects are gone only once the purge
+ran anyway; the process that deleted the blob stops serving it at once. So
+a blob attached in the last TTL of its expiry can answer `404` from another
+process until the entry ages out, and does not from the one that attached
+it. A row in flux, an upload or a
 render under way, is never kept, so polling the metadata and the `wait` of
-a representation request see every change as it lands, and the read path's
-own writes, setting a representation back to `pending`, drop the row from
-the cache. A missing row is kept too, so a URL with a forged id does not
+a representation request see every change as it lands, and this process's
+own writes, a delete, an attach or detach, or setting a representation back
+to `pending`, drop the row from the cache. A missing row is kept too, so a URL with a forged id does not
 cost a query a time. `agrafe_blob_head_cache_total{result}` counts hits
 and misses.
 

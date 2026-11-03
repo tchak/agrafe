@@ -2,13 +2,13 @@
 //! "Original"].
 //!
 //! Only a settled row is kept: `ready` or terminal, with no representation
-//! pending. Such a row changes only by going terminal, which the cache
-//! shows late by at most its TTL, the objects being gone only once the
-//! purge ran anyway. A row in flux, an upload or a render under way, is
-//! never kept, so polling it, and the `wait` of a representation request,
-//! see every change as it lands. The read path's own writes, setting a
-//! representation back to `pending`, drop the row from this process's
-//! cache at once.
+//! pending. Such a row changes only by going terminal or by an attachment
+//! moving its expiry, which the cache shows late by at most its TTL, the
+//! objects being gone only once the purge ran anyway. A row in flux, an
+//! upload or a render under way, is never kept, so polling it, and the
+//! `wait` of a representation request, see every change as it lands. This
+//! process's own writes, a delete, an attach or detach, or setting a
+//! representation back to `pending`, drop the row from its cache at once.
 //!
 //! [DESIGN.md, "Original"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#original
 

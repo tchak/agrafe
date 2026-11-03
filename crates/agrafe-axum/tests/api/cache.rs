@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use agrafe::jobs::JobKind;
 use axum::http::{Method, StatusCode};
+use serde_json::json;
 
 use crate::support::*;
 
@@ -21,6 +22,47 @@ async fn hits(app: &TestApp) -> u64 {
 
 async fn status_of(app: &TestApp, uri: &str) -> StatusCode {
     call(&app.public, req(Method::GET, uri)).await.0
+}
+
+/// An attach clears the expiry and a last detach sets it: a head kept from
+/// before would answer by the old one, `404` once it passes.
+#[tokio::test]
+async fn an_attach_or_detach_drops_the_head() {
+    let db = TestDatabase::new().await;
+    let clamd = fake_clamd().await;
+    let app = setup_tuned(db, clamd, |c| {
+        c.blobs.read_cache_ttl = Duration::from_secs(60)
+    })
+    .await;
+    let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
+    let id = id_of(&blob);
+    let metadata = public_url(&blob, "metadata");
+    while run_job(&app, JobKind::Render).await {}
+    assert_eq!(status_of(&app, &metadata).await, StatusCode::OK);
+    assert_eq!(status_of(&app, &metadata).await, StatusCode::OK);
+    let kept = hits(&app).await;
+    assert_eq!(kept, 1);
+
+    let (status, attachment) = call(
+        &app.private,
+        json_req(
+            Method::POST,
+            &format!("/blobs/{id}/attachments"),
+            json!({"owner_kind": "post", "owner_id": "1", "role": "cover"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{attachment}");
+    assert_eq!(status_of(&app, &metadata).await, StatusCode::OK);
+    assert_eq!(hits(&app).await, kept, "attached: read from the row");
+    assert_eq!(status_of(&app, &metadata).await, StatusCode::OK);
+    assert_eq!(hits(&app).await, kept + 1);
+
+    let uri = format!("/attachments/{}", attachment["id"].as_str().unwrap());
+    let (status, _) = call(&app.private, req(Method::DELETE, &uri)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(status_of(&app, &metadata).await, StatusCode::OK);
+    assert_eq!(hits(&app).await, kept + 1, "detached: read from the row");
 }
 
 #[tokio::test]
