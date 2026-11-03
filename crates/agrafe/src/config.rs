@@ -184,6 +184,7 @@ impl Config {
         }
         self.server.cors.validate()?;
         self.database.validate()?;
+        self.jobs.validate()?;
         self.webhook.validate()?;
         self.sentry.validate()?;
         self.otel.validate()?;
@@ -399,6 +400,11 @@ pub struct DatabaseConfig {
 
 impl DatabaseConfig {
     fn validate(&self) -> Result<(), ConfigError> {
+        if self.max_connections == 0 {
+            return Err(ConfigError::Invalid(
+                "database.max_connections must be at least 1".into(),
+            ));
+        }
         if let Some(schema) = &self.schema {
             let mut chars = schema.chars();
             let plain = chars
@@ -1458,6 +1464,41 @@ pub struct JobsConfig {
 }
 
 impl JobsConfig {
+    /// Below this, idle workers are a tight loop of claims on the database.
+    const MIN_POLL_INTERVAL: Duration = Duration::from_millis(100);
+    /// A lease shorter than the time between two renewals of a healthy
+    /// worker lets another claim a running job.
+    const MIN_LEASE_TIMEOUT: Duration = Duration::from_secs(10);
+    const MIN_REAP_INTERVAL: Duration = Duration::from_secs(1);
+
+    fn validate(&self) -> Result<(), ConfigError> {
+        for (name, value, floor) in [
+            ("poll_interval", self.poll_interval, Self::MIN_POLL_INTERVAL),
+            ("lease_timeout", self.lease_timeout, Self::MIN_LEASE_TIMEOUT),
+            ("reap_interval", self.reap_interval, Self::MIN_REAP_INTERVAL),
+        ] {
+            if value < floor {
+                return Err(ConfigError::Invalid(format!(
+                    "jobs.{name} must be at least {}",
+                    humantime_serde::re::humantime::format_duration(floor)
+                )));
+            }
+        }
+        // Started with no workers, the kind looks covered while its backlog
+        // grows. Leaving a kind to other processes is what jobs.kinds says.
+        if let Some(kind) = self
+            .concurrency
+            .iter()
+            .find_map(|(k, n)| (*n == 0).then_some(k))
+        {
+            return Err(ConfigError::Invalid(format!(
+                "jobs.concurrency.{kind} must be at least 1: leave the kind out of jobs.kinds \
+                 for this process not to run it"
+            )));
+        }
+        Ok(())
+    }
+
     /// Workers for `kind`: the configured count, else a default suited to
     /// what the kind waits on.
     pub(crate) fn concurrency_for(&self, kind: JobKind) -> usize {
@@ -1604,6 +1645,53 @@ mod tests {
                 let config = load(file)?;
                 assert!(matches!(config.storage, StorageConfig::S3 { .. }), "{file}");
             }
+            Ok(())
+        });
+    }
+
+    /// Zero would be a hot loop, a job claimed twice, a kind that looks
+    /// covered and a panic in the pool.
+    #[test]
+    fn the_intervals_and_counts_have_floors() {
+        for (var, value, message) in [
+            (
+                "AGRAFE_JOBS__POLL_INTERVAL",
+                "0s",
+                "jobs.poll_interval must be at least 100ms",
+            ),
+            (
+                "AGRAFE_JOBS__LEASE_TIMEOUT",
+                "0s",
+                "jobs.lease_timeout must be at least 10s",
+            ),
+            (
+                "AGRAFE_JOBS__REAP_INTERVAL",
+                "0s",
+                "jobs.reap_interval must be at least 1s",
+            ),
+            (
+                "AGRAFE_JOBS__CONCURRENCY__PURGE",
+                "0",
+                "jobs.concurrency.purge must be at least 1",
+            ),
+            (
+                "AGRAFE_DATABASE__MAX_CONNECTIONS",
+                "0",
+                "database.max_connections must be at least 1",
+            ),
+        ] {
+            Jail::expect_with(|jail| {
+                jail.set_env(var, value);
+                let err = load(&example()).unwrap_err().to_string();
+                assert!(err.contains(message), "{var}: {err}");
+                Ok(())
+            });
+        }
+        Jail::expect_with(|jail| {
+            jail.set_env("AGRAFE_JOBS__POLL_INTERVAL", "100ms");
+            jail.set_env("AGRAFE_JOBS__LEASE_TIMEOUT", "10s");
+            jail.set_env("AGRAFE_JOBS__REAP_INTERVAL", "1s");
+            load(&example())?;
             Ok(())
         });
     }

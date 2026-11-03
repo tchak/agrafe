@@ -48,7 +48,7 @@ be left out.
 |---|---|---|
 | `url` | **required** | Postgres connection URL. A secret |
 | `schema` | unset | The schema the tables live in, when not the connection's default (`public`). Created by `migrate`. A plain lowercase identifier |
-| `max_connections` | `10` | Pool size of this process |
+| `max_connections` | `10` | Pool size of this process, at least 1 |
 
 ## `[storage]` (required)
 
@@ -291,9 +291,9 @@ Background layers, composited bottom to top. None by default.
 
 | Key | Default | Description |
 |---|---|---|
-| `poll_interval` | `"2s"` | Fallback polling when a `NOTIFY` wakeup is missed |
-| `lease_timeout` | `"10m"` | A job locked for longer is claimed again. Running workers renew it |
-| `reap_interval` | `"1m"` | How often the reaper runs |
+| `poll_interval` | `"2s"` | Fallback polling when a `NOTIFY` wakeup is missed, at least 100 ms |
+| `lease_timeout` | `"10m"` | A job locked for longer is claimed again. Running workers renew it. At least 10 s |
+| `reap_interval` | `"1m"` | How often the reaper runs, at least 1 s |
 | `keep_failed` | `"7d"` | How long dead jobs are kept |
 | `audit_interval` | `"7d"` | How often the audit sweeps the bucket against the `blobs` table; the first run is one interval after the workers start |
 | `kinds` | every kind | The kinds this process runs workers for. `serve --kinds` takes precedence |
@@ -390,6 +390,9 @@ message naming the key:
 | `media.map.layers[0].url must be an http or https URL` | Fix the URL |
 | `archive.max_size must be at most … bytes: …` | Lower it to 309 GiB or less |
 | `jobs.kinds must name at least one kind, or be omitted for all` | Remove the empty list |
+| `jobs.poll_interval must be at least 100ms`, likewise `lease_timeout` (10s) and `reap_interval` (1s) | Raise it |
+| `jobs.concurrency.… must be at least 1: …` | Raise it, or leave the kind out of `jobs.kinds` for this process |
+| `database.max_connections must be at least 1` | Raise it |
 | `webhook.secret is required with webhook.url` | Set the secret |
 | `webhook.secret must be whsec_ followed by base64: …` | Generate it with `echo "whsec_$(openssl rand -base64 24)"` |
 | `webhook.secret is … bytes once decoded, at least 16 are needed: …` | The value was cut short: generate it again with the same command |

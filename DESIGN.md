@@ -3404,8 +3404,11 @@ dead jobs; the blob's retry is for the backend looking at its records.
 
 `enqueue` calls `pg_notify` in the same statement, so the notification
 travels with the commit. One listener per process wakes the pollers of that
-kind; `jobs.poll_interval` is the fallback for a missed wakeup. Concurrency is
-per kind in `jobs.concurrency` (defaults: `fetch` 2, `scan` 4, `render` 4,
+kind; `jobs.poll_interval` is the fallback for a missed wakeup, at least 100 ms
+since a zero is a tight loop of claims; `jobs.lease_timeout` is at least 10 s,
+`jobs.reap_interval` at least 1 s. Concurrency is
+per kind, at least one worker, in `jobs.concurrency`, a kind left to other
+processes being what `jobs.kinds` says (defaults: `fetch` 2, `scan` 4, `render` 4,
 `rows` 2, `archive` 1, `document` 2, `purge` 4, `reap` 1, `notify` 4,
 `audit` 1): rendering and compiling are CPU bound, scanning waits on
 clamd, a rows or archive build, a fetch and a delivery on the network,
