@@ -38,6 +38,7 @@ use crate::blob::read::{Reader, Stored};
 use crate::blob::{Blob, BlobState, PreviewSource, Representation, RepresentationState};
 use crate::blob::{repo, representation};
 use crate::config::MediaConfig;
+use crate::upload;
 
 /// The preview's file in the work directory.
 const PREVIEW: &str = "preview.webp";
@@ -429,7 +430,7 @@ impl<'a> Render<'a> {
             }
             None => None,
         };
-        repo::finish_representation(
+        let recorded = repo::finish_representation(
             self.state.pool(),
             self.blob.id,
             kind,
@@ -439,6 +440,13 @@ impl<'a> Render<'a> {
             rendered,
         )
         .await?;
+        // Deleted meanwhile: a purge that has already swept the prefix will
+        // not come back for what was just written under it.
+        if !recorded && rendered.is_some() {
+            tracing::info!("the blob is no longer ready, dropping its {kind}");
+            let object = crate::blob::key::representation(self.blob.id, kind);
+            upload::delete_quietly(self.state, &object).await;
+        }
         Ok(())
     }
 

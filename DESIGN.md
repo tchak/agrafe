@@ -2209,6 +2209,12 @@ rendered again first. The thumbnail thus appears after the preview rather
 than alongside it, a few seconds for a large image, which the icon
 placeholder and `wait` cover.
 
+A representation is recorded only while the blob is `ready`. A render that
+finds the blob gone terminal by the time it finishes deletes what it wrote
+rather than leave it to the purge, which may already have swept the prefix
+and does not come back: a short `upload.purge_delay`, or a purge brought
+forward, leaves that window on any delete during a render.
+
 A source that vips rejects or that runs past the sandbox timeout, or a
 helper that crashes or runs out of time, hands over to the next source, as
 does a helper that declines (no embedded image to pull out, a sample that is

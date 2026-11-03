@@ -1165,9 +1165,11 @@ pub async fn explain_reaper(conn: &mut PgConnection) -> sqlx::Result<Vec<(&'stat
 }
 
 /// Record the outcome of rendering `kind` for `id`, along with the variant
-/// version it was built with and, for `ready`, what was rendered. Blob
-/// state is untouched: the representation is written even if the blob was
-/// deleted meanwhile, and the purge takes it with the rest of the prefix.
+/// version it was built with and, for `ready`, what was rendered, while the
+/// blob is still `ready`: `false` when it no longer is, and the purge may
+/// have been and gone, so what was written is the caller's to delete. Only
+/// the blob's state is a condition: the preview a thumbnail had rendered
+/// again lands on a representation that is not `pending`.
 pub(crate) async fn finish_representation(
     exec: impl PgExecutor<'_>,
     id: Uuid,
@@ -1176,7 +1178,7 @@ pub(crate) async fn finish_representation(
     source: Option<PreviewSource>,
     version: i32,
     rendered: Option<Rendered>,
-) -> sqlx::Result<()> {
+) -> sqlx::Result<bool> {
     let size = rendered
         .map(|r| i32::try_from(r.size))
         .transpose()
@@ -1201,9 +1203,10 @@ pub(crate) async fn finish_representation(
         qb.push(", preview_source = ")
             .push_bind(source.map(PreviewSource::as_str));
     }
-    qb.push(" WHERE id = ").push_bind(id);
-    qb.build().execute(exec).await?;
-    Ok(())
+    qb.push(" WHERE id = ")
+        .push_bind(id)
+        .push(" AND state = 'ready'");
+    Ok(qb.build().execute(exec).await?.rows_affected() == 1)
 }
 
 /// Ask for `kind` to be (re)generated: the representation goes back to

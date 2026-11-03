@@ -285,6 +285,41 @@ async fn build_of_a_blob_deleted_mid_build_writes_nothing() {
     assert!(!stored(&app, &object_key(&id, "original")).await);
 }
 
+/// A render that outlives the purge of its blob: nothing visits the prefix
+/// after the purge, so the render takes back what it writes there, and the
+/// tombstone does not claim a representation.
+#[tokio::test]
+async fn render_that_outlives_the_purge_leaves_nothing() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("rotated.jpg")).await;
+    let id = id_of(&blob).to_string();
+    let hold = app.gate.hold(At::Put, &object_key(&id, "preview"));
+    let job = spawn_job(&app, JobKind::Render);
+    hold.reached().await;
+
+    assert_eq!(delete(&app, &id).await, StatusCode::NO_CONTENT);
+    sql(
+        &app,
+        "UPDATE jobs SET run_at = now() WHERE blob_id = $1 AND kind = 'purge'",
+        &id,
+    )
+    .await;
+    assert!(run_job(&app, JobKind::Purge).await);
+    assert!(stored_objects(&app).await.is_empty());
+
+    hold.release();
+    assert!(job.await.unwrap());
+    assert!(stored_objects(&app).await.is_empty());
+    let states: (String, String) =
+        sqlx::query_as("SELECT preview_state, thumbnail_state FROM blobs WHERE id = $1")
+            .bind(parse_id(&id))
+            .fetch_one(app.state.pool())
+            .await
+            .unwrap();
+    assert_eq!(states, ("pending".to_string(), "pending".to_string()));
+}
+
 /// The row changes as the built object is about to become visible: an
 /// object nobody owns goes, one another build finished stays.
 #[tokio::test]

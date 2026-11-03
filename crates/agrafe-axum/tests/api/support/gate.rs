@@ -24,6 +24,8 @@ use tokio::sync::Notify;
 pub enum At {
     /// Reading the object, or its metadata.
     Get,
+    /// Writing the object whole, as a representation is.
+    Put,
     /// Completing a multipart upload to it: every byte is written and the
     /// object is about to become visible.
     Complete,
@@ -129,6 +131,7 @@ impl ObjectStore for GatedStore {
         payload: PutPayload,
         opts: PutOptions,
     ) -> Result<PutResult> {
+        self.gate.pass(At::Put, location).await;
         self.inner.put_opts(location, payload, opts).await
     }
 
