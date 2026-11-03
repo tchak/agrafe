@@ -3881,7 +3881,11 @@ operator sees undelivered notifications where dead jobs already are. A
 dead `notify` says nothing on the blob: it is the news of the blob, not
 its progress. When no URL is configured nothing is enqueued, so a
 deployment without a webhook has no idle jobs; `webhook.events` narrows
-the set.
+the set. A worker that claims a delivery with no URL of its own, one
+process of a split deployment missing the variable or a backlog outliving
+the URL, leaves the job dead and names why, rather than deleting a
+notification nobody sent: dead jobs are where the alert looks, and
+`POST /jobs/:id/retry` sends it once the configuration is right.
 
 The request is a JSON body with `event`, `occurred_at` (when the
 transition was recorded), `attempt` (deliveries of this event so far, this

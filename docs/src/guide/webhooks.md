@@ -122,6 +122,11 @@ A backend down for an hour drains its backlog by itself once it is back. A
 dead `notify` says nothing on the blob: it is the news of the blob, not its
 progress.
 
+Every worker that runs `notify` needs `webhook.url` and `webhook.secret`,
+not only the API processes that enqueue. A worker without them leaves the
+job dead at once, `this worker has no webhook.url` in its `last_error`:
+fix its configuration, then retry the job as above.
+
 A delivery is enqueued in the same transaction as the state change it
 reports, so there is never a transition without its notification, and never
 a notification for a transition that did not happen.

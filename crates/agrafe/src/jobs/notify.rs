@@ -200,11 +200,16 @@ pub enum WebhookError {
     /// A connection error or a timeout.
     #[error("request failed: {0}")]
     Request(String),
+    /// This process has no `webhook.url`, though another enqueued the
+    /// event: another attempt here would find the same, and a dead job is
+    /// what shows the notification was not sent.
+    #[error("this worker has no webhook.url: fix its configuration, then retry the job")]
+    NotConfigured,
 }
 
 impl WebhookError {
     pub fn is_permanent(&self) -> bool {
-        matches!(self, WebhookError::Payload(_))
+        matches!(self, WebhookError::Payload(_) | WebhookError::NotConfigured)
     }
 }
 
@@ -322,8 +327,8 @@ pub(crate) async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
     let payload: Payload = serde_json::from_value(job.payload.clone())
         .map_err(|err| WebhookError::Payload(err.to_string()))?;
     let Some(client) = state.webhook() else {
-        tracing::info!(event = %payload.event, "no webhook configured, nothing to deliver");
-        return Ok(());
+        tracing::warn!(event = %payload.event, "a notification reached a worker with no webhook.url");
+        return Err(WebhookError::NotConfigured.into());
     };
     // Read at delivery time: a late or repeated delivery says what is.
     let Some(blob) = repo::find(state.pool(), id).await? else {

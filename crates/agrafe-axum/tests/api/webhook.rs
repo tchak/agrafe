@@ -491,6 +491,41 @@ async fn events_can_be_filtered() {
     assert_eq!(jobs_for(&app, id_of(&blob)).await, ["render"]);
 }
 
+/// A worker missing the URL its API process has: the notification stays
+/// in sight, where the alert on dead deliveries finds it.
+#[tokio::test]
+async fn a_worker_without_a_webhook_leaves_the_notification_dead() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    assert!(app.state.webhook().is_none());
+    let blob = ready_blob(&app, &png_bytes(1024)).await;
+    let job: i64 = sqlx::query_scalar(
+        "INSERT INTO jobs (kind, blob_id, payload, run_at) VALUES ('notify', $1, $2, now()) \
+         RETURNING id",
+    )
+    .bind(id_of(&blob).parse::<uuid::Uuid>().unwrap())
+    .bind(json!({
+        "id": uuid::Uuid::now_v7(),
+        "event": "ready",
+        "occurred_at": Timestamp::now().to_string(),
+    }))
+    .fetch_one(app.state.pool())
+    .await
+    .unwrap();
+
+    assert!(run_job(&app, JobKind::Notify).await);
+    let job = app.state.find_job(job).await.unwrap().unwrap();
+    assert_eq!(app.state.job_state(&job), jobs::JobState::Dead);
+    assert!(
+        job.last_error
+            .as_deref()
+            .unwrap()
+            .contains("no webhook.url"),
+        "{:?}",
+        job.last_error
+    );
+}
+
 #[tokio::test]
 async fn nothing_is_enqueued_without_a_webhook() {
     let db = TestDatabase::new().await;
