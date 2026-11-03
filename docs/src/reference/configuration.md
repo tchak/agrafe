@@ -42,6 +42,15 @@ be left out.
 | `interfaces` | `["private", "public"]` | The interfaces an API process serves; at least one. Ignored by a worker. `serve --interfaces` takes precedence |
 | `private_hosts` | `[]` | The `host:port` names the private interface is reached under. When set, any other `Host` is refused with `403`, except on `/healthz` and `/metrics`. Set it whenever a browser uses the port |
 
+### `[server.cors]`
+
+CORS on the public interface, for pages on another origin that upload with `fetch` or read the responses. Off by default: no CORS headers, and `OPTIONS` answers `405`. Never with credentials, since a public URL is its own authorisation.
+
+| Key | Default | Description |
+|---|---|---|
+| `allowed_origins` | `[]` | Each origin as a browser sends it: scheme, host, and a port other than the default, with no path or trailing slash. `["*"]` allows any origin |
+| `max_age` | `"1h"` | How long a browser may cache a preflight |
+
 ## `[database]` (required)
 
 | Key | Default | Description |
@@ -200,8 +209,10 @@ above `max_inline_scans` plus `jobs.concurrency.scan`.
 | `timeout` | `"60s"` | Wall-clock limit per subprocess |
 | `memory` | `"1 GiB"` | Address space limit, enforced on Linux only |
 | `max_output_size` | `"256 MiB"` | Largest file a subprocess may write |
+| `max_processes` | `1024` | Processes and threads the subprocess's uid may have at once, which bounds a fork bomb. The kernel counts the whole uid, the worker's own included: raise it on a uid that runs much else |
 | `isolation` | `"auto"` | Landlock and seccomp around each subprocess: `auto` where the kernel can, `required` or the worker does not start, `off` |
 | `readable` | `[]` | Extra read-only paths for the subprocesses, such as a fonts directory outside `/usr` |
+| `bubblewrap` | none | Path of `bwrap`, to run each subprocess in its own namespaces on a VM or bare metal that grants unprivileged ones. Set and not working, the worker refuses to start, whatever `isolation` says short of `off`. Not for a default Docker container, and keep `media.tmp_dir` outside `/tmp` with it |
 
 ### `[media.thumbnail]`
 
