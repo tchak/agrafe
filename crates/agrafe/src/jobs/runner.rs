@@ -237,8 +237,12 @@ where
     let took = started.elapsed();
     let outcome = match outcome {
         Ok(()) => {
-            let mut conn = state.pool().acquire().await?;
-            if !super::succeed(&mut conn, job).await? {
+            let removed = settle(|| async move {
+                let mut conn = state.pool().acquire().await?;
+                super::succeed(&mut conn, job).await
+            })
+            .await?;
+            if !removed {
                 tracing::warn!("lease lost: the job was reclaimed or removed, row left alone");
                 return Ok(());
             }
@@ -246,23 +250,28 @@ where
             Outcome::Ok
         }
         Err(err) => {
-            // One transaction: a death stamped on the blob commits with
-            // the notification of it.
-            let mut tx = state.pool().begin().await?;
             let error = err.to_string();
             let permanent = err.is_permanent();
             let retry_after = err.retry_after();
-            let failure = super::fail(
-                &mut tx,
-                job,
-                &error,
-                permanent,
-                retry_after,
-                &state.config().webhook,
-                Timestamp::now(),
-            )
+            let error_ref = &error;
+            let failure = settle(|| async move {
+                // One transaction: a death stamped on the blob commits with
+                // the notification of it.
+                let mut tx = state.pool().begin().await?;
+                let failure = super::fail(
+                    &mut tx,
+                    job,
+                    error_ref,
+                    permanent,
+                    retry_after,
+                    &state.config().webhook,
+                    Timestamp::now(),
+                )
+                .await?;
+                tx.commit().await?;
+                Ok(failure)
+            })
             .await?;
-            tx.commit().await?;
             // As `last_error`, the column's name, and for what the exporters
             // key on: it may quote what a user's file or a host's manifest
             // says, and stays in the logs and the row. See DESIGN.md, "Tracing".
@@ -393,6 +402,74 @@ where
     }
 }
 
+/// Pauses between the tries of an end-of-attempt write: half a second,
+/// doubling, so the last try comes a few seconds after the first, well
+/// inside the lease.
+const SETTLE_RETRIES: [Duration; 3] = [
+    Duration::from_millis(500),
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+];
+
+/// Run the write that ends an attempt, again after a transient database
+/// error. The work is done by then, and a write that does not land leaves
+/// the row locked with it: the job would run again once the lease lapsed,
+/// a delivery twice, a render for nothing, and lose an attempt to a
+/// connection reset. The write is conditioned on holding the row, so a
+/// try that landed before the error reached us is harmless to repeat.
+async fn settle<T, F, Fut>(write: F) -> sqlx::Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = sqlx::Result<T>>,
+{
+    settle_with(&SETTLE_RETRIES, write).await
+}
+
+/// `settle`, pausing for each of `pauses` in turn between the tries.
+async fn settle_with<T, F, Fut>(pauses: &[Duration], mut write: F) -> sqlx::Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = sqlx::Result<T>>,
+{
+    let mut pauses = pauses.iter();
+    loop {
+        match write().await {
+            Err(err) if is_transient(&err) => match pauses.next() {
+                Some(pause) => {
+                    tracing::warn!(error = %err, "could not record the attempt's end, trying again");
+                    tokio::time::sleep(*pause).await;
+                }
+                None => return Err(err),
+            },
+            result => return result,
+        }
+    }
+}
+
+/// Whether a database error is the connection's or the server's moment
+/// rather than the statement's: a lost or refused connection, a pool with
+/// nothing to give, a transaction the server rolled back (a deadlock, a
+/// serialization failure), a server shutting down or out of resources.
+/// Repeating those is worth a try; a statement the server refused fails
+/// the same way again.
+fn is_transient(err: &sqlx::Error) -> bool {
+    match err {
+        sqlx::Error::Io(_)
+        | sqlx::Error::Tls(_)
+        | sqlx::Error::Protocol(_)
+        | sqlx::Error::PoolTimedOut
+        | sqlx::Error::WorkerCrashed => true,
+        sqlx::Error::Database(db) => db.code().is_some_and(|code| {
+            // SQLSTATE classes: 08 connection exception, 40 transaction
+            // rollback, 53 insufficient resources, 57 operator intervention.
+            ["08", "40", "53", "57"]
+                .iter()
+                .any(|class| code.starts_with(class))
+        }),
+        _ => false,
+    }
+}
+
 /// Resolves `grace` after `shutdown` does: the time a stopping process
 /// gives the job it holds before handing it back.
 async fn grace_expired<F: Future<Output = ()>>(shutdown: F, grace: Duration) {
@@ -430,4 +507,56 @@ fn hostname() -> String {
         .ok()
         .filter(|h| !h.is_empty())
         .unwrap_or_else(|| std::process::id().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use super::*;
+
+    const NO_PAUSE: [Duration; 3] = [Duration::ZERO; 3];
+
+    fn transient() -> sqlx::Error {
+        sqlx::Error::PoolTimedOut
+    }
+
+    #[tokio::test]
+    async fn settle_tries_again_after_a_transient_error() {
+        let tries = Cell::new(0);
+        let result = settle_with(&NO_PAUSE, || async {
+            tries.set(tries.get() + 1);
+            if tries.get() < 3 {
+                Err(transient())
+            } else {
+                Ok(tries.get())
+            }
+        })
+        .await;
+        assert_eq!(result.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn settle_gives_up_after_its_retries() {
+        let tries = Cell::new(0);
+        let result = settle_with(&NO_PAUSE, || async {
+            tries.set(tries.get() + 1);
+            Err::<(), _>(transient())
+        })
+        .await;
+        assert!(matches!(result, Err(sqlx::Error::PoolTimedOut)));
+        assert_eq!(tries.get(), 1 + NO_PAUSE.len());
+    }
+
+    #[tokio::test]
+    async fn settle_returns_a_statement_error_at_once() {
+        let tries = Cell::new(0);
+        let result = settle_with(&NO_PAUSE, || async {
+            tries.set(tries.get() + 1);
+            Err::<(), _>(sqlx::Error::RowNotFound)
+        })
+        .await;
+        assert!(matches!(result, Err(sqlx::Error::RowNotFound)));
+        assert_eq!(tries.get(), 1);
+    }
 }

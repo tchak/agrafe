@@ -3377,7 +3377,14 @@ same key, the row taking one header and the object the other's bytes.
 What the attempt does to its row at the end, delete, unlock or mark dead,
 is conditioned on its worker still holding it: a lease lost between the
 last renewal and the end leaves the row, and the blob's verdict, to the
-worker that holds it now.
+worker that holds it now. That write is tried again after a transient
+database error, a connection reset, a pool with nothing to give, a
+deadlock, three more times over a few seconds: the work is done by then,
+and a write that does not land leaves the row locked with it, to run again
+once the lease lapses, a delivery twice and a render for nothing, and
+costs the job an attempt. A statement the server refused is not retried;
+the write being conditional, a try that landed before its error reached
+the worker is harmless to repeat.
 Success deletes the row. Failure, a handler panic included, unlocks it with exponential backoff
 (30 s, doubling, capped at an hour, or longer when the failure asks for
 it: a remote's `Retry-After`) until `max_attempts` (5), then sets
