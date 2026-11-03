@@ -56,6 +56,8 @@ See "Crates" in `DESIGN.md` for the dependency graph.
   needs a fresh database (`DROP SCHEMA public CASCADE; CREATE SCHEMA
   public;`), since sqlx checksums applied migrations.
 - `config/example.toml` — documented configuration reference.
+- `config/alerts.yml` — the Prometheus rules the monitoring guide includes
+  verbatim; `config/alerts.test.yml` tests them with `promtool test rules`.
 - `Dockerfile`, `docker/` — the release images: a trixie build stage, a
   trixie runtime with or without LibreOffice (`VARIANT=office`), and the
   configuration file each variant gets.

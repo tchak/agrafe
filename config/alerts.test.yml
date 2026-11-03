@@ -1,0 +1,182 @@
+# promtool test rules config/alerts.test.yml
+rule_files: [alerts.yml]
+evaluation_interval: 1m
+
+tests:
+  # A kind that falls behind, against the thresholds of its group: an export
+  # may wait an hour, anything else five minutes. Both hold for a while first.
+  - interval: 1m
+    input_series:
+      - series: agrafe_jobs_oldest_due_seconds{instance="a",kind="scan",priority="normal"}
+        values: "400x30"
+      - series: agrafe_jobs_oldest_due_seconds{instance="b",kind="scan",priority="normal"}
+        values: "0x30"
+      - series: agrafe_jobs_oldest_due_seconds{instance="a",kind="render",priority="low"}
+        values: "200x30"
+      - series: agrafe_jobs_oldest_due_seconds{instance="a",kind="archive",priority="normal"}
+        values: "3000x30"
+      - series: agrafe_jobs_oldest_due_seconds{instance="a",kind="rows",priority="normal"}
+        values: "4000x30"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: AgrafeQueueBehind
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: AgrafeQueueBehind
+        exp_alerts:
+          - exp_labels: {kind: scan, priority: normal}
+            exp_annotations:
+              summary: "agrafe scan jobs (normal) waiting for over 5 minutes"
+      - eval_time: 10m
+        alertname: AgrafeExportsBehind
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: AgrafeExportsBehind
+        exp_alerts:
+          - exp_labels: {kind: rows, priority: normal}
+
+  # A kind with dead jobs alerts once, though every process reports the same
+  # census, and a kind at zero does not. A dead delivery is both a dead job and
+  # an undelivered webhook.
+  - interval: 1m
+    input_series:
+      - series: agrafe_jobs{instance="a",kind="notify",priority="normal",state="dead"}
+        values: "2x30"
+      - series: agrafe_jobs{instance="b",kind="notify",priority="normal",state="dead"}
+        values: "2x30"
+      - series: agrafe_jobs{instance="a",kind="audit",priority="normal",state="dead"}
+        values: "1x30"
+      - series: agrafe_jobs{instance="a",kind="scan",priority="normal",state="dead"}
+        values: "0x30"
+      - series: agrafe_jobs{instance="a",kind="scan",priority="normal",state="due"}
+        values: "9x30"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: AgrafeDeadJobs
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: AgrafeDeadJobs
+        exp_alerts:
+          - exp_labels: {kind: audit}
+            exp_annotations:
+              summary: "agrafe has dead audit jobs: GET /jobs?state=dead"
+          - exp_labels: {kind: notify}
+            exp_annotations:
+              summary: "agrafe has dead notify jobs: GET /jobs?state=dead"
+      - eval_time: 1m
+        alertname: AgrafeWebhookUndelivered
+        exp_alerts:
+          - exp_labels: {kind: notify, priority: normal, state: dead}
+            exp_annotations:
+              summary: "agrafe gave up delivering webhooks: GET /jobs?kind=notify&state=dead"
+
+  # A kind no process handles, though another process reports it at zero.
+  - interval: 1m
+    input_series:
+      - series: agrafe_workers{instance="a",kind="scan"}
+        values: "0x30"
+      - series: agrafe_workers{instance="b",kind="scan"}
+        values: "0x30"
+      - series: agrafe_workers{instance="a",kind="render"}
+        values: "0x30"
+      - series: agrafe_workers{instance="b",kind="render"}
+        values: "4x30"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: AgrafeNoWorkers
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: AgrafeNoWorkers
+        exp_alerts:
+          - exp_labels: {kind: scan}
+
+  # Orphans and foreign objects cost storage and do not alert.
+  - interval: 1m
+    input_series:
+      - series: agrafe_audit_findings{instance="a",kind="missing_original"}
+        values: "3x5"
+      - series: agrafe_audit_findings{instance="b",kind="missing_original"}
+        values: "0x5"
+      - series: agrafe_audit_findings{instance="a",kind="orphan"}
+        values: "7x5"
+      - series: agrafe_audit_findings{instance="a",kind="foreign"}
+        values: "1x5"
+      - series: agrafe_audit_findings{instance="a",kind="unknown"}
+        values: "0x5"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: AgrafeAuditFindings
+        exp_alerts:
+          - exp_labels: {kind: missing_original}
+            exp_annotations:
+              summary: "the last agrafe audit found missing_original mismatches: GET /blobs?failed=true, or the audit log lines"
+
+  # A new deployment, its first sweep due a week in: quiet for two weeks, then
+  # it fires if none has finished. promtool's clock starts at the epoch, so the
+  # deployment starts on day 20, for time() to be well past the threshold, as
+  # it is in production.
+  - interval: 1h
+    input_series:
+      - series: agrafe_audit_last_run_timestamp_seconds{instance="a"}
+        values: "_x480 0x480"
+    alert_rule_test:
+      - eval_time: 21d
+        alertname: AgrafeAuditStale
+        exp_alerts: []
+      - eval_time: 33d
+        alertname: AgrafeAuditStale
+        exp_alerts: []
+      - eval_time: 35d
+        alertname: AgrafeAuditStale
+        exp_alerts:
+          - exp_annotations:
+              summary: "no agrafe audit has finished for over two weeks: GET /jobs?kind=audit"
+
+  # An audit finished on day 7, and a deploy on day 8 reset the gauge: quiet
+  # through a week's interval and a long sweep, then it fires.
+  - interval: 1d
+    input_series:
+      - series: agrafe_audit_last_run_timestamp_seconds{instance="a"}
+        values: "0 0 0 0 0 0 0 604800 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
+    alert_rule_test:
+      - eval_time: 9d
+        alertname: AgrafeAuditStale
+        exp_alerts: []
+      - eval_time: 20d
+        alertname: AgrafeAuditStale
+        exp_alerts: []
+      - eval_time: 22d
+        alertname: AgrafeAuditStale
+        exp_alerts:
+          - exp_annotations:
+              summary: "no agrafe audit has finished for over two weeks: GET /jobs?kind=audit"
+
+  # A deployment that never finished one, once it has been up two weeks.
+  - interval: 1d
+    input_series:
+      - series: agrafe_audit_last_run_timestamp_seconds{instance="a"}
+        values: "0x20"
+    alert_rule_test:
+      - eval_time: 15d
+        alertname: AgrafeAuditStale
+        exp_alerts:
+          - exp_annotations:
+              summary: "no agrafe audit has finished for over two weeks: GET /jobs?kind=audit"
+
+  # Weekly audits across a fleet: another process at zero, and the worker
+  # replaced under a new instance label. Quiet throughout.
+  - interval: 1d
+    input_series:
+      - series: agrafe_audit_last_run_timestamp_seconds{instance="old"}
+        values: "0 0 0 0 0 0 0 0 0 864000 864000 864000 864000 864000 864000 864000 864000 864000 864000 864000"
+      - series: agrafe_audit_last_run_timestamp_seconds{instance="api"}
+        values: "0x30"
+      - series: agrafe_audit_last_run_timestamp_seconds{instance="new"}
+        values: "_x19 864000 864000 864000 864000 864000 864000 864000 864000 1728000"
+    alert_rule_test:
+      - eval_time: 20d
+        alertname: AgrafeAuditStale
+        exp_alerts: []
+      - eval_time: 28d
+        alertname: AgrafeAuditStale
+        exp_alerts: []

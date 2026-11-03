@@ -1,0 +1,39 @@
+groups:
+  - name: agrafe
+    rules:
+      - alert: AgrafeQueueBehind
+        expr: max by (kind, priority) (agrafe_jobs_oldest_due_seconds{kind!~"archive|rows|document"}) > 300
+        for: 10m
+        annotations:
+          summary: "agrafe {{ $labels.kind }} jobs ({{ $labels.priority }}) waiting for over 5 minutes"
+
+      - alert: AgrafeExportsBehind
+        expr: max by (kind, priority) (agrafe_jobs_oldest_due_seconds{kind=~"archive|rows|document"}) > 3600
+        for: 15m
+
+      - alert: AgrafeDeadJobs
+        expr: sum by (kind) (max without (instance) (agrafe_jobs{state="dead"})) > 0
+        for: 5m
+        annotations:
+          summary: "agrafe has dead {{ $labels.kind }} jobs: GET /jobs?state=dead"
+
+      - alert: AgrafeWebhookUndelivered
+        expr: max without (instance) (agrafe_jobs{kind="notify", state="dead"}) > 0
+        annotations:
+          summary: "agrafe gave up delivering webhooks: GET /jobs?kind=notify&state=dead"
+
+      - alert: AgrafeNoWorkers
+        expr: sum by (kind) (agrafe_workers) == 0
+        for: 5m
+
+      - alert: AgrafeAuditFindings
+        expr: sum by (kind) (agrafe_audit_findings{kind!~"orphan|foreign"}) > 0
+        annotations:
+          summary: "the last agrafe audit found {{ $labels.kind }} mismatches: GET /blobs?failed=true, or the audit log lines"
+
+      - alert: AgrafeAuditStale
+        expr: |
+          time() - max(max_over_time(agrafe_audit_last_run_timestamp_seconds[15d])) > 14 * 86400
+          and count(agrafe_audit_last_run_timestamp_seconds offset 14d) > 0
+        annotations:
+          summary: "no agrafe audit has finished for over two weeks: GET /jobs?kind=audit"

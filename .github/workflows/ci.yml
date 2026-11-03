@@ -136,6 +136,11 @@ jobs:
           echo "$PROMETHEUS_SHA256  /tmp/prometheus.tar.gz" | sha256sum -c -
           sudo tar -xzf /tmp/prometheus.tar.gz -C /usr/local/bin --strip-components=1 "$name/promtool"
           promtool --version
+      # The rules the monitoring guide publishes, before the long build.
+      - name: Check the alert rules
+        run: |
+          promtool check rules config/alerts.yml
+          promtool test rules config/alerts.test.yml
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@v2
         with:

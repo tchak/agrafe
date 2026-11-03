@@ -3698,7 +3698,10 @@ rate, and per process, since the one worker handling `audit` is the one
 that knows. They do not survive a restart: persisting a report to answer a
 weekly question is not worth a table, and the alerts in the monitoring guide
 read them through `max_over_time`, past a deploy, with a threshold of the
-interval plus a sweep, since the gauge moves only when one finishes. A `worker` process has no API; it binds
+interval plus a sweep, since the gauge moves only when one finishes. Those
+rules are `config/alerts.yml`, which the guide includes and CI runs through
+`promtool test rules`, since a rule that reads well can still fire on every
+deploy. A `worker` process has no API; it binds
 `server.private_addr` all the same, serving `/healthz` and `/metrics` only.
 
 `SIGTERM` or `SIGINT` closes the listeners and drains: open requests finish,
