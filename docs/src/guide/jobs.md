@@ -43,6 +43,9 @@ third of that while the job runs. A worker that dies lets its lease lapse,
 and the job is claimed again.
 
 - **Success** deletes the job.
+- **Shutdown** hands the job back: a stopping process gives it
+  `jobs.shutdown_grace`, twenty seconds, then unlocks it, due now, the
+  attempt not counted, for another process to take.
 - **Failure** schedules a retry with exponential backoff: 30 seconds,
   doubling, capped at an hour, or longer when a remote asked for it with
   `Retry-After`.

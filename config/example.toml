@@ -443,6 +443,12 @@ poll_interval = "2s"
 # A job locked for longer than this is assumed orphaned and claimed again.
 # Running workers renew their lease, so only a dead one lets it lapse.
 lease_timeout = "10m"
+# How long a stopping process lets the jobs it holds finish. Past it, they
+# go back to the queue unlocked and due now, the attempt not counted, for
+# another process to take at once. Keep it below the supervisor's kill
+# deadline (Kubernetes' terminationGracePeriodSeconds, 30s by default): a
+# job still held at the kill waits out lease_timeout instead.
+shutdown_grace = "20s"
 # How often the reaper runs: it records expiries, schedules the purge of
 # expired and deleted blobs, resets uploads stale for upload.stale_after
 # and prunes dead jobs. Expiry itself does not wait for it.

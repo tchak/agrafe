@@ -55,7 +55,8 @@ The first release.
   `document.office_formats`, which pandoc on the `document` workers writes
   from typst's HTML with the styles of the workspace's `reference.docx` or
   `reference.odt`.
-- **Operations**: a Postgres job queue with per-kind worker pools, split
+- **Operations**: a Postgres job queue with per-kind worker pools that
+  hand their jobs back on shutdown (`jobs.shutdown_grace`), split
   API and worker roles, the audit of objects against the database, a
   signed webhook that honours `Retry-After`, Prometheus metrics, request-to-job tracing, the jobs
   API, the HTML dashboard and the reaper.

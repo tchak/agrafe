@@ -1199,6 +1199,9 @@ pub enum Failure {
     Dead,
     /// An identical job was enqueued meanwhile and will run instead.
     Superseded,
+    /// Handed back to the queue by a stopping process: unlocked, due
+    /// now, the attempt not counted.
+    Released,
     /// The lease lapsed and another worker holds the row: it is left to
     /// that worker, untouched.
     Lost,
@@ -1276,25 +1279,63 @@ pub async fn fail(
         .map_or(backoff(job.attempts), |asked| {
             asked.max(backoff(job.attempts))
         });
-    let run_at = now + wait;
-    // A twin enqueued while this one ran, pending or already running,
-    // carries on and this one is redundant.
+    requeue(conn, job, now + wait, Some(&error), false).await
+}
+
+/// Hand a running job back to the queue: unlocked, due now, the attempt
+/// not counted, for the process that is stopping before the job could
+/// finish. Workers elsewhere are notified. As for `fail`, a twin enqueued
+/// meanwhile carries on instead, and a lease another worker took over
+/// leaves the row alone.
+// Public for the integration tests, not part of the API.
+#[doc(hidden)]
+pub async fn release(conn: &mut PgConnection, job: &Job, now: Timestamp) -> sqlx::Result<Failure> {
+    let mut tx = conn.begin().await?;
+    let outcome = match requeue(&mut tx, job, now, None, true).await? {
+        Failure::Retry(_) => {
+            sqlx::query("SELECT pg_notify($1, $2)")
+                .bind(CHANNEL)
+                .bind(job.kind.as_str())
+                .execute(&mut *tx)
+                .await?;
+            Failure::Released
+        }
+        other => other,
+    };
+    tx.commit().await?;
+    Ok(outcome)
+}
+
+/// Unlock `job` for its next attempt at `run_at`, recording `error` when
+/// there is one and refunding the attempt when `refund`, if the row is
+/// still its holder's. A twin enqueued while the job ran, pending or
+/// already running, carries on and this one is redundant.
+async fn requeue(
+    conn: &mut PgConnection,
+    job: &Job,
+    run_at: Timestamp,
+    error: Option<&str>,
+    refund: bool,
+) -> sqlx::Result<Failure> {
     if has_twin(&mut *conn, job).await? {
         return superseded(conn, job).await;
     }
     // A twin enqueued since the check makes the unlock a second pending
     // job of this kind for the blob. The unlock runs under a savepoint:
-    // `fail` runs inside the caller's transaction, which the violation
+    // this runs inside the caller's transaction, which the violation
     // would otherwise abort.
     let mut savepoint = conn.begin().await?;
     let result = sqlx::query(
-        "UPDATE jobs SET locked_at = NULL, locked_by = NULL, run_at = $2, last_error = $3 \
+        "UPDATE jobs SET locked_at = NULL, locked_by = NULL, run_at = $2, \
+                         last_error = coalesce($3, last_error), \
+                         attempts = greatest(0, attempts - $5) \
          WHERE id = $1 AND locked_by = $4",
     )
     .bind(job.id)
     .bind(run_at.to_sqlx())
-    .bind(&error)
+    .bind(error)
     .bind(job.locked_by.as_deref())
+    .bind(i32::from(refund))
     .execute(&mut *savepoint)
     .await;
     match result {

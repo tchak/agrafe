@@ -528,15 +528,17 @@ needed: the read cache is per process and short-lived.
   release: run `agrafe migrate` first, so that a process that answers
   `/healthz` has the schema it was written for.
 - **Shutdown:** `SIGTERM` or `SIGINT` stops accepting requests and lets
-  in-flight ones finish; workers finish the job they hold and claim no new
-  one. The drain has no deadline of its own and a second signal does not
-  cut it short: a slow upload or an archive build can hold it for hours. The
-  deadline is your supervisor's `SIGKILL` (Kubernetes'
-  `terminationGracePeriodSeconds`, 30 s by default, systemd's
-  `TimeoutStopSec`, `docker stop --time`); by hand, send it yourself. Nothing
-  is lost to it: a job cut short by a crash or a kill is claimed again once
-  its lease, `jobs.lease_timeout`, lapses, and the client of an upload cut
-  short retries it, or the reaper resets it after `upload.stale_after`.
+  in-flight ones finish; workers claim no new job and give the one they
+  hold `jobs.shutdown_grace`, 20 s by default, to finish, then hand it back
+  to the queue, unlocked and due now, the attempt not counted, for another
+  process to take at once. Keep the grace below your supervisor's `SIGKILL`
+  deadline (Kubernetes' `terminationGracePeriodSeconds`, 30 s by default,
+  systemd's `TimeoutStopSec`, `docker stop --time`): a job still held at
+  the kill is claimed again only once its lease, `jobs.lease_timeout`,
+  lapses, ten minutes by default. Open requests have no deadline of their
+  own and a second signal does not cut them short: a slow upload can hold
+  the drain until the kill, and nothing is lost to it, since the client
+  retries the upload or the reaper resets it after `upload.stale_after`.
 
 ## Logs
 

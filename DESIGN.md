@@ -3432,7 +3432,9 @@ dead jobs; the blob's retry is for the backend looking at its records.
 travels with the commit. One listener per process wakes the pollers of that
 kind; `jobs.poll_interval` is the fallback for a missed wakeup, at least 100 ms
 since a zero is a tight loop of claims; `jobs.lease_timeout` is at least 10 s,
-`jobs.reap_interval` at least 1 s. Concurrency is
+`jobs.reap_interval` at least 1 s, and `jobs.shutdown_grace` is how long a
+stopping process lets a job run before handing it back, see "Observability"
+below. Concurrency is
 per kind, at least one worker, in `jobs.concurrency`, a kind left to other
 processes being what `jobs.kinds` says (defaults: `fetch` 2, `scan` 4, `render` 4,
 `rows` 2, `archive` 1, `document` 2, `purge` 4, `reap` 1, `notify` 4,
@@ -3716,11 +3718,18 @@ deploy. A `worker` process has no API; it binds
 `server.private_addr` all the same, serving `/healthz` and `/metrics` only.
 
 `SIGTERM` or `SIGINT` closes the listeners and drains: open requests finish,
-workers finish the job they hold and claim no other. The drain has no
-deadline and a second signal changes nothing, since the deadline is the
-supervisor's `SIGKILL`, and a kill is what the design already survives: the
-lease lapses and the job is claimed again, the reaper resets a stale upload.
-A timer of our own would be one more setting to keep below the supervisor's.
+workers claim no other job and give the one they hold `jobs.shutdown_grace`
+(default twenty seconds) to finish, then hand it back to the queue:
+unlocked, due now, the attempt not counted, the workers of another process
+notified. The handler's future is dropped where it stands, the path a lost
+lease already takes, so a job cut short writes nothing it would not have
+on a crash. Without the hand-back, every deploy left each job in flight
+locked until its lease lapsed under the supervisor's `SIGKILL`, ten minutes
+of latency times the number of workers, and cost it an attempt. The grace
+is one more setting to keep below the supervisor's deadline, Kubernetes'
+thirty seconds by default, and the kill is still survived as before: the
+lease lapses and the job is claimed again, the reaper resets a stale
+upload. A second signal changes nothing.
 
 `GET /jobs` lists jobs newest first, cursor paginated on the id, filtered by
 `kind`, `state`, `priority` and `blob_id`; `due` and `scheduled` are listed

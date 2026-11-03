@@ -138,6 +138,75 @@ async fn shutdown_stops_the_claims_with_a_backlog() {
     assert_eq!(left, 20, "nothing claimed after the signal");
 }
 
+/// A process stopping gives the job it holds `jobs.shutdown_grace`, then
+/// hands it back to the queue: unlocked, due now, the attempt not counted,
+/// for another process to take at once rather than after the lease lapses
+/// under the supervisor's kill.
+#[tokio::test]
+async fn a_stopping_process_hands_its_job_back() {
+    let db = TestDatabase::new().await;
+    let received = Arc::new(Notify::new());
+    let clamd = fake_clamd_in(FakeClamd::Held {
+        received: received.clone(),
+        release: Arc::new(Notify::new()),
+    })
+    .await;
+    let app = setup_tuned(db, clamd, |c| {
+        c.jobs.kinds = Some(vec![agrafe::jobs::JobKind::Scan]);
+        c.jobs.shutdown_grace = Duration::from_millis(300);
+    })
+    .await;
+    let bytes = png_bytes(5000);
+    let created = create(&app, blob_for(&bytes, "image/png", "raw")).await;
+    let id = id_of(&created);
+    let (status, body) = put_private(&app, id, bytes).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let shutdown = async move {
+        let _ = stopped.await;
+    }
+    .boxed()
+    .shared();
+    let workers = tokio::spawn(agrafe::jobs::runner::run(app.state.clone(), shutdown));
+    within("clamd to receive the stream", received.notified()).await;
+    let signalled = jiff::Timestamp::now();
+    stop.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), workers)
+        .await
+        .expect("the workers stop")
+        .unwrap()
+        .unwrap();
+    assert!(
+        jiff::Timestamp::now().duration_since(signalled) >= jiff::SignedDuration::from_millis(300),
+        "the job got its grace"
+    );
+
+    let (locked_by, attempts, run_at, failed): (Option<String>, i32, jiff_sqlx::Timestamp, bool) =
+        sqlx::query_as(
+            "SELECT locked_by, attempts, run_at, failed_at IS NOT NULL FROM jobs WHERE kind = 'scan'",
+        )
+        .fetch_one(app.state.pool())
+        .await
+        .unwrap();
+    assert_eq!(locked_by, None, "unlocked");
+    assert_eq!(attempts, 0, "the attempt is not counted");
+    assert!(run_at.to_jiff() <= jiff::Timestamp::now(), "due now");
+    assert!(!failed);
+    assert_eq!(
+        get_blob(&app, id).await["state"],
+        "uploaded",
+        "the blob waits on the scan"
+    );
+    let (status, body) = call(&app.private, req(axum::http::Method::GET, "/metrics")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let text = body.as_str().unwrap();
+    assert!(
+        text.contains("agrafe_job_runs_total{kind=\"scan\",outcome=\"released\"} 1"),
+        "{text}"
+    );
+}
+
 /// A job running longer than its lease keeps it: the heartbeat renews it,
 /// so no other worker claims the job meanwhile.
 #[tokio::test]

@@ -1450,6 +1450,13 @@ pub struct JobsConfig {
     /// again; running workers renew their lease. Ten minutes by default.
     #[serde(with = "humantime_serde", default = "default_lease_timeout")]
     pub lease_timeout: Duration,
+    /// How long a stopping process lets the jobs it holds finish before
+    /// handing them back to the queue, unlocked and due now, the attempt
+    /// not counted. Keep it below the supervisor's kill deadline: a job
+    /// still held at the kill waits out `lease_timeout` instead. Twenty
+    /// seconds by default, under Kubernetes' thirty.
+    #[serde(with = "humantime_serde", default = "default_shutdown_grace")]
+    pub shutdown_grace: Duration,
     /// How often the reaper runs; a minute by default.
     #[serde(with = "humantime_serde", default = "default_reap_interval")]
     pub reap_interval: Duration,
@@ -1540,6 +1547,9 @@ fn default_poll_interval() -> Duration {
 fn default_lease_timeout() -> Duration {
     Duration::from_secs(600)
 }
+fn default_shutdown_grace() -> Duration {
+    Duration::from_secs(20)
+}
 fn default_reap_interval() -> Duration {
     Duration::from_secs(60)
 }
@@ -1555,6 +1565,7 @@ impl Default for JobsConfig {
         Self {
             poll_interval: default_poll_interval(),
             lease_timeout: default_lease_timeout(),
+            shutdown_grace: default_shutdown_grace(),
             reap_interval: default_reap_interval(),
             keep_failed: default_keep_failed(),
             audit_interval: default_audit_interval(),

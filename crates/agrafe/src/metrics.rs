@@ -30,6 +30,8 @@ pub(crate) enum Outcome {
     Retry,
     Dead,
     Superseded,
+    /// Handed back to the queue by a stopping process.
+    Released,
 }
 
 impl Outcome {
@@ -39,6 +41,7 @@ impl Outcome {
             Outcome::Retry => "retry",
             Outcome::Dead => "dead",
             Outcome::Superseded => "superseded",
+            Outcome::Released => "released",
         }
     }
 }

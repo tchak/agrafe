@@ -148,11 +148,21 @@ where
     Ok(())
 }
 
-/// Claim and run one job of `kind`. Returns whether there was one. This is
-/// one turn of a worker, and what tests call.
+/// Claim and run one job of `kind`, to the end. Returns whether there was
+/// one. This is one turn of a worker, and what tests call.
 // Public for the integration tests, not part of the API.
 #[doc(hidden)]
 pub async fn run_one(state: &Agrafe, kind: JobKind, worker: &str) -> sqlx::Result<bool> {
+    turn(state, kind, worker, std::future::pending()).await
+}
+
+/// One turn of a worker: claim and run one job of `kind`, or hand it back
+/// to the queue once `shutdown` resolves and `jobs.shutdown_grace` has
+/// passed without the job finishing.
+async fn turn<F>(state: &Agrafe, kind: JobKind, worker: &str, shutdown: F) -> sqlx::Result<bool>
+where
+    F: Future<Output = ()>,
+{
     let lease = state.config().jobs.lease_timeout;
     let Some(job) = super::claim(state.pool(), kind, worker, lease).await? else {
         return Ok(false);
@@ -173,13 +183,17 @@ pub async fn run_one(state: &Agrafe, kind: JobKind, worker: &str) -> sqlx::Resul
     // thread: a guard held across an await would tag whatever else the
     // thread polls meanwhile.
     context
-        .scope(run_claimed(state, &job, worker).instrument(span))
+        .scope(run_claimed(state, &job, worker, shutdown).instrument(span))
         .await?;
     Ok(true)
 }
 
-async fn run_claimed(state: &Agrafe, job: &Job, worker: &str) -> sqlx::Result<()> {
+async fn run_claimed<F>(state: &Agrafe, job: &Job, worker: &str, shutdown: F) -> sqlx::Result<()>
+where
+    F: Future<Output = ()>,
+{
     let lease = state.config().jobs.lease_timeout;
+    let grace = state.config().jobs.shutdown_grace;
     let started = Instant::now();
     // A handler that panics has failed this attempt; it must not take the
     // worker, or the process in the `all` role, down with it. The lease is
@@ -187,6 +201,9 @@ async fn run_claimed(state: &Agrafe, job: &Job, worker: &str) -> sqlx::Result<()
     // to a second worker. A lease lost all the same, another worker holding
     // the job, ends the attempt where it stands: two runs of one job would
     // write the same objects, and the row is the other worker's to finish.
+    // A process stopping gives the job its grace, then hands it back the
+    // same way, for another process to take now rather than after the
+    // lease lapses under the supervisor's kill.
     let outcome = tokio::select! {
         outcome = std::panic::AssertUnwindSafe(handle(state, job)).catch_unwind() => {
             outcome.unwrap_or_else(|panic| {
@@ -195,6 +212,25 @@ async fn run_claimed(state: &Agrafe, job: &Job, worker: &str) -> sqlx::Result<()
         }
         () = heartbeat(state, job.id, worker, lease) => {
             tracing::warn!("lease lost: the job was reclaimed or removed, attempt abandoned");
+            return Ok(());
+        }
+        () = grace_expired(shutdown, grace) => {
+            let mut conn = state.pool().acquire().await?;
+            let outcome = match super::release(&mut conn, job, Timestamp::now()).await? {
+                Failure::Released => {
+                    tracing::info!("shutting down: job handed back to the queue");
+                    Outcome::Released
+                }
+                Failure::Superseded => {
+                    tracing::info!("shutting down: job dropped, a newer twin runs instead");
+                    Outcome::Superseded
+                }
+                Failure::Retry(_) | Failure::Dead | Failure::Lost => {
+                    tracing::warn!("lease lost: the job was reclaimed or removed, row left alone");
+                    return Ok(());
+                }
+            };
+            state.metrics().job_run(job.kind, outcome, started.elapsed());
             return Ok(());
         }
     };
@@ -247,7 +283,8 @@ async fn run_claimed(state: &Agrafe, job: &Job, worker: &str) -> sqlx::Result<()
                     tracing::warn!(last_error = error, "job failed and was superseded");
                     Outcome::Superseded
                 }
-                Failure::Lost => {
+                // `fail` never releases; the arm is for the enum's sake.
+                Failure::Lost | Failure::Released => {
                     tracing::warn!(
                         last_error = error,
                         "job failed after its lease was lost: the job was reclaimed or removed, row left alone"
@@ -284,9 +321,10 @@ async fn poll<F>(
     shutdown: F,
 ) -> Result<(), Error>
 where
-    F: Future<Output = ()>,
+    F: Future<Output = ()> + Clone,
 {
     let interval = state.config().jobs.poll_interval;
+    let signal = shutdown.clone();
     tokio::pin!(shutdown);
     loop {
         // Nothing is claimed once the signal came, however much is due: a
@@ -296,7 +334,7 @@ where
         }
         // Drain what is due, then wait. The wakeup is best effort: a notify
         // that lands between an empty claim and the wait costs one interval.
-        let wait = match run_one(&state, kind, &worker).await {
+        let wait = match turn(&state, kind, &worker, signal.clone()).await {
             Ok(true) => continue,
             Ok(false) => interval,
             Err(err) => {
@@ -353,6 +391,13 @@ where
             }
         }
     }
+}
+
+/// Resolves `grace` after `shutdown` does: the time a stopping process
+/// gives the job it holds before handing it back.
+async fn grace_expired<F: Future<Output = ()>>(shutdown: F, grace: Duration) {
+    shutdown.await;
+    tokio::time::sleep(grace).await;
 }
 
 /// Renew `worker`'s lease on the job until it is lost: another worker
