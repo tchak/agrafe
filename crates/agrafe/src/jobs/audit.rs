@@ -633,10 +633,10 @@ async fn sweep(
 }
 
 /// The bucket's objects in key order, after `after` when resuming. The
-/// cloud backends list sorted, and S3 and GCS start after a key on the
-/// server (Azure lists from the start and the rest is skipped here); the
-/// local backend walks its directory in whatever order the filesystem
-/// gives, so its listing, development-sized, is sorted in memory.
+/// cloud backends list sorted, and `object_store` starts after a key for
+/// each of them; the local backend walks its directory in whatever order
+/// the filesystem gives, so its listing, development-sized, is sorted in
+/// memory.
 fn listing(
     state: &Agrafe,
     after: Option<Path>,

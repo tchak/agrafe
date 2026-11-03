@@ -3506,9 +3506,8 @@ transient error must not send it back to the start. The job keeps its
 place in its payload (`Progress`: the last key listed and checked, the
 last row passed, the tally so far), saved every minute and when the
 listing ends, and the attempt that finds it there resumes from it, the
-listing with `list_with_offset` (S3 and GCS start after a key on the
-server; Azure lists from the start and the rest is skipped) and the rows
-with their cursor. A save is progress made and gives the job its
+listing with `list_with_offset`, which starts after a key on every cloud
+backend, and the rows with their cursor. A save is progress made and gives the job its
 attempts back, since the attempts guard against failing without getting
 anywhere, and a restart that lets the lease lapse costs an attempt
 (`claim` counts it). What is between the last save and the failure is
