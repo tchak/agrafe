@@ -13,12 +13,11 @@ use agrafe::config::CorsConfig;
 
 /// What a page sends: the upload's type, and the conditional and range
 /// requests of a download.
-const ALLOW_HEADERS: [HeaderName; 5] = [
+const ALLOW_HEADERS: [HeaderName; 4] = [
     header::CONTENT_TYPE,
     header::RANGE,
     header::IF_RANGE,
     header::IF_NONE_MATCH,
-    header::IF_MODIFIED_SINCE,
 ];
 
 /// What a page may read beyond the safelisted response headers: the

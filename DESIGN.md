@@ -251,9 +251,9 @@ included, so a page reads the `code` of a `403` or a `410` instead of an
 opaque network failure.
 
 - **Methods** `GET`, `HEAD`, `PUT`; **request headers** `content-type`,
-  `range`, `if-range`, `if-none-match`, `if-modified-since`; **exposed
-  headers** `content-disposition`, `content-range`, `accept-ranges`,
-  `etag`, `last-modified`.
+  `range`, `if-range`, `if-none-match`; **exposed headers**
+  `content-disposition`, `content-range`, `accept-ranges`, `etag`,
+  `last-modified`.
 - **No credentials, ever.** CORS guards responses a browser authenticates
   with ambient credentials, cookies or HTTP auth, and the public port has
   none: the URL is the whole authorisation. So `"*"` gives a page nothing

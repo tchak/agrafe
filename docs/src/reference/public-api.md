@@ -27,9 +27,9 @@ project](../guide/signed-urls.md) for the token format.
 - **CORS** headers are sent to the origins `server.cors.allowed_origins`
   lists, or to any with `["*"]`, on every response, errors included; none
   by default. Allowed: `GET`, `HEAD`, `PUT`, and the request headers
-  `content-type`, `range`, `if-range`, `if-none-match`,
-  `if-modified-since`. Exposed: `content-disposition`, `content-range`,
-  `accept-ranges`, `etag`, `last-modified`. Never credentials.
+  `content-type`, `range`, `if-range`, `if-none-match`. Exposed:
+  `content-disposition`, `content-range`, `accept-ranges`, `etag`,
+  `last-modified`. Never credentials.
 - **Preflights** (`OPTIONS` with `access-control-request-method`) are
   answered without a signature when CORS is on, and touch nothing. With
   CORS off, `OPTIONS` is a `405`.
