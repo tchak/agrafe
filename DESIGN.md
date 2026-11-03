@@ -4028,6 +4028,13 @@ the code; the changelog says it for an operator or an embedder, and
 generating one from the other (release-plz, git-cliff) would need
 conventional commits and still list every test and refactor.
 
+There is one line of releases, with no maintenance branches: a fix ships as
+the next version from `main`, and `xtask` refuses a version that is not after
+the newest tag. A second line would need the tool, the workflow and the
+images' `latest` tag to tell two lines apart, `latest` following any plain
+version tag today. So `0.1` stops moving when `0.2.0` ships, which the
+deployment guide says.
+
 A release is a tag. `cargo xtask release <version>` bumps the version,
 dates the section, commits `Release <version>` on `main`, tags it
 `v<version>` and pushes both with jj; nothing else writes to `main` or

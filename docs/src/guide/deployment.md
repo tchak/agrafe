@@ -41,8 +41,10 @@ Every release publishes two images to the GitHub Container Registry, for
 | `ghcr.io/tchak/agrafe:0.1.0` | The five binaries, `vips` and fonts, on Debian trixie |
 | `ghcr.io/tchak/agrafe:0.1.0-office` | The same, with LibreOffice and a warmed profile, office thumbnails on, and pandoc, DOCX and ODT documents on |
 
-`0.1` and `0.1-office` follow the latest patch release of `0.1`, `latest`
-and `latest-office` the latest release. Debian trixie is the base for
+`0.1` and `0.1-office` point at the newest release of `0.1`, `latest` and
+`latest-office` at the newest release. There is one line of releases: a fix
+ships as the next version on `main`, so `0.1` stops moving once `0.2.0` is
+out, and staying on it means no more fixes, security ones included. Debian trixie is the base for
 its libvips (see [libvips](#libvips)). The images run as the unprivileged
 `agrafe` user, uid and gid 10001 by number, so Kubernetes' `runAsNonRoot`
 accepts them and a volume needs `fsGroup: 10001` or that owner. They run
