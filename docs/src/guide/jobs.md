@@ -171,6 +171,15 @@ upload a crashed process left open on S3 or GCS is parts, not an object,
 and only the bucket's lifecycle rule reclaims them, see
 [Deployment](deployment.md#object-storage).
 
+A foreign key is reported only if the listing can read it. A key with an
+empty segment (`a//b`), a `.` or `..` segment or an ASCII control character
+fails the whole page on S3, Azure and GCS, so the sweep cannot pass it: every
+attempt stops at the same page, the job dies, and so does next week's run. Its
+`last_error` names the key. Move or delete that object. The next run then
+passes it, starting over from the first key, or run `agrafe audit` for a sweep
+now. `POST /jobs/:id/retry` does not resume the dead one: it answers `409`
+while the next run is pending, which a dead audit schedules itself.
+
 A row that changed within `upload.stale_after` of the listing passing it
 is left for the next run and counted as unsettled: an upload or a render
 finishing as the audit went by may have written an object after the

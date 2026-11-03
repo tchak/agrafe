@@ -3630,7 +3630,15 @@ procedure can end with it; a foreign object is reported and does not
 count, a README in the bucket is not a failed restore, and the alert on
 findings leaves orphans and foreign objects out for the same reason,
 they cost storage and nothing else. Unknown prefixes stay in, they are
-the sign of lost rows. What the listing does not show the
+the sign of lost rows. The exception is a key `object_store` cannot parse,
+with an empty segment, a `.` or `..` segment or an ASCII control character:
+it fails its whole listing page on S3, Azure and GCS, and the local backend
+alone skips it, so no sweep gets past it until it is removed. The bucket is
+taken to be agrafe's, which the deployment guide asks for: only another writer
+makes such a key, the error names it, and a lenient listing would mean
+replacing the client's for a case that takes one `rm` to end. The dead job's
+place is lost with it: its retry is a duplicate of the next run its last
+attempt scheduled, so the next sweep starts over. What the listing does not show the
 audit does not see: a multipart upload a crashed process left open on S3
 or GCS is parts, not an object, and the bucket's
 `AbortIncompleteMultipartUpload` lifecycle rule is what reclaims them

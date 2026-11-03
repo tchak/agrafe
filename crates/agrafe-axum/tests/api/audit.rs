@@ -1073,6 +1073,19 @@ async fn a_failed_last_attempt_still_schedules_the_next_run() {
     .unwrap();
     let week = 7.0 * 24.0 * 3600.0;
     assert!(due_in > week - 60.0 && due_in <= week, "{due_in}");
+
+    // The next run stands in the way of retrying the dead one.
+    let dead: i64 =
+        sqlx::query_scalar("SELECT id FROM jobs WHERE kind = 'audit' AND failed_at IS NOT NULL")
+            .fetch_one(app.state.pool())
+            .await
+            .unwrap();
+    let (status, body) = call(
+        &app.private,
+        req(Method::POST, &format!("/jobs/{dead}/retry")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
 }
 
 /// The audit pages the rows in the bucket's key order through an

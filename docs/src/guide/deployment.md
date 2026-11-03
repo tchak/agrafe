@@ -390,6 +390,11 @@ shard the last two hex digits of the blob id, as in
 `5b/0190b5a2-1c3d-7e4f-8a9b-0c1d2e3f4a5b/original`. A purge deletes
 everything under `<shard>/<id>/`.
 
+Give agrafe a bucket of its own, or at least one where no other writer uses a
+key with an empty segment (`a//b`), a `.` or `..` segment, or an ASCII control
+character. The audit's listing cannot read such a key on S3, Azure or GCS and
+stops at it, see [Jobs and retries](jobs.md#the-audit).
+
 The shard is for stores that split a bucket into key ranges as it grows,
 OpenIO behind OVHcloud's S3 among them: blob ids are ordered by time, and
 keys that began with them would all land in the newest range, which such
