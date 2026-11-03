@@ -479,7 +479,12 @@ the row up as before.
   refreshes its copy once the render is done, when it polls the metadata
   anyway. Blobs are write-once, so the rest never changes.
 - The original is served from the envelope alone. An object that is not
-  in the bucket is `404`: the blob was purged.
+  in the bucket is `404`: the blob was purged. A `GET` with a body to send
+  finds that out; a `HEAD` and a `304`, here and on a representation, open
+  nothing and answer from the envelope until the URL expires, purged or
+  not. That is on purpose: a read of the bucket per `HEAD` would pay for
+  what the `GET` that follows says anyway, and a `304` tells a client that
+  already holds the bytes that they have not changed, which is still true.
 - A representation is served from the envelope when it records it `ready`
   with the current variant version: `304` and `HEAD` from the digest and
   size, the bytes from the bucket. Anything else, a pending render, an

@@ -126,7 +126,7 @@ segment; another name answers `404`.
 | `206` | A single satisfiable range |
 | `304` | `If-None-Match` names the `ETag` |
 | `400` | The `e` envelope does not decode or is another blob's, or the signed `disposition` or `filename` is invalid |
-| `404` | No such blob, terminal, filename mismatch, or, on a sealed URL, the objects were purged |
+| `404` | No such blob, terminal, filename mismatch, or, on a sealed URL, the objects were purged. A sealed `HEAD` or `304` opens nothing and answers from the envelope until the URL expires; only a `GET` with a body to send finds out |
 | `409` | The blob is not `ready` yet |
 | `416` | The range starts past the end. No body |
 
