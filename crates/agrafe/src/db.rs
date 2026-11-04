@@ -5,7 +5,7 @@ use sqlx::decode::Decode;
 use sqlx::error::BoxDynError;
 use sqlx::migrate::MigrateError;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgTypeInfo, PgValueRef};
-use sqlx::{PgPool, Postgres, Type};
+use sqlx::{ConnectOptions, Connection, PgPool, Postgres, Type};
 
 use crate::config::DatabaseConfig;
 
@@ -20,11 +20,19 @@ pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 /// opened before returning. With a `schema`, every connection searches it
 /// alone, so the unqualified table names in the queries and the migrations
 /// resolve there.
+///
+/// One connection is opened on its own first, and fails at once with its
+/// cause. The pool's would retry a refused connection for its whole
+/// `acquire_timeout`, 30 s, then report only `pool timed out`, for the most
+/// common mistake there is, a database not up or a wrong port. Nothing waits
+/// for the database at startup: what starts the process restarts it.
 pub async fn connect(config: &DatabaseConfig) -> sqlx::Result<PgPool> {
     let options: PgConnectOptions = config.url.expose().parse()?;
+    let options = with_schema(options, config);
+    options.connect().await?.close().await?;
     PgPoolOptions::new()
         .max_connections(config.max_connections)
-        .connect_with(with_schema(options, config))
+        .connect_with(options)
         .await
 }
 
@@ -224,6 +232,24 @@ mod tests {
             max_connections: 1,
         };
         assert!(connect(&config).await.is_err());
+    }
+
+    /// A database that refuses connections says so, at once, rather than
+    /// `pool timed out` half a minute later. Nothing listens on port 1.
+    #[tokio::test]
+    async fn a_refused_connection_fails_at_once_with_its_cause() {
+        let config = DatabaseConfig {
+            url: String::from("postgres://agrafe:secret@127.0.0.1:1/agrafe").into(),
+            schema: None,
+            max_connections: 1,
+        };
+        let started = std::time::Instant::now();
+        let err = connect(&config).await.unwrap_err();
+        assert!(
+            matches!(&err, sqlx::Error::Io(io) if io.kind() == std::io::ErrorKind::ConnectionRefused),
+            "{err}"
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
     }
 
     /// With `database.schema`, the tables, the migration history and the

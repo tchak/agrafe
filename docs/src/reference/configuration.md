@@ -412,6 +412,10 @@ message naming the key:
 | `webhook.events must name at least one event, or be omitted for all` | Remove the empty list |
 | `invalid configuration: …` | A missing required key, an unknown variant or a malformed value |
 
+A database that cannot be reached also stops the start, at once and with
+its cause (`connecting to the database: …`). Nothing waits for it to come up,
+so let what starts agrafe restart it.
+
 Workers also probe `vips` and the helpers before starting, and exit with
 `the renderer failed its startup probe: …` when one of them does not work.
 One handling `document` jobs exits with `document.office_formats is on and
