@@ -514,6 +514,34 @@ async fn actions_are_off_by_default_and_answer_404() {
     assert_eq!(app.state.job_state(&state), JobState::Dead, "untouched");
 }
 
+/// A page, its stylesheet and an error page alike: an operator can be
+/// lured onto any of them in a frame.
+#[tokio::test]
+async fn every_response_refuses_to_be_framed() {
+    let db = TestDatabase::new().await;
+    let app = setup(db, false).await;
+    for (uri, status) in [
+        ("/dashboard/jobs", StatusCode::OK),
+        ("/dashboard/style.css", StatusCode::OK),
+        ("/dashboard/no-such-page", StatusCode::NOT_FOUND),
+    ] {
+        let response = app
+            .router
+            .clone()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status, "{uri}");
+        let headers = response.headers();
+        let policy = headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap();
+        assert!(policy.contains("frame-ancestors 'none'"), "{uri}: {policy}");
+        assert!(policy.contains("default-src 'none'"), "{uri}: {policy}");
+        assert_eq!(headers[header::X_FRAME_OPTIONS], "DENY", "{uri}");
+        assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff", "{uri}");
+        assert_eq!(headers[header::REFERRER_POLICY], "same-origin", "{uri}");
+    }
+}
+
 #[tokio::test]
 async fn a_cross_site_action_is_refused() {
     let db = TestDatabase::new().await;

@@ -360,7 +360,16 @@ not have. A refused action is a `403` page on the dashboard, a `forbidden`
 error on the API, and the dashboard checks it before the actions flag, so
 nothing is learnt from a read-only dashboard either.
 
-What that check cannot see is DNS rebinding: a page on `evil.test`, served
+Nor can it see framing. A page that frames the dashboard and lays something
+over a Retry button gets the operator's click, and the form submitted is the
+framed page's own, so the browser marks it `same-origin`, whoever is around
+it: Fetch Metadata compares the initiator with the target and ignores the
+ancestors. So every response of the dashboard says `frame-ancestors 'none'`
+and `X-Frame-Options: DENY`, error pages included, in a policy that also
+allows no script, a page having none. A host that nests the dashboard cannot
+put it in a frame of its own either.
+
+Nor can it see DNS rebinding: a page on `evil.test`, served
 on the private port's number, has its name re-pointed at the private
 address once loaded, and the browser then treats `evil.test:PORT` as
 same-origin, sends `Sec-Fetch-Site: same-origin`, reads the answers, and

@@ -24,8 +24,9 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::LazyLock;
 
 use axum::Router;
-use axum::http::{HeaderMap, StatusCode, header};
-use axum::middleware;
+use axum::extract::Request;
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
 
@@ -38,6 +39,14 @@ use layout::Base;
 /// assembled by `scripts/daisyui.sh`; see `assets/daisyui.css.LICENSE`.
 /// The layout utilities the pages add on top are in `base.html`.
 const STYLESHEET: &str = include_str!("../assets/daisyui.css");
+
+/// What a page may load: the stylesheet and its own `<style>`, the
+/// thumbnails, and the `data:` image the stylesheet holds. No script and no
+/// frames. `frame-ancestors` is the one that matters: a form submitted from
+/// a framed page is same-origin to the check in `origin`, whoever framed it
+/// and laid what over its buttons.
+const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; style-src 'self' 'unsafe-inline'; \
+     img-src 'self' data:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
 
 /// The dashboard with its state applied, to nest under a prefix (it has a
 /// fallback, so it cannot be merged into a router that has one). Its links
@@ -56,8 +65,24 @@ pub fn dashboard_router(state: Agrafe) -> Router {
         .merge(attachments::routes())
         .fallback(not_found)
         .layer(middleware::from_fn(error::render))
+        .layer(middleware::from_fn(browser_policy))
         .with_state(state);
     agrafe_axum::trace::private(router)
+}
+
+/// Outside `error::render`, so the error pages carry it too.
+async fn browser_policy(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    for (name, value) in [
+        (header::CONTENT_SECURITY_POLICY, CONTENT_SECURITY_POLICY),
+        (header::X_FRAME_OPTIONS, "DENY"),
+        (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        (header::REFERRER_POLICY, "same-origin"),
+    ] {
+        headers.insert(name, HeaderValue::from_static(value));
+    }
+    response
 }
 
 async fn home(base: Base) -> Redirect {

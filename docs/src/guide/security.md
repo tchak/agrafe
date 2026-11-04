@@ -251,7 +251,7 @@ private metadata until the fetch completes, and never in errors or logs.
 ## Browsers on the private port
 
 The dashboard puts a browser on the private port, which breaks the "trusted
-network" assumption in two ways, and agrafe guards against both.
+network" assumption in three ways, and agrafe guards against them.
 
 - **Cross-site requests.** A page the operator visits could submit a form
   to the private port. Every unsafe request (anything but `GET`, `HEAD` and
@@ -259,6 +259,11 @@ network" assumption in two ways, and agrafe guards against both.
   site's: a `Sec-Fetch-Site` other than `same-origin` or `none`, or, without
   that header, an `Origin` that is not the `Host`. A request with neither
   header comes from a non-browser client, your backend, and goes through.
+- **Framing.** A page could frame the dashboard and lay something over a
+  button, and the browser would count the click as the dashboard's own. Every
+  response of the dashboard refuses to be framed (`Content-Security-Policy:
+  frame-ancestors 'none'`, `X-Frame-Options: DENY`), error pages included,
+  whichever host nests it.
 - **DNS rebinding.** A page can re-point its own name at the private
   address, then read the private API as same-origin. Set
   `server.private_hosts` to the names and ports the private port is reached
