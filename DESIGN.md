@@ -3599,7 +3599,9 @@ anywhere, and a restart that lets the lease lapse costs an attempt
 (`claim` counts it). What is between the last save and the failure is
 done twice, which every action tolerates: the stamp is conditional, the
 render request is conditional, the delete takes `NotFound` as done; the
-counts of that stretch are added twice, which a tally lives with. Acting
+counts of that stretch are added twice, which a tally lives with. The
+tally is saved by the findings' names, so a release that adds or drops a
+kind resumes a sweep in flight, the new kind starting at zero. Acting
 on a finding never ends an attempt: a stamp, a render request or a delete
 that fails, or an original the deep check cannot read, is logged at
 `error`, counted as not acted on (`errors`, the `agrafe_audit_errors`

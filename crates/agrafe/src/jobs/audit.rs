@@ -224,8 +224,46 @@ pub struct Report {
     /// read. Each is an `error` line in the log, and the next run finds
     /// it again.
     pub errors: u64,
-    /// Findings by kind, in the order of `Finding::ALL`.
+    /// Findings by kind, indexed by the kind, and saved by name.
+    #[serde(with = "tally")]
     counts: [u64; Finding::ALL.len()],
+}
+
+/// How `Report::counts` is saved: a map from `Finding::as_str` to its
+/// count, the kinds with none left out. A sweep in flight outlives a
+/// deploy, so the names and not the positions: a kind the new release adds
+/// starts at zero and one it dropped is ignored, where an array would lose
+/// the sweep's progress to a new length, or misattribute its tally to a new
+/// order.
+mod tally {
+    use std::collections::HashMap;
+
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use super::Finding;
+
+    pub(super) fn serialize<S: Serializer>(
+        counts: &[u64; Finding::ALL.len()],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.collect_map(
+            Finding::ALL
+                .iter()
+                .map(|&kind| (kind.as_str(), counts[kind as usize]))
+                .filter(|&(_, count)| count > 0),
+        )
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<[u64; Finding::ALL.len()], D::Error> {
+        let saved = HashMap::<String, u64>::deserialize(deserializer)?;
+        let mut counts = [0; Finding::ALL.len()];
+        for &kind in Finding::ALL {
+            counts[kind as usize] = saved.get(kind.as_str()).copied().unwrap_or(0);
+        }
+        Ok(counts)
+    }
 }
 
 impl Report {
@@ -1381,6 +1419,41 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_tally_is_saved_by_name() {
+        let mut report = Report::default();
+        report.add(Finding::Orphan);
+        report.add(Finding::Orphan);
+        report.add(Finding::Foreign);
+        let saved = serde_json::to_value(report).unwrap();
+        assert_eq!(
+            saved["counts"],
+            serde_json::json!({ "orphan": 2, "foreign": 1 })
+        );
+        assert_eq!(serde_json::from_value::<Report>(saved).unwrap(), report);
+    }
+
+    /// A release may add or drop a kind while a sweep is in flight: its
+    /// progress is days of work, and what it counted keeps its name.
+    #[test]
+    fn a_sweep_saved_with_other_kinds_resumes() {
+        let progress: Progress = serde_json::from_value(serde_json::json!({
+            "after": "ab/some-key",
+            "cursor": "01890000-0000-7000-8000-000000000001",
+            "report": {
+                "objects": 7,
+                "counts": { "orphan": 2, "a_kind_since_dropped": 5 },
+            },
+        }))
+        .unwrap();
+        assert_eq!(progress.after.as_deref(), Some("ab/some-key"));
+        assert!(!progress.cursor.is_nil());
+        assert_eq!(progress.report.objects, 7);
+        assert_eq!(progress.report.count(Finding::Orphan), 2);
+        assert_eq!(progress.report.count(Finding::Foreign), 0);
+        assert_eq!(progress.report.findings(), 2);
+    }
 
     #[test]
     fn the_report_tallies_by_kind() {
