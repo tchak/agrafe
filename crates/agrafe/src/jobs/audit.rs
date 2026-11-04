@@ -44,6 +44,8 @@ use object_store::ObjectMeta;
 use object_store::path::Path;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(any(test, feature = "test-support"))]
+use sqlx::AssertSqlSafe;
 use sqlx::{Connection as _, PgConnection, PgExecutor};
 use uuid::Uuid;
 
@@ -563,7 +565,11 @@ pub const LOCK: i32 = 0x6175_6469; // "audi"
 
 /// Rows read per query: one round trip to the database per thousand
 /// blobs, as the listing is one request per thousand objects.
-const PAGE: i64 = 1000;
+macro_rules! page {
+    () => {
+        "1000"
+    };
+}
 
 /// Stamp left on a blob whose original the audit found missing or damaged.
 pub(crate) const STAMP: &str = "audit: ";
@@ -758,6 +764,48 @@ impl Row {
     }
 }
 
+/// A page of [`Rows`], after a shard and an id, as of a time. Its states
+/// and its limit are written in rather than bound (DESIGN.md, "Scale"): a
+/// generic plan knowing neither estimates a row or two, sorts a scan of the
+/// whole table and reads it for every page, where `blobs_shard_idx` gives the
+/// page in order. Only the planner's cost comparison would keep a pooled
+/// connection off that plan.
+const PAGE_SQL: &str = concat!(
+    "SELECT ",
+    columns!(),
+    " FROM blobs \
+     WHERE (get_byte(uuid_send(id), 15), id) > ($1, $2) AND purged_at IS NULL \
+       AND state NOT IN ('infected', 'expired', 'deleted') \
+       AND (expires_at IS NULL OR expires_at > $3) \
+       AND (storage_key IS NOT NULL OR source_parts > 0 \
+            OR thumbnail_state = 'ready' OR preview_state = 'ready') \
+     ORDER BY get_byte(uuid_send(id), 15), id LIMIT ",
+    page!()
+);
+
+/// The generic plan of a page of the sweep's rows, as `EXPLAIN` prints it:
+/// the plan a pooled connection may settle on after five runs. For a test
+/// that pins it to its index.
+#[cfg(any(test, feature = "test-support"))]
+pub async fn explain_page(conn: &mut PgConnection) -> sqlx::Result<String> {
+    sqlx::query("SET plan_cache_mode = force_generic_plan")
+        .execute(&mut *conn)
+        .await?;
+    sqlx::raw_sql(AssertSqlSafe(format!("PREPARE page AS {PAGE_SQL}")))
+        .execute(&mut *conn)
+        .await?;
+    let lines: Vec<String> = sqlx::query_scalar(
+        "EXPLAIN EXECUTE page(128, '80000000-0000-7000-8000-000000000000', now())",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    sqlx::raw_sql("DEALLOCATE page").execute(&mut *conn).await?;
+    sqlx::query("RESET plan_cache_mode")
+        .execute(&mut *conn)
+        .await?;
+    Ok(lines.join("\n"))
+}
+
 /// The rows that require objects, in key order (the shard, then the id, see
 /// `blob::key::order`; `blobs_shard_idx`), a page at a time: not
 /// terminal, not purged, not expired at the start of the sweep, and
@@ -785,28 +833,12 @@ impl<'c> Rows<'c> {
 
     async fn peek(&mut self) -> sqlx::Result<Option<&Row>> {
         if self.page.is_empty() && !self.done {
-            let rows: Vec<Row> = sqlx::query_as(concat!(
-                "SELECT ",
-                columns!(),
-                " FROM blobs \
-                 WHERE (get_byte(uuid_send(id), 15), id) > ($1, $2) AND purged_at IS NULL \
-                   AND state <> ALL($3) AND (expires_at IS NULL OR expires_at > $4) \
-                   AND (storage_key IS NOT NULL OR source_parts > 0 \
-                        OR thumbnail_state = $5 OR preview_state = $5) \
-                 ORDER BY get_byte(uuid_send(id), 15), id LIMIT $6"
-            ))
-            .bind(i32::from(key::shard(self.cursor)))
-            .bind(self.cursor)
-            .bind(
-                [BlobState::Infected, BlobState::Expired, BlobState::Deleted]
-                    .map(BlobState::as_str)
-                    .to_vec(),
-            )
-            .bind(self.now.to_sqlx())
-            .bind(RepresentationState::Ready.as_str())
-            .bind(PAGE)
-            .fetch_all(&mut *self.conn)
-            .await?;
+            let rows: Vec<Row> = sqlx::query_as(PAGE_SQL)
+                .bind(i32::from(key::shard(self.cursor)))
+                .bind(self.cursor)
+                .bind(self.now.to_sqlx())
+                .fetch_all(&mut *self.conn)
+                .await?;
             match rows.last() {
                 Some(last) => self.cursor = last.id,
                 None => self.done = true,

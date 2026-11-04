@@ -1202,6 +1202,33 @@ async fn the_retry_of_a_dead_audit_leaves_a_live_sweep_alone() {
     }
 }
 
+/// A page of the sweep walks `blobs_shard_idx` under the generic plan a
+/// pooled connection may settle on, with the planner free to choose: the
+/// table is large enough for a scan to cost more, and a query that bound
+/// its states and limit would still get one, reading the table per page.
+#[tokio::test]
+async fn a_page_of_the_sweep_walks_its_index_under_a_generic_plan() {
+    let db = TestDatabase::new().await;
+    let app = settled_setup(db).await;
+    sqlx::query(
+        "INSERT INTO blobs (id, state, filename, content_type, category, input_type, storage_key) \
+         SELECT gen_random_uuid(), 'ready', 'f', 'text/plain', 'document', 'raw', 'k' \
+         FROM generate_series(1, 50000)",
+    )
+    .execute(app.state.pool())
+    .await
+    .unwrap();
+    sqlx::query("ANALYZE blobs")
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+    let mut conn = app.state.pool().acquire().await.unwrap();
+    let plan = audit::explain_page(&mut conn).await.unwrap();
+    assert!(plan.contains("blobs_shard_idx"), "{plan}");
+    assert!(!plan.contains("Seq Scan"), "{plan}");
+    assert!(!plan.contains("Sort"), "{plan}");
+}
+
 /// The audit pages the rows in the bucket's key order through an
 /// expression the database computes, which must be the shard
 /// `blob::key` writes into every key.
