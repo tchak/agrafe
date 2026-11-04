@@ -1677,6 +1677,52 @@ mod tests {
         });
     }
 
+    /// A key left out of a table takes its default, whichever keys of the
+    /// table are there, as the reference says.
+    #[test]
+    fn a_partial_media_table_keeps_the_other_defaults() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "partial.toml",
+                r#"
+                [server]
+                private_addr = "127.0.0.1:0"
+                public_addr = "127.0.0.1:0"
+                public_base_url = "https://agrafe.test"
+                [database]
+                url = "postgres://localhost/agrafe_dev"
+                [storage]
+                backend = "local"
+                [storage.local]
+                path = "/tmp/agrafe"
+                [signing]
+                current_key = "k1"
+                [signing.keys]
+                k1 = "KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio="
+                [encryption]
+                current_kek = "kek1"
+                [encryption.keks]
+                kek1 = "KysrKysrKysrKysrKysrKysrKysrKysrKysrKysrKys="
+                [media.thumbnail]
+                width = 300
+                [media.preview]
+                quality = 50
+                [media.embedded_image]
+                max_text_chars = 10
+                "#,
+            )?;
+            let render = load(Path::new("partial.toml"))?.media.render;
+            assert_eq!(render.thumbnail.width, 300);
+            assert_eq!(render.thumbnail.height, 256);
+            assert_eq!(render.thumbnail.quality, 80);
+            assert_eq!(render.preview.quality, 50);
+            assert_eq!(render.preview.max_dimension, 2048);
+            assert_eq!(render.embedded_image.max_text_chars, 10);
+            assert_eq!(render.embedded_image.min_coverage, 0.7);
+            Ok(())
+        });
+    }
+
     /// Zero would be a hot loop, a job claimed twice, a kind that looks
     /// covered and a panic in the pool.
     #[test]

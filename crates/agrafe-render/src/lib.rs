@@ -126,7 +126,7 @@ impl Default for Config {
 
 /// The thumbnail box and encoder quality.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct Thumbnail {
     /// The box's width in pixels, 256 by default.
     pub width: u32,
@@ -148,7 +148,7 @@ impl Default for Thumbnail {
 
 /// The preview box (square) and encoder quality.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct Preview {
     /// The side of the box in pixels, 2048 by default.
     pub max_dimension: u32,
@@ -167,7 +167,7 @@ impl Default for Preview {
 
 /// What makes a document "really an image", passed to `agrafe-extract`.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct EmbeddedImage {
     /// Fraction of the page the image must cover (PDF only).
     pub min_coverage: f32,
