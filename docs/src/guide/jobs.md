@@ -59,7 +59,9 @@ and the job is claimed again.
 
 A failure that another attempt would repeat kills the job at once: a
 template that does not compile, a fetch answered `404`, a source line that
-does not parse.
+does not parse, an original that does not decrypt. A data key wrapped under
+a KEK the worker does not have is retried: it says nothing of the bytes, and
+a deploy may bring the KEK.
 
 Job states, as the API reports them:
 

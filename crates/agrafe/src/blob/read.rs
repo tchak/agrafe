@@ -81,9 +81,13 @@ impl ReadError {
 
     /// Whether reading again would fail the same way: the row or the object
     /// is damaged. A store error, or an object ending short of what its
-    /// length promised, may be the connection's.
+    /// length promised, may be the connection's, and a KEK this process
+    /// does not have says nothing of the bytes: a deploy that gives the
+    /// workers a new KEK after the API started wrapping with it is over
+    /// within the attempts.
     pub(crate) fn is_permanent(&self) -> bool {
         match self {
+            ReadError::Key(UnwrapError::UnknownKek { .. }) => false,
             ReadError::Incomplete { .. }
             | ReadError::Header { .. }
             | ReadError::Key(_)

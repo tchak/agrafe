@@ -3404,7 +3404,9 @@ random, or longer when the failure asks for it: a remote's `Retry-After`)
 until `max_attempts`, then sets `failed_at` and leaves it locked: never run again, not holding the one
 pending slot per kind and blob, and still there to read. A failure another
 attempt would repeat (a job without its blob, a purge of a live blob, a
-build's permanent errors, see "Build") is dead at once, without the
+build's permanent errors, see "Build", an object or a row that does not
+read back, though not a KEK this process lacks, which says nothing of the
+bytes and which a deploy may bring) is dead at once, without the
 backoff. An attempt that takes its worker down, a process killed or out
 of memory, never reaches the failure: the claim does not take a job out
 of attempts, so the last such attempt is the last, and the reaper

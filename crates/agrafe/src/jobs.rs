@@ -158,6 +158,10 @@ impl JobError {
         match self {
             JobError::NoBlob(_) | JobError::Unhandled(_) => true,
             JobError::Purge(purge::PurgeError::NotTerminal(_)) => true,
+            JobError::Read(err) => err.is_permanent(),
+            JobError::Representation(crate::blob::representation::Error::Read(err)) => {
+                err.is_permanent()
+            }
             JobError::Build(err) => err.is_permanent(),
             JobError::Fetch(err) => err.is_permanent(),
             JobError::Webhook(err) => err.is_permanent(),

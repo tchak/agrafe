@@ -691,6 +691,65 @@ async fn a_timed_out_helper_fails_both_representations() {
     std::fs::remove_file(&slow).unwrap();
 }
 
+/// A row or an original that cannot be read is dead at its first attempt,
+/// with its verdict on the blob, not three hours of retries behind a
+/// `pending` thumbnail. A KEK this process lacks says nothing of the bytes
+/// and is retried: a deploy brings it.
+#[tokio::test]
+async fn an_original_that_does_not_open_kills_the_render_at_once() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let job = |id: uuid::Uuid| {
+        let pool = app.state.pool().clone();
+        async move {
+            sqlx::query_as::<_, (i32, bool)>(
+                "SELECT attempts, failed_at IS NOT NULL FROM jobs \
+                 WHERE blob_id = $1 AND kind = 'render'",
+            )
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+
+    // The row lacks a key, and the object does not authenticate.
+    let no_key = ready_file(&app, "a.jpg", "image/jpeg", &fixture("photo.jpg")).await;
+    let no_key = id_of(&no_key).to_string();
+    sqlx::query("UPDATE blobs SET wrapped_key = NULL WHERE id = $1")
+        .bind(parse_id(&no_key))
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+    assert!(run_job(&app, JobKind::Render).await);
+    assert_eq!(job(parse_id(&no_key)).await, (1, true), "no wrapped key");
+    let shown = get_blob(&app, &no_key).await;
+    assert!(shown["failed_at"].is_string(), "{shown}");
+
+    let tampered = ready_file(&app, "b.jpg", "image/jpeg", &fixture("photo.jpg")).await;
+    let tampered = id_of(&tampered).to_string();
+    let key = object_store::path::Path::from(storage_key(&app, &tampered).await);
+    let object = app.state.store().get(&key).await.unwrap();
+    let mut bytes = object.bytes().await.unwrap().to_vec();
+    let last = bytes.len() - 1;
+    bytes[last] ^= 1;
+    app.state.store().put(&key, bytes.into()).await.unwrap();
+    assert!(run_job(&app, JobKind::Render).await);
+    assert_eq!(job(parse_id(&tampered)).await, (1, true), "tampered");
+
+    let no_kek = ready_file(&app, "c.jpg", "image/jpeg", &fixture("photo.jpg")).await;
+    let no_kek = id_of(&no_kek).to_string();
+    sqlx::query("UPDATE blobs SET kek_id = 'gone' WHERE id = $1")
+        .bind(parse_id(&no_kek))
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+    assert!(run_job(&app, JobKind::Render).await);
+    assert_eq!(job(parse_id(&no_kek)).await, (1, false), "unknown KEK");
+    let shown = get_blob(&app, &no_kek).await;
+    assert_eq!(shown["failed_at"], Value::Null, "{shown}");
+}
+
 #[tokio::test]
 async fn files_the_renderer_rejects_are_failed() {
     let db = TestDatabase::new().await;

@@ -20,7 +20,10 @@
 //! A file the renderer rejects, or that crashes a helper, leaves the
 //! representation `failed` and the job done: trying the same bytes again
 //! would end the same way. Only failures of ours (store, database, a
-//! missing renderer) fail the job. `agrafe_render::probe` runs the same
+//! missing renderer) fail the job, and an original that does not open, the
+//! row or the object damaged, kills it at once (`ReadError::is_permanent`):
+//! no renderer has seen those bytes, so that is not the file's verdict.
+//! `agrafe_render::probe` runs the same
 //! tools on known files before a worker starts, so a broken deployment
 //! fails there.
 
