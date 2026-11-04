@@ -39,7 +39,7 @@ These count what one process did, so sum them across processes.
 
 | Metric | Labels | Meaning |
 |---|---|---|
-| `agrafe_job_runs_total` | `kind`, `outcome` | Finished attempts. `outcome` is `ok`, `retry`, `dead`, `superseded` (dropped in favour of a newer twin) or `released` (handed back to the queue by a stopping process) |
+| `agrafe_job_runs_total` | `kind`, `outcome` | Finished attempts. `outcome` is `ok`, `retry`, `dead`, `superseded` (dropped in favour of a newer twin) or `released` (handed back to the queue by a stopping process, or to wait for an older render of its blob) |
 | `agrafe_job_duration_seconds` | `kind` | Histogram of attempt wall time, buckets from 50 ms to one hour |
 | `agrafe_workers` | `kind` | Workers this process runs, zero for a kind it does not, so a kind no process handles sums to zero |
 | `agrafe_blob_head_cache_total` | `result` | Row lookups by the read routes, `hit` or `miss` |

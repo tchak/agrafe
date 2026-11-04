@@ -2232,6 +2232,17 @@ not open, is rendered again first. The thumbnail thus appears after the preview 
 than alongside it, a few seconds for a large image, which the icon
 placeholder and `wait` cover.
 
+One render at a time for a blob. A job that is running holds no pending slot,
+so after a version bump the `<img>` of a preview, a few milliseconds behind the
+thumbnail's, enqueues a twin the workers claim at once, and at a billion blobs
+that doubles the decode of every blob viewed. A render that finds an older one
+of its blob running on a live lease therefore hands itself back, the attempt
+refunded, and looks again in five seconds, usually to find nothing pending. It
+waits rather than ending: the older job read the row before this one was
+enqueued, and a kind it did not render stays `pending` with nothing else to pick
+it up, which is why the lazy path does not skip the enqueue when a render is
+running. The older job decides, so two starting together cannot both wait.
+
 A representation is recorded only while the blob is `ready`. A render that
 finds the blob gone terminal by the time it finishes deletes what it wrote
 rather than leave it to the purge, which may already have swept the prefix

@@ -53,6 +53,16 @@ pub async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
         return Err(JobError::Unhandled(job.kind));
     }
     let id = job.blob_id.ok_or(JobError::NoBlob(job.kind))?;
+    // A running job holds no pending slot, so a request for the other
+    // representation enqueues a twin, which would decode the original
+    // beside this one, most often for what that one is already rendering.
+    // It waits instead, and reads the row when the older one is done: what
+    // that one did not get to is still `pending`, and nothing else would
+    // pick it up.
+    let lease = state.config().jobs.lease_timeout;
+    if super::older_twin_running(state.pool(), job, lease).await? {
+        return Err(JobError::Busy);
+    }
     let Some(blob) = repo::find(state.pool(), id).await? else {
         tracing::info!("blob is gone, nothing to render");
         return Ok(());

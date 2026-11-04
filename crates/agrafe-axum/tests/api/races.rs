@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agrafe::jobs::JobKind;
-use axum::http::StatusCode;
+use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
@@ -318,6 +318,166 @@ async fn render_that_outlives_the_purge_leaves_nothing() {
             .await
             .unwrap();
     assert_eq!(states, ("pending".to_string(), "pending".to_string()));
+}
+
+/// Every due render, to the end.
+async fn render_all(app: &TestApp) {
+    while run_job(app, JobKind::Render).await {}
+}
+
+/// `GET` a representation through the private port, which is what asks for
+/// a stale one.
+async fn ask_for(app: &TestApp, id: &str, kind: &str) {
+    let (status, _) = call(
+        &app.private,
+        req(Method::GET, &format!("/blobs/{id}/{kind}/photo.jpg")),
+    )
+    .await;
+    assert!(
+        status.is_success() || status == StatusCode::NOT_FOUND,
+        "{status}"
+    );
+}
+
+/// The render jobs of `id` as (locked, attempts, due in the future).
+async fn renders(app: &TestApp, id: &str) -> Vec<(bool, i32, bool)> {
+    sqlx::query_as(
+        "SELECT locked_at IS NOT NULL, attempts, run_at > now() FROM jobs \
+         WHERE blob_id = $1 AND kind = 'render' ORDER BY id",
+    )
+    .bind(parse_id(id))
+    .fetch_all(app.state.pool())
+    .await
+    .unwrap()
+}
+
+/// Make the waiting render due now.
+async fn due_now(app: &TestApp, id: &str) {
+    sql(
+        app,
+        "UPDATE jobs SET run_at = now() WHERE blob_id = $1 AND kind = 'render'",
+        id,
+    )
+    .await;
+}
+
+/// After a version bump the second representation's request enqueues a
+/// twin while the first's render runs. It waits, its attempt refunded,
+/// without decoding the original beside the other, and finds nothing left.
+#[tokio::test]
+async fn a_second_render_waits_for_the_one_running() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
+    let id = id_of(&blob).to_string();
+    render_all(&app).await;
+    sql(
+        &app,
+        "UPDATE blobs SET thumbnail_variant_version = 0, preview_variant_version = 0 \
+         WHERE id = $1",
+        &id,
+    )
+    .await;
+
+    ask_for(&app, &id, "thumbnail").await;
+    let hold = app.gate.hold(At::Put, &object_key(&id, "preview"));
+    let first = spawn_job(&app, JobKind::Render);
+    hold.reached().await;
+    ask_for(&app, &id, "preview").await;
+    assert_eq!(
+        renders(&app, &id).await,
+        [(true, 1, false), (false, 0, false)]
+    );
+
+    // No gate holds this one, so it would finish if it rendered.
+    assert!(run_job(&app, JobKind::Render).await);
+    assert_eq!(
+        renders(&app, &id).await,
+        [(true, 1, false), (false, 0, true)],
+        "unlocked, its attempt refunded, due later"
+    );
+    assert!(!run_job(&app, JobKind::Render).await, "not due yet");
+
+    hold.release();
+    assert!(within("the job", first).await.unwrap());
+    let shown = get_blob(&app, &id).await;
+    assert_eq!(shown["thumbnail_state"], "ready", "{shown}");
+    assert_eq!(shown["preview_state"], "ready", "{shown}");
+
+    due_now(&app, &id).await;
+    assert!(run_job(&app, JobKind::Render).await);
+    assert_eq!(renders(&app, &id).await, []);
+}
+
+/// What the running job read before the request is not its to render: the
+/// twin, having waited, does it. Skipping the enqueue while a render runs
+/// would leave the preview `pending` for good.
+#[tokio::test]
+async fn a_representation_asked_for_during_a_render_is_not_lost() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
+    let id = id_of(&blob).to_string();
+    render_all(&app).await;
+    sql(
+        &app,
+        "UPDATE blobs SET thumbnail_variant_version = 0 WHERE id = $1",
+        &id,
+    )
+    .await;
+
+    // The thumbnail alone: its job uses the stored preview.
+    ask_for(&app, &id, "thumbnail").await;
+    let hold = app.gate.hold(At::Put, &object_key(&id, "thumbnail"));
+    let first = spawn_job(&app, JobKind::Render);
+    hold.reached().await;
+    sql(
+        &app,
+        "UPDATE blobs SET preview_variant_version = 0 WHERE id = $1",
+        &id,
+    )
+    .await;
+    ask_for(&app, &id, "preview").await;
+    assert!(run_job(&app, JobKind::Render).await);
+
+    hold.release();
+    assert!(within("the job", first).await.unwrap());
+    let shown = get_blob(&app, &id).await;
+    assert_eq!(shown["thumbnail_state"], "ready", "{shown}");
+    assert_eq!(shown["preview_state"], "pending", "{shown}");
+
+    due_now(&app, &id).await;
+    assert!(run_job(&app, JobKind::Render).await);
+    assert_eq!(get_blob(&app, &id).await["preview_state"], "ready");
+    assert_eq!(renders(&app, &id).await, []);
+}
+
+/// A worker that died holding the older render stops nothing once its
+/// lease has lapsed.
+#[tokio::test]
+async fn a_lapsed_older_render_does_not_hold_the_next_one() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
+    let id = id_of(&blob).to_string();
+    render_all(&app).await;
+    // Out of attempts, so that the claim leaves it to the reaper.
+    sql(
+        &app,
+        "INSERT INTO jobs (kind, blob_id, locked_at, locked_by, attempts, max_attempts) \
+         VALUES ('render', $1, now() - interval '1 day', 'gone', 1, 1)",
+        &id,
+    )
+    .await;
+    sql(
+        &app,
+        "UPDATE blobs SET preview_variant_version = 0 WHERE id = $1",
+        &id,
+    )
+    .await;
+    ask_for(&app, &id, "preview").await;
+    assert!(run_job(&app, JobKind::Render).await);
+    assert_eq!(get_blob(&app, &id).await["preview_state"], "ready");
 }
 
 /// The row changes as the built object is about to become visible: an

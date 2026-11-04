@@ -148,6 +148,11 @@ where
     Ok(())
 }
 
+/// How long a job that found its older twin running waits before it looks
+/// again. Short against a worst-case render, and its next look costs one
+/// indexed probe; most often the twin did the work and there is none left.
+const BUSY_WAIT: jiff::SignedDuration = jiff::SignedDuration::from_secs(5);
+
 /// Claim and run one job of `kind`, to the end. Returns whether there was
 /// one. This is one turn of a worker, and what tests call.
 // Public for the integration tests, not part of the API.
@@ -248,6 +253,28 @@ where
             }
             tracing::info!(took_ms = took.as_millis() as u64, "job done");
             Outcome::Ok
+        }
+        Err(JobError::Busy) => {
+            let run_at = Timestamp::now() + BUSY_WAIT;
+            let failure = settle(|| async move {
+                let mut conn = state.pool().acquire().await?;
+                super::defer(&mut conn, job, run_at).await
+            })
+            .await?;
+            match failure {
+                Failure::Retry(at) => {
+                    tracing::info!(retry_at = %at, "an older job runs for this blob, waiting");
+                    Outcome::Released
+                }
+                Failure::Superseded => {
+                    tracing::info!("an older job runs for this blob, a newer one takes over");
+                    Outcome::Superseded
+                }
+                Failure::Dead | Failure::Lost | Failure::Released => {
+                    tracing::warn!("lease lost: the job was reclaimed or removed, row left alone");
+                    return Ok(());
+                }
+            }
         }
         Err(err) => {
             let error = err.to_string();

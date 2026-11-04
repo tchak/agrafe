@@ -147,6 +147,10 @@ pub enum JobError {
     Webhook(#[from] notify::WebhookError),
     #[error("audit: {0}")]
     Audit(#[from] audit::AuditError),
+    /// Not a failure: a twin is doing this work, and the job comes back
+    /// when it should be done, see `defer`.
+    #[error("an older job of this kind is running for the blob")]
+    Busy,
 }
 
 impl JobError {
@@ -1488,6 +1492,54 @@ async fn requeue(
     if has_twin(&mut *conn, job).await? {
         return superseded(conn, job).await;
     }
+    hand_back(conn, job, run_at, error, refund).await
+}
+
+/// Hand a running job back to wait for its older twin to finish, at
+/// `run_at`, the attempt not counted: `JobError::Busy`. Unlike `release`,
+/// the twin it waits for does not make it redundant, since it read the row
+/// before this job was enqueued; only a newer pending one does, which will
+/// read the row later still.
+pub(crate) async fn defer(
+    conn: &mut PgConnection,
+    job: &Job,
+    run_at: Timestamp,
+) -> sqlx::Result<Failure> {
+    let mut tx = conn.begin().await?;
+    let outcome = hand_back(&mut tx, job, run_at, None, true).await?;
+    tx.commit().await?;
+    Ok(outcome)
+}
+
+/// Whether a render, or any job of `job`'s kind, older than `job` is running
+/// for its blob on a lease that has not lapsed. The older one decides, so
+/// that two twins starting together cannot both wait. On `jobs_blob_idx`.
+pub(crate) async fn older_twin_running(
+    exec: impl PgExecutor<'_>,
+    job: &Job,
+    lease: Duration,
+) -> sqlx::Result<bool> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM jobs \
+         WHERE blob_id = $1 AND kind = $2 AND id < $3 AND failed_at IS NULL \
+           AND locked_at >= now() - make_interval(secs => $4))",
+    )
+    .bind(job.blob_id)
+    .bind(job.kind.as_str())
+    .bind(job.id)
+    .bind(lease.as_secs_f64())
+    .fetch_one(exec)
+    .await
+}
+
+/// Unlock `job` at `run_at` under a savepoint, see `requeue`.
+async fn hand_back(
+    conn: &mut PgConnection,
+    job: &Job,
+    run_at: Timestamp,
+    error: Option<&str>,
+    refund: bool,
+) -> sqlx::Result<Failure> {
     // A twin enqueued since the check makes the unlock a second pending
     // job of this kind for the blob. The unlock runs under a savepoint:
     // this runs inside the caller's transaction, which the violation

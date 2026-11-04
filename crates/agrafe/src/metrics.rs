@@ -30,7 +30,8 @@ pub(crate) enum Outcome {
     Retry,
     Dead,
     Superseded,
-    /// Handed back to the queue by a stopping process.
+    /// Handed back to the queue by a stopping process, or to wait for an
+    /// older job of its blob.
     Released,
 }
 
