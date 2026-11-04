@@ -92,6 +92,11 @@ CREATE TABLE blobs (
                       CHECK (preview_state IN ('pending', 'ready', 'failed', 'unavailable', 'disabled')),
     preview_source    text
                       CHECK (preview_source IN ('image', 'embedded_image', 'geojson', 'gpx', 'kml', 'shapefile', 'gml')),
+    -- A failed preview that ran a tool out of its time limit: true, or NULL
+    -- for every other row, which costs them nothing. A thumbnail rendered
+    -- later over that verdict must not hand the file to a second tool for
+    -- as long again. See DESIGN.md, "Representations".
+    preview_timed_out boolean CHECK (preview_timed_out),
     thumbnail_variant_version integer,
     preview_variant_version   integer,
     -- What was rendered: the SHA-256 and the size of the WebP, recorded

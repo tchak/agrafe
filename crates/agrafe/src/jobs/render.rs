@@ -111,10 +111,11 @@ impl NoPicture {
         }
     }
 
-    /// The stored verdict of a preview rendered by an earlier job, which
-    /// does not say whether a rejection was a timeout.
-    fn stored(state: RepresentationState) -> Self {
+    /// The stored verdict of a preview rendered by an earlier job: the same
+    /// bytes get the same thumbnail, whichever was asked for first.
+    fn stored(state: RepresentationState, timed_out: bool) -> Self {
         match state {
+            RepresentationState::Failed if timed_out => NoPicture::TimedOut,
             RepresentationState::Failed => NoPicture::Rejected,
             _ => NoPicture::Declined,
         }
@@ -179,7 +180,10 @@ impl<'a> Render<'a> {
                 None => return self.fresh_preview().await,
             },
             (state @ (RepresentationState::Failed | RepresentationState::Unavailable), true) => {
-                Preview::Missing(NoPicture::stored(state))
+                Preview::Missing(NoPicture::stored(
+                    state,
+                    blob.preview_timed_out.unwrap_or(false),
+                ))
             }
             _ => return self.fresh_preview().await,
         })
@@ -198,8 +202,9 @@ impl<'a> Render<'a> {
             Verdict::Declined => Preview::Missing(NoPicture::Declined),
         };
         let state = state_of(&verdict);
+        let timed_out = matches!(preview, Preview::Missing(NoPicture::TimedOut));
         let (bytes, source) = verdict.rendered().unzip();
-        self.finish(Representation::Preview, state, bytes, source)
+        self.finish(Representation::Preview, state, bytes, source, timed_out)
             .await?;
         Ok(preview)
     }
@@ -225,7 +230,7 @@ impl<'a> Render<'a> {
                 Verdict::Declined => self.thumbnail_without_picture(NoPicture::Declined).await?,
             },
         };
-        self.finish(Representation::Thumbnail, state, bytes, None)
+        self.finish(Representation::Thumbnail, state, bytes, None, false)
             .await
     }
 
@@ -424,6 +429,7 @@ impl<'a> Render<'a> {
         state: RepresentationState,
         bytes: Option<Vec<u8>>,
         source: Option<PreviewSource>,
+        timed_out: bool,
     ) -> Result<(), JobError> {
         let rendered = match &bytes {
             Some(bytes) => {
@@ -439,6 +445,7 @@ impl<'a> Render<'a> {
             kind,
             state,
             source,
+            timed_out,
             self.media().variant_version,
             rendered,
         )

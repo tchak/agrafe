@@ -33,7 +33,7 @@ macro_rules! blob_columns {
          source_parts, source_rows, source_size, source_updated_at, source_sheet, \
          source_sheet_rows, archive_entries, archive_errors, source_main, workspace_size, \
          kek_id, wrapped_key, encryption_header, chunk_size, \
-         thumbnail_state, preview_state, preview_source, \
+         thumbnail_state, preview_state, preview_source, preview_timed_out, \
          thumbnail_variant_version, preview_variant_version, \
          thumbnail_sha256, thumbnail_size, preview_sha256, preview_size, \
          created_at, updated_at, upload_started_at, upload_heartbeat_at, uploaded_at, \
@@ -1169,13 +1169,16 @@ pub async fn explain_reaper(conn: &mut PgConnection) -> sqlx::Result<Vec<(&'stat
 /// blob is still `ready`: `false` when it no longer is, and the purge may
 /// have been and gone, so what was written is the caller's to delete. Only
 /// the blob's state is a condition: the preview a thumbnail had rendered
-/// again lands on a representation that is not `pending`.
+/// again lands on a representation that is not `pending`. `timed_out` is
+/// recorded for the preview alone, see `Blob::preview_timed_out`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn finish_representation(
     exec: impl PgExecutor<'_>,
     id: Uuid,
     kind: Representation,
     state: RepresentationState,
     source: Option<PreviewSource>,
+    timed_out: bool,
     version: i32,
     rendered: Option<Rendered>,
 ) -> sqlx::Result<bool> {
@@ -1201,7 +1204,9 @@ pub(crate) async fn finish_representation(
         .push_bind(size);
     if kind == Representation::Preview {
         qb.push(", preview_source = ")
-            .push_bind(source.map(PreviewSource::as_str));
+            .push_bind(source.map(PreviewSource::as_str))
+            .push(", preview_timed_out = ")
+            .push_bind(timed_out.then_some(true));
     }
     qb.push(" WHERE id = ")
         .push_bind(id)

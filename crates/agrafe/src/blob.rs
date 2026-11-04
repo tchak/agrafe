@@ -586,6 +586,10 @@ pub struct Blob {
     /// What the preview was rendered from, a [`PreviewSource`] as text;
     /// written with the preview's state, `None` without a rendered preview.
     pub preview_source: Option<String>,
+    /// `true` when the preview is `failed` because a tool ran out of time,
+    /// which is not for the thumbnail to try again with another; `None`
+    /// otherwise, and meaningful only beside `failed`.
+    pub preview_timed_out: Option<bool>,
     /// The `media.variant_version` the thumbnail was last rendered with;
     /// another one makes the read path regenerate it.
     pub thumbnail_variant_version: Option<i32>,

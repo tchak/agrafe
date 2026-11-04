@@ -691,6 +691,67 @@ async fn a_timed_out_helper_fails_both_representations() {
     std::fs::remove_file(&slow).unwrap();
 }
 
+/// A later job renders the thumbnail over a preview that timed out: `failed`
+/// as when one job did both, not the same bytes handed to the page renderer
+/// for as long again.
+#[tokio::test]
+async fn a_thumbnail_over_a_stored_timeout_is_failed() {
+    let db = TestDatabase::new().await;
+    use std::os::unix::fs::PermissionsExt;
+    let slow = std::env::temp_dir().join(format!("agrafe-slow-extract-{}", uuid::Uuid::now_v7()));
+    std::fs::write(&slow, "#!/bin/sh\nsleep 30\n").unwrap();
+    std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let clamd = fake_clamd().await;
+    // Long enough for the page renderer the thumbnail must not reach.
+    let app = setup_tuned(db, clamd, |c| {
+        c.media.render.extract_command = slow.to_string_lossy().into_owned();
+        c.media.render.sandbox.timeout = Duration::from_secs(2);
+    })
+    .await;
+    let scan = ready_file(&app, "scan.pdf", "application/pdf", &fixture("image.pdf")).await;
+    let id = id_of(&scan);
+    render_all(&app).await;
+    let flag = || {
+        sqlx::query_scalar::<_, Option<bool>>("SELECT preview_timed_out FROM blobs WHERE id = $1")
+            .bind(parse_id(id))
+            .fetch_one(app.state.pool())
+    };
+    assert_eq!(flag().await.unwrap(), Some(true));
+
+    // The thumbnail alone is stale: its job reads the preview's verdict.
+    sqlx::query("UPDATE blobs SET thumbnail_variant_version = 0 WHERE id = $1")
+        .bind(parse_id(id))
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+    icon(&app, &format!("/blobs/{id}/thumbnail/scan.pdf"), "pending").await;
+    assert!(run_job(&app, JobKind::Render).await);
+    let shown = get_blob(&app, id).await;
+    assert_eq!(shown["preview_state"], "failed", "{shown}");
+    assert_eq!(shown["thumbnail_state"], "failed", "{shown}");
+
+    // A render that gets further clears it.
+    sqlx::query(
+        "UPDATE blobs SET preview_variant_version = 0, thumbnail_variant_version = 0 \
+         WHERE id = $1",
+    )
+    .bind(parse_id(id))
+    .execute(app.state.pool())
+    .await
+    .unwrap();
+    std::fs::write(&slow, "#!/bin/sh\nexit 0\n").unwrap();
+    no_preview(
+        &app,
+        &format!("/blobs/{id}/preview/scan.pdf"),
+        "pending",
+        "preview is pending",
+    )
+    .await;
+    assert!(run_job(&app, JobKind::Render).await);
+    assert_eq!(flag().await.unwrap(), None);
+    std::fs::remove_file(&slow).unwrap();
+}
+
 /// A row or an original that cannot be read is dead at its first attempt,
 /// with its verdict on the blob, not three hours of retries behind a
 /// `pending` thumbnail. A KEK this process lacks says nothing of the bytes

@@ -2223,7 +2223,11 @@ on it. A thumbnail rendered on its own, the preview disabled, follows the
 same rule from its own attempt at the picture. The exception is a
 timeout: a file that exhausted one tool's time limit is not handed to a
 second for as long again, and the thumbnail is `failed` with the
-preview. A preview from another version, or whose object is gone or does
+preview. The row keeps that apart from any other `failed`
+(`preview_timed_out`, null on every other row), so a thumbnail rendered by a
+later job over the verdict, after a version bump asked for the preview first
+or a retry of a thumbnail whose write failed, gets the same answer: one file,
+one verdict, in whatever order it was asked for. A preview from another version, or whose object is gone or does
 not open, is rendered again first. The thumbnail thus appears after the preview rather
 than alongside it, a few seconds for a large image, which the icon
 placeholder and `wait` cover.
