@@ -941,7 +941,9 @@ async fn representation_objects_are_checked_against_the_row_state() {
     render_all(&app).await;
 
     sqlx::query(
-        "UPDATE blobs SET thumbnail_state = 'pending', preview_state = 'failed' WHERE id = $1",
+        "UPDATE blobs SET thumbnail_state = 'pending', thumbnail_sha256 = NULL, \
+         thumbnail_size = NULL, preview_state = 'failed', preview_sha256 = NULL, \
+         preview_size = NULL WHERE id = $1",
     )
     .bind(parse_id(id))
     .execute(app.state.pool())

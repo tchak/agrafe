@@ -154,6 +154,8 @@ async fn resolve(state: &Agrafe, blob: &BlobHead, kind: Representation) -> Resul
     match rep_state {
         RepresentationState::Ready => match blob.rendered(kind) {
             Some(rendered) => Ok(Resolved::Ready(rendered)),
+            // The row's CHECKs rule this out. Still, nothing is served
+            // without the digest its headers are made from.
             None => {
                 tracing::warn!(blob = %blob.id, kind = %kind, "ready without a digest, regenerating");
                 repo::request_representation(state.pool(), blob.id, kind).await?;

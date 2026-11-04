@@ -1154,6 +1154,15 @@ async fn representations_regenerate_when_missing_or_stale() {
         .unwrap();
     no_preview(&app, &preview, "pending", "preview is pending").await;
     assert_eq!(jobs_for(&app, id).await, ["render"]);
+    // What the row said of the last render does not stay beside `pending`.
+    let row: (Option<Vec<u8>>, Option<i32>, Option<String>) = sqlx::query_as(
+        "SELECT preview_sha256, preview_size, preview_source FROM blobs WHERE id = $1",
+    )
+    .bind(parse_id(id))
+    .fetch_one(app.state.pool())
+    .await
+    .unwrap();
+    assert_eq!(row, (None, None, None));
     assert!(run_job(&app, JobKind::Render).await);
     rendered(&app, &preview).await;
     let version: i32 =
@@ -1166,7 +1175,8 @@ async fn representations_regenerate_when_missing_or_stale() {
 
     // A failed representation is retried on a version bump as well.
     sqlx::query(
-        "UPDATE blobs SET thumbnail_state = 'failed', thumbnail_variant_version = 0 WHERE id = $1",
+        "UPDATE blobs SET thumbnail_state = 'failed', thumbnail_sha256 = NULL, \
+         thumbnail_size = NULL, thumbnail_variant_version = 0 WHERE id = $1",
     )
     .bind(parse_id(id))
     .execute(app.state.pool())
@@ -1176,27 +1186,34 @@ async fn representations_regenerate_when_missing_or_stale() {
     assert_eq!(jobs_for(&app, id).await, ["render"]);
 }
 
+/// `ready` promises a digest and a size to answer conditional requests
+/// with, and nothing else may carry them.
 #[tokio::test]
-async fn a_ready_row_without_a_digest_is_rendered_again() {
+async fn the_row_holds_a_digest_and_a_size_with_ready_alone() {
     let db = TestDatabase::new().await;
     let app = setup(db).await;
     let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
     let id = id_of(&blob);
     render_all(&app).await;
-    let thumbnail = format!("/blobs/{id}/thumbnail/photo.jpg");
 
-    // `ready` promises a digest to answer conditional requests with; a
-    // row without one is not trusted, and the render queued again.
-    sqlx::query("UPDATE blobs SET thumbnail_sha256 = NULL WHERE id = $1")
-        .bind(parse_id(id))
-        .execute(app.state.pool())
-        .await
-        .unwrap();
-    icon(&app, &thumbnail, "pending").await;
-    assert_eq!(get_blob(&app, id).await["thumbnail_state"], "pending");
-    assert_eq!(jobs_for(&app, id).await, ["render"]);
-    assert!(run_job(&app, JobKind::Render).await);
-    rendered(&app, &thumbnail).await;
+    for statement in [
+        "UPDATE blobs SET thumbnail_sha256 = NULL WHERE id = $1",
+        "UPDATE blobs SET thumbnail_size = NULL WHERE id = $1",
+        "UPDATE blobs SET thumbnail_state = 'pending' WHERE id = $1",
+        "UPDATE blobs SET preview_sha256 = NULL WHERE id = $1",
+        "UPDATE blobs SET preview_size = NULL WHERE id = $1",
+        "UPDATE blobs SET preview_state = 'failed' WHERE id = $1",
+    ] {
+        let err = sqlx::query(statement)
+            .bind(parse_id(id))
+            .execute(app.state.pool())
+            .await
+            .expect_err(statement);
+        assert!(
+            err.as_database_error().unwrap().is_check_violation(),
+            "{statement}: {err}"
+        );
+    }
 }
 
 #[tokio::test]

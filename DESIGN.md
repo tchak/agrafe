@@ -2304,8 +2304,8 @@ They are small and served whole, with a strong `ETag` of the content and
 bump changes them under the same URL. The row records the SHA-256 and the
 size of each rendered WebP (`thumbnail_sha256`, `thumbnail_size`, and the
 same for the preview), set with `ready` and cleared with any other state,
-so a conditional request answered `304` and a `HEAD` never read the
-object; only a `GET` with a body to send does.
+which `CHECK`s on the table hold, so a conditional request answered `304`
+and a `HEAD` never read the object; only a `GET` with a body to send does.
 
 Every picture or placeholder a representation route serves carries
 `X-Representation-State`, so a client can tell a placeholder from the final

@@ -1217,7 +1217,10 @@ pub(crate) async fn finish_representation(
 /// Ask for `kind` to be (re)generated: the representation goes back to
 /// `pending` and a job is enqueued, if the blob is still `ready` and the
 /// representation was not disabled at creation. The lazy path of the
-/// `GET` handler, for a missing object or a stale variant version.
+/// `GET` handler, for a missing object or a stale variant version. What the
+/// row recorded of the last render goes with it; the variant version stays
+/// until the next one, being what the object still in the bucket was built
+/// with.
 pub(crate) async fn request_representation(
     pool: &PgPool,
     id: Uuid,
@@ -1228,7 +1231,15 @@ pub(crate) async fn request_representation(
     qb.push(kind.state_column())
         .push(" = ")
         .push_bind(RepresentationState::Pending.as_str())
-        .push(" WHERE id = ")
+        .push(", ")
+        .push(kind.digest_column())
+        .push(" = NULL, ")
+        .push(kind.size_column())
+        .push(" = NULL");
+    if kind == Representation::Preview {
+        qb.push(", preview_source = NULL, preview_timed_out = NULL");
+    }
+    qb.push(" WHERE id = ")
         .push_bind(id)
         .push(" AND state = ")
         .push_bind(BlobState::Ready.as_str())
