@@ -3677,8 +3677,12 @@ What it does with a finding, each one a `warn` line in the log:
   they are accounted for and not required.
 What the row requires is checked only once the row has stood still for
 `upload.stale_after` before the listing passed its prefix (`updated_at`,
-kept by the trigger, against the time the listing of that stretch began;
-for the rows the listing never showed, the time it ended). The listing
+kept by the trigger, against a time no later than the store's answer for
+that stretch, since a page comes off the stream only as fast as its objects
+are checked, and under `--deep` that can take longer than `stale_after`;
+`object_store` does not say where pages begin, so the time is taken every
+5000 objects, the largest page any backend gives, and the previous one is
+used, and the local backend's one answer is timed at the start). The listing
 and the row are read at different moments, and a row that changed in
 between may name an object written after the listing looked, an upload
 finishing as the audit went by, or a new size for one it listed, a

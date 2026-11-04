@@ -643,8 +643,65 @@ async fn audit(
 struct Group {
     id: Uuid,
     objects: Vec<ObjectMeta>,
-    /// When the listing reached the prefix.
+    /// When the listing looked at the prefix, or earlier, see
+    /// [`ListingClock`].
     listed_at: Timestamp,
+}
+
+/// The most objects one page of a listing holds: 1000 on S3 and Google
+/// Cloud Storage, 5000 on Azure.
+const LARGEST_PAGE: u64 = 5000;
+
+/// A time no later than the store's answer that holds the object the
+/// listing just gave, which is what a row may be judged against: a row
+/// changed after the store answered may name an object the answer could not
+/// show.
+///
+/// The time an object comes off the stream is too late. A page is fetched
+/// when its first object is asked for and the rest come from memory, so
+/// its last object can come off after the whole page's checks, which under
+/// `--deep` is time enough for a blob to be uploaded and pass as settled.
+/// `object_store` does not say where pages begin, but they hold at most
+/// `stride` objects: the page of an object began less than `stride` objects
+/// back, so a stamp taken before asking for the object that far back or
+/// further came before the answer. The stamps are taken every `stride`
+/// objects and the previous one used, which errs by two strides' time at
+/// most, and on the safe side: a row is left for the next run.
+struct ListingClock {
+    /// `None` when the whole listing is one answer, given when it started.
+    stride: Option<u64>,
+    asked: u64,
+    current: Timestamp,
+    previous: Timestamp,
+}
+
+impl ListingClock {
+    fn new(start: Timestamp, stride: Option<u64>) -> Self {
+        Self {
+            stride,
+            asked: 0,
+            current: start,
+            previous: start,
+        }
+    }
+
+    /// Before asking the listing for its next object.
+    fn asking(&mut self, now: Timestamp) {
+        if self
+            .stride
+            .is_some_and(|stride| self.asked > 0 && self.asked.is_multiple_of(stride))
+        {
+            self.previous = self.current;
+            self.current = now;
+        }
+        self.asked += 1;
+    }
+
+    /// No later than the answer holding the object last asked for, or, once
+    /// the listing has ended, than its last answer.
+    fn passed(&self) -> Timestamp {
+        self.previous
+    }
 }
 
 async fn sweep(
@@ -673,9 +730,14 @@ async fn sweep(
     // object it gained since, a render's, lists after that key: it is
     // the next run's, not a group out of order.
     let resumed = sweep.last;
+    let local = matches!(state.config().storage, StorageConfig::Local { .. });
+    let mut clock = ListingClock::new(now, (!local).then_some(LARGEST_PAGE));
     let mut listing = listing(state, after);
     let mut current: Option<Group> = None;
-    while let Some(object) = listing.try_next().await? {
+    while let Some(object) = {
+        clock.asking(Timestamp::now());
+        listing.try_next().await?
+    } {
         let owner = key::owner(&object.location);
         if owner.is_some() && owner == resumed && current.is_none() {
             continue;
@@ -691,7 +753,7 @@ async fn sweep(
                 let group = Group {
                     id,
                     objects: vec![object],
-                    listed_at: Timestamp::now(),
+                    listed_at: clock.passed(),
                 };
                 if let Some(done) = current.replace(group) {
                     sweep.merge(&mut rows, done).await?;
@@ -706,8 +768,8 @@ async fn sweep(
     sweep.save(true).await;
 
     // The rows after the last prefix listed: the listing passed them all
-    // when it ended, with nothing for them.
-    sweep.listed_at = Timestamp::now();
+    // with its last answer, with nothing for them.
+    sweep.listed_at = clock.passed();
     while let Some(row) = rows.next().await? {
         sweep.check(&row, &[]).await;
         sweep.cursor = row.id;
@@ -1419,6 +1481,32 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Whatever the pages' size up to the stride and however they fall, the
+    /// clock is never later than the answer holding the object.
+    #[test]
+    fn the_listing_clock_is_never_later_than_the_page() {
+        let at = |asked: u64| Timestamp::from_second(1_700_000_000 + asked as i64).unwrap();
+        const STRIDE: u64 = 5;
+        for page in 1..=STRIDE {
+            let mut clock = ListingClock::new(at(0), Some(STRIDE));
+            for object in 0..40 {
+                // Its page is fetched when its first object is asked for.
+                let fetched = at(object - object % page);
+                clock.asking(at(object));
+                assert!(clock.passed() <= fetched, "page {page}, object {object}");
+            }
+            // The end of the listing, after a last answer.
+            clock.asking(at(40));
+            assert!(clock.passed() <= at(39 - 39 % page), "page {page}, the end");
+        }
+        // The local backend's one answer: it stays where it started.
+        let mut clock = ListingClock::new(at(0), None);
+        for object in 0..40 {
+            clock.asking(at(object));
+        }
+        assert_eq!(clock.passed(), at(0));
+    }
 
     #[test]
     fn the_tally_is_saved_by_name() {

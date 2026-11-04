@@ -674,6 +674,71 @@ async fn a_row_that_just_changed_is_left_for_the_next_run() {
     assert!(get_blob(&app, id).await["failed_at"].is_string());
 }
 
+/// A sweep held up on one row, as a slow `--deep` page holds it up, does
+/// not judge a blob uploaded meanwhile by the time it got going again: the
+/// listing looked before that blob existed, and it would be stamped with its
+/// original in the bucket.
+#[tokio::test]
+async fn an_upload_during_a_slow_stretch_is_left_for_the_next_run() {
+    let db = TestDatabase::new().await;
+    let clamd = fake_clamd().await;
+    let app = setup_tuned(db, clamd, |c| c.upload.stale_after = Duration::from_secs(1)).await;
+    let mut before = Vec::new();
+    for _ in 0..8 {
+        before.push(id_of(&ready_blob(&app, &png_bytes(100)).await).to_string());
+    }
+    before.sort_by_key(|id| agrafe::blob::key::order(parse_id(id)));
+    // The first in the sweep's order, listed for its junk, its original
+    // missing: its stamp is what the lock holds up.
+    let first = &before[0];
+    delete_object(&app, &storage_key(&app, first).await).await;
+    put_object(&app, &object_key(first, "junk"), vec![1]).await;
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+
+    let mut lock = app.state.pool().begin().await.unwrap();
+    sqlx::query("SELECT id FROM blobs WHERE id = $1 FOR UPDATE")
+        .bind(parse_id(first))
+        .execute(&mut *lock)
+        .await
+        .unwrap();
+    let state = app.state.clone();
+    let sweep = tokio::spawn(async move { state.audit(Options::default()).await });
+    loop {
+        let waiting: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity \
+             WHERE datname = current_database() AND wait_event_type = 'Lock'",
+        )
+        .fetch_one(app.state.pool())
+        .await
+        .unwrap();
+        if waiting > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    // Wherever their shards put them, most of these sort after the rows the
+    // sweep has got to. They stand still for longer than `stale_after`
+    // before it goes on.
+    let mut during = Vec::new();
+    for _ in 0..8 {
+        during.push(id_of(&ready_blob(&app, &png_bytes(100)).await).to_string());
+    }
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    lock.commit().await.unwrap();
+    let report = sweep.await.unwrap().unwrap();
+
+    assert_eq!(report.count(Finding::MissingOriginal), 1, "{report}");
+    assert!(get_blob(&app, first).await["failed_at"].is_string());
+    for id in &during {
+        assert_eq!(
+            get_blob(&app, id).await["failed_at"],
+            json!(null),
+            "{report}"
+        );
+    }
+}
+
 /// A job whose payload holds a `Progress` carries on from it: the rows up
 /// to its cursor and the keys up to its last one are done, the tally so
 /// far is added to.
