@@ -66,7 +66,7 @@ For example, a `failed` delivery that is retried after `POST
 /blobs/:id/retry` fixed the blob arrives with `blob.state` already `ready`.
 
 A dead render is the other `failed` with `blob.state` at `ready`: the original
-is there to show, and `thumbnail_state` or `preview_state` is still `pending`.
+is there to show, and an entry of `blob.representations` is still `pending`.
 It may even be the first you hear of the blob, when it replaces a `ready`
 still undelivered. A render that succeeds on retry sends no event, as
 representations have none.

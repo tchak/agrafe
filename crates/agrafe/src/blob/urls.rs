@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::envelope::Envelope;
-use super::{Blob, create, repo};
+use super::{Blob, Representations, create, repo};
 use crate::app::Agrafe;
 
 /// Longest a representation request may `wait` for a pending render.
@@ -34,9 +34,16 @@ pub enum MintError {
 }
 
 impl Agrafe {
-    /// The URLs for `blob` with the default options. Never fails.
-    pub fn urls(&self, blob: &Blob) -> BlobUrls {
-        mint(self, blob, &MintOptions::default(), SystemTime::now())
+    /// The URLs for `blob` with the default options, its `representations`
+    /// sealed into the read URLs with the rest of the row. Never fails.
+    pub fn urls(&self, blob: &Blob, representations: &Representations) -> BlobUrls {
+        mint(
+            self,
+            blob,
+            representations,
+            &MintOptions::default(),
+            SystemTime::now(),
+        )
     }
 
     /// URLs with `opts`, checked against the configuration.
@@ -52,7 +59,12 @@ impl Agrafe {
         let blob = repo::find(self.pool(), id)
             .await?
             .ok_or(MintError::NotFound)?;
-        Ok(mint(self, &blob, opts, SystemTime::now()))
+        let representations = self
+            .representations_for(&[id])
+            .await?
+            .remove(&id)
+            .unwrap_or_default();
+        Ok(mint(self, &blob, &representations, opts, SystemTime::now()))
     }
 }
 
@@ -158,7 +170,13 @@ pub(crate) const ENVELOPE_PARAM: &str = "e";
 /// Mint at `now`, for callers that want several blobs to share one expiry.
 /// The read URLs of a `ready` blob are sealed: they carry its envelope,
 /// and expire no later than the blob does.
-pub(crate) fn mint(state: &Agrafe, blob: &Blob, opts: &MintOptions, now: SystemTime) -> BlobUrls {
+pub(crate) fn mint(
+    state: &Agrafe,
+    blob: &Blob,
+    representations: &Representations,
+    opts: &MintOptions,
+    now: SystemTime,
+) -> BlobUrls {
     let signer = state.signer();
     let ttl = &state.config().signing.ttl;
     let mut read_expires = signer.expiry_for(opts.ttl.unwrap_or(ttl.read), now);
@@ -166,7 +184,7 @@ pub(crate) fn mint(state: &Agrafe, blob: &Blob, opts: &MintOptions, now: SystemT
 
     let envelope = Timestamp::try_from(now)
         .ok()
-        .and_then(|now| Envelope::from_head(&blob.head(), now))
+        .and_then(|now| Envelope::from_head(&blob.head(representations.clone()), now))
         .map(|e| e.encode());
     if envelope.is_some()
         && let Some(at) = blob.expires_at

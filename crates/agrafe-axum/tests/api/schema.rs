@@ -4,7 +4,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use agrafe::blob::{BlobState, InputType, PreviewSource, RepresentationState, ScanState};
+use agrafe::blob::{
+    BlobState, InputType, PreviewSource, Representation, RepresentationState, ScanState,
+};
 use agrafe::classify::Category;
 use agrafe::jobs::{JobKind, Priority};
 use sqlx::{PgPool, Postgres, QueryBuilder};
@@ -19,7 +21,12 @@ fn expected() -> BTreeMap<Column, BTreeSet<String>> {
     fn values<T: Copy>(all: &[T], f: impl Fn(T) -> String) -> BTreeSet<String> {
         all.iter().map(|&v| f(v)).collect()
     }
-    let representation = values(RepresentationState::ALL, |v| v.as_str().into());
+    // `disabled` is the absence of a row, never stored.
+    let representation_states: BTreeSet<String> = RepresentationState::ALL
+        .iter()
+        .filter(|s| **s != RepresentationState::Disabled)
+        .map(|s| s.as_str().into())
+        .collect();
     let priority = values(Priority::ALL, |v| v.rank().to_string());
     BTreeMap::from([
         (
@@ -38,10 +45,13 @@ fn expected() -> BTreeMap<Column, BTreeSet<String>> {
             ("blobs", "category"),
             values(Category::ALL, |v| v.as_str().into()),
         ),
-        (("blobs", "thumbnail_state"), representation.clone()),
-        (("blobs", "preview_state"), representation),
         (
-            ("blobs", "preview_source"),
+            ("representations", "kind"),
+            values(Representation::ALL, |v| v.as_str().into()),
+        ),
+        (("representations", "state"), representation_states),
+        (
+            ("representations", "source"),
             values(PreviewSource::ALL, |v| v.as_str().into()),
         ),
         (("blobs", "priority"), priority.clone()),

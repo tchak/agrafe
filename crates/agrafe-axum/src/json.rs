@@ -1,9 +1,12 @@
 //! Response bodies.
 
+use std::collections::BTreeMap;
+
 use serde::Serialize;
 use uuid::Uuid;
 
-use agrafe::blob::{BlobHead, BlobState, RepresentationState, ScanState};
+use agrafe::blob::metadata::RepresentationMetadata;
+use agrafe::blob::{BlobHead, BlobState, Representation, ScanState};
 use agrafe::classify::Category;
 
 /// The full metadata lives in the library, where the webhook delivery
@@ -21,8 +24,9 @@ pub struct PublicBlobResponse {
     pub category: Category,
     pub size: Option<i64>,
     pub scan_state: ScanState,
-    pub thumbnail_state: RepresentationState,
-    pub preview_state: RepresentationState,
+    /// The same object as the private metadata's, for the kinds the
+    /// public port serves, which today are all of them.
+    pub representations: BTreeMap<Representation, RepresentationMetadata>,
 }
 
 impl PublicBlobResponse {
@@ -34,8 +38,7 @@ impl PublicBlobResponse {
             category: blob.category,
             size: blob.size,
             scan_state: blob.scan_state,
-            thumbnail_state: blob.thumbnail_state,
-            preview_state: blob.preview_state,
+            representations: RepresentationMetadata::all(&blob.representations),
         }
     }
 }

@@ -216,8 +216,14 @@ async fn archive_is_built_from_a_manifest_in_parts() {
     // touching the original. The members have renders queued too.
     while run_job(&app, JobKind::Render).await {}
     let rendered = get_blob(&app, id).await;
-    assert_eq!(rendered["preview_state"], "unavailable");
-    assert_eq!(rendered["thumbnail_state"], "unavailable");
+    assert_eq!(
+        rendered["representations"]["preview"]["state"],
+        "unavailable"
+    );
+    assert_eq!(
+        rendered["representations"]["thumbnail"]["state"],
+        "unavailable"
+    );
 }
 
 /// `PUT /blobs/:id` is part one and the finish in one call.

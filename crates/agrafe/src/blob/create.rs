@@ -61,11 +61,9 @@ impl Agrafe {
             Timestamp::now(),
         )?;
         check_office_formats(&new, &config.document)?;
-        if new.attachment.is_none() && new.url.is_none() {
-            return Ok(repo::insert(self.pool(), &new).await?);
-        }
+        // The row and its representations' go together, see `repo::insert`.
         let mut tx = self.pool().begin().await?;
-        let blob = repo::insert(&mut *tx, &new).await?;
+        let blob = repo::insert(&mut tx, &new).await?;
         if let Some(attachment) = &new.attachment {
             let expires_at = config.blobs.default_expires_at(Timestamp::now());
             attachment::insert_with_blob(&mut tx, blob.id, attachment, expires_at).await?;
@@ -168,7 +166,8 @@ pub(crate) struct NewBlob {
     /// `None` only for a blob created attached.
     pub expires_at: Option<Timestamp>,
     pub priority: Priority,
-    /// The representations to render; the others start `disabled`.
+    /// The representations to render, each getting a `pending` row; the
+    /// others have none and are `disabled`.
     pub representations: Vec<Representation>,
     pub attachment: Option<NewAttachment>,
 }

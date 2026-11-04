@@ -21,8 +21,9 @@
       <tr><th>size</th><td>{{ view.blob.size|size }}</td></tr>
       <tr><th>priority</th><td>{{ view.blob.priority }}</td></tr>
       <tr><th>scan</th><td>{{ view.blob.scan_state|badge|safe }}{% if let Some(sig) = view.blob.scan_signature %} {{ sig }}{% endif %}{% if let Some(at) = view.blob.scanned_at %} <span class="opacity-60">at {{ at|ts }}</span>{% endif %}{% if view.blob.skip_virus_scan %} <span class="opacity-60">(skipped on request)</span>{% endif %}</td></tr>
-      <tr><th>thumbnail</th><td>{{ view.blob.thumbnail_state|badge|safe }}</td></tr>
-      <tr><th>preview</th><td>{{ view.blob.preview_state|badge|safe }}{% if let Some(src) = view.blob.preview_source %} <span class="opacity-60">from {{ src }}</span>{% endif %}</td></tr>
+      {% for r in view.representations.iter() %}
+      <tr><th>{{ r.kind }}</th><td>{{ r.state|badge|safe }}{% if let Some(src) = r.source %} <span class="opacity-60">from {{ src }}</span>{% endif %}</td></tr>
+      {% endfor %}
     </tbody>
   </table>
   </div>

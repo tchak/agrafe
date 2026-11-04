@@ -812,13 +812,14 @@ fn listing(
 macro_rules! columns {
     () => {
         "id, state, expires_at, storage_key, size, chunk_size, kek_id, wrapped_key, \
-         encryption_header, checksum_sha256, source_parts, thumbnail_state, thumbnail_size, \
-         preview_state, preview_size, purged_at, updated_at"
+         encryption_header, checksum_sha256, source_parts, purged_at, updated_at"
     };
 }
 
 /// What an audit needs of a row: the state, what objects it accounts for,
-/// their expected lengths, and the envelope for the deep check.
+/// their expected lengths, and the envelope for the deep check. Its
+/// `representations` rows come from a second query per page, see
+/// `attach_representations`.
 #[derive(Debug, sqlx::FromRow)]
 struct Row {
     id: Uuid,
@@ -834,17 +835,30 @@ struct Row {
     encryption_header: Option<Vec<u8>>,
     checksum_sha256: Option<Vec<u8>>,
     source_parts: i32,
-    #[sqlx(try_from = "String")]
-    thumbnail_state: RepresentationState,
-    thumbnail_size: Option<i32>,
-    #[sqlx(try_from = "String")]
-    preview_state: RepresentationState,
-    preview_size: Option<i32>,
     #[sqlx(try_from = "crate::db::NullableTimestamp")]
     purged_at: Option<Timestamp>,
-    /// When the row last changed, by the trigger: a row that changed
-    /// after the listing passed its prefix may describe objects the
-    /// listing could not have shown.
+    /// When the blob's own row last changed, by the trigger: a row that
+    /// changed after the listing passed its prefix may describe objects
+    /// the listing could not have shown. The original's, since a render
+    /// moves its representation's row and not this.
+    #[sqlx(try_from = "jiff_sqlx::Timestamp")]
+    updated_at: Timestamp,
+    /// The blob's rows in `representations`, each judged by its own
+    /// `updated_at`; a kind with none is `disabled` and requires nothing.
+    #[sqlx(skip)]
+    representations: Vec<Derived>,
+}
+
+/// What an audit needs of a `representations` row: which object it
+/// accounts for, the object's expected length, and when it last moved.
+#[derive(Debug, sqlx::FromRow)]
+struct Derived {
+    blob_id: Uuid,
+    #[sqlx(try_from = "String")]
+    kind: Representation,
+    #[sqlx(try_from = "String")]
+    state: RepresentationState,
+    size: Option<i64>,
     #[sqlx(try_from = "jiff_sqlx::Timestamp")]
     updated_at: Timestamp,
 }
@@ -856,12 +870,34 @@ impl Row {
             .and_then(|s| Layout::new(s).ok())
     }
 
-    fn representation(&self, kind: Representation) -> (RepresentationState, Option<i32>) {
-        match kind {
-            Representation::Thumbnail => (self.thumbnail_state, self.thumbnail_size),
-            Representation::Preview => (self.preview_state, self.preview_size),
-        }
+    fn representation(&self, kind: Representation) -> Option<&Derived> {
+        self.representations.iter().find(|r| r.kind == kind)
     }
+}
+
+/// Read the `representations` rows of `rows` in one query, by primary key,
+/// and hand each its own: the audit's second query per page, never one
+/// per blob.
+async fn attach_representations(exec: impl PgExecutor<'_>, rows: &mut [Row]) -> sqlx::Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<Uuid> = rows.iter().map(|row| row.id).collect();
+    let derived: Vec<Derived> = sqlx::query_as(
+        "SELECT blob_id, kind, state, size, updated_at FROM representations \
+         WHERE blob_id = ANY($1)",
+    )
+    .bind(&ids)
+    .fetch_all(exec)
+    .await?;
+    let mut by_blob: HashMap<Uuid, Vec<Derived>> = HashMap::new();
+    for d in derived {
+        by_blob.entry(d.blob_id).or_default().push(d);
+    }
+    for row in rows {
+        row.representations = by_blob.remove(&row.id).unwrap_or_default();
+    }
+    Ok(())
 }
 
 /// A page of [`Rows`], after a shard and an id, as of a time. Its states
@@ -869,7 +905,9 @@ impl Row {
 /// generic plan knowing neither estimates a row or two, sorts a scan of the
 /// whole table and reads it for every page, where `blobs_shard_idx` gives the
 /// page in order. Only the planner's cost comparison would keep a pooled
-/// connection off that plan.
+/// connection off that plan. A `ready` representation needs no term of
+/// its own: it is recorded only while the blob is `ready`, which has its
+/// original.
 const PAGE_SQL: &str = concat!(
     "SELECT ",
     columns!(),
@@ -877,8 +915,7 @@ const PAGE_SQL: &str = concat!(
      WHERE (get_byte(uuid_send(id), 15), id) > ($1, $2) AND purged_at IS NULL \
        AND state NOT IN ('infected', 'expired', 'deleted') \
        AND (expires_at IS NULL OR expires_at > $3) \
-       AND (storage_key IS NOT NULL OR source_parts > 0 \
-            OR thumbnail_state = 'ready' OR preview_state = 'ready') \
+       AND (storage_key IS NOT NULL OR source_parts > 0) \
      ORDER BY get_byte(uuid_send(id), 15), id LIMIT ",
     page!()
 );
@@ -909,9 +946,9 @@ pub async fn explain_page(conn: &mut PgConnection) -> sqlx::Result<String> {
 /// The rows that require objects, in key order (the shard, then the id, see
 /// `blob::key::order`; `blobs_shard_idx`), a page at a time: not
 /// terminal, not purged, not expired at the start of the sweep, and
-/// naming an original, source parts or a `ready` representation. The
-/// rows that require nothing, tombstones among them, are looked up by
-/// id when the listing has objects under their prefix.
+/// naming an original or source parts, which every `ready` representation
+/// comes with. The rows that require nothing, tombstones among them, are
+/// looked up by id when the listing has objects under their prefix.
 struct Rows<'c> {
     conn: &'c mut PgConnection,
     now: Timestamp,
@@ -933,12 +970,13 @@ impl<'c> Rows<'c> {
 
     async fn peek(&mut self) -> sqlx::Result<Option<&Row>> {
         if self.page.is_empty() && !self.done {
-            let rows: Vec<Row> = sqlx::query_as(PAGE_SQL)
+            let mut rows: Vec<Row> = sqlx::query_as(PAGE_SQL)
                 .bind(i32::from(key::shard(self.cursor)))
                 .bind(self.cursor)
                 .bind(self.now.to_sqlx())
                 .fetch_all(&mut *self.conn)
                 .await?;
+            attach_representations(&mut *self.conn, &mut rows).await?;
             match rows.last() {
                 Some(last) => self.cursor = last.id,
                 None => self.done = true,
@@ -954,12 +992,16 @@ impl<'c> Rows<'c> {
     }
 }
 
-/// The row of `id`, whatever its state.
-async fn find(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Result<Option<Row>> {
-    sqlx::query_as(concat!("SELECT ", columns!(), " FROM blobs WHERE id = $1"))
-        .bind(id)
-        .fetch_optional(exec)
-        .await
+/// The row of `id`, whatever its state, with its representations.
+async fn find(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<Row>> {
+    let row: Option<Row> =
+        sqlx::query_as(concat!("SELECT ", columns!(), " FROM blobs WHERE id = $1"))
+            .bind(id)
+            .fetch_optional(&mut *conn)
+            .await?;
+    let mut rows: Vec<Row> = row.into_iter().collect();
+    attach_representations(&mut *conn, &mut rows).await?;
+    Ok(rows.pop())
 }
 
 struct Sweep<'a> {
@@ -1018,7 +1060,8 @@ impl Sweep<'_> {
             // blob awaiting its purge, a `created` one with nothing yet,
             // or no row at all. The lookup also covers a row that appeared
             // after its page was read.
-            match find(self.state.pool(), group.id).await? {
+            let mut conn = self.state.pool().acquire().await?;
+            match find(&mut conn, group.id).await? {
                 Some(row) => self.check(&row, &group.objects).await,
                 None => self.unknown(&group).await,
             }
@@ -1111,14 +1154,21 @@ impl Sweep<'_> {
             // require and nothing to delete.
             return;
         }
-        // What the row requires is checked only once the row has stood
+        // What a row requires is checked only once the row has stood
         // still for `upload.stale_after` before the listing passed it; an
         // object it names may otherwise have been written, or replaced,
         // after the listing looked. An object that young is not judged
         // either, see `young`: the row was read before the listing
-        // reached it and may not have recorded the object yet.
-        let settled = row.updated_at <= self.settled_before();
-        if !settled {
+        // reached it and may not have recorded the object yet. Each
+        // object is judged by its own row: the original by the blob's,
+        // a representation by its own, so a render that finished as the
+        // listing went by leaves that representation unjudged and the
+        // rest judged.
+        let settled_before = self.settled_before();
+        let settled = row.updated_at <= settled_before;
+        let rep_settled =
+            |rep: Option<&Derived>| rep.is_none_or(|rep| rep.updated_at <= settled_before);
+        if !settled || !row.representations.iter().all(|rep| rep_settled(Some(rep))) {
             self.report.unsettled += 1;
         }
 
@@ -1174,12 +1224,14 @@ impl Sweep<'_> {
             }
         }
 
-        for kind in [Representation::Thumbnail, Representation::Preview] {
-            let (rep_state, size) = row.representation(kind);
+        for &kind in Representation::ALL {
+            let rep = row.representation(kind);
+            let rep_state = rep.map_or(RepresentationState::Disabled, |rep| rep.state);
+            let settled = rep_settled(rep);
             match (seen.remove(kind.as_str()), rep_state) {
                 (Some(object), RepresentationState::Ready) => {
                     let want = layout
-                        .zip(size)
+                        .zip(rep.and_then(|rep| rep.size))
                         .map(|(layout, size)| layout.ciphertext_len(size as u64));
                     if let Some(want) = want
                         && want != object.size

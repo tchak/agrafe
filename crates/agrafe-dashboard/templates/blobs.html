@@ -17,7 +17,7 @@
 <div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
 <table class="table table-zebra table-sm">
   <thead>
-    <tr><th>id</th><th>filename</th><th>content type</th><th>category</th><th>size</th><th>state</th><th>scan</th><th>thumbnail</th><th>preview</th><th>attached</th><th>failed at</th><th>created at</th></tr>
+    <tr><th>id</th><th>filename</th><th>content type</th><th>category</th><th>size</th><th>state</th><th>scan</th><th>representations</th><th>attached</th><th>failed at</th><th>created at</th></tr>
   </thead>
   <tbody>
     {% for v in blobs %}
@@ -29,8 +29,7 @@
       <td>{{ v.blob.size|size }}</td>
       <td>{{ v.state|badge|safe }}</td>
       <td>{{ v.blob.scan_state|badge|safe }}</td>
-      <td>{{ v.blob.thumbnail_state|badge|safe }}</td>
-      <td>{{ v.blob.preview_state|badge|safe }}</td>
+      <td>{% for r in v.representations.iter() %}<span class="whitespace-nowrap">{{ r.kind }} {{ r.state|badge|safe }}</span> {% endfor %}</td>
       <td>{% if v.attached %}yes{% else %}no{% endif %}</td>
       <td>{{ v.blob.failed_at|opt_ts }}</td>
       <td>{{ v.blob.created_at|ts }}</td>

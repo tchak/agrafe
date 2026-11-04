@@ -140,11 +140,11 @@ async fn resolve(state: &Agrafe, blob: &BlobHead, kind: Representation) -> Resul
         return Ok(Resolved::NotReady(blob.state_at(now)));
     }
     let version = state.config().media.variant_version;
-    let rep_state = blob.representation_state(kind);
+    let rep_state = blob.representations.state(kind);
     if !matches!(
         rep_state,
         RepresentationState::Pending | RepresentationState::Disabled
-    ) && blob.representation_version(kind) != Some(version)
+    ) && blob.representations.version(kind) != Some(version)
     {
         tracing::info!(blob = %blob.id, kind = %kind, "built with another variant version, regenerating");
         repo::request_representation(state.pool(), blob.id, kind).await?;
@@ -152,7 +152,7 @@ async fn resolve(state: &Agrafe, blob: &BlobHead, kind: Representation) -> Resul
         return Ok(Resolved::Placeholder(RepresentationState::Pending));
     }
     match rep_state {
-        RepresentationState::Ready => match blob.rendered(kind) {
+        RepresentationState::Ready => match blob.representations.rendered(kind) {
             Some(rendered) => Ok(Resolved::Ready(rendered)),
             // The row's CHECKs rule this out. Still, nothing is served
             // without the digest its headers are made from.

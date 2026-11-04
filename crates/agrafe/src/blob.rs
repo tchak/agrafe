@@ -14,6 +14,8 @@ pub mod repo;
 pub mod representation;
 pub mod urls;
 
+use std::collections::HashMap;
+
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -92,6 +94,16 @@ impl Agrafe {
             self.heads().insert(id, &entry);
         }
         Ok(entry)
+    }
+
+    /// The representations of every blob among `ids`, in one query: the
+    /// second query of a listing page, never one per blob. A blob with no
+    /// row has no entry, its kinds all `disabled`.
+    pub async fn representations_for(
+        &self,
+        ids: &[Uuid],
+    ) -> sqlx::Result<HashMap<Uuid, Representations>> {
+        repo::representations_for(self.pool(), ids).await
     }
 
     /// List blobs, newest first. `content_type` is normalised here, and
@@ -334,7 +346,8 @@ pub enum RepresentationState {
     /// this variant version.
     Unavailable,
     /// Turned off when the blob was created; never rendered, never
-    /// regenerated.
+    /// regenerated. Never stored: it is the absence of a row in
+    /// `representations`, see [`Representations::state`].
     Disabled,
 }
 
@@ -346,8 +359,9 @@ agrafe_types::str_enum!(RepresentationState {
     Disabled => "disabled",
 });
 
-/// The two derived representations of a blob.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// The kinds of derived representation a blob can have. The order is the
+/// one they are listed in, the pictures first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Representation {
     /// A WebP fitted into the `media.thumbnail` box; the category icon is
@@ -362,38 +376,6 @@ agrafe_types::str_enum!(Representation {
     Preview => "preview",
 });
 
-impl Representation {
-    /// The `blobs` column holding its state. Code-owned names, safe to
-    /// splice into SQL.
-    pub(crate) fn state_column(self) -> &'static str {
-        match self {
-            Representation::Thumbnail => "thumbnail_state",
-            Representation::Preview => "preview_state",
-        }
-    }
-
-    pub(crate) fn version_column(self) -> &'static str {
-        match self {
-            Representation::Thumbnail => "thumbnail_variant_version",
-            Representation::Preview => "preview_variant_version",
-        }
-    }
-
-    pub(crate) fn digest_column(self) -> &'static str {
-        match self {
-            Representation::Thumbnail => "thumbnail_sha256",
-            Representation::Preview => "preview_sha256",
-        }
-    }
-
-    pub(crate) fn size_column(self) -> &'static str {
-        match self {
-            Representation::Thumbnail => "thumbnail_size",
-            Representation::Preview => "preview_size",
-        }
-    }
-}
-
 /// What the row records of a rendered representation: enough to answer a
 /// conditional or `HEAD` request without reading the object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -405,11 +387,87 @@ pub struct Rendered {
 }
 
 impl Rendered {
-    fn from_columns(sha256: Option<&[u8]>, size: Option<i32>) -> Option<Self> {
+    pub(crate) fn from_columns(sha256: Option<&[u8]>, size: Option<i64>) -> Option<Self> {
         Some(Self {
             sha256: sha256?.try_into().ok()?,
             size: u64::try_from(size?).ok()?,
         })
+    }
+}
+
+/// One derived representation of a blob, a row of `representations`: one
+/// per blob and kind the blob asked for at creation. A kind with no row
+/// is `disabled`, see [`Representations`]. See [DESIGN.md, "Derived
+/// representations"].
+///
+/// [DESIGN.md, "Derived representations"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#derived-representations
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepresentationRow {
+    /// Which representation this is.
+    pub kind: Representation,
+    /// Where its rendering stands; never `disabled`.
+    pub state: RepresentationState,
+    /// The kind's version it was last built with, `media.variant_version`
+    /// for the pictures; another one makes the read path regenerate it.
+    /// `None` before its first render.
+    pub version: Option<i32>,
+    /// The digest and size of what was rendered, recorded with `ready` and
+    /// cleared with any other state, which `CHECK`s on the table hold.
+    pub rendered: Option<Rendered>,
+    /// Preview only: what it was rendered from, `None` without a rendered
+    /// preview.
+    pub source: Option<PreviewSource>,
+    /// Preview only: `true` when it is `failed` because a tool ran out of
+    /// time, which is not for the thumbnail to try again with another.
+    pub timed_out: bool,
+}
+
+/// The representations a blob has rows for, by kind, at most one of
+/// each. A kind that is not there was left out of `representations` at
+/// creation and is `disabled`: four of the kinds to come are opt-in, and a
+/// row per disabled kind would be billions of rows saying nothing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Representations(Vec<RepresentationRow>);
+
+impl Representations {
+    /// The representations in `rows`, in [`Representation`] order.
+    pub fn new(mut rows: Vec<RepresentationRow>) -> Self {
+        rows.sort_by_key(|row| row.kind);
+        Self(rows)
+    }
+
+    /// The row of `kind`, when the blob has one.
+    pub fn get(&self, kind: Representation) -> Option<&RepresentationRow> {
+        self.0.iter().find(|row| row.kind == kind)
+    }
+
+    /// The state of `kind`: `disabled` when the blob has no row for it.
+    pub fn state(&self, kind: Representation) -> RepresentationState {
+        self.get(kind)
+            .map_or(RepresentationState::Disabled, |row| row.state)
+    }
+
+    /// The version `kind` was last rendered with; `None` before its first
+    /// render, or without a row.
+    pub fn version(&self, kind: Representation) -> Option<i32> {
+        self.get(kind).and_then(|row| row.version)
+    }
+
+    /// What the row of `kind` records of its rendering.
+    pub fn rendered(&self, kind: Representation) -> Option<Rendered> {
+        self.get(kind).and_then(|row| row.rendered)
+    }
+
+    /// Every row, in [`Representation`] order.
+    pub fn iter(&self) -> std::slice::Iter<'_, RepresentationRow> {
+        self.0.iter()
+    }
+
+    /// Whether a render is to come: some representation is `pending`.
+    pub fn any_pending(&self) -> bool {
+        self.0
+            .iter()
+            .any(|row| row.state == RepresentationState::Pending)
     }
 }
 
@@ -424,6 +482,7 @@ pub enum PreviewSource {
     /// resolution.
     EmbeddedImage,
     /// The geometry of a GeoJSON file drawn over a map background.
+    #[serde(rename = "geojson")]
     GeoJson,
     /// The waypoints, routes and tracks of a GPX file drawn over a map
     /// background.
@@ -577,42 +636,11 @@ pub struct Blob {
     /// rewriting objects.
     pub chunk_size: Option<i32>,
 
-    /// Where the thumbnail's rendering stands.
-    #[sqlx(try_from = "String")]
-    pub thumbnail_state: RepresentationState,
-    /// Where the preview's rendering stands.
-    #[sqlx(try_from = "String")]
-    pub preview_state: RepresentationState,
-    /// What the preview was rendered from, a [`PreviewSource`] as text;
-    /// written with the preview's state, `None` without a rendered preview.
-    pub preview_source: Option<String>,
-    /// `true` when the preview is `failed` because a tool ran out of time,
-    /// which is not for the thumbnail to try again with another; `None`
-    /// otherwise, and meaningful only beside `failed`.
-    pub preview_timed_out: Option<bool>,
-    /// The `media.variant_version` the thumbnail was last rendered with;
-    /// another one makes the read path regenerate it.
-    pub thumbnail_variant_version: Option<i32>,
-    /// The `media.variant_version` the preview was last rendered with;
-    /// another one makes the read path regenerate it.
-    pub preview_variant_version: Option<i32>,
-    /// SHA-256 of the rendered thumbnail WebP, recorded with `ready` and
-    /// cleared with any other state; see [`Rendered`].
-    pub thumbnail_sha256: Option<Vec<u8>>,
-    /// Size in bytes of the rendered thumbnail WebP, alongside
-    /// `thumbnail_sha256`.
-    pub thumbnail_size: Option<i32>,
-    /// SHA-256 of the rendered preview WebP, recorded with `ready` and
-    /// cleared with any other state; see [`Rendered`].
-    pub preview_sha256: Option<Vec<u8>>,
-    /// Size in bytes of the rendered preview WebP, alongside
-    /// `preview_sha256`.
-    pub preview_size: Option<i32>,
-
     /// When the row was inserted.
     #[sqlx(try_from = "jiff_sqlx::Timestamp")]
     pub created_at: Timestamp,
-    /// When the row last changed, kept by a trigger.
+    /// When the row last changed, kept by a trigger. A render finishing
+    /// moves its own row in `representations`, not this.
     #[sqlx(try_from = "jiff_sqlx::Timestamp")]
     pub updated_at: Timestamp,
     /// When the upload in flight, or the last one, entered `uploading`:
@@ -668,23 +696,6 @@ impl Blob {
         self.state_at(now) == BlobState::Ready
     }
 
-    /// The state of the `kind` representation.
-    pub fn representation_state(&self, kind: Representation) -> RepresentationState {
-        match kind {
-            Representation::Thumbnail => self.thumbnail_state,
-            Representation::Preview => self.preview_state,
-        }
-    }
-
-    /// The variant version the `kind` representation was last rendered
-    /// with; `None` before its first render.
-    pub fn representation_version(&self, kind: Representation) -> Option<i32> {
-        match kind {
-            Representation::Thumbnail => self.thumbnail_variant_version,
-            Representation::Preview => self.preview_variant_version,
-        }
-    }
-
     /// Blobs are write-once: a `PUT` may start only before any bytes exist.
     pub(crate) fn accepts_upload(&self, now: Timestamp) -> bool {
         self.state_at(now) == BlobState::Created
@@ -699,9 +710,10 @@ impl Blob {
         self.storage_key.is_some() || self.source_parts > 0 || self.upload_started_at.is_some()
     }
 
-    /// The row as the read routes see it, for a handler that holds the
+    /// The row as the read routes see it, with the blob's
+    /// `representations` read beside it, for a handler that holds the
     /// whole blob and answers as the public port does.
-    pub fn head(&self) -> BlobHead {
+    pub fn head(&self, representations: Representations) -> BlobHead {
         BlobHead {
             id: self.id,
             state: self.state,
@@ -717,15 +729,8 @@ impl Blob {
             wrapped_key: self.wrapped_key.clone(),
             encryption_header: self.encryption_header.clone(),
             chunk_size: self.chunk_size,
-            thumbnail_state: self.thumbnail_state,
-            preview_state: self.preview_state,
-            thumbnail_variant_version: self.thumbnail_variant_version,
-            preview_variant_version: self.preview_variant_version,
-            thumbnail_sha256: self.thumbnail_sha256.clone(),
-            thumbnail_size: self.thumbnail_size,
-            preview_sha256: self.preview_sha256.clone(),
-            preview_size: self.preview_size,
             uploaded_at: self.uploaded_at,
+            representations,
         }
     }
 }
@@ -750,9 +755,10 @@ pub(crate) fn state_at(
 }
 
 /// What serving a blob needs of its row: identity, state, the envelope and
-/// the representation states. `Blob` carries the upload, scan and source
+/// its representations. `Blob` carries the upload, scan and source
 /// bookkeeping besides, which a download has no use for. The read routes
-/// fetch this and nothing more; see `repo::find_head`. Neither carries a
+/// fetch this and nothing more, the `representations` rows joined to the
+/// blob's in the one query; see `repo::find_head`. Neither carries a
 /// `rows` blob's column declaration, see `repo::sheets`.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct BlobHead {
@@ -788,43 +794,16 @@ pub struct BlobHead {
     pub encryption_header: Option<Vec<u8>>,
     /// See [`Blob::chunk_size`].
     pub chunk_size: Option<i32>,
-    /// See [`Blob::thumbnail_state`].
-    #[sqlx(try_from = "String")]
-    pub thumbnail_state: RepresentationState,
-    /// See [`Blob::preview_state`].
-    #[sqlx(try_from = "String")]
-    pub preview_state: RepresentationState,
-    /// See [`Blob::thumbnail_variant_version`].
-    pub thumbnail_variant_version: Option<i32>,
-    /// See [`Blob::preview_variant_version`].
-    pub preview_variant_version: Option<i32>,
-    /// See [`Blob::thumbnail_sha256`].
-    pub thumbnail_sha256: Option<Vec<u8>>,
-    /// See [`Blob::thumbnail_size`].
-    pub thumbnail_size: Option<i32>,
-    /// See [`Blob::preview_sha256`].
-    pub preview_sha256: Option<Vec<u8>>,
-    /// See [`Blob::preview_size`].
-    pub preview_size: Option<i32>,
     /// See [`Blob::uploaded_at`].
     #[sqlx(try_from = "crate::db::NullableTimestamp")]
     pub uploaded_at: Option<Timestamp>,
+    /// The blob's rows in `representations`, folded in by the query that
+    /// read the blob's own.
+    #[sqlx(skip)]
+    pub representations: Representations,
 }
 
 impl BlobHead {
-    /// What the row records of the rendered `kind`, when it records both
-    /// the digest and the size.
-    pub(crate) fn rendered(&self, kind: Representation) -> Option<Rendered> {
-        match kind {
-            Representation::Thumbnail => {
-                Rendered::from_columns(self.thumbnail_sha256.as_deref(), self.thumbnail_size)
-            }
-            Representation::Preview => {
-                Rendered::from_columns(self.preview_sha256.as_deref(), self.preview_size)
-            }
-        }
-    }
-
     /// See [`Blob::state_at`].
     pub fn state_at(&self, now: Timestamp) -> BlobState {
         state_at(self.state, self.expires_at, now)
@@ -838,22 +817,6 @@ impl BlobHead {
     /// See [`Blob::is_readable`].
     pub fn is_readable(&self, now: Timestamp) -> bool {
         self.state_at(now) == BlobState::Ready
-    }
-
-    /// See [`Blob::representation_state`].
-    pub fn representation_state(&self, kind: Representation) -> RepresentationState {
-        match kind {
-            Representation::Thumbnail => self.thumbnail_state,
-            Representation::Preview => self.preview_state,
-        }
-    }
-
-    /// See [`Blob::representation_version`].
-    pub fn representation_version(&self, kind: Representation) -> Option<i32> {
-        match kind {
-            Representation::Thumbnail => self.thumbnail_variant_version,
-            Representation::Preview => self.preview_variant_version,
-        }
     }
 }
 

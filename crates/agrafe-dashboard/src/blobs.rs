@@ -17,7 +17,7 @@ use agrafe::Agrafe;
 use agrafe::attachment::{self, Attachment};
 use agrafe::blob::urls::encode_segment;
 use agrafe::blob::{self, ListParams};
-use agrafe::blob::{Blob, BlobState, RetryError, ScanState};
+use agrafe::blob::{Blob, BlobState, Representations, RetryError, ScanState};
 use agrafe::classify::Category;
 use agrafe::jobs;
 
@@ -105,13 +105,15 @@ impl BlobsQuery {
     }
 }
 
-/// A blob with the state it is in now and whether anything is attached to
-/// it, which the row alone does not say.
+/// A blob with the state it is in now, whether anything is attached to
+/// it, which the row alone does not say, and its representations, which
+/// have rows of their own.
 #[derive(Debug, Clone)]
 pub struct BlobView {
     pub blob: Blob,
     pub state: BlobState,
     pub attached: bool,
+    pub representations: Representations,
 }
 
 #[derive(Template, WebTemplate)]
@@ -134,6 +136,9 @@ async fn list(
     Query(query): Query<BlobsQuery>,
 ) -> Result<BlobsPage, DashboardError> {
     let page = agrafe.list_blobs(query.params()).await?;
+    let ids: Vec<Uuid> = page.items.iter().map(|b| b.id).collect();
+    // The page's representations in one query, never one per row.
+    let mut representations = agrafe.representations_for(&ids).await?;
     let now = Timestamp::now();
     let blobs = page
         .items
@@ -143,6 +148,7 @@ async fn list(
             // Whether any attachment exists is whether the row has no
             // expiry, see "Attachments": no query of `attachments`.
             attached: blob.expires_at.is_none(),
+            representations: representations.remove(&blob.id).unwrap_or_default(),
             blob,
         })
         .collect();
@@ -189,12 +195,16 @@ async fn show(
         ..Default::default()
     };
     let ids = [id];
-    let (blob, attachments, jobs) = futures::try_join!(
+    let (blob, mut representations, attachments, jobs) = futures::try_join!(
         agrafe.find_blob(id).map_err(DashboardError::from),
+        agrafe
+            .representations_for(&ids)
+            .map_err(DashboardError::from),
         agrafe.attachments_for(&ids).map_err(DashboardError::from),
         agrafe.list_jobs(&params).map_err(DashboardError::from),
     )?;
     let blob = blob.ok_or(DashboardError::NotFound)?;
+    let representations = representations.remove(&id).unwrap_or_default();
     let mut attachments = attachments;
     let attachments_truncated = attachments.len() > attachment::INLINE_LIMIT;
     attachments.truncate(attachment::INLINE_LIMIT);
@@ -209,6 +219,7 @@ async fn show(
         view: BlobView {
             state: blob.state_at(Timestamp::now()),
             attached: !attachments.is_empty(),
+            representations,
             blob,
         },
         thumbnail,

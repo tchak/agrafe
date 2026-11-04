@@ -349,7 +349,10 @@ async fn a_dead_render_reports_failed_on_a_ready_blob() {
     verify(&hit);
     assert_eq!(hit.body["event"], "failed");
     assert_eq!(hit.body["blob"]["state"], "ready");
-    assert_eq!(hit.body["blob"]["thumbnail_state"], "pending");
+    assert_eq!(
+        hit.body["blob"]["representations"]["thumbnail"]["state"],
+        "pending"
+    );
     assert!(hit.body["blob"]["failed_at"].is_string(), "{}", hit.body);
 
     let (status, body) = call(
@@ -360,7 +363,10 @@ async fn a_dead_render_reports_failed_on_a_ready_blob() {
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
     assert!(run_job(&app, JobKind::Render).await);
     let shown = get_blob(&app, id).await;
-    assert_eq!(shown["thumbnail_state"], "ready", "{shown}");
+    assert_eq!(
+        shown["representations"]["thumbnail"]["state"], "ready",
+        "{shown}"
+    );
     assert_eq!(shown["failed_at"], Value::Null, "{shown}");
     assert!(
         notify_job(&app, id).await.is_none(),

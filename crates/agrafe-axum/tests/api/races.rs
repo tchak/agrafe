@@ -311,13 +311,13 @@ async fn render_that_outlives_the_purge_leaves_nothing() {
     hold.release();
     assert!(job.await.unwrap());
     assert!(stored_objects(&app).await.is_empty());
-    let states: (String, String) =
-        sqlx::query_as("SELECT preview_state, thumbnail_state FROM blobs WHERE id = $1")
+    let states: Vec<String> =
+        sqlx::query_scalar("SELECT state FROM representations WHERE blob_id = $1 ORDER BY kind")
             .bind(parse_id(&id))
-            .fetch_one(app.state.pool())
+            .fetch_all(app.state.pool())
             .await
             .unwrap();
-    assert_eq!(states, ("pending".to_string(), "pending".to_string()));
+    assert_eq!(states, ["pending", "pending"]);
 }
 
 /// Every due render, to the end.
@@ -373,8 +373,7 @@ async fn a_second_render_waits_for_the_one_running() {
     render_all(&app).await;
     sql(
         &app,
-        "UPDATE blobs SET thumbnail_variant_version = 0, preview_variant_version = 0 \
-         WHERE id = $1",
+        "UPDATE representations SET version = 0 WHERE blob_id = $1",
         &id,
     )
     .await;
@@ -401,8 +400,14 @@ async fn a_second_render_waits_for_the_one_running() {
     hold.release();
     assert!(within("the job", first).await.unwrap());
     let shown = get_blob(&app, &id).await;
-    assert_eq!(shown["thumbnail_state"], "ready", "{shown}");
-    assert_eq!(shown["preview_state"], "ready", "{shown}");
+    assert_eq!(
+        shown["representations"]["thumbnail"]["state"], "ready",
+        "{shown}"
+    );
+    assert_eq!(
+        shown["representations"]["preview"]["state"], "ready",
+        "{shown}"
+    );
 
     due_now(&app, &id).await;
     assert!(run_job(&app, JobKind::Render).await);
@@ -421,7 +426,7 @@ async fn a_representation_asked_for_during_a_render_is_not_lost() {
     render_all(&app).await;
     sql(
         &app,
-        "UPDATE blobs SET thumbnail_variant_version = 0 WHERE id = $1",
+        "UPDATE representations SET version = 0 WHERE blob_id = $1 AND kind = 'thumbnail'",
         &id,
     )
     .await;
@@ -433,7 +438,7 @@ async fn a_representation_asked_for_during_a_render_is_not_lost() {
     hold.reached().await;
     sql(
         &app,
-        "UPDATE blobs SET preview_variant_version = 0 WHERE id = $1",
+        "UPDATE representations SET version = 0 WHERE blob_id = $1 AND kind = 'preview'",
         &id,
     )
     .await;
@@ -443,12 +448,21 @@ async fn a_representation_asked_for_during_a_render_is_not_lost() {
     hold.release();
     assert!(within("the job", first).await.unwrap());
     let shown = get_blob(&app, &id).await;
-    assert_eq!(shown["thumbnail_state"], "ready", "{shown}");
-    assert_eq!(shown["preview_state"], "pending", "{shown}");
+    assert_eq!(
+        shown["representations"]["thumbnail"]["state"], "ready",
+        "{shown}"
+    );
+    assert_eq!(
+        shown["representations"]["preview"]["state"], "pending",
+        "{shown}"
+    );
 
     due_now(&app, &id).await;
     assert!(run_job(&app, JobKind::Render).await);
-    assert_eq!(get_blob(&app, &id).await["preview_state"], "ready");
+    assert_eq!(
+        get_blob(&app, &id).await["representations"]["preview"]["state"],
+        "ready"
+    );
     assert_eq!(renders(&app, &id).await, []);
 }
 
@@ -471,13 +485,16 @@ async fn a_lapsed_older_render_does_not_hold_the_next_one() {
     .await;
     sql(
         &app,
-        "UPDATE blobs SET preview_variant_version = 0 WHERE id = $1",
+        "UPDATE representations SET version = 0 WHERE blob_id = $1 AND kind = 'preview'",
         &id,
     )
     .await;
     ask_for(&app, &id, "preview").await;
     assert!(run_job(&app, JobKind::Render).await);
-    assert_eq!(get_blob(&app, &id).await["preview_state"], "ready");
+    assert_eq!(
+        get_blob(&app, &id).await["representations"]["preview"]["state"],
+        "ready"
+    );
 }
 
 /// The row changes as the built object is about to become visible: an

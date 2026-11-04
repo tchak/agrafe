@@ -74,8 +74,9 @@ current time.
 Alongside its state, a blob tracks:
 
 - `scan_state`: `pending`, `clean`, `infected` or `skipped`;
-- `thumbnail_state` and `preview_state`: `pending`, `ready`, `failed`,
-  `unavailable` or `disabled` (see [Previews and
+- `representations`: one entry per kind it asked for, `thumbnail` and
+  `preview`, each `pending`, `ready`, `failed` or `unavailable`; a kind
+  left out at creation is absent, `disabled` (see [Previews and
   thumbnails](representations.md));
 - `failed_at` and `last_error`, set when the job that was to move the blob
   along ran out of attempts (see [Jobs and retries](jobs.md)).

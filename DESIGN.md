@@ -53,7 +53,15 @@ database or a first deployment holds.
   request.
 - Per-blob cost is multiplied by billions: a column, an index, a row
   per event, an extra object per blob or a request to the store per
-  read is weighed at that multiple, in storage and in money.
+  read is weighed at that multiple, in storage and in money. The
+  `representations` table is one such weighing: a row per blob and kind
+  the blob asked for, two by default, about 110 bytes each plus a
+  40-byte index entry, roughly 300 GB at a billion blobs against the
+  60 GB the same facts cost as columns on `blobs`. Small next to the
+  `blobs` table and its fourteen indexes, and the opt-in kinds cost
+  nothing on the blobs that do not ask for them, where a wide row
+  would carry a `disabled` state per kind per blob; the lookup is a
+  primary-key range scan of at most six rows.
 - Hot rows and global counters do not exist. Nothing updates one row
   per upload or per read; aggregates come from metrics, estimates
   (`pg_class.reltuples`) or bounded samples.
@@ -130,7 +138,7 @@ No signature. Reachable only from trusted networks.
 |---|---|---|
 | `POST` | `/blobs` | Create a blob (metadata only, no bytes yet) |
 | `GET` | `/blobs` | List blobs, cursor paginated, filterable |
-| `GET` | `/blobs/:id` | Full metadata, attachments, ready-made signed public URLs and, once `ready`, the envelope |
+| `GET` | `/blobs/:id` | Full metadata, its `representations` by kind, attachments, ready-made signed public URLs and, once `ready`, the envelope |
 | `PUT` | `/blobs/:id` | Upload bytes, once: the file of a `raw` or `multipart` blob, the whole source of a `rows`, `archive` or `document` one |
 | `PUT` | `/blobs/:id/parts/:n` | Append part `n` of a `rows`, `archive` or `document` source |
 | `POST` | `/blobs/:id/finish` | Seal a source sent in parts and enqueue its build |
@@ -161,7 +169,7 @@ handlers are shared.
 | Method | Path | Purpose |
 |---|---|---|
 | `PUT` | `/blobs/:token/:id` | Upload bytes, only `raw` and `multipart` |
-| `GET` | `/blobs/:token/:id` | Reduced metadata: id, state, scan state, representation states, content type, category, size. `404` once the blob is `expired`, `infected` or `deleted` |
+| `GET` | `/blobs/:token/:id` | Reduced metadata: id, state, scan state, the `representations` by kind, content type, category, size. `404` once the blob is `expired`, `infected` or `deleted` |
 | `GET` | `/blobs/:token/:id/original/:filename` | Original bytes, supports `Range` |
 | `GET` | `/blobs/:token/:id/preview/:filename` | WebP preview or 404 |
 | `GET` | `/blobs/:token/:id/thumbnail/:filename` | WebP thumbnail, always 200 |
@@ -472,8 +480,11 @@ lookup. A sealed URL carries the row instead: the **envelope**, one opaque
 string with everything serving a `ready` blob needs (the wrapped data key
 and its KEK id, the stream header and segment size, the size, checksum and
 content type of the original, the category, and for each representation
-its state, variant version, digest and size; format in
-`blob::envelope`). It travels as the signed query parameter `e`, so it is
+the blob has a row for, its kind, state, version, digest and size, a
+counted list in which a `disabled` kind is absent as it is in the table;
+format in `blob::envelope`). The list carries the kinds the public port
+serves, the pictures; a data representation is private-port only and is
+never sealed. It travels as the signed query parameter `e`, so it is
 covered by the signature like the rest of the target, and the wrapped key
 is bound to the blob id, so nothing in it needs protecting on its own. The
 public read routes with an `e` verify the signature, decode the envelope
@@ -696,9 +707,11 @@ which needs its expiry: one the backend holds on to stays.
 Separate from the blob state, each blob tracks `scan_state`
 (`pending`, `clean`, `infected`, `skipped`), `scan_signature` (what clamd
 found, for `infected`, whichever path scanned the file; private metadata
-only), a state per derived representation (`pending`, `ready`, `failed`,
-`unavailable`, `disabled`), and `failed_at` with `last_error` when the job
-that was to move it along died (see "Jobs").
+only), and `failed_at` with `last_error` when the job that was to move it
+along died (see "Jobs"). Each derived representation it asked for has a
+row of its own in `representations` with its state (`pending`, `ready`,
+`failed`, `unavailable`; a kind with no row is `disabled`), see "Derived
+representations".
 
 ### Attachments
 
@@ -2149,14 +2162,46 @@ handler sets it back to `pending`, enqueues a generation job (deduplicated
 with any pending one) and serves the placeholder. Bumping the version in
 config therefore regenerates everything on demand, `failed` and
 `unavailable` ones included, since a new renderer may do better. Each
-representation records the version it was built with
-(`thumbnail_variant_version`, `preview_variant_version`).
+representation records the version it was built with (`version` on its
+row).
 
-A representation left out of `representations` at creation is `disabled`:
-set once, never `pending`, so neither the eager render nor the lazy repair
-touches it, and a blob with both disabled gets no render job at all. The
-thumbnail endpoint serves the icon for it and the preview endpoint `404`,
-each with `disabled` in the header, so a client can tell a choice from an
+A representation is a row of the `representations` table, one per blob
+and kind, keyed by the pair and nothing else: nothing refers to a
+representation by an id of its own, jobs are per blob and objects are
+`<shard>/<blob id>/<kind>`, so the primary key is the one-per-kind
+guarantee, the lookup path and the table's only index. The row carries
+the state, the version, the digest and size of what was rendered (held
+to `ready` by a `CHECK` pair), the kind's own columns, nullable with a
+`CHECK` each (`source` and `timed_out` for the preview; the kinds are few
+and known, and a `detail jsonb` would lose the `CHECK`s and the typed
+decode for nothing), and an `updated_at` of its own, kept by the trigger
+for the audit. The `blobs` row keeps nothing about representations, and
+`blobs.updated_at` does not move when a render finishes: the trigger on
+`blobs` fires for the blob's own changes only. Creation inserts the rows
+for the requested kinds, `pending`, in the blob's transaction; a render
+finishing or a repair asking for one again is an update on the row with
+the blob's state as its condition, in one statement. The rows live and
+die with the blob: a terminal blob keeps them until the reaper prunes the
+tombstone, and `ON DELETE CASCADE` takes them. A `representations jsonb`
+column on `blobs` was considered and rejected (no join, but a conditional
+update on a nested path is clumsy, nothing checks it, and the audit cannot
+index it); so was a blob row per representation, Active Storage's variant
+records, which pay for an identity, a key, a checksum and a purge cycle
+of their own, none of which a representation that lives and dies with its
+blob needs. In the metadata the rows appear as one `representations`
+object keyed by kind, each entry with its `state` and, with `ready`, the
+`checksum` and `size`, the preview's with its `source`; `version` and
+`timed_out` stay private to the row.
+
+A representation left out of `representations` at creation is `disabled`,
+which is the absence of a row: never stored, so neither the eager render
+nor the lazy repair finds it, a blob with both left out gets no render
+job at all, and the kind is absent from the metadata's object. Four of
+the kinds to come are opt-in, and a row per disabled kind would be
+billions of rows saying nothing. `RepresentationState::Disabled` stays in
+Rust and in the API, mapped from the missing row: the thumbnail endpoint
+serves the icon for it and the preview endpoint `404`, each with
+`disabled` in the header, so a client can tell a choice from an
 inability. A thumbnail whose preview is disabled is rendered on its own,
 through the preview sources straight into the thumbnail box: the same
 picture, only the larger object spared. The choice is final, as the blob
@@ -2232,8 +2277,8 @@ on it. A thumbnail rendered on its own, the preview disabled, follows the
 same rule from its own attempt at the picture. The exception is a
 timeout: a file that exhausted one tool's time limit is not handed to a
 second for as long again, and the thumbnail is `failed` with the
-preview. The row keeps that apart from any other `failed`
-(`preview_timed_out`, null on every other row), so a thumbnail rendered by a
+preview. The preview's row keeps that apart from any other `failed`
+(`timed_out`, null on every other row), so a thumbnail rendered by a
 later job over the verdict, after a version bump asked for the preview first
 or a retry of a thumbnail whose write failed, gets the same answer: one file,
 one verdict, in whatever order it was asked for. A preview from another version, or whose object is gone or does
@@ -2310,11 +2355,11 @@ objects, and the associated data is the object's name within the blob,
 as for the original.
 They are small and served whole, with a strong `ETag` of the content and
 `Cache-Control: private, max-age=86400`: not `immutable`, since a version
-bump changes them under the same URL. The row records the SHA-256 and the
-size of each rendered WebP (`thumbnail_sha256`, `thumbnail_size`, and the
-same for the preview), set with `ready` and cleared with any other state,
-which `CHECK`s on the table hold, so a conditional request answered `304`
-and a `HEAD` never read the object; only a `GET` with a body to send does.
+bump changes them under the same URL. Each representation's row records
+the SHA-256 and the size of the rendered WebP (`sha256`, `size`), set with
+`ready` and cleared with any other state, which `CHECK`s on the table
+hold, so a conditional request answered `304` and a `HEAD` never read the
+object; only a `GET` with a body to send does.
 
 Every picture or placeholder a representation route serves carries
 `X-Representation-State`, so a client can tell a placeholder from the final
@@ -2327,9 +2372,13 @@ the "upload then show it" flow.
 
 The read routes are the hot path, and the row lookup is the one query on
 it. They fetch a `BlobHead`, the columns serving needs (identity, state,
-the envelope, the representation states), never the whole row: a `rows`
-blob keeps its column declaration on the row as JSON, up to megabytes a
-download has no use for.
+the envelope), never the whole row: a `rows` blob keeps its column
+declaration on the row as JSON, up to megabytes a download has no use
+for. The blob's `representations` rows come in the same query, a `LEFT
+JOIN` on the blob id that yields at most one row per kind, folded into the
+head in Rust; the listing, `find_many` and the dashboard's page fetch
+the representations of a page with one more query, `WHERE blob_id =
+ANY(...)`, never one per blob.
 
 A sealed URL (see "Sealed URLs") carries the row and skips the lookup
 altogether. Otherwise it is answered from an in-process cache for a row
@@ -2508,8 +2557,8 @@ reach a client.
 Preview exists for every file we can render, not only images. The UI must key
 on "has preview", never on category. Sources, in order:
 
-1. **Images**: decode and transcode. `preview_source = image`.
-2. **Embedded image extraction** (`preview_source = embedded_image`): a
+1. **Images**: decode and transcode. The preview's `source` is `image`.
+2. **Embedded image extraction** (`source = embedded_image`): a
    one-page PDF whose single image XObject covers at least
    `media.embedded_image.min_coverage` of the page box (the part of the
    image inside it), drawn upright on a page the viewer does not turn
@@ -2533,7 +2582,7 @@ on "has preview", never on category. Sources, in order:
    containing a screenshot. The parsing runs in the `agrafe-extract`
    helper, its own binary executed in the sandbox, never in a server
    process.
-3. **Map** (`preview_source = geojson`, `gpx`, `kml`, `shapefile` or `gml`,
+3. **Map** (`source = geojson`, `gpx`, `kml`, `shapefile` or `gml`,
    one value per format, so the row says what was drawn; a KMZ is a KML
    document in a ZIP, and what was drawn is that document): a GeoJSON,
    GPX, KML, KMZ or GML file's or a zipped shapefile's geometry drawn over a map background, the way a form's
@@ -2856,8 +2905,8 @@ on "has preview", never on category. Sources, in order:
 A document that is not one of these has no preview, whether PDF or office:
 the first page of a PDF is its thumbnail (see "Thumbnail"), not a preview.
 
-Files with no source answer `404` from the preview endpoint, with
-`preview_state = unavailable`; so do `pending`, `failed` and `disabled`
+Files with no source answer `404` from the preview endpoint, the preview
+`unavailable`; so do `pending`, `failed` and `disabled`
 ones, each with its state in `X-Representation-State` and a message saying
 why. A blob that
 is not `ready` answers `409` as the original does.
@@ -3636,10 +3685,12 @@ database, so the objects of a blob come as one group and the rows between
 two groups are the ones the listing has nothing for; a key whose id is
 any other spelling of a UUID, or sits under a shard that is not its own,
 is foreign, not a prefix. The listing is one request per thousand
-objects, the rows one query per thousand, paged in the same order through
+objects, the rows one query per thousand and their `representations` one
+more, paged in the same order through
 the expression index `blobs_shard_idx` over the rows that require objects
-(an original, source parts, a `ready` representation; not terminal, not
-purged), and a listed prefix with no such row is looked up by id, since a
+(an original or source parts, which every `ready` representation comes
+with, since one is recorded only while the blob is `ready`; not terminal,
+not purged), and a listed prefix with no such row is looked up by id, since a
 tombstone's leftovers and a `created` blob's stray object are orphans, and
 a prefix with no row at all is not one. A backend that listed a prefix out
 of order would be refused (`AuditError::Unsorted`), not misread. The local backend walks its
@@ -3686,10 +3737,14 @@ used, and the local backend's one answer is timed at the start). The listing
 and the row are read at different moments, and a row that changed in
 between may name an object written after the listing looked, an upload
 finishing as the audit went by, or a new size for one it listed, a
-render replacing it: what the listing shows of it is not evidence. Such
-a row is counted as unsettled and left for the next run, which is also
-what makes the rows created while the listing ran safe, wherever their
-shard puts them in its order, since they are unsettled by construction. What the
+render replacing it: what the listing shows of it is not evidence. Each
+object is judged by its own row: the original by the blob's `updated_at`,
+a representation by its row's in `representations`, so a render that
+finished after the listing passed the prefix leaves that representation
+unjudged and the original judged. Such a row is counted as unsettled and
+what it has not settled is left for the next run, which is also what
+makes the rows created while the listing ran safe, wherever their shard
+puts them in its order, since they are unsettled by construction. What the
 row does not account for is judged by the object's own age: one written
 within `upload.stale_after` of the listing passing it is what an upload
 or a render in flight looks like, its row not yet updated, and is left

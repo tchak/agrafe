@@ -316,8 +316,14 @@ async fn document_is_built_from_a_workspace_in_parts() {
     // its first page as a thumbnail and no preview.
     while run_job(&app, JobKind::Render).await {}
     let rendered = get_blob(&app, id).await;
-    assert_eq!(rendered["thumbnail_state"], "ready", "{rendered}");
-    assert_eq!(rendered["preview_state"], "unavailable");
+    assert_eq!(
+        rendered["representations"]["thumbnail"]["state"], "ready",
+        "{rendered}"
+    );
+    assert_eq!(
+        rendered["representations"]["preview"]["state"],
+        "unavailable"
+    );
 }
 
 /// `PUT /blobs/:id` is part one and the finish in one call, and `main`

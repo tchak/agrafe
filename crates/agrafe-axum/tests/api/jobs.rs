@@ -1083,7 +1083,10 @@ async fn a_panicking_handler_fails_the_attempt() {
     assert!(jobs_for(&app, id).await.is_empty(), "the job is done");
     let got = get_blob(&app, id).await;
     // The bytes are not a picture: a verdict all the same.
-    assert_eq!(got["thumbnail_state"], "failed", "{got}");
+    assert_eq!(
+        got["representations"]["thumbnail"]["state"], "failed",
+        "{got}"
+    );
 }
 
 /// Workers that render do not start on a renderer that fails its probe.

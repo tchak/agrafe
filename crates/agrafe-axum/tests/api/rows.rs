@@ -193,8 +193,11 @@ async fn csv_is_built_from_rows_in_parts() {
     // first lines, like any text file's.
     while run_job(&app, JobKind::Render).await {}
     let rendered = get_blob(&app, id).await;
-    assert_eq!(rendered["preview_state"], "unavailable");
-    assert_eq!(rendered["thumbnail_state"], "ready");
+    assert_eq!(
+        rendered["representations"]["preview"]["state"],
+        "unavailable"
+    );
+    assert_eq!(rendered["representations"]["thumbnail"]["state"], "ready");
 }
 
 /// Every sheet of a built XLSX or ODS as a spreadsheet reader sees it: its

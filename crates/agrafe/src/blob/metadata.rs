@@ -5,6 +5,8 @@
 //!
 //! [DESIGN.md, "Webhooks"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#webhooks
 
+use std::collections::BTreeMap;
+
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use jiff::Timestamp;
@@ -13,17 +15,29 @@ use uuid::Uuid;
 
 use super::envelope::Envelope;
 use super::urls::BlobUrls;
-use super::{Blob, BlobState, InputType, RepresentationState, ScanState};
+use super::{
+    Blob, BlobState, InputType, PreviewSource, Representation, RepresentationRow,
+    RepresentationState, Representations, ScanState,
+};
 use crate::app::Agrafe;
 use crate::attachment::Attachment;
 use crate::classify::Category;
 use crate::jobs::Priority;
 
 impl Agrafe {
-    /// The full metadata of `blob`, its attachments read now.
+    /// The full metadata of `blob`, its representations and attachments
+    /// read now.
     pub async fn blob_metadata(&self, blob: &Blob) -> sqlx::Result<BlobMetadata> {
-        let attachments = self.attachments_for(&[blob.id]).await?;
-        Ok(BlobMetadata::new(blob, &attachments, self.urls(blob)))
+        let ids = [blob.id];
+        let (mut representations, attachments) =
+            futures::try_join!(self.representations_for(&ids), self.attachments_for(&ids))?;
+        let representations = representations.remove(&blob.id).unwrap_or_default();
+        Ok(BlobMetadata::new(
+            blob,
+            &representations,
+            &attachments,
+            self.urls(blob, &representations),
+        ))
     }
 }
 
@@ -75,13 +89,9 @@ pub struct BlobMetadata {
     pub scanned_at: Option<Timestamp>,
     /// What clamd found, for an `infected` blob. Private metadata only.
     pub scan_signature: Option<String>,
-    /// Where the thumbnail's rendering stands.
-    pub thumbnail_state: RepresentationState,
-    /// Where the preview's rendering stands.
-    pub preview_state: RepresentationState,
-    /// What the preview was rendered from, a `PreviewSource` value; null
-    /// without a rendered preview.
-    pub preview_source: Option<String>,
+    /// The derived representations the blob asked for, by kind. A kind
+    /// left out at creation is absent, which is `disabled`.
+    pub representations: BTreeMap<Representation, RepresentationMetadata>,
     /// Source parts accepted so far, for a generated blob. Null for
     /// `raw`, `multipart` and `url`.
     pub source_parts: Option<i32>,
@@ -133,10 +143,15 @@ pub struct BlobMetadata {
 }
 
 impl BlobMetadata {
-    /// The metadata of `blob`, with its `attachments` and the `urls`
-    /// minted for it. Past `attachment::INLINE_LIMIT` the attachments are
-    /// cut short and say so.
-    pub fn new(blob: &Blob, attachments: &[Attachment], urls: BlobUrls) -> Self {
+    /// The metadata of `blob`, with its `representations`, its
+    /// `attachments` and the `urls` minted for it. Past
+    /// `attachment::INLINE_LIMIT` the attachments are cut short and say so.
+    pub fn new(
+        blob: &Blob,
+        representations: &Representations,
+        attachments: &[Attachment],
+        urls: BlobUrls,
+    ) -> Self {
         let generated = blob.input_type.is_generated();
         Self {
             id: blob.id,
@@ -156,9 +171,7 @@ impl BlobMetadata {
             scan_state: blob.scan_state,
             scanned_at: blob.scanned_at,
             scan_signature: blob.scan_signature.clone(),
-            thumbnail_state: blob.thumbnail_state,
-            preview_state: blob.preview_state,
-            preview_source: blob.preview_source.clone(),
+            representations: RepresentationMetadata::all(representations),
             source_parts: generated.then_some(blob.source_parts),
             source_rows: generated.then_some(blob.source_rows),
             source_size: generated.then_some(blob.source_size),
@@ -178,8 +191,66 @@ impl BlobMetadata {
                 .collect(),
             attachments_truncated: attachments.len() > crate::attachment::INLINE_LIMIT,
             urls,
-            envelope: Envelope::from_head(&blob.head(), Timestamp::now()).map(|e| e.encode()),
+            envelope: Envelope::from_head(&blob.head(representations.clone()), Timestamp::now())
+                .map(|e| e.encode()),
         }
+    }
+}
+
+/// One derived representation, as the metadata lists it under its kind.
+/// The state always; with `ready`, the digest and size of what was
+/// rendered, which a backend storing envelopes gets in encoded form; and
+/// what the kind records of its own, see [`RepresentationDetail`].
+#[derive(Debug, Serialize)]
+pub struct RepresentationMetadata {
+    /// Where the rendering stands; never `disabled`, that kind being
+    /// absent.
+    pub state: RepresentationState,
+    /// SHA-256 of the rendered WebP, base64, with `ready`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checksum: Option<String>,
+    /// Size of the rendered WebP in bytes, with `ready`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<i64>,
+    /// What the kind records besides.
+    #[serde(flatten)]
+    pub detail: RepresentationDetail,
+}
+
+/// What a kind records of its own, beyond its state and what was
+/// rendered.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum RepresentationDetail {
+    /// A thumbnail records nothing more.
+    Thumbnail {},
+    /// What the preview was rendered from; null without a rendered one.
+    Preview {
+        /// A [`PreviewSource`] value.
+        source: Option<PreviewSource>,
+    },
+}
+
+impl RepresentationMetadata {
+    /// The metadata of `row`.
+    pub fn new(row: &RepresentationRow) -> Self {
+        Self {
+            state: row.state,
+            checksum: row.rendered.map(|r| STANDARD.encode(r.sha256)),
+            size: row.rendered.and_then(|r| i64::try_from(r.size).ok()),
+            detail: match row.kind {
+                Representation::Thumbnail => RepresentationDetail::Thumbnail {},
+                Representation::Preview => RepresentationDetail::Preview { source: row.source },
+            },
+        }
+    }
+
+    /// The metadata of every representation in `representations`, by kind.
+    pub fn all(representations: &Representations) -> BTreeMap<Representation, Self> {
+        representations
+            .iter()
+            .map(|row| (row.kind, Self::new(row)))
+            .collect()
     }
 }
 

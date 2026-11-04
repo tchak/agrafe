@@ -152,10 +152,14 @@ pub async fn serve_sealed(
     method: &Method,
     headers: &HeaderMap,
 ) -> ApiResult<Option<Response>> {
-    let sealed = envelope.representation(kind);
+    // A kind the envelope does not list has no row, `disabled`, which the
+    // row-backed path answers as it does today.
+    let Some(sealed) = envelope.representation(kind) else {
+        return Ok(None);
+    };
     let current = state.config().media.variant_version;
     let (Some(rendered), RepresentationState::Ready, Some(version)) =
-        (sealed.rendered, sealed.state, sealed.variant_version)
+        (sealed.rendered, sealed.state, sealed.version)
     else {
         return Ok(None);
     };

@@ -98,9 +98,9 @@ await fetch(urls.upload, { method: "PUT", body: form });
 ```
 
 The public `PUT` answers with reduced metadata: `id`, `state`,
-`content_type`, `category`, `size`, `scan_state`, `thumbnail_state` and
-`preview_state`. The browser can poll `urls.metadata` for the same fields
-until the blob is `ready`.
+`content_type`, `category`, `size`, `scan_state` and the `representations`
+by kind. The browser can poll `urls.metadata` for the same fields until
+the blob is `ready`.
 
 The upload URL lives for `signing.ttl.upload`, one hour by default, and works
 once: blobs are write-once.
@@ -217,5 +217,6 @@ audit, does not need a thumbnail:
  "checksum": "…", "size": 52011, "representations": []}
 ```
 
-The skipped representations are `disabled` for good. The thumbnail route
-still answers the category icon.
+The skipped representations are `disabled` for good, and absent from the
+metadata's `representations`. The thumbnail route still answers the
+category icon.

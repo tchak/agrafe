@@ -69,8 +69,8 @@ async fn image_gets_a_thumbnail_and_a_preview() {
     // 600x300 with EXIF orientation 6: upright it is 300x600.
     let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("rotated.jpg")).await;
     let id = id_of(&blob);
-    assert_eq!(blob["thumbnail_state"], "pending");
-    assert_eq!(blob["preview_state"], "pending");
+    assert_eq!(blob["representations"]["thumbnail"]["state"], "pending");
+    assert_eq!(blob["representations"]["preview"]["state"], "pending");
     assert_eq!(jobs_for(&app, id).await, ["render"]);
     let thumbnail = format!("/blobs/{id}/thumbnail/photo.jpg");
     let preview = format!("/blobs/{id}/preview/photo.jpg");
@@ -83,9 +83,9 @@ async fn image_gets_a_thumbnail_and_a_preview() {
     assert!(run_job(&app, JobKind::Render).await);
     assert!(!run_job(&app, JobKind::Render).await);
     let blob = get_blob(&app, id).await;
-    assert_eq!(blob["thumbnail_state"], "ready");
-    assert_eq!(blob["preview_state"], "ready");
-    assert_eq!(blob["preview_source"], "image");
+    assert_eq!(blob["representations"]["thumbnail"]["state"], "ready");
+    assert_eq!(blob["representations"]["preview"]["state"], "ready");
+    assert_eq!(blob["representations"]["preview"]["source"], "image");
 
     // Fitted into the box, upright, never enlarged.
     let (headers, size) = rendered(&app, &thumbnail).await;
@@ -180,7 +180,7 @@ async fn vector_images_fill_the_box() {
     let id = id_of(&blob);
     render_all(&app).await;
     let blob = get_blob(&app, id).await;
-    assert_eq!(blob["preview_source"], "image");
+    assert_eq!(blob["representations"]["preview"]["source"], "image");
     let (_, size) = rendered(&app, &format!("/blobs/{id}/thumbnail/logo.svg")).await;
     assert_eq!(size, (256, 128));
     let (_, size) = rendered(&app, &format!("/blobs/{id}/preview/logo.svg")).await;
@@ -203,9 +203,12 @@ async fn pdf_previews_come_from_the_embedded_image_only() {
     render_all(&app).await;
 
     let blob = get_blob(&app, id).await;
-    assert_eq!(blob["preview_state"], "ready");
-    assert_eq!(blob["preview_source"], "embedded_image");
-    assert_eq!(blob["thumbnail_state"], "ready");
+    assert_eq!(blob["representations"]["preview"]["state"], "ready");
+    assert_eq!(
+        blob["representations"]["preview"]["source"],
+        "embedded_image"
+    );
+    assert_eq!(blob["representations"]["thumbnail"]["state"], "ready");
     let (_, size) = rendered(&app, &format!("/blobs/{id}/preview/scan.pdf")).await;
     assert_eq!(size, (400, 200));
     let (_, size) = rendered(&app, &format!("/blobs/{id}/thumbnail/scan.pdf")).await;
@@ -215,9 +218,19 @@ async fn pdf_previews_come_from_the_embedded_image_only() {
         let id = id_of(blob);
         let name = blob["filename"].as_str().unwrap();
         let blob = get_blob(&app, id).await;
-        assert_eq!(blob["preview_state"], "unavailable", "{name}");
-        assert_eq!(blob["preview_source"], Value::Null, "{name}");
-        assert_eq!(blob["thumbnail_state"], "ready", "{name}");
+        assert_eq!(
+            blob["representations"]["preview"]["state"], "unavailable",
+            "{name}"
+        );
+        assert_eq!(
+            blob["representations"]["preview"]["source"],
+            Value::Null,
+            "{name}"
+        );
+        assert_eq!(
+            blob["representations"]["thumbnail"]["state"], "ready",
+            "{name}"
+        );
         no_preview(
             &app,
             &format!("/blobs/{id}/preview/{name}"),
@@ -247,7 +260,10 @@ async fn office_documents_wrapping_a_picture() {
         let id = id_of(blob);
         let name = blob["filename"].as_str().unwrap();
         let blob = get_blob(&app, id).await;
-        assert_eq!(blob["preview_source"], "embedded_image", "{name}");
+        assert_eq!(
+            blob["representations"]["preview"]["source"], "embedded_image",
+            "{name}"
+        );
         let (_, size) = rendered(&app, &format!("/blobs/{id}/preview/{name}")).await;
         assert_eq!(size, (64, 32), "{name}");
         let (_, size) = rendered(&app, &format!("/blobs/{id}/thumbnail/{name}")).await;
@@ -258,9 +274,9 @@ async fn office_documents_wrapping_a_picture() {
     // icon stays.
     let id = id_of(&letter);
     let blob = get_blob(&app, id).await;
-    assert_eq!(blob["preview_state"], "unavailable");
-    assert_eq!(blob["preview_source"], Value::Null);
-    assert_eq!(blob["thumbnail_state"], "unavailable");
+    assert_eq!(blob["representations"]["preview"]["state"], "unavailable");
+    assert_eq!(blob["representations"]["preview"]["source"], Value::Null);
+    assert_eq!(blob["representations"]["thumbnail"]["state"], "unavailable");
     let docx_icon = icon(
         &app,
         &format!("/blobs/{id}/thumbnail/letter.docx"),
@@ -341,8 +357,14 @@ async fn office_documents_get_their_first_page_through_libreoffice() {
         let id = id_of(blob);
         let name = blob["filename"].as_str().unwrap();
         let blob = get_blob(&app, id).await;
-        assert_eq!(blob["preview_state"], "unavailable", "{name}");
-        assert_eq!(blob["thumbnail_state"], "ready", "{name}");
+        assert_eq!(
+            blob["representations"]["preview"]["state"], "unavailable",
+            "{name}"
+        );
+        assert_eq!(
+            blob["representations"]["thumbnail"]["state"], "ready",
+            "{name}"
+        );
         no_preview(
             &app,
             &format!("/blobs/{id}/preview/{name}"),
@@ -355,11 +377,14 @@ async fn office_documents_get_their_first_page_through_libreoffice() {
         assert!((150..=200).contains(&width), "{name}: {width}");
     }
     let blob = get_blob(&app, id_of(&picture)).await;
-    assert_eq!(blob["preview_source"], "embedded_image");
-    assert_eq!(blob["thumbnail_state"], "ready");
+    assert_eq!(
+        blob["representations"]["preview"]["source"],
+        "embedded_image"
+    );
+    assert_eq!(blob["representations"]["thumbnail"]["state"], "ready");
     let id = id_of(&broken);
     let blob = get_blob(&app, id).await;
-    assert_eq!(blob["thumbnail_state"], "failed");
+    assert_eq!(blob["representations"]["thumbnail"]["state"], "failed");
     icon(
         &app,
         &format!("/blobs/{id}/thumbnail/broken.docx"),
@@ -468,8 +493,14 @@ async fn legacy_and_variant_office_files_get_their_first_page_too() {
         let name = blob["filename"].as_str().unwrap();
         let blob = get_blob(&app, id).await;
         assert_eq!(blob["category"], *category, "{name}");
-        assert_eq!(blob["preview_state"], "unavailable", "{name}");
-        assert_eq!(blob["thumbnail_state"], "ready", "{name}");
+        assert_eq!(
+            blob["representations"]["preview"]["state"], "unavailable",
+            "{name}"
+        );
+        assert_eq!(
+            blob["representations"]["thumbnail"]["state"], "ready",
+            "{name}"
+        );
         no_preview(
             &app,
             &format!("/blobs/{id}/preview/{name}"),
@@ -532,8 +563,14 @@ async fn presentations_and_drawings_get_their_first_slide_through_libreoffice() 
         let name = blob["filename"].as_str().unwrap();
         let blob = get_blob(&app, id).await;
         assert_eq!(blob["category"], *category, "{name}");
-        assert_eq!(blob["preview_state"], "unavailable", "{name}");
-        assert_eq!(blob["thumbnail_state"], "ready", "{name}");
+        assert_eq!(
+            blob["representations"]["preview"]["state"], "unavailable",
+            "{name}"
+        );
+        assert_eq!(
+            blob["representations"]["thumbnail"]["state"], "ready",
+            "{name}"
+        );
         no_preview(
             &app,
             &format!("/blobs/{id}/preview/{name}"),
@@ -547,7 +584,7 @@ async fn presentations_and_drawings_get_their_first_slide_through_libreoffice() 
     }
     let id = id_of(&broken);
     let blob = get_blob(&app, id).await;
-    assert_eq!(blob["thumbnail_state"], "failed");
+    assert_eq!(blob["representations"]["thumbnail"]["state"], "failed");
     icon(
         &app,
         &format!("/blobs/{id}/thumbnail/broken.pptx"),
@@ -580,9 +617,19 @@ async fn text_files_get_a_thumbnail_and_no_preview() {
         let id = id_of(blob);
         let name = blob["filename"].as_str().unwrap();
         let blob = get_blob(&app, id).await;
-        assert_eq!(blob["thumbnail_state"], "ready", "{name}");
-        assert_eq!(blob["preview_state"], "unavailable", "{name}");
-        assert_eq!(blob["preview_source"], Value::Null, "{name}");
+        assert_eq!(
+            blob["representations"]["thumbnail"]["state"], "ready",
+            "{name}"
+        );
+        assert_eq!(
+            blob["representations"]["preview"]["state"], "unavailable",
+            "{name}"
+        );
+        assert_eq!(
+            blob["representations"]["preview"]["source"],
+            Value::Null,
+            "{name}"
+        );
         let (_, size) = rendered(&app, &format!("/blobs/{id}/thumbnail/{name}")).await;
         assert_eq!(size, (256, 256), "{name}");
         no_preview(
@@ -606,7 +653,10 @@ async fn text_files_get_a_thumbnail_and_no_preview() {
     assert_ne!(a, b);
 
     let id = id_of(&fake);
-    assert_eq!(get_blob(&app, id).await["thumbnail_state"], "unavailable");
+    assert_eq!(
+        get_blob(&app, id).await["representations"]["thumbnail"]["state"],
+        "unavailable"
+    );
     icon(
         &app,
         &format!("/blobs/{id}/thumbnail/fake.txt"),
@@ -636,7 +686,10 @@ async fn a_crashing_helper_fails_the_file_not_the_job() {
     for (blob, name) in [(&notes, "notes.txt"), (&letter, "picture.docx")] {
         let id = id_of(blob);
         let blob = get_blob(&app, id).await;
-        assert_eq!(blob["thumbnail_state"], "failed", "{name}");
+        assert_eq!(
+            blob["representations"]["thumbnail"]["state"], "failed",
+            "{name}"
+        );
         assert_eq!(jobs_for(&app, id).await, Vec::<String>::new(), "{name}");
     }
     // A PDF has no other preview source, so the preview is failed; the
@@ -653,14 +706,21 @@ async fn a_crashing_helper_fails_the_file_not_the_job() {
     let (status, body) = put_private(&app, id_of(&thumbnail_only), fixture("image.pdf")).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     render_all(&app).await;
+    // A disabled preview has no entry at all.
     for (blob, name, preview) in [
-        (&scan, "scan.pdf", "failed"),
-        (&thumbnail_only, "thumb.pdf", "disabled"),
+        (&scan, "scan.pdf", json!("failed")),
+        (&thumbnail_only, "thumb.pdf", Value::Null),
     ] {
         let id = id_of(blob);
         let blob = get_blob(&app, id).await;
-        assert_eq!(blob["preview_state"], preview, "{name}");
-        assert_eq!(blob["thumbnail_state"], "ready", "{name}");
+        assert_eq!(
+            blob["representations"]["preview"]["state"], preview,
+            "{name}"
+        );
+        assert_eq!(
+            blob["representations"]["thumbnail"]["state"], "ready",
+            "{name}"
+        );
         rendered(&app, &format!("/blobs/{id}/thumbnail/{name}")).await;
     }
 }
@@ -685,8 +745,8 @@ async fn a_timed_out_helper_fails_both_representations() {
     render_all(&app).await;
     let id = id_of(&scan);
     let blob = get_blob(&app, id).await;
-    assert_eq!(blob["preview_state"], "failed");
-    assert_eq!(blob["thumbnail_state"], "failed");
+    assert_eq!(blob["representations"]["preview"]["state"], "failed");
+    assert_eq!(blob["representations"]["thumbnail"]["state"], "failed");
     assert_eq!(jobs_for(&app, id).await, Vec::<String>::new());
     std::fs::remove_file(&slow).unwrap();
 }
@@ -712,14 +772,16 @@ async fn a_thumbnail_over_a_stored_timeout_is_failed() {
     let id = id_of(&scan);
     render_all(&app).await;
     let flag = || {
-        sqlx::query_scalar::<_, Option<bool>>("SELECT preview_timed_out FROM blobs WHERE id = $1")
-            .bind(parse_id(id))
-            .fetch_one(app.state.pool())
+        sqlx::query_scalar::<_, Option<bool>>(
+            "SELECT timed_out FROM representations WHERE blob_id = $1 AND kind = 'preview'",
+        )
+        .bind(parse_id(id))
+        .fetch_one(app.state.pool())
     };
     assert_eq!(flag().await.unwrap(), Some(true));
 
     // The thumbnail alone is stale: its job reads the preview's verdict.
-    sqlx::query("UPDATE blobs SET thumbnail_variant_version = 0 WHERE id = $1")
+    sqlx::query("UPDATE representations SET version = 0 WHERE blob_id = $1 AND kind = 'thumbnail'")
         .bind(parse_id(id))
         .execute(app.state.pool())
         .await
@@ -727,18 +789,21 @@ async fn a_thumbnail_over_a_stored_timeout_is_failed() {
     icon(&app, &format!("/blobs/{id}/thumbnail/scan.pdf"), "pending").await;
     assert!(run_job(&app, JobKind::Render).await);
     let shown = get_blob(&app, id).await;
-    assert_eq!(shown["preview_state"], "failed", "{shown}");
-    assert_eq!(shown["thumbnail_state"], "failed", "{shown}");
+    assert_eq!(
+        shown["representations"]["preview"]["state"], "failed",
+        "{shown}"
+    );
+    assert_eq!(
+        shown["representations"]["thumbnail"]["state"], "failed",
+        "{shown}"
+    );
 
     // A render that gets further clears it.
-    sqlx::query(
-        "UPDATE blobs SET preview_variant_version = 0, thumbnail_variant_version = 0 \
-         WHERE id = $1",
-    )
-    .bind(parse_id(id))
-    .execute(app.state.pool())
-    .await
-    .unwrap();
+    sqlx::query("UPDATE representations SET version = 0 WHERE blob_id = $1")
+        .bind(parse_id(id))
+        .execute(app.state.pool())
+        .await
+        .unwrap();
     std::fs::write(&slow, "#!/bin/sh\nexit 0\n").unwrap();
     no_preview(
         &app,
@@ -819,8 +884,8 @@ async fn files_the_renderer_rejects_are_failed() {
     let id = id_of(&blob);
     render_all(&app).await;
     let blob = get_blob(&app, id).await;
-    assert_eq!(blob["thumbnail_state"], "failed");
-    assert_eq!(blob["preview_state"], "failed");
+    assert_eq!(blob["representations"]["thumbnail"]["state"], "failed");
+    assert_eq!(blob["representations"]["preview"]["state"], "failed");
     assert_eq!(
         jobs_for(&app, id).await,
         Vec::<String>::new(),
@@ -843,8 +908,8 @@ async fn files_the_renderer_rejects_are_failed() {
     let id = id_of(&blob);
     render_all(&app).await;
     let blob = get_blob(&app, id).await;
-    assert_eq!(blob["thumbnail_state"], "failed");
-    assert_eq!(blob["preview_state"], "failed");
+    assert_eq!(blob["representations"]["thumbnail"]["state"], "failed");
+    assert_eq!(blob["representations"]["preview"]["state"], "failed");
 }
 
 #[tokio::test]
@@ -865,14 +930,14 @@ async fn oversized_originals_get_no_representations() {
     let pdf = ready_file(&app, "text.pdf", "application/pdf", &fixture("mixed.pdf")).await;
     render_all(&app).await;
     let blob = get_blob(&app, id).await;
-    assert_eq!(blob["thumbnail_state"], "unavailable");
-    assert_eq!(blob["preview_state"], "unavailable");
+    assert_eq!(blob["representations"]["thumbnail"]["state"], "unavailable");
+    assert_eq!(blob["representations"]["preview"]["state"], "unavailable");
     let text = get_blob(&app, id_of(&text)).await;
-    assert_eq!(text["thumbnail_state"], "ready");
-    assert_eq!(text["preview_state"], "unavailable");
+    assert_eq!(text["representations"]["thumbnail"]["state"], "ready");
+    assert_eq!(text["representations"]["preview"]["state"], "unavailable");
     let pdf = get_blob(&app, id_of(&pdf)).await;
-    assert_eq!(pdf["thumbnail_state"], "unavailable");
-    assert_eq!(pdf["preview_state"], "unavailable");
+    assert_eq!(pdf["representations"]["thumbnail"]["state"], "unavailable");
+    assert_eq!(pdf["representations"]["preview"]["state"], "unavailable");
 }
 
 #[tokio::test]
@@ -887,8 +952,8 @@ async fn a_missing_renderer_fails_the_job_not_the_file() {
     let id = id_of(&blob);
     assert!(run_job(&app, JobKind::Render).await);
     let blob = get_blob(&app, id).await;
-    assert_eq!(blob["thumbnail_state"], "pending");
-    assert_eq!(blob["preview_state"], "pending");
+    assert_eq!(blob["representations"]["thumbnail"]["state"], "pending");
+    assert_eq!(blob["representations"]["preview"]["state"], "pending");
     let error: String =
         sqlx::query_scalar("SELECT last_error FROM jobs WHERE blob_id = $1 AND kind = 'render'")
             .bind(parse_id(id))
@@ -1077,12 +1142,13 @@ async fn conditional_and_head_requests_are_answered_from_the_row() {
     let length = headers["content-length"].clone();
 
     // The ETag is the digest the row records: the one the bytes have.
-    let (digest, size): (Vec<u8>, i32) =
-        sqlx::query_as("SELECT thumbnail_sha256, thumbnail_size FROM blobs WHERE id = $1")
-            .bind(parse_id(id))
-            .fetch_one(app.state.pool())
-            .await
-            .unwrap();
+    let (digest, size): (Vec<u8>, i64) = sqlx::query_as(
+        "SELECT sha256, size FROM representations WHERE blob_id = $1 AND kind = 'thumbnail'",
+    )
+    .bind(parse_id(id))
+    .fetch_one(app.state.pool())
+    .await
+    .unwrap();
     let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
     assert_eq!(etag, format!("\"{hex}\""));
     assert_eq!(length.to_str().unwrap(), size.to_string());
@@ -1138,7 +1204,10 @@ async fn representations_regenerate_when_missing_or_stale() {
         .await
         .unwrap();
     icon(&app, &thumbnail, "pending").await;
-    assert_eq!(get_blob(&app, id).await["thumbnail_state"], "pending");
+    assert_eq!(
+        get_blob(&app, id).await["representations"]["thumbnail"]["state"],
+        "pending"
+    );
     assert_eq!(jobs_for(&app, id).await, ["render"]);
     icon(&app, &thumbnail, "pending").await;
     assert_eq!(jobs_for(&app, id).await, ["render"], "queued once");
@@ -1147,7 +1216,7 @@ async fn representations_regenerate_when_missing_or_stale() {
     assert_eq!(size, (256, 128));
 
     // Built with another variant version: the same, for a preview too.
-    sqlx::query("UPDATE blobs SET preview_variant_version = 0 WHERE id = $1")
+    sqlx::query("UPDATE representations SET version = 0 WHERE blob_id = $1 AND kind = 'preview'")
         .bind(parse_id(id))
         .execute(app.state.pool())
         .await
@@ -1155,8 +1224,8 @@ async fn representations_regenerate_when_missing_or_stale() {
     no_preview(&app, &preview, "pending", "preview is pending").await;
     assert_eq!(jobs_for(&app, id).await, ["render"]);
     // What the row said of the last render does not stay beside `pending`.
-    let row: (Option<Vec<u8>>, Option<i32>, Option<String>) = sqlx::query_as(
-        "SELECT preview_sha256, preview_size, preview_source FROM blobs WHERE id = $1",
+    let row: (Option<Vec<u8>>, Option<i64>, Option<String>) = sqlx::query_as(
+        "SELECT sha256, size, source FROM representations WHERE blob_id = $1 AND kind = 'preview'",
     )
     .bind(parse_id(id))
     .fetch_one(app.state.pool())
@@ -1165,18 +1234,19 @@ async fn representations_regenerate_when_missing_or_stale() {
     assert_eq!(row, (None, None, None));
     assert!(run_job(&app, JobKind::Render).await);
     rendered(&app, &preview).await;
-    let version: i32 =
-        sqlx::query_scalar("SELECT preview_variant_version FROM blobs WHERE id = $1")
-            .bind(parse_id(id))
-            .fetch_one(app.state.pool())
-            .await
-            .unwrap();
+    let version: i32 = sqlx::query_scalar(
+        "SELECT version FROM representations WHERE blob_id = $1 AND kind = 'preview'",
+    )
+    .bind(parse_id(id))
+    .fetch_one(app.state.pool())
+    .await
+    .unwrap();
     assert_eq!(version, app.state.config().media.variant_version);
 
     // A failed representation is retried on a version bump as well.
     sqlx::query(
-        "UPDATE blobs SET thumbnail_state = 'failed', thumbnail_sha256 = NULL, \
-         thumbnail_size = NULL, thumbnail_variant_version = 0 WHERE id = $1",
+        "UPDATE representations SET state = 'failed', sha256 = NULL, size = NULL, version = 0 \
+         WHERE blob_id = $1 AND kind = 'thumbnail'",
     )
     .bind(parse_id(id))
     .execute(app.state.pool())
@@ -1187,7 +1257,8 @@ async fn representations_regenerate_when_missing_or_stale() {
 }
 
 /// `ready` promises a digest and a size to answer conditional requests
-/// with, and nothing else may carry them.
+/// with, and nothing else may carry them; and `disabled` is never stored,
+/// being the absence of the row.
 #[tokio::test]
 async fn the_row_holds_a_digest_and_a_size_with_ready_alone() {
     let db = TestDatabase::new().await;
@@ -1197,12 +1268,14 @@ async fn the_row_holds_a_digest_and_a_size_with_ready_alone() {
     render_all(&app).await;
 
     for statement in [
-        "UPDATE blobs SET thumbnail_sha256 = NULL WHERE id = $1",
-        "UPDATE blobs SET thumbnail_size = NULL WHERE id = $1",
-        "UPDATE blobs SET thumbnail_state = 'pending' WHERE id = $1",
-        "UPDATE blobs SET preview_sha256 = NULL WHERE id = $1",
-        "UPDATE blobs SET preview_size = NULL WHERE id = $1",
-        "UPDATE blobs SET preview_state = 'failed' WHERE id = $1",
+        "UPDATE representations SET sha256 = NULL WHERE blob_id = $1 AND kind = 'thumbnail'",
+        "UPDATE representations SET size = NULL WHERE blob_id = $1 AND kind = 'thumbnail'",
+        "UPDATE representations SET state = 'pending' WHERE blob_id = $1 AND kind = 'thumbnail'",
+        "UPDATE representations SET sha256 = NULL WHERE blob_id = $1 AND kind = 'preview'",
+        "UPDATE representations SET size = NULL WHERE blob_id = $1 AND kind = 'preview'",
+        "UPDATE representations SET state = 'failed' WHERE blob_id = $1 AND kind = 'preview'",
+        "UPDATE representations SET state = 'disabled', sha256 = NULL, size = NULL \
+         WHERE blob_id = $1 AND kind = 'preview'",
     ] {
         let err = sqlx::query(statement)
             .bind(parse_id(id))
@@ -1255,7 +1328,7 @@ async fn a_corrupt_representation_is_an_internal_error() {
     render_all(&app).await;
     rendered(&app, &thumbnail).await;
     let blob = get_blob(&app, id).await;
-    assert_eq!(blob["preview_state"], "ready");
+    assert_eq!(blob["representations"]["preview"]["state"], "ready");
     assert_eq!(blob["failed_at"], Value::Null);
 }
 
@@ -1287,12 +1360,13 @@ async fn representations_disabled_at_creation_are_never_rendered() {
         assert_eq!(status, StatusCode::OK, "{body}");
     }
 
-    // Nothing to render: no job, and the icon and 404 are final.
+    // Nothing to render: no job, and the icon and 404 are final. A
+    // disabled kind has no row and no entry.
     let id = id_of(&neither);
     let blob = get_blob(&app, id).await;
     assert_eq!(blob["state"], "ready");
-    assert_eq!(blob["thumbnail_state"], "disabled");
-    assert_eq!(blob["preview_state"], "disabled");
+    assert_eq!(blob["representations"], json!({}), "{blob}");
+    assert_eq!(representation_rows(&app, id).await, 0);
     assert_eq!(jobs_for(&app, id).await, Vec::<String>::new());
     let thumbnail = format!("/blobs/{id}/thumbnail/neither.jpg");
     let preview = format!("/blobs/{id}/preview/neither.jpg");
@@ -1302,14 +1376,28 @@ async fn representations_disabled_at_creation_are_never_rendered() {
     // with the variant version it never had.
     assert_eq!(jobs_for(&app, id).await, Vec::<String>::new());
 
-    // The thumbnail alone is rendered, from the original.
+    // The thumbnail alone is rendered, from the original: one row, one
+    // entry in the metadata, and nothing of a preview.
     let id = id_of(&thumbnail_only);
+    assert_eq!(representation_rows(&app, id).await, 1);
     assert_eq!(jobs_for(&app, id).await, ["render"]);
     render_all(&app).await;
     let blob = get_blob(&app, id).await;
-    assert_eq!(blob["thumbnail_state"], "ready");
-    assert_eq!(blob["preview_state"], "disabled");
-    assert_eq!(blob["preview_source"], Value::Null);
+    assert_eq!(blob["representations"]["thumbnail"]["state"], "ready");
+    assert!(
+        blob["representations"]["thumbnail"]["checksum"].is_string(),
+        "{blob}"
+    );
+    assert!(
+        blob["representations"]["thumbnail"]["size"].is_u64(),
+        "{blob}"
+    );
+    assert_eq!(
+        blob["representations"].as_object().unwrap().len(),
+        1,
+        "{blob}"
+    );
+    assert_eq!(blob["representations"]["preview"], Value::Null);
     let (_, size) = rendered(&app, &format!("/blobs/{id}/thumbnail/thumb.jpg")).await;
     assert_eq!(size, (128, 256));
     no_preview(
@@ -1333,6 +1421,15 @@ async fn representations_disabled_at_creation_are_never_rendered() {
     );
 }
 
+/// How many rows of `representations` the blob has.
+async fn representation_rows(app: &TestApp, id: &str) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM representations WHERE blob_id = $1")
+        .bind(parse_id(id))
+        .fetch_one(app.state.pool())
+        .await
+        .unwrap()
+}
+
 /// A thumbnail regenerated on its own is made from the stored preview: the
 /// original is never read, which deleting it proves.
 #[tokio::test]
@@ -1354,7 +1451,10 @@ async fn thumbnails_regenerate_from_the_stored_preview() {
     assert!(run_job(&app, JobKind::Render).await);
     let (_, size) = rendered(&app, &thumbnail).await;
     assert_eq!(size, (256, 128));
-    assert_eq!(get_blob(&app, id).await["preview_state"], "ready");
+    assert_eq!(
+        get_blob(&app, id).await["representations"]["preview"]["state"],
+        "ready"
+    );
 }
 
 /// A thumbnail regenerated on its own follows the verdict the preview has
@@ -1387,16 +1487,24 @@ async fn thumbnails_regenerate_from_the_preview_verdict() {
     ] {
         let id = id_of(blob);
         let name = blob["filename"].as_str().unwrap();
-        sqlx::query("UPDATE blobs SET thumbnail_variant_version = 0 WHERE id = $1")
-            .bind(parse_id(id))
-            .execute(app.state.pool())
-            .await
-            .unwrap();
+        sqlx::query(
+            "UPDATE representations SET version = 0 WHERE blob_id = $1 AND kind = 'thumbnail'",
+        )
+        .bind(parse_id(id))
+        .execute(app.state.pool())
+        .await
+        .unwrap();
         icon(&app, &format!("/blobs/{id}/thumbnail/{name}"), "pending").await;
         assert!(run_job(&app, JobKind::Render).await, "{name}");
         let got = get_blob(&app, id).await;
-        assert_eq!(got["preview_state"], preview, "{name}");
-        assert_eq!(got["thumbnail_state"], thumbnail, "{name}");
+        assert_eq!(
+            got["representations"]["preview"]["state"], preview,
+            "{name}"
+        );
+        assert_eq!(
+            got["representations"]["thumbnail"]["state"], thumbnail,
+            "{name}"
+        );
     }
     rendered(&app, &format!("/blobs/{photo_id}/thumbnail/photo.jpg")).await;
     rendered(&app, &format!("/blobs/{photo_id}/preview/photo.jpg")).await;
@@ -1439,7 +1547,10 @@ async fn render_jobs_with_nothing_to_do_finish() {
     assert!(run_job(&app, JobKind::Render).await);
     let got = get_blob(&app, id_of(&pending)).await;
     assert_eq!(got["state"], "deleted");
-    assert_eq!(got["thumbnail_state"], "pending", "never rendered");
+    assert_eq!(
+        got["representations"]["thumbnail"]["state"], "pending",
+        "never rendered"
+    );
     assert_eq!(jobs_for(&app, id_of(&pending)).await, ["purge"]);
 }
 

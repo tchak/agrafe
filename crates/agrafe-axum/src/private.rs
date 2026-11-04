@@ -66,10 +66,14 @@ async fn respond(agrafe: &Agrafe, blob: &Blob) -> ApiResult<BlobResponse> {
     Ok(agrafe.blob_metadata(blob).await?)
 }
 
-/// `respond` for a page of blobs, with one query for their attachments.
+/// `respond` for a page of blobs, with one query for their representations
+/// and one for their attachments.
 async fn respond_many(agrafe: &Agrafe, blobs: &[Blob]) -> ApiResult<Vec<BlobResponse>> {
     let ids: Vec<Uuid> = blobs.iter().map(|b| b.id).collect();
-    let attachments = agrafe.attachments_for(&ids).await?;
+    let (representations, attachments) = futures::try_join!(
+        agrafe.representations_for(&ids),
+        agrafe.attachments_for(&ids)
+    )?;
     Ok(blobs
         .iter()
         .map(|blob| {
@@ -78,7 +82,9 @@ async fn respond_many(agrafe: &Agrafe, blobs: &[Blob]) -> ApiResult<Vec<BlobResp
                 .filter(|a| a.blob_id == blob.id)
                 .cloned()
                 .collect();
-            BlobResponse::new(blob, &own, agrafe.urls(blob))
+            let representations = representations.get(&blob.id).cloned().unwrap_or_default();
+            let urls = agrafe.urls(blob, &representations);
+            BlobResponse::new(blob, &representations, &own, urls)
         })
         .collect())
 }

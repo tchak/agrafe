@@ -188,9 +188,18 @@ async fn geojson_files_get_a_map_preview_and_thumbnail() {
         let blob = get_blob(&app, id).await;
         assert_eq!(blob["content_type"], "application/geo+json", "{name}");
         assert_eq!(blob["category"], "text", "{name}");
-        assert_eq!(blob["preview_state"], "ready", "{name}");
-        assert_eq!(blob["preview_source"], "geojson", "{name}");
-        assert_eq!(blob["thumbnail_state"], "ready", "{name}");
+        assert_eq!(
+            blob["representations"]["preview"]["state"], "ready",
+            "{name}"
+        );
+        assert_eq!(
+            blob["representations"]["preview"]["source"], "geojson",
+            "{name}"
+        );
+        assert_eq!(
+            blob["representations"]["thumbnail"]["state"], "ready",
+            "{name}"
+        );
         // The map is the preview box, square, at the test's 400 pixels,
         // since no layer caps it lower; the thumbnail is fitted from it.
         let size = rendered(&app, &format!("/blobs/{id}/preview/{name}")).await;
@@ -261,8 +270,8 @@ async fn the_background_comes_from_the_layers_that_apply() {
     assert!((span - (bbox[3] - bbox[1])).abs() < 1e-3, "square");
     let id = id_of(&parcel);
     let blob = get_blob(&app, id).await;
-    assert_eq!(blob["preview_state"], "ready");
-    assert_eq!(blob["preview_source"], "geojson");
+    assert_eq!(blob["representations"]["preview"]["state"], "ready");
+    assert_eq!(blob["representations"]["preview"]["source"], "geojson");
     rendered(&app, &format!("/blobs/{id}/preview/polygon-hole.geojson")).await;
 
     // A box past the world square, the world's padded, asks for none.
@@ -270,7 +279,10 @@ async fn the_background_comes_from_the_layers_that_apply() {
     render_all(&app).await;
     assert_eq!(wms.requests().len(), 1);
     let id = id_of(&world);
-    assert_eq!(get_blob(&app, id).await["preview_state"], "ready");
+    assert_eq!(
+        get_blob(&app, id).await["representations"]["preview"]["state"],
+        "ready"
+    );
 }
 
 /// A layer that comes back at another size than asked still covers the
@@ -291,7 +303,10 @@ async fn a_layer_of_another_size_is_fitted_to_the_map() {
     assert_eq!(requests.len(), 1, "{requests:?}");
     assert_eq!(requests[0]["WIDTH"], "400");
     let id = id_of(&point);
-    assert_eq!(get_blob(&app, id).await["preview_state"], "ready");
+    assert_eq!(
+        get_blob(&app, id).await["representations"]["preview"]["state"],
+        "ready"
+    );
     let size = rendered(&app, &format!("/blobs/{id}/preview/point.geojson")).await;
     assert_eq!(size, (400, 400));
 }
@@ -311,8 +326,8 @@ async fn provider_fault(db: TestDatabase, answer: Answer, expected: &str) {
     let id = id_of(&point);
     assert!(run_job(&app, JobKind::Render).await);
     let blob = get_blob(&app, id).await;
-    assert_eq!(blob["preview_state"], "pending");
-    assert_eq!(blob["thumbnail_state"], "pending");
+    assert_eq!(blob["representations"]["preview"]["state"], "pending");
+    assert_eq!(blob["representations"]["thumbnail"]["state"], "pending");
     assert_eq!(jobs_for(&app, id).await, ["render"]);
     let error = last_error(&app, id).await;
     assert!(error.contains(expected), "{error}");
@@ -345,7 +360,7 @@ async fn an_extent_that_does_not_parse_rejects_the_map() {
     let id = id_of(&point);
     render_all(&app).await;
     let blob = get_blob(&app, id).await;
-    assert_eq!(blob["preview_state"], "failed");
+    assert_eq!(blob["representations"]["preview"]["state"], "failed");
     assert_eq!(
         jobs_for(&app, id).await,
         Vec::<String>::new(),
@@ -369,7 +384,7 @@ async fn redirects_stay_on_the_layer_host() {
     render_all(&app).await;
     assert_eq!(moved.requests().len(), 2, "the redirect and the move");
     assert_eq!(
-        get_blob(&app, id_of(&point)).await["preview_state"],
+        get_blob(&app, id_of(&point)).await["representations"]["preview"]["state"],
         "ready"
     );
 
@@ -422,7 +437,10 @@ async fn an_extent_that_fails_the_checks_rejects_the_map() {
         let id = id_of(&point);
         render_all(&app).await;
         let blob = get_blob(&app, id).await;
-        assert_eq!(blob["preview_state"], "failed", "{name}");
+        assert_eq!(
+            blob["representations"]["preview"]["state"], "failed",
+            "{name}"
+        );
         assert_eq!(
             jobs_for(&app, id).await,
             Vec::<String>::new(),
@@ -474,12 +492,12 @@ async fn a_geojson_declared_as_json_or_text_is_refined() {
         let blob = get_blob(&app, id).await;
         assert_eq!(blob["content_type"], "application/geo+json");
         assert_eq!(blob["category"], "text");
-        assert_eq!(blob["preview_state"], "ready");
-        assert_eq!(blob["preview_source"], "geojson");
+        assert_eq!(blob["representations"]["preview"]["state"], "ready");
+        assert_eq!(blob["representations"]["preview"]["source"], "geojson");
     }
     let plain = get_blob(&app, id_of(&plain_json)).await;
-    assert_eq!(plain["preview_state"], "unavailable");
-    assert_eq!(plain["thumbnail_state"], "ready");
+    assert_eq!(plain["representations"]["preview"]["state"], "unavailable");
+    assert_eq!(plain["representations"]["thumbnail"]["state"], "ready");
     // The original is served with the refined type.
     let id = id_of(&as_json);
     let (status, headers, _) = fetch(
@@ -513,9 +531,9 @@ async fn gpx_files_get_a_map_preview_and_thumbnail() {
     let blob = get_blob(&app, id).await;
     assert_eq!(blob["content_type"], "application/gpx+xml");
     assert_eq!(blob["category"], "text");
-    assert_eq!(blob["preview_state"], "ready");
-    assert_eq!(blob["preview_source"], "gpx");
-    assert_eq!(blob["thumbnail_state"], "ready");
+    assert_eq!(blob["representations"]["preview"]["state"], "ready");
+    assert_eq!(blob["representations"]["preview"]["source"], "gpx");
+    assert_eq!(blob["representations"]["thumbnail"]["state"], "ready");
     let size = rendered(&app, &format!("/blobs/{id}/preview/track.gpx")).await;
     assert_eq!(size, (400, 400));
     let size = rendered(&app, &format!("/blobs/{id}/thumbnail/track.gpx")).await;
@@ -562,8 +580,8 @@ async fn a_gpx_declared_as_xml_or_text_is_refined() {
     let blob = get_blob(&app, id).await;
     assert_eq!(blob["content_type"], "application/gpx+xml");
     assert_eq!(blob["category"], "text");
-    assert_eq!(blob["preview_state"], "ready");
-    assert_eq!(blob["preview_source"], "gpx");
+    assert_eq!(blob["representations"]["preview"]["state"], "ready");
+    assert_eq!(blob["representations"]["preview"]["source"], "gpx");
     // The original is served with the refined type.
     let (status, headers, _) = fetch(
         &app.private,
@@ -573,8 +591,8 @@ async fn a_gpx_declared_as_xml_or_text_is_refined() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(headers["content-type"], "application/gpx+xml");
     let plain = get_blob(&app, id_of(&plain_xml)).await;
-    assert_eq!(plain["preview_state"], "unavailable");
-    assert_eq!(plain["thumbnail_state"], "ready");
+    assert_eq!(plain["representations"]["preview"]["state"], "unavailable");
+    assert_eq!(plain["representations"]["thumbnail"]["state"], "ready");
 
     // Declared as something a GPX is not.
     let bytes = fixture("track.gpx");
@@ -601,9 +619,18 @@ async fn kml_and_kmz_files_get_a_map_preview_and_thumbnail() {
         let name = blob["filename"].as_str().unwrap();
         let blob = get_blob(&app, id).await;
         assert_eq!(blob["category"], category, "{name}");
-        assert_eq!(blob["preview_state"], "ready", "{name}");
-        assert_eq!(blob["preview_source"], "kml", "{name}");
-        assert_eq!(blob["thumbnail_state"], "ready", "{name}");
+        assert_eq!(
+            blob["representations"]["preview"]["state"], "ready",
+            "{name}"
+        );
+        assert_eq!(
+            blob["representations"]["preview"]["source"], "kml",
+            "{name}"
+        );
+        assert_eq!(
+            blob["representations"]["thumbnail"]["state"], "ready",
+            "{name}"
+        );
         let size = rendered(&app, &format!("/blobs/{id}/preview/{name}")).await;
         assert_eq!(size, (400, 400), "{name}");
         let size = rendered(&app, &format!("/blobs/{id}/thumbnail/{name}")).await;
@@ -655,8 +682,14 @@ async fn a_kml_declared_as_xml_or_text_and_a_kmz_declared_as_zip_are_refined() {
         let name = blob["filename"].as_str().unwrap();
         let blob = get_blob(&app, id).await;
         assert_eq!(blob["category"], category, "{name}");
-        assert_eq!(blob["preview_state"], "ready", "{name}");
-        assert_eq!(blob["preview_source"], "kml", "{name}");
+        assert_eq!(
+            blob["representations"]["preview"]["state"], "ready",
+            "{name}"
+        );
+        assert_eq!(
+            blob["representations"]["preview"]["source"], "kml",
+            "{name}"
+        );
         // The original is served with the refined type.
         let (status, headers, _) = fetch(
             &app.private,
@@ -671,8 +704,11 @@ async fn a_kml_declared_as_xml_or_text_and_a_kmz_declared_as_zip_are_refined() {
         );
     }
     let plain = get_blob(&app, id_of(&plain_zip)).await;
-    assert_eq!(plain["preview_state"], "unavailable");
-    assert_eq!(plain["thumbnail_state"], "unavailable");
+    assert_eq!(plain["representations"]["preview"]["state"], "unavailable");
+    assert_eq!(
+        plain["representations"]["thumbnail"]["state"],
+        "unavailable"
+    );
 
     // Declared as something a KML or a KMZ is not.
     for (fixture_name, declared, sniffed) in [
@@ -714,9 +750,9 @@ async fn a_zipped_shapefile_gets_a_map_preview_and_thumbnail() {
         let blob = get_blob(&app, id).await;
         assert_eq!(blob["content_type"], "application/x-shapefile");
         assert_eq!(blob["category"], "archive");
-        assert_eq!(blob["preview_state"], "ready");
-        assert_eq!(blob["preview_source"], "shapefile");
-        assert_eq!(blob["thumbnail_state"], "ready");
+        assert_eq!(blob["representations"]["preview"]["state"], "ready");
+        assert_eq!(blob["representations"]["preview"]["source"], "shapefile");
+        assert_eq!(blob["representations"]["thumbnail"]["state"], "ready");
         let size = rendered(&app, &format!("/blobs/{id}/preview/parcels.zip")).await;
         assert_eq!(size, (400, 400));
         let size = rendered(&app, &format!("/blobs/{id}/thumbnail/parcels.zip")).await;
@@ -758,9 +794,18 @@ async fn gml_files_get_a_map_preview_and_thumbnail() {
         let blob = get_blob(&app, id).await;
         assert_eq!(blob["content_type"], "application/gml+xml", "{name}");
         assert_eq!(blob["category"], "text", "{name}");
-        assert_eq!(blob["preview_state"], "ready", "{name}");
-        assert_eq!(blob["preview_source"], "gml", "{name}");
-        assert_eq!(blob["thumbnail_state"], "ready", "{name}");
+        assert_eq!(
+            blob["representations"]["preview"]["state"], "ready",
+            "{name}"
+        );
+        assert_eq!(
+            blob["representations"]["preview"]["source"], "gml",
+            "{name}"
+        );
+        assert_eq!(
+            blob["representations"]["thumbnail"]["state"], "ready",
+            "{name}"
+        );
         let size = rendered(&app, &format!("/blobs/{id}/preview/{name}")).await;
         assert_eq!(size, (400, 400), "{name}");
         let size = rendered(&app, &format!("/blobs/{id}/thumbnail/{name}")).await;
@@ -797,8 +842,14 @@ async fn a_gml_declared_as_xml_or_text_is_refined() {
         let name = blob["filename"].as_str().unwrap();
         let blob = get_blob(&app, id).await;
         assert_eq!(blob["category"], "text", "{name}");
-        assert_eq!(blob["preview_state"], "ready", "{name}");
-        assert_eq!(blob["preview_source"], "gml", "{name}");
+        assert_eq!(
+            blob["representations"]["preview"]["state"], "ready",
+            "{name}"
+        );
+        assert_eq!(
+            blob["representations"]["preview"]["source"], "gml",
+            "{name}"
+        );
         // The original is served with the refined type.
         let (status, headers, _) = fetch(
             &app.private,
@@ -810,8 +861,8 @@ async fn a_gml_declared_as_xml_or_text_is_refined() {
     }
     // Refined, but nothing to draw: the text thumbnail it had before.
     let empty = get_blob(&app, id_of(&as_text_xml)).await;
-    assert_eq!(empty["preview_state"], "unavailable");
-    assert_eq!(empty["thumbnail_state"], "ready");
+    assert_eq!(empty["representations"]["preview"]["state"], "unavailable");
+    assert_eq!(empty["representations"]["thumbnail"]["state"], "ready");
 
     // Declared as something a GML is not.
     let bytes = fixture("parcels.gml");
@@ -871,9 +922,19 @@ async fn files_without_a_map_get_what_a_text_file_gets() {
         let id = id_of(blob);
         let name = blob["filename"].as_str().unwrap();
         let blob = get_blob(&app, id).await;
-        assert_eq!(blob["preview_state"], "unavailable", "{name}");
-        assert_eq!(blob["preview_source"], Value::Null, "{name}");
-        assert_eq!(blob["thumbnail_state"], "unavailable", "{name}");
+        assert_eq!(
+            blob["representations"]["preview"]["state"], "unavailable",
+            "{name}"
+        );
+        assert_eq!(
+            blob["representations"]["preview"]["source"],
+            Value::Null,
+            "{name}"
+        );
+        assert_eq!(
+            blob["representations"]["thumbnail"]["state"], "unavailable",
+            "{name}"
+        );
         let (status, headers, body) = fetch(
             &app.private,
             get_with(&format!("/blobs/{id}/thumbnail/{name}"), &[]),
@@ -896,9 +957,19 @@ async fn files_without_a_map_get_what_a_text_file_gets() {
         let id = id_of(blob);
         let name = blob["filename"].as_str().unwrap();
         let blob = get_blob(&app, id).await;
-        assert_eq!(blob["preview_state"], preview, "{name}");
-        assert_eq!(blob["preview_source"], Value::Null, "{name}");
-        assert_eq!(blob["thumbnail_state"], "ready", "{name}");
+        assert_eq!(
+            blob["representations"]["preview"]["state"], preview,
+            "{name}"
+        );
+        assert_eq!(
+            blob["representations"]["preview"]["source"],
+            Value::Null,
+            "{name}"
+        );
+        assert_eq!(
+            blob["representations"]["thumbnail"]["state"], "ready",
+            "{name}"
+        );
         let size = rendered(&app, &format!("/blobs/{id}/thumbnail/{name}")).await;
         assert_eq!(size, (256, 256), "{name}");
         assert_eq!(jobs_for(&app, id).await, Vec::<String>::new(), "{name}");

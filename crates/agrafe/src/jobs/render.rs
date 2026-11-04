@@ -38,7 +38,7 @@ use tokio::io::AsyncWriteExt;
 use super::{Job, JobError, JobKind};
 use crate::app::Agrafe;
 use crate::blob::read::{Reader, Stored};
-use crate::blob::{Blob, BlobState, PreviewSource, Representation, RepresentationState};
+use crate::blob::{BlobHead, BlobState, PreviewSource, Representation, RepresentationState};
 use crate::blob::{repo, representation};
 use crate::config::MediaConfig;
 use crate::upload;
@@ -63,7 +63,9 @@ pub async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
     if super::older_twin_running(state.pool(), job, lease).await? {
         return Err(JobError::Busy);
     }
-    let Some(blob) = repo::find(state.pool(), id).await? else {
+    // The head, read from the row: what serving needs is what rendering
+    // needs, the representations with it.
+    let Some(blob) = repo::find_head(state.pool(), id).await? else {
         tracing::info!("blob is gone, nothing to render");
         return Ok(());
     };
@@ -71,7 +73,7 @@ pub async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
         tracing::info!(state = %blob.state, "blob is not ready, nothing to render");
         return Ok(());
     }
-    let pending = |kind| blob.representation_state(kind) == RepresentationState::Pending;
+    let pending = |kind| blob.representations.state(kind) == RepresentationState::Pending;
     if !pending(Representation::Preview) && !pending(Representation::Thumbnail) {
         tracing::info!("nothing is pending, nothing to render");
         return Ok(());
@@ -145,7 +147,7 @@ fn state_of<T>(verdict: &Verdict<T>) -> RepresentationState {
 /// removed when the job is done.
 struct Render<'a> {
     state: &'a Agrafe,
-    blob: &'a Blob,
+    blob: &'a BlobHead,
     plan: Plan,
     stored: Stored,
     workdir: tempfile::TempDir,
@@ -154,12 +156,12 @@ struct Render<'a> {
 }
 
 impl<'a> Render<'a> {
-    fn new(state: &'a Agrafe, blob: &'a Blob) -> Result<Self, JobError> {
+    fn new(state: &'a Agrafe, blob: &'a BlobHead) -> Result<Self, JobError> {
         Ok(Self {
             state,
             blob,
             plan: plan(&blob.content_type),
-            stored: Stored::from_blob(blob)?,
+            stored: Stored::from_head(blob)?,
             workdir: agrafe_render::workdir(state.config().media.tmp_dir.as_deref())?,
             original: None,
         })
@@ -178,22 +180,20 @@ impl<'a> Render<'a> {
     /// pending, or when the thumbnail needs one and the stored one is from
     /// another variant version or gone. A verdict from this version stands.
     async fn preview(&mut self, pending: bool) -> Result<Preview, JobError> {
-        let blob = self.blob;
         if pending {
             return self.fresh_preview().await;
         }
-        let current = blob.preview_variant_version == Some(self.media().variant_version);
-        Ok(match (blob.preview_state, current) {
-            (RepresentationState::Disabled, _) => Preview::Disabled,
+        let Some(row) = self.blob.representations.get(Representation::Preview) else {
+            return Ok(Preview::Disabled);
+        };
+        let current = row.version == Some(self.media().variant_version);
+        Ok(match (row.state, current) {
             (RepresentationState::Ready, true) => match self.stored_preview().await? {
                 Some(path) => Preview::Ready(path),
                 None => return self.fresh_preview().await,
             },
             (state @ (RepresentationState::Failed | RepresentationState::Unavailable), true) => {
-                Preview::Missing(NoPicture::stored(
-                    state,
-                    blob.preview_timed_out.unwrap_or(false),
-                ))
+                Preview::Missing(NoPicture::stored(state, row.timed_out))
             }
             _ => return self.fresh_preview().await,
         })

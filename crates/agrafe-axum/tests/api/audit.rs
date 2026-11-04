@@ -120,7 +120,7 @@ async fn a_consistent_bucket_has_no_findings() {
     let going = ready_blob(&app, &png_bytes(100)).await;
     assert_eq!(delete(&app, id_of(&going)).await, StatusCode::NO_CONTENT);
     assert_eq!(
-        get_blob(&app, id_of(&photo)).await["thumbnail_state"],
+        get_blob(&app, id_of(&photo)).await["representations"]["thumbnail"]["state"],
         "ready"
     );
 
@@ -294,15 +294,15 @@ async fn a_missing_representation_is_rendered_again() {
         "{report}"
     );
     let got = get_blob(&app, id).await;
-    assert_eq!(got["thumbnail_state"], "pending");
-    assert_eq!(got["preview_state"], "pending");
+    assert_eq!(got["representations"]["thumbnail"]["state"], "pending");
+    assert_eq!(got["representations"]["preview"]["state"], "pending");
     assert_eq!(got["failed_at"], json!(null), "repaired, not stuck");
     assert_eq!(jobs_for(&app, id).await, vec!["render"]);
 
     render_all(&app).await;
     let got = get_blob(&app, id).await;
-    assert_eq!(got["thumbnail_state"], "ready");
-    assert_eq!(got["preview_state"], "ready");
+    assert_eq!(got["representations"]["thumbnail"]["state"], "ready");
+    assert_eq!(got["representations"]["preview"]["state"], "ready");
     let report = audit_now(&app).await;
     assert_eq!(counts(&report), vec![], "{report}");
     assert_eq!(report.objects, 3);
@@ -339,7 +339,10 @@ async fn a_lost_original_is_not_rendered_from() {
         "audit: the original is missing from the store"
     );
     let stamped = got["failed_at"].as_str().unwrap().to_string();
-    assert_eq!(got["thumbnail_state"], "ready", "left as the row had it");
+    assert_eq!(
+        got["representations"]["thumbnail"]["state"], "ready",
+        "left as the row had it"
+    );
     assert_eq!(jobs_for(&app, id).await, Vec::<String>::new());
 
     let report = audit_now(&app).await;
@@ -1006,9 +1009,16 @@ async fn representation_objects_are_checked_against_the_row_state() {
     render_all(&app).await;
 
     sqlx::query(
-        "UPDATE blobs SET thumbnail_state = 'pending', thumbnail_sha256 = NULL, \
-         thumbnail_size = NULL, preview_state = 'failed', preview_sha256 = NULL, \
-         preview_size = NULL WHERE id = $1",
+        "UPDATE representations SET state = 'pending', sha256 = NULL, size = NULL \
+         WHERE blob_id = $1 AND kind = 'thumbnail'",
+    )
+    .bind(parse_id(id))
+    .execute(app.state.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE representations SET state = 'failed', sha256 = NULL, size = NULL \
+         WHERE blob_id = $1 AND kind = 'preview'",
     )
     .bind(parse_id(id))
     .execute(app.state.pool())

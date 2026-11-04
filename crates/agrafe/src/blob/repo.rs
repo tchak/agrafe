@@ -1,6 +1,8 @@
 //! Blob persistence. Every state change is a conditional update.
 //! `updated_at` is maintained by a database trigger, never by hand.
 
+use std::collections::HashMap;
+
 use jiff::Timestamp;
 use jiff_sqlx::ToSqlx;
 use sqlx::{AssertSqlSafe, PgConnection, PgExecutor, PgPool, Postgres, QueryBuilder};
@@ -9,7 +11,7 @@ use uuid::Uuid;
 use super::create::NewBlob;
 use super::{
     Blob, BlobHead, BlobState, InputType, PreviewSource, Rendered, Representation,
-    RepresentationState, ScanOutcome, ScanState,
+    RepresentationRow, RepresentationState, Representations, ScanOutcome, ScanState,
 };
 use crate::attachment;
 use crate::clamav::Verdict;
@@ -33,9 +35,6 @@ macro_rules! blob_columns {
          source_parts, source_rows, source_size, source_updated_at, source_sheet, \
          source_sheet_rows, archive_entries, archive_errors, source_main, workspace_size, \
          kek_id, wrapped_key, encryption_header, chunk_size, \
-         thumbnail_state, preview_state, preview_source, preview_timed_out, \
-         thumbnail_variant_version, preview_variant_version, \
-         thumbnail_sha256, thumbnail_size, preview_sha256, preview_size, \
          created_at, updated_at, upload_started_at, upload_heartbeat_at, uploaded_at, \
          deleted_at, purged_at, failed_at, last_error"
     };
@@ -65,27 +64,23 @@ pub(crate) async fn sheets(
         .filter(|sheets| !sheets.is_empty()))
 }
 
-pub(crate) async fn insert(exec: impl PgExecutor<'_>, new: &NewBlob) -> sqlx::Result<Blob> {
+/// Insert the blob's row and, `pending`, a `representations` row for each
+/// kind it asked for: a kind left out has no row and is `disabled` for
+/// good. Two statements, so the caller holds a transaction.
+pub(crate) async fn insert(conn: &mut PgConnection, new: &NewBlob) -> sqlx::Result<Blob> {
     let scan_state = if new.skip_virus_scan {
         ScanState::Skipped
     } else {
         ScanState::Pending
     };
-    let initial = |kind| {
-        if new.representations.contains(&kind) {
-            RepresentationState::Pending
-        } else {
-            RepresentationState::Disabled
-        }
-    };
-    sqlx::query_as::<_, Blob>(concat!(
+    let blob = sqlx::query_as::<_, Blob>(concat!(
         r#"
         INSERT INTO blobs (
             id, state, filename, content_type, category, input_type,
             checksum_sha256, size, skip_virus_scan, expires_at, scan_state, priority,
-            source_columns, thumbnail_state, preview_state, checksum_md5, url, source_main
+            source_columns, checksum_md5, url, source_main
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
         RETURNING "#,
         blob_columns!()
     ))
@@ -102,13 +97,23 @@ pub(crate) async fn insert(exec: impl PgExecutor<'_>, new: &NewBlob) -> sqlx::Re
     .bind(scan_state.as_str())
     .bind(new.priority.rank())
     .bind(new.source_columns.as_ref().map(sqlx::types::Json))
-    .bind(initial(Representation::Thumbnail).as_str())
-    .bind(initial(Representation::Preview).as_str())
     .bind(&new.checksum_md5)
     .bind(&new.url)
     .bind(&new.source_main)
-    .fetch_one(exec)
-    .await
+    .fetch_one(&mut *conn)
+    .await?;
+    if !new.representations.is_empty() {
+        let kinds: Vec<&str> = new.representations.iter().map(|k| k.as_str()).collect();
+        sqlx::query(
+            "INSERT INTO representations (blob_id, kind) \
+             SELECT $1, unnest($2::text[]) ON CONFLICT DO NOTHING",
+        )
+        .bind(blob.id)
+        .bind(&kinds)
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(blob)
 }
 
 pub async fn find(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Result<Option<Blob>> {
@@ -122,22 +127,151 @@ pub async fn find(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Result<Option<Bl
     .await
 }
 
+/// The columns of a `representations` row as the queries alias them,
+/// beside a blob's own so the names do not clash. Nullable, since a
+/// `LEFT JOIN` yields a row of nulls for a blob without any.
+macro_rules! representation_columns {
+    ($r:literal) => {
+        concat!(
+            $r,
+            ".kind AS rep_kind, ",
+            $r,
+            ".state AS rep_state, ",
+            $r,
+            ".version AS rep_version, ",
+            $r,
+            ".sha256 AS rep_sha256, ",
+            $r,
+            ".size AS rep_size, ",
+            $r,
+            ".source AS rep_source, ",
+            $r,
+            ".timed_out AS rep_timed_out"
+        )
+    };
+}
+
+/// A `representations` row as [`representation_columns!`] selects it.
+#[derive(Debug, sqlx::FromRow)]
+struct RepresentationColumns {
+    rep_kind: Option<String>,
+    rep_state: Option<String>,
+    rep_version: Option<i32>,
+    rep_sha256: Option<Vec<u8>>,
+    rep_size: Option<i64>,
+    rep_source: Option<String>,
+    rep_timed_out: Option<bool>,
+}
+
+impl RepresentationColumns {
+    /// The row, or `None` for the nulls of a join that found none.
+    fn into_row(self) -> sqlx::Result<Option<RepresentationRow>> {
+        let decode = |e: agrafe_types::ParseEnumError| sqlx::Error::Decode(e.into());
+        let (Some(kind), Some(state)) = (self.rep_kind, self.rep_state) else {
+            return Ok(None);
+        };
+        Ok(Some(RepresentationRow {
+            kind: kind.parse().map_err(decode)?,
+            state: state.parse().map_err(decode)?,
+            version: self.rep_version,
+            rendered: Rendered::from_columns(self.rep_sha256.as_deref(), self.rep_size),
+            source: self
+                .rep_source
+                .as_deref()
+                .map(str::parse)
+                .transpose()
+                .map_err(decode)?,
+            timed_out: self.rep_timed_out.unwrap_or(false),
+        }))
+    }
+}
+
+/// One row of the head query: the blob's columns, and one of its
+/// representations or none.
+#[derive(Debug, sqlx::FromRow)]
+struct HeadRow {
+    #[sqlx(flatten)]
+    head: BlobHead,
+    #[sqlx(flatten)]
+    representation: RepresentationColumns,
+}
+
 /// The one query on the read path: the columns of a [`BlobHead`], listed
-/// so a download never ships `source_columns` or the rest of the row.
+/// so a download never ships `source_columns` or the rest of the row, with
+/// the blob's `representations` rows joined on, at most one per kind,
+/// folded into the head here.
 pub(crate) async fn find_head(
     exec: impl PgExecutor<'_>,
     id: Uuid,
 ) -> sqlx::Result<Option<BlobHead>> {
-    sqlx::query_as::<_, BlobHead>(
-        "SELECT id, state, filename, content_type, category, checksum_sha256, size, \
-         expires_at, scan_state, storage_key, kek_id, wrapped_key, encryption_header, \
-         chunk_size, thumbnail_state, preview_state, thumbnail_variant_version, \
-         preview_variant_version, thumbnail_sha256, thumbnail_size, preview_sha256, \
-         preview_size, uploaded_at \
-         FROM blobs WHERE id = $1",
+    let rows: Vec<HeadRow> = sqlx::query_as(concat!(
+        "SELECT b.id, b.state, b.filename, b.content_type, b.category, b.checksum_sha256, \
+         b.size, b.expires_at, b.scan_state, b.storage_key, b.kek_id, b.wrapped_key, \
+         b.encryption_header, b.chunk_size, b.uploaded_at, ",
+        representation_columns!("r"),
+        " FROM blobs b LEFT JOIN representations r ON r.blob_id = b.id WHERE b.id = $1"
+    ))
+    .bind(id)
+    .fetch_all(exec)
+    .await?;
+    let mut rows = rows.into_iter();
+    let Some(first) = rows.next() else {
+        return Ok(None);
+    };
+    let mut head = first.head;
+    let mut representations = Vec::new();
+    for columns in std::iter::once(first.representation).chain(rows.map(|r| r.representation)) {
+        if let Some(row) = columns.into_row()? {
+            representations.push(row);
+        }
+    }
+    head.representations = Representations::new(representations);
+    Ok(Some(head))
+}
+
+/// A `representations` row with the blob it belongs to.
+#[derive(Debug, sqlx::FromRow)]
+struct KeyedRepresentation {
+    blob_id: Uuid,
+    #[sqlx(flatten)]
+    representation: RepresentationColumns,
+}
+
+/// The representations of every blob among `ids`, by blob: the second
+/// query of a page, never one per blob. A blob with no row has no entry.
+pub(crate) async fn representations_for(
+    exec: impl PgExecutor<'_>,
+    ids: &[Uuid],
+) -> sqlx::Result<HashMap<Uuid, Representations>> {
+    let rows: Vec<KeyedRepresentation> = sqlx::query_as(concat!(
+        "SELECT r.blob_id, ",
+        representation_columns!("r"),
+        " FROM representations r WHERE r.blob_id = ANY($1)"
+    ))
+    .bind(ids)
+    .fetch_all(exec)
+    .await?;
+    let mut by_blob: HashMap<Uuid, Vec<RepresentationRow>> = HashMap::new();
+    for keyed in rows {
+        if let Some(row) = keyed.representation.into_row()? {
+            by_blob.entry(keyed.blob_id).or_default().push(row);
+        }
+    }
+    Ok(by_blob
+        .into_iter()
+        .map(|(id, rows)| (id, Representations::new(rows)))
+        .collect())
+}
+
+/// Whether a render is to come for the blob: some representation of its is
+/// `pending`. A primary-key probe.
+async fn render_pending(exec: impl PgExecutor<'_>, id: Uuid) -> sqlx::Result<bool> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM representations WHERE blob_id = $1 AND state = $2)",
     )
     .bind(id)
-    .fetch_optional(exec)
+    .bind(RepresentationState::Pending.as_str())
+    .fetch_one(exec)
     .await
 }
 
@@ -695,7 +829,8 @@ pub(crate) async fn enqueue_next(
     webhook: &WebhookConfig,
     blob: &Blob,
 ) -> sqlx::Result<()> {
-    enqueue_kinds(conn, blob, next_kinds(blob)).await?;
+    let kinds = next_kinds(&mut *conn, blob).await?;
+    enqueue_kinds(conn, blob, kinds).await?;
     if let Some(event) = Event::of(blob).filter(|event| webhook.wants(*event)) {
         notify::enqueue(&mut *conn, blob.id, blob.priority, event, Timestamp::now()).await?;
     }
@@ -703,10 +838,10 @@ pub(crate) async fn enqueue_next(
 }
 
 /// The job kinds a blob in its current state is waiting on; empty when it
-/// waits on none.
-fn next_kinds(blob: &Blob) -> &'static [JobKind] {
-    let pending = |kind| blob.representation_state(kind) == RepresentationState::Pending;
-    match (blob.state, blob.input_type) {
+/// waits on none. A `ready` blob waits on a render while a representation
+/// of its is `pending`, which its rows say.
+async fn next_kinds(conn: &mut PgConnection, blob: &Blob) -> sqlx::Result<&'static [JobKind]> {
+    Ok(match (blob.state, blob.input_type) {
         (BlobState::Created, InputType::Url) => &[JobKind::Fetch],
         (BlobState::Uploaded, InputType::Raw | InputType::Multipart | InputType::Url) => {
             &[JobKind::Scan]
@@ -714,13 +849,9 @@ fn next_kinds(blob: &Blob) -> &'static [JobKind] {
         (BlobState::Uploaded, InputType::Rows) => &[JobKind::Rows],
         (BlobState::Uploaded, InputType::Archive) => &[JobKind::Archive],
         (BlobState::Uploaded, InputType::Document) => &[JobKind::Document],
-        (BlobState::Ready, _)
-            if pending(Representation::Thumbnail) || pending(Representation::Preview) =>
-        {
-            &[JobKind::Render]
-        }
+        (BlobState::Ready, _) if render_pending(&mut *conn, blob.id).await? => &[JobKind::Render],
         _ => &[],
-    }
+    })
 }
 
 /// Enqueue one job of each of `kinds` for the blob, due now, at the blob's
@@ -784,7 +915,7 @@ pub(crate) async fn retry(pool: &PgPool, id: Uuid, now: Timestamp) -> sqlx::Resu
     if blob.state_at(now).is_terminal() {
         return Ok(Retry::Nothing(blob));
     }
-    let kinds = next_kinds(&blob);
+    let kinds = next_kinds(&mut tx, &blob).await?;
     if kinds.is_empty() {
         return Ok(Retry::Nothing(blob));
     }
@@ -1164,13 +1295,14 @@ pub async fn explain_reaper(conn: &mut PgConnection) -> sqlx::Result<Vec<(&'stat
     Ok(plans)
 }
 
-/// Record the outcome of rendering `kind` for `id`, along with the variant
-/// version it was built with and, for `ready`, what was rendered, while the
-/// blob is still `ready`: `false` when it no longer is, and the purge may
-/// have been and gone, so what was written is the caller's to delete. Only
-/// the blob's state is a condition: the preview a thumbnail had rendered
-/// again lands on a representation that is not `pending`. `timed_out` is
-/// recorded for the preview alone, see `Blob::preview_timed_out`.
+/// Record the outcome of rendering `kind` for `id` on its row, along with
+/// the version it was built with and, for `ready`, what was rendered, while
+/// the blob is still `ready`: `false` when it no longer is, and the purge
+/// may have been and gone, so what was written is the caller's to delete.
+/// Only the blob's state is a condition: the preview a thumbnail had
+/// rendered again lands on a representation that is not `pending`, and a
+/// kind with no row, `disabled`, affects none. `source` and `timed_out`
+/// are the preview's, see `RepresentationRow`; the thumbnail passes none.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn finish_representation(
     exec: impl PgExecutor<'_>,
@@ -1183,76 +1315,56 @@ pub(crate) async fn finish_representation(
     rendered: Option<Rendered>,
 ) -> sqlx::Result<bool> {
     let size = rendered
-        .map(|r| i32::try_from(r.size))
+        .map(|r| i64::try_from(r.size))
         .transpose()
         .map_err(|e| sqlx::Error::Encode(e.into()))?;
-    let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("UPDATE blobs SET ");
-    qb.push(kind.state_column())
-        .push(" = ")
-        .push_bind(state.as_str())
-        .push(", ")
-        .push(kind.version_column())
-        .push(" = ")
-        .push_bind(version)
-        .push(", ")
-        .push(kind.digest_column())
-        .push(" = ")
-        .push_bind(rendered.map(|r| r.sha256.to_vec()))
-        .push(", ")
-        .push(kind.size_column())
-        .push(" = ")
-        .push_bind(size);
-    if kind == Representation::Preview {
-        qb.push(", preview_source = ")
-            .push_bind(source.map(PreviewSource::as_str))
-            .push(", preview_timed_out = ")
-            .push_bind(timed_out.then_some(true));
-    }
-    qb.push(" WHERE id = ")
-        .push_bind(id)
-        .push(" AND state = 'ready'");
-    Ok(qb.build().execute(exec).await?.rows_affected() == 1)
+    let result = sqlx::query(
+        "UPDATE representations r \
+         SET state = $3, version = $4, sha256 = $5, size = $6, source = $7, timed_out = $8 \
+         FROM blobs b \
+         WHERE b.id = r.blob_id AND r.blob_id = $1 AND r.kind = $2 AND b.state = $9",
+    )
+    .bind(id)
+    .bind(kind.as_str())
+    .bind(state.as_str())
+    .bind(version)
+    .bind(rendered.map(|r| r.sha256.to_vec()))
+    .bind(size)
+    .bind(source.map(PreviewSource::as_str))
+    .bind(timed_out.then_some(true))
+    .bind(BlobState::Ready.as_str())
+    .execute(exec)
+    .await?;
+    Ok(result.rows_affected() == 1)
 }
 
 /// Ask for `kind` to be (re)generated: the representation goes back to
-/// `pending` and a job is enqueued, if the blob is still `ready` and the
-/// representation was not disabled at creation. The lazy path of the
-/// `GET` handler, for a missing object or a stale variant version. What the
-/// row recorded of the last render goes with it; the variant version stays
-/// until the next one, being what the object still in the bucket was built
-/// with.
+/// `pending` and a job is enqueued, if the blob is still `ready` and has a
+/// row for the kind, one disabled at creation having none. The lazy path
+/// of the `GET` handler, for a missing object or a stale variant version.
+/// What the row recorded of the last render goes with it; the version
+/// stays until the next one, being what the object still in the bucket
+/// was built with.
 pub(crate) async fn request_representation(
     pool: &PgPool,
     id: Uuid,
     kind: Representation,
 ) -> sqlx::Result<bool> {
     let mut tx = pool.begin().await?;
-    let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("UPDATE blobs SET ");
-    qb.push(kind.state_column())
-        .push(" = ")
-        .push_bind(RepresentationState::Pending.as_str())
-        .push(", ")
-        .push(kind.digest_column())
-        .push(" = NULL, ")
-        .push(kind.size_column())
-        .push(" = NULL");
-    if kind == Representation::Preview {
-        qb.push(", preview_source = NULL, preview_timed_out = NULL");
-    }
-    qb.push(" WHERE id = ")
-        .push_bind(id)
-        .push(" AND state = ")
-        .push_bind(BlobState::Ready.as_str())
-        .push(" AND ")
-        .push(kind.state_column())
-        .push(" <> ")
-        .push_bind(RepresentationState::Disabled.as_str())
-        .push(" RETURNING priority");
-    let Some(rank) = qb
-        .build_query_scalar::<i16>()
-        .fetch_optional(&mut *tx)
-        .await?
-    else {
+    let rank: Option<i16> = sqlx::query_scalar(
+        "UPDATE representations r \
+         SET state = $3, sha256 = NULL, size = NULL, source = NULL, timed_out = NULL \
+         FROM blobs b \
+         WHERE b.id = r.blob_id AND r.blob_id = $1 AND r.kind = $2 AND b.state = $4 \
+         RETURNING b.priority",
+    )
+    .bind(id)
+    .bind(kind.as_str())
+    .bind(RepresentationState::Pending.as_str())
+    .bind(BlobState::Ready.as_str())
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(rank) = rank else {
         tx.rollback().await?;
         return Ok(false);
     };

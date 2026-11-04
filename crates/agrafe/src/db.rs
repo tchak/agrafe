@@ -276,10 +276,16 @@ mod tests {
         .fetch_all(&pool)
         .await
         .unwrap();
-        let expected: Vec<(String, String)> = ["_sqlx_migrations", "attachments", "blobs", "jobs"]
-            .into_iter()
-            .map(|t| ("agrafe_files".to_owned(), t.to_owned()))
-            .collect();
+        let expected: Vec<(String, String)> = [
+            "_sqlx_migrations",
+            "attachments",
+            "blobs",
+            "jobs",
+            "representations",
+        ]
+        .into_iter()
+        .map(|t| ("agrafe_files".to_owned(), t.to_owned()))
+        .collect();
         assert_eq!(tables, expected);
 
         let functions: Vec<String> = sqlx::query_scalar(

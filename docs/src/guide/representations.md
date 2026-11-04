@@ -57,7 +57,7 @@ thumbnails through a `media.variant_version` bump. Spreadsheets exported
 by agrafe are ordinary blobs and get a thumbnail too.
 
 A user interface should key on whether a blob has a preview
-(`preview_state` is `ready`), never on its category.
+(`representations.preview.state` is `ready`), never on its category.
 
 ## Maps
 
@@ -205,7 +205,20 @@ provider, then `POST /blobs/:id/retry`. See
 
 ## States
 
-`thumbnail_state` and `preview_state` take one of:
+The metadata's `representations` object has one entry per kind the blob
+asked for at creation, keyed by kind:
+
+```json
+"representations": {
+  "thumbnail": {"state": "ready", "checksum": "R0lGODlhAQABAIAAAP…", "size": 4210},
+  "preview": {"state": "failed", "source": null}
+}
+```
+
+Each entry carries a `state`, and with `ready` the `checksum` (SHA-256 of
+the WebP, base64) and `size` that the conditional requests below are
+answered from; the preview's entry carries its `source`, what it was
+rendered from. The state is one of:
 
 | State | Meaning |
 |---|---|
@@ -213,7 +226,11 @@ provider, then `POST /blobs/:id/retry`. See
 | `ready` | Rendered and stored |
 | `failed` | A renderer rejected the file. Retrying would fail the same way |
 | `unavailable` | Nothing can render this file |
-| `disabled` | Left out of `representations` at creation; never rendered |
+
+A kind left out of `representations` at creation is `disabled`: never
+rendered, and absent from the object, so "is the thumbnail disabled" is
+"is there a `thumbnail` entry". The routes still answer it, with
+`disabled` in `X-Representation-State`.
 
 ## Serving
 

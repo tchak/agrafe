@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use uuid::Uuid;
 
-use super::{BlobHead, BlobState, RepresentationState};
+use super::{BlobHead, BlobState};
 use crate::config::BlobsConfig;
 
 /// A `None` is a row that is not there, kept like the others so a URL
@@ -70,7 +70,5 @@ fn settled(head: &BlobHead) -> bool {
         head.state,
         BlobState::Ready | BlobState::Infected | BlobState::Expired | BlobState::Deleted
     );
-    state
-        && head.thumbnail_state != RepresentationState::Pending
-        && head.preview_state != RepresentationState::Pending
+    state && !head.representations.any_pending()
 }

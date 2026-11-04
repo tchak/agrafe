@@ -10,16 +10,19 @@
 //! u32 chunk_size, u64 size, bytes checksum (32)
 //! str content_type, str category, str scan_state
 //! u8 has uploaded_at, i64 uploaded_at (unix microseconds, when present)
-//! thumbnail, preview:
-//!   str state,
-//!   u8 has variant_version, i32 variant_version  (when present)
+//! u8 count, then per representation:
+//!   str kind, str state,
+//!   u8 has version, i32 version                  (when present)
 //!   u8 rendered, bytes sha256 (32), u64 size     (when rendered)
 //! ```
 //!
 //! Integers are big endian. Every value round-trips: microseconds are
-//! what Postgres keeps of a timestamp, and nothing stands in for `None`. The envelope is signed with the rest of the
-//! URL, and the wrapped key is bound to the blob id, so nothing in it
-//! needs authenticating on its own.
+//! what Postgres keeps of a timestamp, and nothing stands in for `None`.
+//! Only the representations the blob has a row for are written, each kind
+//! at most once, so a `disabled` one is absent, as in the table; decoding
+//! refuses a kind it does not know or sees twice. The envelope is signed
+//! with the rest of the URL, and the wrapped key is bound to the blob id,
+//! so nothing in it needs authenticating on its own.
 //!
 //! [DESIGN.md, "Sealed URLs"]: https://github.com/tchak/agrafe/blob/main/DESIGN.md#sealed-urls
 
@@ -30,7 +33,10 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use jiff::Timestamp;
 use uuid::Uuid;
 
-use super::{BlobHead, BlobState, Rendered, Representation, RepresentationState, ScanState};
+use super::{
+    BlobHead, BlobState, Rendered, Representation, RepresentationRow, RepresentationState,
+    Representations, ScanState,
+};
 use crate::classify::Category;
 use crate::encryption::MAX_CHUNK_SIZE;
 
@@ -42,17 +48,41 @@ const VERSION: u8 = 1;
 #[error("invalid envelope")]
 pub struct EnvelopeError;
 
-/// A representation as the envelope recorded it.
+/// A representation as the envelope recorded it: what its row says, less
+/// what serving has no use for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SealedRepresentation {
+    /// Which representation.
+    pub kind: Representation,
     /// The representation's state when the URL was minted.
     pub state: RepresentationState,
-    /// The variant version it was rendered with; `None` before its first
-    /// render.
-    pub variant_version: Option<i32>,
+    /// The version it was rendered with; `None` before its first render.
+    pub version: Option<i32>,
     /// The digest and size of the rendered WebP, when the row recorded
     /// both.
     pub rendered: Option<Rendered>,
+}
+
+impl SealedRepresentation {
+    fn from_row(row: &RepresentationRow) -> Self {
+        Self {
+            kind: row.kind,
+            state: row.state,
+            version: row.version,
+            rendered: row.rendered,
+        }
+    }
+
+    fn into_row(self) -> RepresentationRow {
+        RepresentationRow {
+            kind: self.kind,
+            state: self.state,
+            version: self.version,
+            rendered: self.rendered,
+            source: None,
+            timed_out: false,
+        }
+    }
 }
 
 /// What serving a `ready` blob needs of its row, sealed into a signed URL
@@ -79,10 +109,9 @@ pub struct Envelope {
     pub scan_state: ScanState,
     /// When the bytes landed, to the second.
     pub uploaded_at: Option<Timestamp>,
-    /// The thumbnail as the row recorded it.
-    pub thumbnail: SealedRepresentation,
-    /// The preview as the row recorded it.
-    pub preview: SealedRepresentation,
+    /// The representations the blob has rows for, as they recorded them,
+    /// in [`Representation`] order and each kind at most once.
+    pub representations: Vec<SealedRepresentation>,
 }
 
 impl Envelope {
@@ -92,11 +121,6 @@ impl Envelope {
         if !head.is_readable(now) {
             return None;
         }
-        let sealed = |kind| SealedRepresentation {
-            state: head.representation_state(kind),
-            variant_version: head.representation_version(kind),
-            rendered: head.rendered(kind),
-        };
         Some(Self {
             kek_id: head.kek_id.clone()?,
             wrapped_key: head.wrapped_key.clone()?,
@@ -108,17 +132,21 @@ impl Envelope {
             category: head.category,
             scan_state: head.scan_state,
             uploaded_at: head.uploaded_at,
-            thumbnail: sealed(Representation::Thumbnail),
-            preview: sealed(Representation::Preview),
+            representations: head
+                .representations
+                .iter()
+                .map(SealedRepresentation::from_row)
+                .collect(),
         })
     }
 
-    /// The `kind` representation as the envelope recorded it.
-    pub fn representation(&self, kind: Representation) -> SealedRepresentation {
-        match kind {
-            Representation::Thumbnail => self.thumbnail,
-            Representation::Preview => self.preview,
-        }
+    /// The `kind` representation as the envelope recorded it; `None` for a
+    /// kind the blob has no row for, which is `disabled`.
+    pub fn representation(&self, kind: Representation) -> Option<SealedRepresentation> {
+        self.representations
+            .iter()
+            .copied()
+            .find(|r| r.kind == kind)
     }
 
     /// The row as the envelope recorded it: `ready`, with no expiry, since
@@ -139,15 +167,10 @@ impl Envelope {
             wrapped_key: Some(self.wrapped_key.clone()),
             encryption_header: Some(self.header.as_bytes().to_vec()),
             chunk_size: Some(self.chunk_size as i32),
-            thumbnail_state: self.thumbnail.state,
-            preview_state: self.preview.state,
-            thumbnail_variant_version: self.thumbnail.variant_version,
-            preview_variant_version: self.preview.variant_version,
-            thumbnail_sha256: self.thumbnail.rendered.map(|r| r.sha256.to_vec()),
-            thumbnail_size: self.thumbnail.rendered.map(|r| r.size as i32),
-            preview_sha256: self.preview.rendered.map(|r| r.sha256.to_vec()),
-            preview_size: self.preview.rendered.map(|r| r.size as i32),
             uploaded_at: self.uploaded_at,
+            representations: Representations::new(
+                self.representations.iter().map(|r| r.into_row()).collect(),
+            ),
         }
     }
 
@@ -171,9 +194,12 @@ impl Envelope {
             }
             None => w.u8(0),
         }
-        for rep in [&self.thumbnail, &self.preview] {
+        let count = u8::try_from(self.representations.len()).expect("few kinds exist");
+        w.u8(count);
+        for rep in &self.representations {
+            w.str(rep.kind.as_str());
             w.str(rep.state.as_str());
-            match rep.variant_version {
+            match rep.version {
                 Some(version) => {
                     w.u8(1);
                     w.i32(version);
@@ -226,9 +252,15 @@ impl Envelope {
             1 => Some(Timestamp::from_microsecond(r.i64()?).map_err(|_| EnvelopeError)?),
             _ => return Err(EnvelopeError),
         };
-        let mut rep = || -> Result<SealedRepresentation, EnvelopeError> {
+        let count = r.u8()?;
+        let mut representations: Vec<SealedRepresentation> = Vec::with_capacity(count.into());
+        for _ in 0..count {
+            let kind: Representation = r.str()?.parse().map_err(|_| EnvelopeError)?;
+            if representations.iter().any(|rep| rep.kind == kind) {
+                return Err(EnvelopeError);
+            }
             let state = r.str()?.parse().map_err(|_| EnvelopeError)?;
-            let variant_version = match r.u8()? {
+            let version = match r.u8()? {
                 0 => None,
                 1 => Some(r.i32()?),
                 _ => return Err(EnvelopeError),
@@ -241,14 +273,13 @@ impl Envelope {
                 }),
                 _ => return Err(EnvelopeError),
             };
-            Ok(SealedRepresentation {
+            representations.push(SealedRepresentation {
+                kind,
                 state,
-                variant_version,
+                version,
                 rendered,
-            })
-        };
-        let thumbnail = rep()?;
-        let preview = rep()?;
+            });
+        }
         if !r.0.is_empty() {
             return Err(EnvelopeError);
         }
@@ -263,8 +294,7 @@ impl Envelope {
             category,
             scan_state,
             uploaded_at,
-            thumbnail,
-            preview,
+            representations,
         })
     }
 }
@@ -364,19 +394,23 @@ mod tests {
             category: Category::Image,
             scan_state: ScanState::Clean,
             uploaded_at: Some("2026-10-16T08:44:26.123456Z".parse().unwrap()),
-            thumbnail: SealedRepresentation {
-                state: RepresentationState::Ready,
-                variant_version: Some(3),
-                rendered: Some(Rendered {
-                    sha256: [4u8; 32],
-                    size: 12_345,
-                }),
-            },
-            preview: SealedRepresentation {
-                state: RepresentationState::Pending,
-                variant_version: None,
-                rendered: None,
-            },
+            representations: vec![
+                SealedRepresentation {
+                    kind: Representation::Thumbnail,
+                    state: RepresentationState::Ready,
+                    version: Some(3),
+                    rendered: Some(Rendered {
+                        sha256: [4u8; 32],
+                        size: 12_345,
+                    }),
+                },
+                SealedRepresentation {
+                    kind: Representation::Preview,
+                    state: RepresentationState::Pending,
+                    version: None,
+                    rendered: None,
+                },
+            ],
         }
     }
 
@@ -400,17 +434,15 @@ mod tests {
     #[test]
     fn keeps_every_value() {
         let mut env = sample();
-        env.thumbnail.variant_version = Some(0);
-        env.thumbnail.rendered = Some(Rendered {
+        env.representations[0].version = Some(0);
+        env.representations[0].rendered = Some(Rendered {
             sha256: [4u8; 32],
             size: u64::from(u32::MAX) + 1,
         });
         let decoded = Envelope::decode(&env.encode()).unwrap();
-        assert_eq!(decoded.thumbnail.variant_version, Some(0));
-        assert_eq!(
-            decoded.thumbnail.rendered.unwrap().size,
-            u64::from(u32::MAX) + 1
-        );
+        let thumbnail = decoded.representation(Representation::Thumbnail).unwrap();
+        assert_eq!(thumbnail.version, Some(0));
+        assert_eq!(thumbnail.rendered.unwrap().size, u64::from(u32::MAX) + 1);
         assert_eq!(decoded.uploaded_at.unwrap().subsec_microsecond(), 123_456);
         assert_eq!(decoded, env);
     }
@@ -442,6 +474,49 @@ mod tests {
         assert_eq!(Envelope::decode(&env.encode()), Err(EnvelopeError));
         env.wrapped_key.truncate(WRAPPED_LEN - 1);
         assert_eq!(Envelope::decode(&env.encode()), Err(EnvelopeError));
+    }
+
+    /// A kind the blob has no row for is absent, and comes back `disabled`
+    /// through the head; a kind written twice, or one this build does not
+    /// know, is refused.
+    #[test]
+    fn representations_are_listed_once_each() {
+        let mut env = sample();
+        env.representations.truncate(1);
+        let decoded = Envelope::decode(&env.encode()).unwrap();
+        assert_eq!(decoded, env);
+        assert_eq!(decoded.representation(Representation::Preview), None);
+        let head = decoded.head(Uuid::now_v7(), "a");
+        assert_eq!(
+            head.representations.state(Representation::Preview),
+            RepresentationState::Disabled
+        );
+        assert_eq!(
+            head.representations.state(Representation::Thumbnail),
+            RepresentationState::Ready
+        );
+
+        let mut twice = sample();
+        twice.representations.push(twice.representations[0]);
+        assert_eq!(Envelope::decode(&twice.encode()), Err(EnvelopeError));
+
+        let mut none = sample();
+        none.representations.clear();
+        assert_eq!(Envelope::decode(&none.encode()), Ok(none));
+
+        // An unknown kind: the string "icon" in place of "preview".
+        let bytes = URL_SAFE_NO_PAD.decode(sample().encode()).unwrap();
+        let needle = b"\x00\x07preview";
+        let at = bytes
+            .windows(needle.len())
+            .position(|w| w == needle)
+            .unwrap();
+        let mut unknown = bytes.clone();
+        unknown.splice(at..at + needle.len(), b"\x00\x04icon".iter().copied());
+        assert_eq!(
+            Envelope::decode(&URL_SAFE_NO_PAD.encode(unknown)),
+            Err(EnvelopeError)
+        );
     }
 
     #[test]

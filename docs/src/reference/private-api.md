@@ -79,9 +79,10 @@ Every blob route answers with the full metadata, the same object the
   "scan_state": "clean",
   "scanned_at": "2026-10-19T09:12:03.418273Z",
   "scan_signature": null,
-  "thumbnail_state": "ready",
-  "preview_state": "ready",
-  "preview_source": "image",
+  "representations": {
+    "thumbnail": {"state": "ready", "checksum": "R0lGODlhAQABAIAAAP…", "size": 4210},
+    "preview": {"state": "ready", "checksum": "iVBORw0KGgoAAAANSU…", "size": 88412, "source": "image"}
+  },
   "source_parts": null,
   "source_rows": null,
   "source_size": null,
@@ -135,8 +136,7 @@ Every blob route answers with the full metadata, the same object the
 | `scan_state` | string | `pending`, `clean`, `infected`, `skipped` |
 | `scanned_at` | timestamp or null | |
 | `scan_signature` | string or null | What `clamd` found, for an infected blob |
-| `thumbnail_state`, `preview_state` | string | `pending`, `ready`, `failed`, `unavailable`, `disabled` |
-| `preview_source` | string or null | `image`, `embedded_image`, `geojson`, `gpx`, `kml` (a KMZ's document too), `shapefile` or `gml` once a preview is rendered |
+| `representations` | object | One entry per kind the blob asked for at creation, `thumbnail` and `preview`, keyed by kind. A kind left out is absent: that is `disabled`. See below |
 | `source_parts`, `source_rows`, `source_size` | integer or null | For generated blobs: parts accepted, lines and bytes across them. Null otherwise |
 | `archive_entries`, `archive_errors` | integer or null | For a built archive: members written and members skipped |
 | `created_at`, `updated_at` | timestamp | |
@@ -146,6 +146,15 @@ Every blob route answers with the full metadata, the same object the
 | `attachments_truncated` | boolean | More than a hundred owners use the blob; `GET /attachments?blob_id=` lists them all |
 | `urls` | object | Signed public URLs, see [Serving files](../guide/serving.md#urls-in-the-metadata) |
 | `envelope` | string or null | For a `ready`, unexpired blob: the opaque envelope for [sealed URLs](../guide/signed-urls.md#sealed-urls) |
+
+Each entry of `representations`:
+
+| Field | Type | Description |
+|---|---|---|
+| `state` | string | `pending`, `ready`, `failed`, `unavailable`. Never `disabled`: that kind has no entry |
+| `checksum` | string | SHA-256 of the rendered WebP, base64. With `ready` only |
+| `size` | integer | Bytes of the rendered WebP. With `ready` only |
+| `source` | string or null | The preview's entry only: `image`, `embedded_image`, `geojson`, `gpx`, `kml` (a KMZ's document too), `shapefile` or `gml` once a preview is rendered |
 
 ### `POST /blobs`
 
@@ -166,7 +175,7 @@ The body is limited to 16 MiB.
 | `main` | string | no | Entry file of a `document` workspace, `main.typ` by default |
 | `skip_virus_scan` | boolean | no | Default `false`. Forced `true` for generated blobs |
 | `priority` | string | no | `high`, `normal` (default), `low` |
-| `representations` | array | no | Among `thumbnail` and `preview`; both by default |
+| `representations` | array | no | Among `thumbnail` and `preview`; both by default. `[]` renders nothing. A kind left out is `disabled` for good and absent from the metadata's `representations` |
 | `expires_at` | timestamp | no | In the future. Not with `expires_in` or `attachment` |
 | `expires_in` | duration | no | Not with `expires_at` or `attachment`. Default `blobs.default_expires_in` |
 | `attachment` | object | no | `{"owner_kind", "owner_id", "role"}`, and `"replace": true` to detach the other blobs at the address: attach in the same transaction; the blob then has no expiry |

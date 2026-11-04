@@ -48,7 +48,11 @@ The first release.
   bubblewrap where the host grants it: images, PDF first pages, embedded
   images, text, maps of GeoJSON, GPX, KML, KMZ and GML files and zipped
   shapefiles, and, with
-  LibreOffice, office documents; category icons for the rest.
+  LibreOffice, office documents; category icons for the rest. Each one
+  is a row of the `representations` table, and the metadata lists them
+  as one `representations` object keyed by kind, each entry with its
+  `state` and, once `ready`, the `checksum` and `size` of the WebP; a
+  kind left out at creation is absent.
 - **Generated files**: spreadsheets, ZIP archives and documents compiled
   from typst, built by jobs from parts sent in pieces. A document is a
   PDF, or from the same template a DOCX or an ODT, offered by

@@ -82,36 +82,6 @@ CREATE TABLE blobs (
     encryption_header bytea,
     chunk_size        integer,
 
-    -- derived representations, each with the variant version it was built
-    -- with, so a bump can regenerate one without touching the other. A
-    -- representation turned off at creation is `disabled` for good: never
-    -- pending, so the render job and the lazy repair path leave it alone.
-    thumbnail_state   text NOT NULL DEFAULT 'pending'
-                      CHECK (thumbnail_state IN ('pending', 'ready', 'failed', 'unavailable', 'disabled')),
-    preview_state     text NOT NULL DEFAULT 'pending'
-                      CHECK (preview_state IN ('pending', 'ready', 'failed', 'unavailable', 'disabled')),
-    preview_source    text
-                      CHECK (preview_source IN ('image', 'embedded_image', 'geojson', 'gpx', 'kml', 'shapefile', 'gml')),
-    -- A failed preview that ran a tool out of its time limit: true, or NULL
-    -- for every other row, which costs them nothing. A thumbnail rendered
-    -- later over that verdict must not hand the file to a second tool for
-    -- as long again. See DESIGN.md, "Representations".
-    preview_timed_out boolean CHECK (preview_timed_out),
-    thumbnail_variant_version integer,
-    preview_variant_version   integer,
-    -- What was rendered: the SHA-256 and the size of the WebP, recorded
-    -- with `ready` and cleared with any other state, so a conditional or
-    -- HEAD request is answered from the row without a bucket read. The
-    -- table's CHECKs below hold them to that.
-    thumbnail_sha256  bytea CHECK (thumbnail_sha256 IS NULL OR octet_length(thumbnail_sha256) = 32),
-    thumbnail_size    integer CHECK (thumbnail_size IS NULL OR thumbnail_size >= 0),
-    preview_sha256    bytea CHECK (preview_sha256 IS NULL OR octet_length(preview_sha256) = 32),
-    preview_size      integer CHECK (preview_size IS NULL OR preview_size >= 0),
-    CHECK ((thumbnail_state = 'ready') = (thumbnail_sha256 IS NOT NULL)),
-    CHECK ((thumbnail_state = 'ready') = (thumbnail_size IS NOT NULL)),
-    CHECK ((preview_state = 'ready') = (preview_sha256 IS NOT NULL)),
-    CHECK ((preview_state = 'ready') = (preview_size IS NOT NULL)),
-
     -- timestamps. An upload in flight touches upload_heartbeat_at while it
     -- runs, so the reaper can tell a slow upload from one a crashed process
     -- left behind. The purge stamps purged_at once nothing of the blob is

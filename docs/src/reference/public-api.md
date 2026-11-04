@@ -72,8 +72,10 @@ The reduced metadata of a blob, for a browser to poll after an upload.
   "category": "image",
   "size": 482113,
   "scan_state": "clean",
-  "thumbnail_state": "ready",
-  "preview_state": "pending"
+  "representations": {
+    "thumbnail": {"state": "ready", "checksum": "R0lGODlhAQABAIAAAP…", "size": 4210},
+    "preview": {"state": "pending", "source": null}
+  }
 }
 ```
 
@@ -85,7 +87,7 @@ The reduced metadata of a blob, for a browser to poll after an upload.
 | `category` | string | `image`, `document`, `spreadsheet`, `presentation`, `archive`, `audio`, `video`, `text`, `other` |
 | `size` | integer or null | Bytes; null for a generated blob not yet built |
 | `scan_state` | string | `pending`, `clean`, `infected`, `skipped` |
-| `thumbnail_state`, `preview_state` | string | `pending`, `ready`, `failed`, `unavailable`, `disabled` |
+| `representations` | object | One entry per kind the blob asked for, `thumbnail` and `preview`, the same object as the [private metadata's](private-api.md#blob-metadata): `state` (`pending`, `ready`, `failed`, `unavailable`), with `ready` the `checksum` and `size` of the WebP, and the preview's `source`. A kind left out at creation is absent: `disabled` |
 
 ## `GET /blobs/:token/:id/original/:filename`
 

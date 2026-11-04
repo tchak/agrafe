@@ -718,7 +718,7 @@ async fn retry_enqueues_what_the_blob_waits_on() {
     // it, the dead render pruned long ago: the retry is what gets it going.
     let ready = ready_blob(&app, &png_bytes(100)).await;
     let ready_id = id_of(&ready).to_string();
-    assert_eq!(ready["thumbnail_state"], "pending");
+    assert_eq!(ready["representations"]["thumbnail"]["state"], "pending");
     sqlx::query("DELETE FROM jobs WHERE blob_id = $1")
         .bind(parse_id(&ready_id))
         .execute(pool)

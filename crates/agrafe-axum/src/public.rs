@@ -77,7 +77,12 @@ async fn upload_blob(
             ApiError::Infected(_) => ApiError::Infected(None),
             other => other,
         })?;
-    Ok(Json(PublicBlobResponse::new(&blob.head())))
+    let representations = state
+        .representations_for(&[blob.id])
+        .await?
+        .remove(&blob.id)
+        .unwrap_or_default();
+    Ok(Json(PublicBlobResponse::new(&blob.head(representations))))
 }
 
 async fn get_original(
