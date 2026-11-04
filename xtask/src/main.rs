@@ -204,14 +204,10 @@ fn release(root: &Path, version: &Version) -> Result<(), Error> {
     )?;
     let start = start.trim();
 
+    // Before anything is written: a changelog it refuses leaves the tree
+    // as it was.
     let mut changelog = read(&changelog_path)?;
     changelog::unreleased(&changelog)?;
-
-    if *version != current {
-        manifest = manifest::bump(&manifest, &current, version)?;
-        write(&manifest_path, &manifest)?;
-        process::run(root, "cargo", &["update", "--workspace", "--quiet"])?;
-    }
     if version.pre.is_empty() {
         let today = jiff::Zoned::now().date();
         changelog = changelog::release(
@@ -221,6 +217,14 @@ fn release(root: &Path, version: &Version) -> Result<(), Error> {
             &repository,
             last_release,
         )?;
+    }
+
+    if *version != current {
+        manifest = manifest::bump(&manifest, &current, version)?;
+        write(&manifest_path, &manifest)?;
+        process::run(root, "cargo", &["update", "--workspace", "--quiet"])?;
+    }
+    if version.pre.is_empty() {
         write(&changelog_path, &changelog)?;
     }
 

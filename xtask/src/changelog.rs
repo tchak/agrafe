@@ -12,6 +12,8 @@ pub enum ChangelogError {
     Empty(String),
     #[error("no [Unreleased] link")]
     NoLink,
+    #[error("the [Unreleased] heading was not moved under {0}: is it exactly `## [Unreleased]`?")]
+    NotReleased(String),
 }
 
 const UNRELEASED: &str = "Unreleased";
@@ -68,7 +70,9 @@ pub fn notes<'a>(changelog: &'a str, version: &Version) -> Result<&'a str, Chang
 /// `changelog` with Unreleased's entries moved under `version`, dated
 /// `date`, an empty Unreleased above it, and the links pointed at the
 /// version's tag: Unreleased compares from it, and the version against
-/// `last_release` or, for the first, is the tag's release page.
+/// `last_release` or, for the first, is the tag's release page. A result
+/// that does not read back that way is refused: it would be tagged, and
+/// the release workflow would stop on a tag already pushed.
 pub fn release(
     changelog: &str,
     version: &Version,
@@ -88,7 +92,8 @@ pub fn release(
     let mut out = String::with_capacity(changelog.len() + 200);
     let mut linked = false;
     for line in changelog.split_inclusive('\n') {
-        if line == heading {
+        // As `section` reads it, a trailing space or a CRLF included.
+        if line.trim_end() == heading.trim_end() {
             out.push_str(&heading);
             out.push_str(&format!("\n## [{version}] - {date}\n"));
         } else if line.starts_with(&unreleased_link) && !linked {
@@ -102,6 +107,11 @@ pub fn release(
     }
     if !linked {
         return Err(ChangelogError::NoLink);
+    }
+    let moved = section(&out, &version.to_string()).is_ok()
+        && matches!(unreleased(&out), Err(ChangelogError::Empty(_)));
+    if !moved {
+        return Err(ChangelogError::NotReleased(version.to_string()));
     }
     Ok(out)
 }
@@ -181,6 +191,32 @@ Intro.
         ));
         // The section stops at the next one.
         assert_eq!(notes(&out, &v("0.2.0")).unwrap(), "### Fixed\n\n- One.");
+    }
+
+    #[test]
+    fn a_heading_section_accepts_is_released_too() {
+        for changelog in [
+            FIRST.replace("## [Unreleased]\n", "## [Unreleased] \n"),
+            FIRST.replace('\n', "\r\n"),
+        ] {
+            assert!(unreleased(&changelog).is_ok());
+            let out = release(&changelog, &v("0.1.0"), "2026-10-21", REPOSITORY, None).unwrap();
+            assert_eq!(
+                notes(&out, &v("0.1.0")).unwrap().replace('\r', ""),
+                "### Added\n\n- Everything."
+            );
+            assert!(matches!(unreleased(&out), Err(ChangelogError::Empty(_))));
+        }
+    }
+
+    #[test]
+    fn a_heading_it_cannot_move_is_refused() {
+        let changelog = FIRST.replace("## [Unreleased]\n", "## [Unreleased] soon\n");
+        assert!(unreleased(&changelog).is_ok(), "section reads it");
+        assert!(matches!(
+            release(&changelog, &v("0.1.0"), "2026-10-21", REPOSITORY, None),
+            Err(ChangelogError::NotReleased(_))
+        ));
     }
 
     #[test]
