@@ -1074,7 +1074,8 @@ async fn a_failed_last_attempt_still_schedules_the_next_run() {
     let week = 7.0 * 24.0 * 3600.0;
     assert!(due_in > week - 60.0 && due_in <= week, "{due_in}");
 
-    // The next run stands in the way of retrying the dead one.
+    // The dead one's retry takes the place of the next run, which has not
+    // started: one live audit, due now, and no dead one.
     let dead: i64 =
         sqlx::query_scalar("SELECT id FROM jobs WHERE kind = 'audit' AND failed_at IS NOT NULL")
             .fetch_one(app.state.pool())
@@ -1085,7 +1086,120 @@ async fn a_failed_last_attempt_still_schedules_the_next_run() {
         req(Method::POST, &format!("/jobs/{dead}/retry")),
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(jobs(&app).await, (0, 1), "the retry replaced the next run");
+    let live: i64 =
+        sqlx::query_scalar("SELECT id FROM jobs WHERE kind = 'audit' AND failed_at IS NULL")
+            .fetch_one(app.state.pool())
+            .await
+            .unwrap();
+    assert_eq!(live, dead);
+}
+
+/// A dead sweep's retry resumes from its saved place, however long the
+/// next run was to wait, and schedules the one after when it ends.
+#[tokio::test]
+async fn the_retry_of_a_dead_audit_resumes_from_its_saved_place() {
+    let db = TestDatabase::new().await;
+    let app = settled_setup(db).await;
+    let mut ids = Vec::new();
+    for _ in 0..3 {
+        ids.push(id_of(&ready_blob(&app, &png_bytes(100)).await).to_string());
+    }
+    ids.sort_by_key(|id| agrafe::blob::key::order(parse_id(id)));
+    for id in &ids {
+        delete_object(&app, &storage_key(&app, id).await).await;
+    }
+    put_object(&app, &object_key(&ids[0], "junk"), vec![1]).await;
+
+    let saved = audit::Progress {
+        after: Some(object_key(&ids[0], "junk")),
+        cursor: ids[1].parse().unwrap(),
+        report: Report::default(),
+    };
+    let dead: i64 = sqlx::query_scalar(
+        "INSERT INTO jobs (kind, payload, run_at, failed_at, last_error, locked_at, locked_by) \
+         VALUES ('audit', $1, now(), now(), 'died', now(), 'gone') RETURNING id",
+    )
+    .bind(serde_json::to_value(&saved).unwrap())
+    .fetch_one(app.state.pool())
+    .await
+    .unwrap();
+    let next_week = Timestamp::now() + jiff::SignedDuration::from_hours(168);
+    assert!(audit::schedule(app.state.pool(), next_week).await.unwrap());
+
+    let (status, body) = call(
+        &app.private,
+        req(Method::POST, &format!("/jobs/{dead}/retry")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(run_job(&app, JobKind::Audit).await);
+
+    for (i, id) in ids.iter().enumerate() {
+        let stamped = get_blob(&app, id).await["failed_at"].is_string();
+        assert_eq!(
+            stamped,
+            i == 2,
+            "blob {i}: only the one after the saved place"
+        );
+    }
+    let due_in: f64 = sqlx::query_scalar(
+        "SELECT EXTRACT(EPOCH FROM run_at - now())::float8 FROM jobs WHERE kind = 'audit'",
+    )
+    .fetch_one(app.state.pool())
+    .await
+    .unwrap();
+    assert!(due_in > 6.0 * 24.0 * 3600.0, "the next run: {due_in}");
+}
+
+/// The retry of a dead audit is refused beside another live sweep, running
+/// or holding progress, and leaves it alone: only a run that has not
+/// started gives way.
+#[tokio::test]
+async fn the_retry_of_a_dead_audit_leaves_a_live_sweep_alone() {
+    let db = TestDatabase::new().await;
+    let app = settled_setup(db).await;
+    for live in [
+        "INSERT INTO jobs (kind, payload, run_at, locked_at, locked_by, attempts) \
+         VALUES ('audit', '{}', now(), now(), 'worker', 1) RETURNING id",
+        "INSERT INTO jobs (kind, payload, run_at) \
+         VALUES ('audit', '{\"cursor\": \"01999e6c-0000-7000-8000-000000000000\"}', now()) \
+         RETURNING id",
+        "INSERT INTO jobs (kind, payload, run_at, attempts) \
+         VALUES ('audit', '{}', now(), 2) RETURNING id",
+    ] {
+        sqlx::query("DELETE FROM jobs WHERE kind = 'audit'")
+            .execute(app.state.pool())
+            .await
+            .unwrap();
+        let dead: i64 = sqlx::query_scalar(
+            "INSERT INTO jobs (kind, run_at, failed_at, locked_at, locked_by) \
+             VALUES ('audit', now(), now(), now(), 'gone') RETURNING id",
+        )
+        .fetch_one(app.state.pool())
+        .await
+        .unwrap();
+        let live_id: i64 = sqlx::query_scalar(live)
+            .fetch_one(app.state.pool())
+            .await
+            .unwrap();
+        let (status, body) = call(
+            &app.private,
+            req(Method::POST, &format!("/jobs/{dead}/retry")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{live}: {body}");
+        let left: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM jobs WHERE id = $1 OR (id = $2 AND failed_at IS NOT NULL)",
+        )
+        .bind(live_id)
+        .bind(dead)
+        .fetch_one(app.state.pool())
+        .await
+        .unwrap();
+        assert_eq!(left, 2, "{live}");
+    }
 }
 
 /// The audit pages the rows in the bucket's key order through an

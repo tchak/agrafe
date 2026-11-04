@@ -3563,7 +3563,12 @@ the reaper, the next run is scheduled at the end and not the start: a
 blob-less job that fails while its twin is pending is redundant, not
 retried (`fail`, "superseded"), and the retry is what carries a sweep
 on. The last attempt and a run that stepped aside schedule it too, so a
-dead job does not end the weekly cadence.
+dead job does not end the weekly cadence. `POST /jobs/:id/retry` on a dead
+audit deletes that run if it has not started, in one transaction with the
+retry, and the retried run schedules the next one when it ends: the unique
+pending index would otherwise refuse the retry, and the dead row's saved
+place would be pruned with it, a sweep of days lost to an outage of hours.
+Beside a sweep that is running or holds progress the retry stays a `409`.
 
 A sweep of a billion blobs is days of listing, and a deploy or a
 transient error must not send it back to the start. The job keeps its

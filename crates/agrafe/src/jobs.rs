@@ -861,42 +861,61 @@ pub enum Action {
     /// Only a dead job can be acted on; this one is in another state.
     NotDead(Job),
     /// A pending job of the same kind already exists for the blob, so the
-    /// dead one has nothing to add.
+    /// dead one has nothing to add; for an audit, another sweep is under
+    /// way, which two would race for the lock and lose progress over.
     Duplicate(Job),
     /// No job has this id.
     Missing,
 }
 
 /// Give a dead job its attempts back and run it now. Workers are notified.
+/// A dead audit takes the place of the run it scheduled, see
+/// `audit::clear_the_way`, all of it in one transaction: a retry that is
+/// refused leaves that run where it was.
 pub(crate) async fn retry(conn: &mut PgConnection, id: i64) -> sqlx::Result<Action> {
+    let mut tx = conn.begin().await?;
+    if !audit::clear_the_way(&mut tx, id).await? {
+        tx.rollback().await?;
+        return Ok(match find(&mut *conn, id).await? {
+            Some(job) => Action::Duplicate(job),
+            None => Action::Missing,
+        });
+    }
     let result = sqlx::query_as::<_, Job>(
         "UPDATE jobs SET failed_at = NULL, locked_at = NULL, locked_by = NULL, \
                          attempts = 0, run_at = now() \
          WHERE id = $1 AND failed_at IS NOT NULL RETURNING *",
     )
     .bind(id)
-    .fetch_optional(&mut *conn)
+    .fetch_optional(&mut *tx)
     .await;
     match result {
         Ok(Some(job)) => {
             sqlx::query("SELECT pg_notify($1, $2)")
                 .bind(CHANNEL)
                 .bind(job.kind.as_str())
-                .execute(&mut *conn)
+                .execute(&mut *tx)
                 .await?;
             if let Some(blob_id) = job.blob_id.filter(|_| job.kind.finishes_blob()) {
-                clear_failure(&mut *conn, blob_id).await?;
+                clear_failure(&mut *tx, blob_id).await?;
             }
+            tx.commit().await?;
             Ok(Action::Done(job))
         }
-        Ok(None) => Ok(match find(&mut *conn, id).await? {
-            Some(job) => Action::NotDead(job),
-            None => Action::Missing,
-        }),
-        Err(err) if is_unique_violation(&err) => Ok(match find(&mut *conn, id).await? {
-            Some(job) => Action::Duplicate(job),
-            None => Action::Missing,
-        }),
+        Ok(None) => {
+            tx.rollback().await?;
+            Ok(match find(&mut *conn, id).await? {
+                Some(job) => Action::NotDead(job),
+                None => Action::Missing,
+            })
+        }
+        Err(err) if is_unique_violation(&err) => {
+            tx.rollback().await?;
+            Ok(match find(&mut *conn, id).await? {
+                Some(job) => Action::Duplicate(job),
+                None => Action::Missing,
+            })
+        }
         Err(err) => Err(err),
     }
 }

@@ -474,12 +474,13 @@ One job. `404` when unknown.
 ### `POST /jobs/:id/retry`
 
 Gives a dead job its attempts back and makes it due now. Answers `200` with
-the job.
+the job. A dead audit carries on from its saved place, in place of the next
+run it scheduled if that one has not started.
 
 | Status | Code | When |
 |---|---|---|
 | `404` | `not_found` | Unknown job |
-| `409` | `conflict` | The job is not dead, or its blob already has a pending job of that kind |
+| `409` | `conflict` | The job is not dead, its blob already has a pending job of that kind, or it is an audit and another sweep is under way |
 
 ### `POST /jobs/retry`
 

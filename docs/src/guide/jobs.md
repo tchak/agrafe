@@ -196,9 +196,11 @@ empty segment (`a//b`), a `.` or `..` segment or an ASCII control character
 fails the whole page on S3, Azure and GCS, so the sweep cannot pass it: every
 attempt stops at the same page, the job dies, and so does next week's run. Its
 `last_error` names the key. Move or delete that object. The next run then
-passes it, starting over from the first key, or run `agrafe audit` for a sweep
-now. `POST /jobs/:id/retry` does not resume the dead one: it answers `409`
-while the next run is pending, which a dead audit schedules itself.
+passes it, starting over from the first key, or `POST /jobs/:id/retry` the dead
+one, which carries on from its saved place. That retry takes the place of the
+next run a dead audit schedules, which comes back when the retried one ends. It
+answers `409` beside a sweep already under way, and `POST /jobs/retry` leaves
+dead audits alone.
 
 A row that changed within `upload.stale_after` of the listing passing it
 is left for the next run and counted as unsettled: an upload or a render

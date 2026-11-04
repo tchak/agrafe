@@ -514,6 +514,45 @@ async fn schedule_after(
     Ok(result.rows_affected() == 1)
 }
 
+/// Make room for retrying the job `id` when it is a dead audit: its
+/// progress is in its row and can only be used by that row running again,
+/// so the run it scheduled for next week, which has not started and holds
+/// nothing, goes. The cadence holds, since the retried run schedules the
+/// next one when it ends. `false` when another sweep is live all the same,
+/// running or holding progress of its own: a twin beside it would
+/// supersede it at its first failure, as in `schedule_after`. Any other
+/// job is left to the retry's own checks. On the caller's transaction,
+/// which keeps the deleted run if the retry does not go through.
+pub(super) async fn clear_the_way(conn: &mut PgConnection, id: i64) -> sqlx::Result<bool> {
+    let dead_audit: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM jobs \
+         WHERE id = $1 AND kind = $2 AND failed_at IS NOT NULL)",
+    )
+    .bind(id)
+    .bind(JobKind::Audit.as_str())
+    .fetch_one(&mut *conn)
+    .await?;
+    if !dead_audit {
+        return Ok(true);
+    }
+    sqlx::query(
+        "DELETE FROM jobs \
+         WHERE kind = $1 AND blob_id IS NULL AND failed_at IS NULL AND locked_at IS NULL \
+           AND attempts = 0 AND payload = '{}'::jsonb",
+    )
+    .bind(JobKind::Audit.as_str())
+    .execute(&mut *conn)
+    .await?;
+    let live: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM jobs \
+         WHERE kind = $1 AND blob_id IS NULL AND failed_at IS NULL)",
+    )
+    .bind(JobKind::Audit.as_str())
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(!live)
+}
+
 /// Advisory lock held for the length of one audit, by the session that
 /// runs it: the job and the command line never sweep at once. Keyed on
 /// the installation (see `jobs::try_lock`), so two deployments on one
