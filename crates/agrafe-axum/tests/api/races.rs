@@ -320,6 +320,79 @@ async fn render_that_outlives_the_purge_leaves_nothing() {
     assert_eq!(states, ["pending", "pending"]);
 }
 
+/// A render finishing as its blob is being deleted: the delete holds the
+/// blob's row and has not yet committed when the render records its
+/// picture. The record waits for the delete's verdict instead of reading
+/// the `ready` its snapshot had, finds the blob `deleted`, and takes back
+/// what it wrote; nothing says `ready` on a deleted blob. The delete is
+/// played by hand, since a request holds its row for no longer than its
+/// own statements take.
+#[tokio::test]
+async fn render_that_finishes_during_a_delete_waits_for_its_verdict() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("rotated.jpg")).await;
+    let id = id_of(&blob).to_string();
+    let hold = app.gate.hold(At::Put, &object_key(&id, "preview"));
+    let job = spawn_job(&app, JobKind::Render);
+    hold.reached().await;
+
+    // The delete's first statement, as `soft_delete` takes the row.
+    let mut delete = app.state.pool().begin().await.unwrap();
+    sqlx::query("SELECT id FROM blobs WHERE id = $1 FOR UPDATE")
+        .bind(parse_id(&id))
+        .execute(&mut *delete)
+        .await
+        .unwrap();
+    hold.release();
+
+    // The render writes its preview and records it, which waits on the
+    // row. This database only: the tests share the server.
+    let mut waiting = 0i64;
+    for _ in 0..100 {
+        waiting = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity \
+             WHERE datname = current_database() AND wait_event_type = 'Lock' \
+               AND query LIKE 'UPDATE representations r%'",
+        )
+        .fetch_one(app.state.pool())
+        .await
+        .unwrap();
+        if waiting > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(waiting, 1, "the render waits for the delete's verdict");
+    assert!(!job.is_finished());
+
+    // The delete's verdict, then its commit: the render goes on from here.
+    sqlx::query("UPDATE blobs SET state = 'deleted' WHERE id = $1 AND state = 'ready'")
+        .bind(parse_id(&id))
+        .execute(&mut *delete)
+        .await
+        .unwrap();
+    delete.commit().await.unwrap();
+    assert!(within("the job", job).await.unwrap());
+
+    let rows: Vec<(String, Option<Vec<u8>>)> = sqlx::query_as(
+        "SELECT state, sha256 FROM representations WHERE blob_id = $1 ORDER BY kind",
+    )
+    .bind(parse_id(&id))
+    .fetch_all(app.state.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        rows,
+        [("pending".to_owned(), None), ("pending".to_owned(), None)],
+        "nothing recorded on a deleted blob"
+    );
+    // Taken back: only the original, which the purge is for, remains.
+    assert!(stored(&app, &object_key(&id, "original")).await);
+    assert!(!stored(&app, &object_key(&id, "preview")).await);
+    assert!(!stored(&app, &object_key(&id, "thumbnail")).await);
+}
+
 /// Every due render, to the end.
 async fn render_all(app: &TestApp) {
     while run_job(app, JobKind::Render).await {}

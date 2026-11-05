@@ -2180,7 +2180,11 @@ for the audit. The `blobs` row keeps nothing about representations, and
 `blobs` fires for the blob's own changes only. Creation inserts the rows
 for the requested kinds, `pending`, in the blob's transaction; a render
 finishing or a repair asking for one again is an update on the row with
-the blob's state as its condition, in one statement. The rows live and
+the blob's state as its condition, in one statement that reads the blob's
+row `FOR SHARE`: a delete in flight holds that row `FOR UPDATE`, so the
+update waits for its verdict and sees the state it leaves, as the
+conditional update on `blobs` did when the states were its columns, and a
+`ready` picture is never recorded on a deleted blob. The rows live and
 die with the blob: a terminal blob keeps them until the reaper prunes the
 tombstone, and `ON DELETE CASCADE` takes them. A `representations jsonb`
 column on `blobs` was considered and rejected (no join, but a conditional

@@ -1303,6 +1303,12 @@ pub async fn explain_reaper(conn: &mut PgConnection) -> sqlx::Result<Vec<(&'stat
 /// rendered again lands on a representation that is not `pending`, and a
 /// kind with no row, `disabled`, affects none. `source` and `timed_out`
 /// are the preview's, see `RepresentationRow`; the thumbnail passes none.
+///
+/// The blob's row is read `FOR SHARE`, not merely joined: a delete in
+/// flight holds it `FOR UPDATE`, so the update waits for the delete's
+/// verdict and sees the state it leaves rather than the one its snapshot
+/// had, and never records a `ready` picture on a deleted blob. Two renders
+/// share the lock without waiting on each other.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn finish_representation(
     exec: impl PgExecutor<'_>,
@@ -1321,8 +1327,8 @@ pub(crate) async fn finish_representation(
     let result = sqlx::query(
         "UPDATE representations r \
          SET state = $3, version = $4, sha256 = $5, size = $6, source = $7, timed_out = $8 \
-         FROM blobs b \
-         WHERE b.id = r.blob_id AND r.blob_id = $1 AND r.kind = $2 AND b.state = $9",
+         FROM (SELECT id FROM blobs WHERE id = $1 AND state = $9 FOR SHARE) b \
+         WHERE b.id = r.blob_id AND r.kind = $2",
     )
     .bind(id)
     .bind(kind.as_str())
@@ -1344,7 +1350,9 @@ pub(crate) async fn finish_representation(
 /// of the `GET` handler, for a missing object or a stale variant version.
 /// What the row recorded of the last render goes with it; the version
 /// stays until the next one, being what the object still in the bucket
-/// was built with.
+/// was built with. The blob's row is read `FOR SHARE`, as
+/// `finish_representation` reads it, so a delete in flight is waited for
+/// and no render is asked for a blob it has just deleted.
 pub(crate) async fn request_representation(
     pool: &PgPool,
     id: Uuid,
@@ -1354,8 +1362,8 @@ pub(crate) async fn request_representation(
     let rank: Option<i16> = sqlx::query_scalar(
         "UPDATE representations r \
          SET state = $3, sha256 = NULL, size = NULL, source = NULL, timed_out = NULL \
-         FROM blobs b \
-         WHERE b.id = r.blob_id AND r.blob_id = $1 AND r.kind = $2 AND b.state = $4 \
+         FROM (SELECT id, priority FROM blobs WHERE id = $1 AND state = $4 FOR SHARE) b \
+         WHERE b.id = r.blob_id AND r.kind = $2 \
          RETURNING b.priority",
     )
     .bind(id)
