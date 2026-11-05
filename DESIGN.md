@@ -1277,7 +1277,8 @@ transaction, unreadable until the job is done.
 This is the one place a blob holds objects before it is `uploaded`, so
 `created` means "no original, maybe parts", not an empty prefix. The
 failed-upload rule, the stale-upload reset and the purge on terminal states
-are about the original; the parts go with the purge of the prefix.
+are about the original; the parts go with the purge of the prefix, unless
+a build that succeeded has deleted them already, see "Build".
 
 What the accept pass has to carry across parts stays small and sits on the
 row: `source_parts`, `source_size` (bytes of source), `source_rows`
@@ -1329,7 +1330,19 @@ short in transit, or a KEK this process lacks, which a deploy may bring, is
 retried. Out of attempts, the blob is stuck in
 `uploaded`, unreadable, like a scan that never completes. No new state: `uploaded`
 already means that what the client sent is in the bucket and a job has to
-finish the blob. The source is purged with the rest of the prefix.
+finish the blob. The source stays for a retry, and is purged with the rest
+of the prefix.
+
+A build that finishes deletes its source, right after the row moves to
+`ready`. Nothing reads a part again: there is no rebuild, a render works from
+the original, and a `rows` source of several gigabytes would otherwise lie
+beside the file it became for as long as the blob lives. The counts stay on
+the row, so `GET` still reports them. The delete is best effort and never
+fails the job, which would put a verdict on a `ready` blob: a part that a
+crash or a refused delete leaves behind is an orphan to the audit, and goes
+with the purge at the latest. A build whose lease lapsed, still reading
+beside the one that finished, fails on the missing object and changes
+nothing, the job no longer being its own.
 
 Builds are three job kinds, `rows`, `archive` and `document`, each with
 its own worker pool: `jobs.concurrency.rows` (default two),
@@ -3766,10 +3779,10 @@ What it does with a finding, each one a `warn` line in the log:
   bucket restored from an older backup: there is nothing to render from,
   and the render job would only fail its attempts and die.
 - Missing source part under a `created` or `uploaded` generated blob, or
-  a part of a length no stream produces under any blob that reaches this
-  check, `ready` included: report only; the build fails on it itself. The
-  parts stay after the build and go with the purge, so under a `ready`
-  blob a missing one is accounted for and not required.
+  a part of a length no stream produces under a blob not yet built: report
+  only; the build fails on it itself. Under a `ready` blob no part is
+  required, the build having deleted them, and one left behind is an orphan
+  once the row has stood still.
 What the row requires is checked only once the row has stood still for
 `upload.stale_after` before the listing passed its prefix (`updated_at`,
 kept by the trigger, against a time no later than the store's answer for

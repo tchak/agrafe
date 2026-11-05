@@ -369,6 +369,85 @@ async fn a_lost_original_is_not_rendered_from() {
     );
 }
 
+/// A `rows` blob in two parts, sealed, and its build next in the queue.
+async fn two_part_rows(app: &TestApp) -> String {
+    let created = create(
+        app,
+        json!({
+            "filename": "export.csv",
+            "content_type": "text/csv",
+            "input_type": "rows",
+            "columns": [{"name": "Name"}],
+        }),
+    )
+    .await;
+    let id = id_of(&created).to_string();
+    for n in 1..=2 {
+        let uri = format!("/blobs/{id}/parts/{n}");
+        let (status, body) = call(&app.private, put_raw(&uri, b"[\"Lovelace\"]\n".to_vec())).await;
+        assert!(status.is_success(), "{status} {body}");
+    }
+    let (status, body) = call(
+        &app.private,
+        req(Method::POST, &format!("/blobs/{id}/finish")),
+    )
+    .await;
+    assert!(status.is_success(), "{status} {body}");
+    id
+}
+
+/// A delete the store refused: the build is done all the same and the blob
+/// is fine, and the part left behind is an orphan, whatever its bytes,
+/// for `--fix` to take.
+#[tokio::test]
+async fn a_part_a_build_left_behind_is_an_orphan() {
+    let db = TestDatabase::new().await;
+    let app = settled_setup(db).await;
+    let id = two_part_rows(&app).await;
+    let part = object_key(&id, "source/1");
+    app.gate.refuse_delete(&part);
+    assert!(run_job(&app, JobKind::Rows).await);
+    let got = get_blob(&app, &id).await;
+    assert_eq!(got["state"], "ready", "{got}");
+    assert_eq!(got["failed_at"], json!(null), "{got}");
+    assert!(!jobs_for(&app, &id).await.contains(&"rows".to_string()));
+    assert_eq!(source_objects(&app, &id).await, vec![part.clone()]);
+
+    let report = audit_now(&app).await;
+    assert_eq!(counts(&report), vec![(Finding::Orphan, 1)], "{report}");
+
+    // Not the build's to fail on any more, so not a missing source.
+    put_object(&app, &part, vec![0; 5]).await;
+    let report = audit_now(&app).await;
+    assert_eq!(counts(&report), vec![(Finding::Orphan, 1)], "{report}");
+
+    let report = audit_with(&app, FIX).await;
+    assert_eq!(report.deleted, 1, "{report}");
+    assert_eq!(source_objects(&app, &id).await, Vec::<String>::new());
+    let report = audit_now(&app).await;
+    assert_eq!(counts(&report), vec![], "{report}");
+    assert_eq!(get_blob(&app, &id).await["failed_at"], json!(null));
+}
+
+/// A build finishing as the audit went by may still be deleting its parts:
+/// nothing is said of them until the row has stood still.
+#[tokio::test]
+async fn a_part_under_a_row_that_just_changed_is_left_alone() {
+    let db = TestDatabase::new().await;
+    let clamd = fake_clamd().await;
+    let app = setup_tuned(db, clamd, |c| {
+        c.upload.stale_after = Duration::from_secs(3600)
+    })
+    .await;
+    let id = two_part_rows(&app).await;
+    app.gate.refuse_delete(&object_key(&id, "source/1"));
+    assert!(run_job(&app, JobKind::Rows).await);
+
+    let report = audit_now(&app).await;
+    assert_eq!(counts(&report), vec![], "{report}");
+    assert_eq!(report.young, 0, "{report}");
+}
+
 /// Ask for a representation again as the read path does, its object gone.
 async fn render_again(app: &TestApp, id: &str, kind: &str) {
     sqlx::query(

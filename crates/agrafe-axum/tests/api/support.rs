@@ -488,6 +488,19 @@ pub fn unix_now() -> u64 {
 }
 
 /// The object key a blob's original is stored under.
+/// The source objects of a blob in the store.
+pub async fn source_objects(app: &TestApp, id: &str) -> Vec<String> {
+    let prefix = object_key(id, "source/");
+    let mut keys: Vec<String> = stored_objects(app)
+        .await
+        .into_iter()
+        .map(|o| o.location.to_string())
+        .filter(|k| k.starts_with(&prefix))
+        .collect();
+    keys.sort();
+    keys
+}
+
 pub async fn storage_key(app: &TestApp, id: &str) -> String {
     agrafe::blob::repo::find(app.state.pool(), parse_id(id))
         .await

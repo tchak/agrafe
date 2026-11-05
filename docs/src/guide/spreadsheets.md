@@ -128,6 +128,10 @@ Every line is checked as the part arrives. A bad line answers `422` naming
 the line, counted within the part, and the reason. The part is discarded,
 the parts already stored are kept, and the backend can send the part again.
 
+A build that finishes deletes the parts from the bucket, so a large source
+does not cost storage twice. `source_parts`, `source_rows` and `source_size`
+stay on the blob as a record. A build that fails keeps them for its retry.
+
 A source that is never finished is an abandoned export. `DELETE /blobs/:id`
 is the way out; as a backstop, the reaper expires a `created` blob whose
 last part is older than `upload.abandoned_after`, one day by default.

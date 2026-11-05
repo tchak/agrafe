@@ -19,10 +19,11 @@ pub mod zip;
 use agrafe_crypto::Key;
 use agrafe_crypto::streaming::{Encryptor, Layout};
 use bytes::Bytes;
+use futures::{StreamExt as _, stream};
 use jiff::Timestamp;
 use md5::Md5;
 use object_store::path::Path as ObjectPath;
-use object_store::{ObjectStoreExt, WriteMultipart};
+use object_store::{ObjectStore as _, ObjectStoreExt, WriteMultipart};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -31,7 +32,7 @@ use super::{Job, JobError};
 use crate::app::Agrafe;
 use crate::blob::read::ReadError;
 use crate::blob::repo::{self, Built, Transition};
-use crate::blob::{Blob, BlobState, InputType};
+use crate::blob::{Blob, BlobState, InputType, key};
 use crate::encryption::UnwrapError;
 use crate::source::SourceError;
 use crate::upload::{self, PART_CONCURRENCY};
@@ -191,13 +192,16 @@ pub(crate) async fn run<A: Assemble>(state: &Agrafe, job: &Job) -> Result<(), Jo
         return Ok(());
     };
     match repo::complete_build(state.pool(), &state.config().webhook, id, &built).await? {
-        Transition::Done(blob) => tracing::info!(
-            size = built.size,
-            entries = built.archive.map(|a| a.0),
-            skipped = built.archive.map(|a| a.1),
-            state = %blob.state,
-            "built"
-        ),
+        Transition::Done(blob) => {
+            tracing::info!(
+                size = built.size,
+                entries = built.archive.map(|a| a.0),
+                skipped = built.archive.map(|a| a.1),
+                state = %blob.state,
+                "built"
+            );
+            delete_source(state, &blob).await;
+        }
         // The blob left `uploaded` in the moment since the last check.
         // Expired or deleted, the object is nobody's and goes. `ready`
         // means another build of the same blob finished first, which a
@@ -210,6 +214,26 @@ pub(crate) async fn run<A: Assemble>(state: &Agrafe, job: &Job) -> Result<(), Jo
         Transition::Missing => upload::delete_quietly(state, &built.storage_key).await,
     }
     Ok(())
+}
+
+/// The source has done its work: nothing reads a part of a `ready` blob
+/// again, and a `rows` source of several gigabytes would otherwise lie
+/// beside the file it became for as long as the blob lives. The row keeps
+/// its counts. Best effort, since failing the job would put a verdict on
+/// a blob that is fine: a part left here is an orphan to the audit, and
+/// goes with the purge at the latest.
+async fn delete_source(state: &Agrafe, blob: &Blob) {
+    let id = blob.id;
+    let locations = stream::iter(1..=u32::try_from(blob.source_parts).unwrap_or(0))
+        .map(move |n| Ok(ObjectPath::from(key::source(id, n))))
+        .boxed();
+    let mut results = state.store().delete_stream(locations);
+    while let Some(result) = results.next().await {
+        match result {
+            Ok(_) | Err(object_store::Error::NotFound { .. }) => {}
+            Err(err) => tracing::warn!(error = %err, "could not delete a source part"),
+        }
+    }
 }
 
 /// Whether the build may still finish the blob's key: the job's lease

@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use agrafe::storage::Store;
 use async_trait::async_trait;
 use bytes::Bytes;
+use futures::StreamExt as _;
 use futures::stream::BoxStream;
 use object_store::path::Path;
 use object_store::{
@@ -29,6 +30,8 @@ pub enum At {
     /// Completing a multipart upload to it: every byte is written and the
     /// object is about to become visible.
     Complete,
+    /// Deleting the object.
+    Delete,
 }
 
 /// One operation caught by the store: it signals `reached` and goes
@@ -57,6 +60,8 @@ impl Hold {
 enum Action {
     Hold(Hold),
     Panic,
+    /// The store says no: only on [`At::Delete`].
+    Refuse,
 }
 
 /// Where the next catch is set; shared by the test and its store.
@@ -82,6 +87,23 @@ impl Gate {
         self.set(at, key, Action::Panic);
     }
 
+    /// Fail the next delete of `key`, once, as a store that will not.
+    pub fn refuse_delete(&self, key: &str) {
+        self.set(At::Delete, key, Action::Refuse);
+    }
+
+    /// Whether the delete of `location` is the one to refuse.
+    fn refuses(&self, location: &Path) -> bool {
+        let mut slot = self.0.lock().unwrap();
+        match &*slot {
+            Some((At::Delete, p, Action::Refuse)) if p == location => {
+                *slot = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn set(&self, at: At, key: &str, action: Action) {
         *self.0.lock().unwrap() = Some((at, Path::from(key), action));
     }
@@ -100,7 +122,7 @@ impl Gate {
                 hold.release.notified().await;
             }
             Some(Action::Panic) => panic!("the gate panics on {location}"),
-            None => {}
+            Some(Action::Refuse) | None => {}
         }
     }
 }
@@ -162,6 +184,19 @@ impl ObjectStore for GatedStore {
         &self,
         locations: BoxStream<'static, Result<Path>>,
     ) -> BoxStream<'static, Result<Path>> {
+        let gate = self.gate.clone();
+        let locations = locations
+            .map(move |location| {
+                let location = location?;
+                if gate.refuses(&location) {
+                    return Err(object_store::Error::Generic {
+                        store: "gate",
+                        source: format!("the gate refuses to delete {location}").into(),
+                    });
+                }
+                Ok(location)
+            })
+            .boxed();
         self.inner.delete_stream(locations)
     }
 

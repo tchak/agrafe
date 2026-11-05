@@ -141,6 +141,7 @@ async fn build(app: &TestApp, id: &str) -> Value {
     assert!(run_job(app, JobKind::Rows).await);
     let built = get_blob(app, id).await;
     assert_eq!(built["state"], "ready", "{built}");
+    assert_eq!(source_objects(app, id).await, Vec::<String>::new());
     built
 }
 
@@ -1086,6 +1087,7 @@ async fn a_build_retries_a_kek_this_process_lacks() {
     let shown = get_blob(&app, id).await;
     assert_eq!(shown["state"], "uploaded");
     assert_eq!(shown["failed_at"], Value::Null, "{shown}");
+    assert_eq!(source_objects(&app, id).await.len(), 1, "for the retry");
 }
 
 /// A source part damaged in the store, whether its length fits no stream

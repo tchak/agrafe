@@ -266,6 +266,49 @@ async fn uploaded_rows(app: &TestApp) -> String {
     id
 }
 
+/// A worker whose lease lapsed, still reading the source when the one that
+/// took the job over finishes and deletes it: it fails on the missing
+/// object, and with the job no longer its own nothing reaches the blob.
+#[tokio::test]
+async fn a_lapsed_build_reading_a_deleted_source_changes_nothing() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let id = uploaded_rows(&app).await;
+    let hold = app.gate.hold(At::Get, &object_key(&id, "source/1"));
+    let stalled = spawn_job(&app, JobKind::Rows);
+    hold.reached().await;
+
+    sql(
+        &app,
+        "UPDATE jobs SET locked_at = now() - interval '1 day' WHERE blob_id = $1",
+        &id,
+    )
+    .await;
+    assert!(
+        agrafe::jobs::runner::run_one(&app.state, JobKind::Rows, "other")
+            .await
+            .unwrap()
+    );
+    let built = get_blob(&app, &id).await;
+    assert_eq!(built["state"], "ready", "{built}");
+    assert_eq!(source_objects(&app, &id).await, Vec::<String>::new());
+
+    hold.release();
+    assert!(finishes(stalled).await);
+    let got = get_blob(&app, &id).await;
+    assert_eq!(got["state"], "ready", "{got}");
+    assert_eq!(got["failed_at"], json!(null), "{got}");
+    assert_eq!(got["checksum"], built["checksum"]);
+    assert!(stored(&app, &object_key(&id, "original")).await);
+    let dead: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM jobs WHERE blob_id = $1 AND kind = 'rows'")
+            .bind(parse_id(&id))
+            .fetch_one(app.state.pool())
+            .await
+            .unwrap();
+    assert_eq!(dead, 0, "the job went with the build that finished");
+}
+
 /// Deleted while the build reads the source: the build stops short of
 /// finishing the object.
 #[tokio::test]

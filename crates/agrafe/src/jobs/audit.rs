@@ -127,8 +127,8 @@ pub enum Finding {
     /// An object under a known blob's prefix that its row does not
     /// account for: a purged blob's leftovers, an original under a row
     /// that never recorded it, a representation the row says is not
-    /// there. The row is authoritative, so it is garbage: reported, and
-    /// deleted under `--fix` once older than `upload.stale_after`.
+    /// there, a source part a build left behind. The row is authoritative,
+    /// so it is garbage: reported, and deleted under `--fix` once older than `upload.stale_after`.
     Orphan,
     /// An object under a prefix no row has. Not the same thing: the row
     /// may have been lost, which is what a database restored from a
@@ -1287,10 +1287,18 @@ impl Sweep<'_> {
             }
         }
 
-        // The parts stay after the build and go with the purge; before it,
-        // the build needs every one.
+        // Before the build, it needs every part. It deletes them as it
+        // finishes, so one still here once the row has stood still was left
+        // behind, by a crash or a delete that failed: an orphan like the
+        // rest, falling through to them below.
         let needed = settled && matches!(state, BlobState::Created | BlobState::Uploaded);
-        for n in 1..=u32::try_from(row.source_parts).unwrap_or(0) {
+        let left_behind = settled && state == BlobState::Ready;
+        let parts = if left_behind {
+            0
+        } else {
+            u32::try_from(row.source_parts).unwrap_or(0)
+        };
+        for n in 1..=parts {
             let name = format!("source/{n}");
             match seen.remove(name.as_str()) {
                 Some(object) => {

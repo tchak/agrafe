@@ -197,7 +197,11 @@ async fn build(app: &TestApp, filename: &str, content_type: &str, workspace: Vec
     let (status, body) = put_private(app, id, workspace).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(run_job(app, JobKind::Document).await);
-    get_blob(app, id).await
+    let got = get_blob(app, id).await;
+    if got["state"] == "ready" {
+        assert_eq!(source_objects(app, id).await, Vec::<String>::new());
+    }
+    got
 }
 
 /// The one job of `kind` for the blob, as `(attempts, dead, last_error)`.
@@ -306,11 +310,7 @@ async fn document_is_built_from_a_workspace_in_parts() {
     );
     assert_eq!(built["size"], bytes.len());
     assert_eq!(built["checksum"], STANDARD.encode(Sha256::digest(&bytes)));
-    assert_eq!(
-        storage_key(&app, id).await,
-        object_key(id, "original"),
-        "the source parts stay under the prefix until the purge"
-    );
+    assert_eq!(storage_key(&app, id).await, object_key(id, "original"));
 
     // Once ready the PDF is rendered like any other: a page of text gets
     // its first page as a thumbnail and no preview.

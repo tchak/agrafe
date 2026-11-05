@@ -79,19 +79,6 @@ fn unzip(bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
         .collect()
 }
 
-/// The source objects of a blob in the store.
-async fn source_objects(app: &TestApp, id: &str) -> Vec<String> {
-    let prefix = object_key(id, "source/");
-    let mut keys: Vec<String> = stored_objects(app)
-        .await
-        .into_iter()
-        .map(|o| o.location.to_string())
-        .filter(|k| k.starts_with(&prefix))
-        .collect();
-    keys.sort();
-    keys
-}
-
 #[tokio::test]
 async fn archive_is_built_from_a_manifest_in_parts() {
     let db = TestDatabase::new().await;
@@ -190,11 +177,9 @@ async fn archive_is_built_from_a_manifest_in_parts() {
         "the checksum is of the archive"
     );
     assert_eq!(built["checksum_md5"], STANDARD.encode(Md5::digest(&bytes)));
-    assert_eq!(
-        storage_key(&app, id).await,
-        object_key(id, "original"),
-        "the source parts stay under the prefix until the purge"
-    );
+    assert_eq!(storage_key(&app, id).await, object_key(id, "original"));
+    assert_eq!(source_objects(&app, id).await, Vec::<String>::new());
+    assert_eq!(built["source_parts"], 2, "the row keeps its counts");
     let entries = unzip(&bytes);
     let names: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(
