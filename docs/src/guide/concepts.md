@@ -31,8 +31,8 @@ Every blob has:
 
 `rows`, `archive` and `document` blobs are **generated**: agrafe builds the
 file in a job after the request. `url`, `rows`, `archive` and `document`
-are private-only, because each makes the service read other blobs or the
-network on the creator's say-so.
+are private-only, because they make the service read other blobs or the
+network, or build a file of its own, on the creator's say-so.
 
 ### Write-once
 
@@ -68,8 +68,10 @@ any unattached   ──► deleted
 | `deleted` | Deleted by the backend. Terminal; objects purged. | never |
 
 A blob is `expired` from the instant its `expires_at` passes, not when the
-background reaper gets to it. Every read compares the expiry with the
-current time.
+background reaper gets to it. Every read through the row compares the expiry
+with the current time. Private metadata keeps the stored state, beside the past
+`expires_at`, until the reaper records it, and a [sealed URL](serving.md#sealed-urls) reads no
+row at all.
 
 Alongside its state, a blob tracks:
 
@@ -87,7 +89,9 @@ A deleted or expired blob keeps its row for `blobs.keep_purged`, ninety
 days by default, after its objects are purged. During that time
 `GET /blobs/:id` on the private port still answers with the state,
 `deleted_at` and `purged_at`, so the backend can tell a blob it deleted
-from an id that never existed. The public port answers `404` either way.
+from an id that never existed. The public port answers `404` either way,
+except through a [sealed URL](serving.md#sealed-urls) minted before, which serves the blob until
+its objects are purged or the URL expires.
 
 ## Attachments
 
@@ -102,10 +106,10 @@ its default expiry. See [Attachments and lifetime](attachments.md).
 Each blob is served as up to three things:
 
 - the **original**, the bytes as uploaded, with `Range` support;
-- a **preview**, a WebP of at most 2048 pixels for images and for documents
-  that only wrap an image;
-- a **thumbnail**, a 256×256 WebP that always exists, falling back to a
-  category icon.
+- a **preview**, a WebP of at most 2048 pixels for images, maps and
+  documents that only wrap an image;
+- a **thumbnail**, a WebP fitted into 256×256 that always exists, falling
+  back to a category icon.
 
 See [Serving files](serving.md) and [Previews and
 thumbnails](representations.md).
@@ -117,7 +121,7 @@ thumbnails](representations.md).
 | Default address | `127.0.0.1:8080` | `127.0.0.1:8081` |
 | Who calls it | Your backend, an operator | Browsers |
 | Authentication | None: trusted network only | An HMAC signature in every URL |
-| Terminal blobs | Reported with their real state | `404` |
+| Terminal blobs | Reported with their real state | `404`, but for a sealed URL until the purge |
 | Operations | Everything | Upload, metadata, original, preview, thumbnail |
 
 Routes on the public port have the shape of their private counterparts with

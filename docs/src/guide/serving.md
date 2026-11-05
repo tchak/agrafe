@@ -85,7 +85,8 @@ The original route serves the bytes as uploaded, decrypted on the fly.
   `filename`, with an ASCII fallback and the UTF-8 name (RFC 6266).
 
 The `:filename` segment of the path must match the blob's filename,
-percent-decoded, or the answer is `404`. It gives browsers a sensible
+percent-decoded, or the answer is `404`; a sealed URL has no row to compare
+it with, and serves under the segment its minter signed. It gives browsers a sensible
 download name, and stops a URL from pretending to serve a file it does not.
 
 ## Sealed URLs
@@ -107,7 +108,8 @@ Two consequences matter:
 - A blob deleted or expired after a sealed URL was minted stays readable
   through it until the purge removes its objects (the reaper interval plus
   `upload.purge_delay`) or the URL expires, whichever comes first. The
-  row-backed routes hide it at once. For a blob with an `expires_at`, the
+  row-backed routes hide it at once, or for a delete on another process
+  within `blobs.read_cache_ttl`. For a blob with an `expires_at`, the
   URLs agrafe mints expire no later than the blob.
 - A representation still `pending` in the envelope falls back to the row
   when served, which renders and repairs as usual.
@@ -144,7 +146,7 @@ original answers `409`, the thumbnail the icon with
 | `403 forbidden`, `invalid signature` | Malformed token, unknown key id, or a signature that does not match the method, path or query |
 | `403 forbidden`, `signature not valid yet` | An expiry further in the future than `signing.window` plus `signing.ttl.max` |
 | `410 gone`, `signature expired` | The expiry has passed |
-| `404 not_found` | Valid signature, but the blob does not exist or is terminal |
+| `404 not_found` | Valid signature, but the blob does not exist or is terminal, on a route that reads the row, or a sealed URL's objects were purged |
 | `400 bad_request` | The envelope in `e` does not decode, or is another blob's: the minter's mistake. One naming a retired KEK is served from the row instead |
 
 See [Errors](../reference/errors.md) for the full list.

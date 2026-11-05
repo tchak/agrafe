@@ -74,7 +74,8 @@ message = METHOD "\n" expires "\n" tail
 | Thumbnail | `GET` | `/<id>/thumbnail/<filename>[?query]` |
 
 The id is the lowercase hyphenated UUID, as agrafe returns it. The filename
-is the blob's own filename: a different one answers `404`. Use the
+is the blob's own filename: a different one answers `404`, or on a sealed URL
+is served under that name. Use the
 `filename` query parameter to change the download name.
 
 ### Encoding the filename
@@ -112,8 +113,10 @@ The parameters a read URL may carry:
 | `e` | An envelope | Makes the URL [sealed](#sealed-urls) |
 
 When agrafe mints, it validates these parameters and refuses anything else.
-When you mint, nothing validates them until a browser follows the URL, and
-a bad value then answers `400` on a correctly signed URL. Validate them in
+When you mint, nothing validates them until a browser follows the URL: a bad
+`disposition`, or a `wait` that is not an integer, then answers `400` on a
+correctly signed URL, a `wait` too long is cut to `30000`, and a `filename`
+is served sanitised rather than refused. Validate them in
 your minter: `disposition` is exactly `inline` or `attachment`, `wait` is
 an integer of at most `30000`, and `filename` follows the [filename
 rules](uploads.md#create-the-blob). Unknown parameters are ignored by the

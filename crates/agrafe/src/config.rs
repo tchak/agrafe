@@ -579,8 +579,8 @@ pub struct SigningConfig {
     /// The id, in `keys`, of the key new tokens are minted with.
     pub current_key: String,
     /// Every key a token may be verified with, by id: the current one and
-    /// those being rotated out. Ids appear in tokens, so letters, digits,
-    /// `-` and `_` only; values are at least 32 random bytes in base64.
+    /// those being rotated out. Ids appear in tokens, so lowercase letters,
+    /// digits and `_` only; values are at least 32 random bytes in base64.
     pub keys: HashMap<String, Base64Secret>,
     /// Expiries are rounded up to the next multiple of this before the TTL
     /// is added, so URLs minted inside one window are identical and

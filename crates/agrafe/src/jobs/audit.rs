@@ -1378,9 +1378,9 @@ impl Sweep<'_> {
 
     /// Record a finding on the original: the log line, the count, and the
     /// row's `failed_at` and `last_error` unless a verdict is on it
-    /// already, or the row moved on since it was read. Nothing clears
-    /// the stamp but a retry, which a blob with its original gone has
-    /// nothing to retry; the first one stands.
+    /// already, or the row moved on since it was read. An enqueue leaves
+    /// the stamp; a retry or a success clears it, and the next sweep
+    /// stamps it again. Until then the first one stands.
     async fn stamp(&mut self, row: &Row, finding: Finding, what: String) {
         self.report.add(finding);
         tracing::warn!(blob = %row.id, finding = %finding, "audit: {what}");

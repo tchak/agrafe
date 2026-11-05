@@ -153,7 +153,8 @@ const PROBE_IMAGE_PDF: &[u8] = include_bytes!("../assets/probe/image.pdf");
 const PROBE_GEOJSON: &[u8] = include_bytes!("../assets/probe/point.geojson");
 /// Two pages of text: the exported PDF must have one.
 const PROBE_DOCX: &[u8] = include_bytes!("../assets/probe/pages.docx");
-/// One sheet of a few cells.
+/// A sheet of a few cells with a manual page break: the exported PDF must
+/// have one page.
 const PROBE_XLSX: &[u8] = include_bytes!("../assets/probe/sheet.xlsx");
 /// Two slides: the exported PDF must have one.
 const PROBE_PPTX: &[u8] = include_bytes!("../assets/probe/slides.pptx");

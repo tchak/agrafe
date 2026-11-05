@@ -116,8 +116,8 @@ pub struct BlobMetadata {
     pub deleted_at: Option<Timestamp>,
     /// When the purge removed the blob's objects from the bucket.
     pub purged_at: Option<Timestamp>,
-    /// Set when the job that was to finish the blob, a scan, a build or a
-    /// render, ran out of attempts: the blob is stuck where it is until
+    /// Set when the job that was to finish the blob, a fetch, a scan, a build
+    /// or a render, ran out of attempts: the blob is stuck where it is until
     /// `POST /blobs/:id/retry` or a delete. Cleared when a job is enqueued
     /// for it again. See [DESIGN.md, "Jobs"].
     ///

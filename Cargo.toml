@@ -17,7 +17,7 @@ members = [
 ]
 
 [workspace.package]
-# Every crate is released together, at this version. scripts/release.sh
+# Every crate is released together, at this version. cargo xtask release
 # bumps it, with the internal dependencies below.
 version = "0.1.0"
 edition = "2024"

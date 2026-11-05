@@ -4,8 +4,8 @@
 //! Message: `METHOD "\n" expires_unix "\n" path_and_query_after_token`
 //!
 //! The tail is the raw request target starting at `/<id>`, including the query
-//! string. Nothing is decoded or re-encoded on either side; the server mints
-//! and the server verifies.
+//! string. Nothing is decoded or re-encoded on either side; the minter, the
+//! server or a backend, signs the bytes it sends and the server verifies them.
 
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};

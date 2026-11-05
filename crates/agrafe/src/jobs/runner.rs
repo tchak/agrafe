@@ -56,8 +56,9 @@ pub enum Error {
     Schedule(sqlx::Error),
 }
 
-/// Run the workers until `shutdown` resolves. A job in flight finishes;
-/// nothing new is claimed afterwards.
+/// Run the workers until `shutdown` resolves. A job in flight gets
+/// `jobs.shutdown_grace` to finish, then goes back to the queue; nothing new
+/// is claimed afterwards.
 pub async fn run<F>(state: Agrafe, shutdown: F) -> Result<(), Error>
 where
     F: Future<Output = ()> + Clone + Send + 'static,

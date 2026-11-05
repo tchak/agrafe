@@ -24,7 +24,8 @@ agrafe --config agrafe.toml migrate
 ## `agrafe serve`
 
 Runs the HTTP interfaces, the workers, or both, until `SIGINT` or
-`SIGTERM`, then drains what is in flight with no deadline; see
+`SIGTERM`, then drains: requests with no deadline, jobs for
+`jobs.shutdown_grace`, after which they go back to the queue; see
 [Deployment](../guide/deployment.md). A second signal changes nothing, only
 `SIGKILL` cuts the drain short.
 

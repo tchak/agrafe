@@ -9,7 +9,8 @@ after the scan:
 - the **preview**, a WebP of at most `media.preview.max_dimension` (2048
   pixels by default) on its longest side, for files that are pictures.
 
-Images are scaled to fit, never cropped and never enlarged. EXIF orientation
+Images are scaled to fit and never cropped; a raster is never enlarged,
+where an SVG fills the box. EXIF orientation
 is applied, colours are converted to sRGB, and every piece of metadata is
 stripped.
 
@@ -71,9 +72,9 @@ box. A `.geojson` uploaded as
 `application/json` or `text/plain`, which is how they tend to arrive, is
 recognised by its first KiB and its `content_type` becomes
 `application/geo+json` as the upload completes. The recognition is a look
-at that first KiB for a `"type"` of `Feature` or `FeatureCollection` at
-any depth, so a JSON document that merely embeds a feature there is
-refined too; it holds no GeoJSON at the top level and gets the text
+at that first KiB for a top-level `"type"` of `Feature` or
+`FeatureCollection`: a nested object's `type` is any JSON's to have, and a
+document that merely embeds a feature stays JSON and gets the text
 thumbnail. Likewise a `.gpx` or a `.kml` uploaded as `application/xml`,
 `text/xml` or `text/plain` whose root element, within the first KiB, is
 `<gpx>` or `<kml>` becomes `application/gpx+xml` or
@@ -185,7 +186,7 @@ only on an extent between its `min_span` and `max_span`; a map whose
 extent leaves the world, a file spanning the globe, gets no layer. Use
 `max_span` to keep requests within what a layer covers: a provider that
 refuses a bbox fails the attempt every time. The attribution
-of the first drawn layer is burned into a corner of the map. There is no
+of the first drawn layer that has one is burned into a corner of the map. There is no
 layer by default: the geometry is then drawn on a flat background and
 nothing leaves the worker. Every render with a layer configured sends the
 extent of a user's geometry to that provider, so the render workers'
@@ -197,7 +198,7 @@ decode fails the render attempt, which is retried; the representations stay
 `pending`, never `failed`, for what the provider did. A `4xx` is no
 exception, since a refusal cannot be told from a misconfigured layer, which
 must not settle every map as failed. When the attempts run out, after about
-eight minutes, the job is dead: the blob gets `failed_at` and a `failed`
+three hours, the job is dead: the blob gets `failed_at` and a `failed`
 webhook event, and the representations stay `pending`. Fix the layer (its
 `max_span`, say, or `max_size` if it caps the image) or wait for the
 provider, then `POST /blobs/:id/retry`. See
@@ -320,11 +321,12 @@ did not grant, then renders a text sample, a one-pixel PNG, a one-page PDF,
 a GIF, a WebP, a TIFF, a HEIC, an AVIF, a JPEG 2000 image, the JPEG `agrafe-extract` pulls out of a PDF wrapping one and the map of a
 one-point GeoJSON, without a background layer, through
 the exact command lines the jobs use, and, with `media.office.command`
-set, converts a two-page DOCX and an XLSX through LibreOffice and checks
-that the DOCX came out as one page. The process refuses to start if any
+set, converts a two-page DOCX, XLSX and ODG, a two-slide PPTX and an ODT
+with a macro through LibreOffice, and checks that each two-page file came
+out as one page and that the macro did not run. The process refuses to start if any
 of them fails, so a libvips built without PDF, SVG or HEIF support, a font
-directory the sandbox does not expose, or a LibreOffice without Calc or
-too old for the first-page export, fails the deployment rather than
+directory the sandbox does not expose, or a LibreOffice without Writer,
+Calc, Impress or Draw or too old for the first-page export, fails the deployment rather than
 every render. The worker logs what the sandbox gives it, `sandbox:
 landlock abi 4, seccomp, rlimits`, `sandbox: bubblewrap 0.11.1, seccomp,
 rlimits` or `sandbox: rlimits only (macos)`.

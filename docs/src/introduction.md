@@ -55,7 +55,9 @@ agrafe listens on two ports.
 - The **public port** is for browsers. Every route carries an HMAC signature
   bound to the HTTP method, the path and the query string. A blob that was
   deleted, has expired or was found infected answers `404` there, even with a
-  valid signature.
+  valid signature, except through a [sealed URL](guide/serving.md#sealed-urls)
+  minted before, which serves it until its objects are purged or the URL
+  expires.
 
 ## What a typical flow looks like
 

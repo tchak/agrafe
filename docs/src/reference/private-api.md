@@ -105,6 +105,7 @@ Every blob route answers with the full metadata, the same object the
       "created_at": "2026-10-19T09:14:20.004417Z"
     }
   ],
+  "attachments_truncated": false,
   "urls": {
     "upload": "https://files.example/blobs/v1.k1.1792310400.…/0199f6a0-…",
     "metadata": "https://files.example/blobs/v1.k1.1792393200.…/0199f6a0-…",
@@ -120,7 +121,7 @@ Every blob route answers with the full metadata, the same object the
 | Field | Type | Description |
 |---|---|---|
 | `id` | UUID | UUID v7: ids sort by creation time |
-| `state` | string | `created`, `uploading`, `uploaded`, `ready`, `infected`, `expired`, `deleted` |
+| `state` | string | `created`, `uploading`, `uploaded`, `ready`, `infected`, `expired`, `deleted`, as stored: a blob past `expires_at` keeps its previous one until the reaper records it |
 | `filename` | string | |
 | `content_type` | string | Normalised to `type/subtype` |
 | `category` | string | `image`, `document`, `spreadsheet`, `presentation`, `archive`, `audio`, `video`, `text`, `other` |
@@ -192,9 +193,11 @@ The content types a generated blob may declare:
 |---|---|---|
 | `201` | | Created |
 | `400` | `bad_request` | Malformed JSON |
+| `409` | `conflict` | An `attachment` with `replace` and more than 1000 other blobs at its address |
 | `413` | `payload_too_large` | The body exceeds 16 MiB |
 | `415` | `unsupported_media_type` | Missing `Content-Type: application/json` |
 | `422` | `unprocessable` | A missing, unknown or invalid field; the message names it |
+| `503` | `unavailable` | An `attachment` that deadlocked with the reaper, with `Retry-After`; no blob was created |
 
 ### `GET /blobs`
 
@@ -250,6 +253,7 @@ metadata, still `created`, with `source_parts` counting the parts stored.
 
 | Status | Code | When |
 |---|---|---|
+| `404` | `not_found` | No such blob |
 | `409` | `conflict` | Not the next part (`expected part N`), not a generated blob, or the blob is not `created` |
 | `413` | `payload_too_large` | The part exceeds `upload.max_size` |
 | `422` | `unprocessable` | A bad line, as `line N: reason`; too many parts; the archive or workspace over its limit. The part is discarded; earlier parts are kept |
@@ -261,6 +265,7 @@ Seals a source sent in parts and enqueues its build. The blob moves to
 
 | Status | Code | When |
 |---|---|---|
+| `404` | `not_found` | No such blob |
 | `409` | `conflict` | No parts (`the source has no parts`), not a generated blob, or not `created` |
 
 ### `DELETE /blobs/:id`
@@ -436,8 +441,8 @@ Detaches. The last detach sets the blob's expiry to
   "priority": "normal",
   "payload": {},
   "run_at": "2026-10-19T09:40:11.000000Z",
-  "attempts": 5,
-  "max_attempts": 5,
+  "attempts": 10,
+  "max_attempts": 10,
   "locked_at": "2026-10-19T09:40:11.204118Z",
   "locked_by": "worker-3-0199f6…/scan/1",
   "last_error": "clamd at 127.0.0.1:3310: Connection refused (os error 111)",

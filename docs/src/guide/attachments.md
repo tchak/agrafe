@@ -97,8 +97,8 @@ unless the request gives one. Then:
 - the **last detach** sets it again to the default, counted from that
   moment.
 
-For a blob that is not in a terminal state, "attached" and "has no expiry"
-are the same thing. There is no other way to create a blob that never
+For a blob in any state, "attached" and "has no expiry" are the same
+thing. There is no other way to create a blob that never
 expires: permanent is spelled "attached".
 
 ```text

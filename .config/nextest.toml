@@ -1,6 +1,6 @@
 # cargo-nextest (https://nexte.st): each test in a process of its own, all
 # at once. The database tests can run together because each has a database
-# of its own (`#[sqlx::test]`).
+# of its own (`TestDatabase`).
 
 [profile.default]
 # The slowest test takes about eight seconds. Past 15s a test is reported

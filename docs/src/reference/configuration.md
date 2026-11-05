@@ -6,6 +6,9 @@ with `AGRAFE_`, upper-case it, and join the levels with a double underscore.
 A key agrafe does not know, misspelled or in the wrong table, is refused at
 startup with its name, from the file or the environment; a variable without
 a double underscore, such as `AGRAFE_CONFIG`, is not a key and is left alone.
+The exception is directly under `[storage]`, where nothing is refused but in
+the chosen backend's table: an image's file sets up `local` and the
+environment switches to `s3`, the `[storage.local]` left behind.
 
 | Key | Environment variable |
 |---|---|
@@ -15,8 +18,8 @@ a double underscore, such as `AGRAFE_CONFIG`, is not a key and is left alone.
 | `jobs.concurrency.archive` | `AGRAFE_JOBS__CONCURRENCY__ARCHIVE` |
 
 The environment takes precedence over the file. Pass secrets through it in
-production: the database URL, the signing keys, the KEKs, the bucket
-credentials and the webhook secret are redacted from debug output, but a
+production: the database URL, the signing keys, the KEKs, the bucket's
+secret keys and the webhook secret are redacted from debug output, but a
 file is still a file.
 
 ## Value formats
@@ -246,7 +249,7 @@ template variants, RTF, drawings) a first-page thumbnail; see
 
 | Key | Default | Description |
 |---|---|---|
-| `command` | unset | The LibreOffice binary, a name on the `PATH` or a path. Unset, office files get the icon. Set, the worker needs Landlock (unless `media.sandbox.isolation` is `"off"`) and a `media.tmp_dir` outside `/tmp` |
+| `command` | unset | The LibreOffice binary, a name on the `PATH` or a path. Unset, office files get the icon. Set, the worker needs Landlock or bubblewrap (unless `media.sandbox.isolation` is `"off"`) and a `media.tmp_dir` outside `/tmp` |
 | `profile_template` | unset | A warmed user profile copied into the work directory for every run; unset, LibreOffice creates one per run. Either way the profile's macro security is pinned before the run: "very high", no trusted location, macro execution off, over whatever the template says |
 
 ### `[media.office.sandbox]`
@@ -305,6 +308,7 @@ Background layers, composited bottom to top. None by default.
 |---|---|---|
 | `poll_interval` | `"2s"` | Fallback polling when a `NOTIFY` wakeup is missed, at least 100 ms |
 | `lease_timeout` | `"10m"` | A job locked for longer is claimed again. Running workers renew it. At least 10 s |
+| `shutdown_grace` | `"20s"` | How long a stopping process lets the jobs it holds finish. Past it, they go back to the queue due now, the attempt not counted. Keep it below the supervisor's kill deadline: a job still held at the kill waits out `lease_timeout` instead |
 | `reap_interval` | `"1m"` | How often the reaper runs, at least 1 s |
 | `keep_failed` | `"7d"` | How long dead jobs are kept |
 | `audit_interval` | `"7d"` | How often the audit sweeps the bucket against the `blobs` table; the first run is one interval after the workers start |
@@ -361,6 +365,7 @@ traces](../guide/monitoring.md#exporting-errors-and-traces).
 | `attach_stacktrace` | `false` | Attach the stack's frames, never its variables, to every event |
 | `event_level` | `"error"` | The tracing level and above that become an event: `error`, `warn`, `info`, `debug` or `trace` |
 | `breadcrumb_level` | `"info"` | The tracing level and above that become a breadcrumb. The HTTP client crates stay at `info` at most |
+| `debug` | `false` | Print the Sentry SDK's own diagnostics |
 
 ## `[otel]`
 

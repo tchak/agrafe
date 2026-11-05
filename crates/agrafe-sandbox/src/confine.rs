@@ -248,7 +248,7 @@ const ARCH: TargetArch = TargetArch::riscv64;
 
 /// Refused outright with `EPERM`: sockets of every family, which also
 /// closes path-based unix sockets (Postgres), which no Landlock ABI
-/// governs; tracing, cross-process memory and descriptor theft
+/// before 9 governs; tracing, cross-process memory and descriptor theft
 /// (`pidfd_getfd` reaches the worker's sockets from the same uid when
 /// Yama allows it); namespaces, mounts and the new mount API; a session
 /// or process group of the child's own, which would take it out of the

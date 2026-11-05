@@ -103,7 +103,7 @@ answers `202` with the metadata.
 It answers `409` when the blob waits on nothing, when the job it waits on is
 already pending or running, or when the blob is `infected`, and `410` for
 an expired or deleted blob. It needs no job id, so it works after the dead
-job was pruned. It is the only way to restart a render whose job died.
+job was pruned, where a retry by job id cannot restart a render.
 
 ### Retrying a job
 
@@ -149,8 +149,9 @@ run, in one transaction:
    dead jobs older than `jobs.keep_failed`, scheduling a dead purge's blob
    anew;
 5. hands uploads stale for `upload.stale_after` back to `created`;
-6. prunes tombstones purged more than `blobs.keep_purged` ago, with their
-   attachments and jobs.
+6. prunes tombstones purged more than `blobs.keep_purged` ago, and those
+   with nothing to purge last updated as long ago, with their attachments and
+   jobs.
 
 Each step takes at most ten thousand rows. A run that filled a batch starts
 the next one at once instead of waiting for the interval, so a backlog (a
@@ -171,7 +172,8 @@ The `audit` job checks that the bucket and the `blobs` table agree, every
 after the workers start and each one scheduling the next when it is done.
 It is for the mismatches nothing else sees: a
 bucket or a database restored from backup, a lifecycle rule, a bad purge.
-It merges the bucket listing, one request per thousand objects, with the
+It merges the bucket listing, one request per page of a thousand objects
+on S3 and Google Cloud Storage and five thousand on Azure, with the
 blobs table, one query per thousand rows, both in key order; nothing is
 held for the length of the bucket. The listing's sizes are enough to
 catch a truncated object; nothing is decrypted.

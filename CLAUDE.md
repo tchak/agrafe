@@ -37,7 +37,7 @@ See "Crates" in `DESIGN.md` for the dependency graph.
 - `crates/agrafe-crypto` — streaming AEAD and key wrapping, reviewed in
   isolation; no dependency on the server crate.
 - `crates/agrafe-types` — content types, classification, sniffing, the
-  text-sample contract, `str_enum!`. Pure; shared by every other crate.
+  text-sample contract, `str_enum!`. Pure; shared by most of the others.
 - `crates/agrafe-sandbox` — subprocesses with resource limits.
 - `crates/agrafe-extract`, `crates/agrafe-render-text`,
   `crates/agrafe-render-document`, `crates/agrafe-render-geo` — the
@@ -83,8 +83,8 @@ See "Crates" in `DESIGN.md` for the dependency graph.
   `cargo run --bin agrafe -- --config config/agrafe.toml serve` (the
   workspace has several binaries, so `--bin` is needed). The workers need the
   helper binaries: `cargo build --workspace` and point
-  `media.extract_command`, `media.render_text_command` and
-  `media.render_document_command` at the binaries under `target/debug`, or
+  `media.extract_command`, `media.render_text_command`,
+  `media.render_document_command` and `media.render_geo_command` at the binaries under `target/debug`, or
   put `target/debug` on `PATH`.
 - Tests need a `agrafe_test` database reachable as the current OS user
   with `CREATEDB`, or `DATABASE_URL`, and `vips` on the `PATH` (`brew

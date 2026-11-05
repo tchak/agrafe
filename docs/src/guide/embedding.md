@@ -65,9 +65,10 @@ let internal = axum::Router::new()
 The dashboard finds its prefix from the request, and embeds thumbnails from
 the private API one segment up: `/agrafe/dashboard` expects the private
 routes under `/agrafe`. Put it behind your own authentication. When nesting
-it yourself, wrap it in `agrafe_axum::host::refuse_unknown_host` and
-`agrafe_axum::trace::private` as the binary does, since a layer on a router
-does not reach routes nested after it.
+it yourself, wrap it in `agrafe_axum::host::refuse_unknown_host` as the
+binary does, since a layer on a router does not reach routes nested after
+it. It brings its own request span: do not wrap it in
+`agrafe_axum::trace::private` again.
 
 ## Running the workers
 
@@ -82,7 +83,7 @@ tokio::spawn(jobs::runner::run(agrafe.clone(), shutdown));
 The runner probes the renderers and the document compiler when it handles
 their kinds, schedules the reaper, and starts the pools of `jobs.kinds`. It
 returns once the shutdown future completes and the jobs in flight have
-finished.
+finished or, past `jobs.shutdown_grace`, gone back to the queue.
 
 ## Tracing
 

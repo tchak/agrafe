@@ -253,9 +253,8 @@ Inside those spans, the slow operations have spans of their own: `storage`
 for each object store call, with `op` and `path`; `sandbox` for each
 renderer or helper run, with the `program` and its `outcome`; and `clamav`
 for the connection and the wait for the verdict. They show in a log line's
-context when something is logged inside them. Nothing is exported yet; the
-spans and the stored trace context are what an OpenTelemetry or Sentry
-exporter will build on.
+context when something is logged inside them, and the exporters below take
+them with the stored trace context.
 
 ## Exporting errors and traces
 

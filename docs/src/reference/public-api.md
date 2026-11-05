@@ -14,13 +14,15 @@ project](../guide/signed-urls.md) for the token format.
 
 ## Conventions
 
-- **Signature first.** A request whose token is missing, malformed, signed
+- **Signature first.** A request whose token is malformed, signed
   with an unknown key, or signed for another method, path or query answers
   `403` before anything else. An expired token answers `410`.
 - **Terminal blobs do not exist.** A blob that is `expired`, `infected` or
   `deleted` answers `404` on every route, upload included, even with a valid
   signature. So does a blob past its `expires_at` that the reaper has not
-  recorded yet.
+  recorded yet. The exception is a read through a
+  [sealed URL](../guide/serving.md#sealed-urls), which looks at no row: it
+  serves the blob until its objects are purged or the URL expires.
 - **`HEAD`** is accepted wherever `GET` is, and verified as `GET`.
 - **Errors** are JSON, `{"error": {"code": "...", "message": "..."}}`. See
   [Errors](errors.md).
@@ -85,7 +87,7 @@ The reduced metadata of a blob, for a browser to poll after an upload.
 | `state` | string | `created`, `uploading`, `uploaded`, `ready` |
 | `content_type` | string | |
 | `category` | string | `image`, `document`, `spreadsheet`, `presentation`, `archive`, `audio`, `video`, `text`, `other` |
-| `size` | integer or null | Bytes; null for a generated blob not yet built |
+| `size` | integer or null | Bytes; null for a generated blob not yet built, but for an archive's running estimate |
 | `scan_state` | string | `pending`, `clean`, `infected`, `skipped` |
 | `representations` | object | One entry per kind the blob asked for, `thumbnail` and `preview`, the same object as the [private metadata's](private-api.md#blob-metadata): `state` (`pending`, `ready`, `failed`, `unavailable`), with `ready` the `checksum` and `size` of the WebP, and the preview's `source`. A kind left out at creation is absent: `disabled` |
 
@@ -94,7 +96,8 @@ The reduced metadata of a blob, for a browser to poll after an upload.
 The original bytes, decrypted.
 
 **Path.** `:filename` must be the blob's filename, percent-encoded as one
-segment; another name answers `404`.
+segment; another name answers `404`, or on a sealed URL is served under that
+name.
 
 **Signed query.**
 
@@ -127,7 +130,7 @@ segment; another name answers `404`.
 | `200` | The whole file |
 | `206` | A single satisfiable range |
 | `304` | `If-None-Match` names the `ETag` |
-| `400` | The `e` envelope does not decode or is another blob's, or the signed `disposition` or `filename` is invalid |
+| `400` | The `e` envelope does not decode or is another blob's, or the signed `disposition` is invalid |
 | `404` | No such blob, terminal, filename mismatch, or, on a sealed URL, the objects were purged. A sealed `HEAD` or `304` opens nothing and answers from the envelope until the URL expires; only a `GET` with a body to send finds out |
 | `409` | The blob is not `ready` yet |
 | `416` | The range starts past the end. No body |

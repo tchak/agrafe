@@ -7,7 +7,7 @@ the `agrafe` binary with its four helpers next to it.
 
 | Binary | Role |
 |---|---|
-| `agrafe` | The server: `serve` and `migrate` |
+| `agrafe` | The server: `serve`, `migrate` and `audit` |
 | `agrafe-extract` | Pulls the embedded image out of a PDF, DOCX or ODT |
 | `agrafe-render-text` | Rasterises the first lines of a text file |
 | `agrafe-render-document` | Compiles a typst workspace into a PDF, or into HTML for pandoc |
@@ -79,6 +79,7 @@ AGRAFE_ENCRYPTION__KEKS__KEK1=…
 AGRAFE_SERVER__PUBLIC_BASE_URL=https://files.example.org
 AGRAFE_CLAMAV__ADDR=clamd:3310
 AGRAFE_STORAGE__BACKEND=s3
+AGRAFE_STORAGE__S3__BUCKET=agrafe
 AGRAFE_MEDIA__SANDBOX__ISOLATION=required
 ```
 
@@ -279,7 +280,7 @@ apt install libreoffice-writer-nogui libreoffice-calc-nogui \
 
 About 400 MB. The fonts are not optional: without them a page renders as
 boxes and LibreOffice exits 0, which nothing reports. The startup probe
-converts a two-page DOCX, an XLSX, a two-slide PPTX, a two-page ODG and
+converts a two-page DOCX, a two-page XLSX, a two-slide PPTX, a two-page ODG and
 an ODT carrying a macro, and checks that each two-page file came out as
 one page and that the macro did not run, so a LibreOffice without one of
 Writer, Calc, Impress or Draw, or older than 7.4, fails the deployment
@@ -352,7 +353,7 @@ sealed URL uses the database, so size the server's `max_connections` for
 the sum of the pools.
 
 The `jobs` table churns: every job is an insert, an update when claimed
-and a delete when done, and each version lands in its eight indexes. The
+and a delete when done, and each version lands in its nine indexes, the primary key's included. The
 migration sets the table to vacuum and analyze after a thousand dead rows
 rather than the stock fifth of the table, which on a table holding only
 the backlog is never, or everything at once after a mass expiry. Nothing
@@ -535,8 +536,9 @@ needed: the read cache is per process and short-lived.
 - **Liveness and readiness:** `GET /healthz` on either port answers `ok`.
   Every process answers it on the private address, worker-only and
   public-only ones included.
-- **Startup:** a worker that cannot run `vips` or a helper exits before
-  serving, with the failing command in the log. Every process, and `agrafe
+- **Startup:** a worker that cannot run `vips` or a helper exits at
+  startup, with the failing command in the log; `/healthz` may answer while
+  the probes run. Every process, and `agrafe
   audit`, exits before serving when the database lacks a migration of its
   release: run `agrafe migrate` first, so that a process that answers
   `/healthz` has the schema it was written for.

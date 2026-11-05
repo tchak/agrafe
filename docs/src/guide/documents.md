@@ -198,7 +198,7 @@ with `failed_at` set, and `last_error` holds the compiler's diagnostics, one
 per line:
 
 ```text
-main.typ:12:5: error: unknown variable: montnat
+build: the document does not compile: main.typ:12:5: error: unknown variable: montnat
 ```
 
 The same happens when a referenced blob is gone by the time the build runs,
@@ -209,7 +209,7 @@ the template does not compile to HTML, and when pandoc refuses the
 conversion, `last_error` then holding what pandoc said:
 
 ```text
-the document does not convert: Could not parse reference-doc "…/reference.docx": Did not find end of central directory signature
+build: the document does not convert: Could not parse reference-doc "…/reference.docx": Did not find end of central directory signature
 ```
 
 Fix the template, the data or the reference document, then create a new

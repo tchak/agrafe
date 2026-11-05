@@ -1,7 +1,6 @@
 //! Minting signed public URLs for a blob, and the signed query parameters
-//! they may carry. The server is the only minter, so a parameter is checked
-//! here, when the backend asks for it, rather than on a correctly signed URL
-//! later.
+//! they may carry. When the server mints, a parameter is checked here, when
+//! the backend asks for it, rather than on a correctly signed URL later.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime};

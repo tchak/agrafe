@@ -49,8 +49,8 @@ empty cell. Objects and arrays as values are refused.
 | Column type | Accepted values | Written as |
 |---|---|---|
 | none | any scalar | what the JSON says: a number is numeric, a boolean is boolean, a string is text |
-| `date` | `null` or `YYYY-MM-DD` | a date cell |
-| `datetime` | `null` or `YYYY-MM-DDTHH:MM:SS`, optional fraction and offset (`Z`, `±HH`, `±HHMM`, `±HH:MM`) | a date and time cell, the offset dropped |
+| `date` | `null` or `YYYY-MM-DD` | a date cell; in an XLSX, text before 1900-03-01, which Excel cannot show as a date |
+| `datetime` | `null` or `YYYY-MM-DDTHH:MM:SS`, optional fraction and offset (`Z`, `±HH`, `±HHMM`, `±HH:MM`) | a date and time cell, the offset dropped; in an XLSX, text before 1900-03-01 |
 
 Spreadsheets have no time zones, so a datetime is written as the wall-clock
 time given. Format it in the zone your users read.
@@ -161,5 +161,6 @@ the cell limit, is refused at the line that crossed it.
 - **ODS** cells are typed, with the displayed text alongside the value.
 
 A built spreadsheet is not virus scanned, since it contains only what agrafe
-wrote. A CSV gets a text thumbnail; an XLSX or ODS gets the category icon.
+wrote. A CSV gets a text thumbnail; an XLSX or ODS gets its first page when
+`media.office.command` names a LibreOffice, and the category icon otherwise.
 None has a preview.

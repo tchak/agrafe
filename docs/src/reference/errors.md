@@ -56,7 +56,7 @@ route, which answers an icon rather than an error.
 | `403` | `forbidden` | `invalid signature` | Malformed token, unknown key id, or a signature for another method, path or query |
 | `403` | `forbidden` | `signature not valid yet` | The expiry lies beyond `signing.window` plus `signing.ttl.max`: a minter's mistake, or a cap lowered since |
 | `410` | `gone` | `signature expired` | The expiry has passed |
-| `404` | `not_found` | `not found` | Valid signature; no such blob, or a terminal one |
+| `404` | `not_found` | `not found` | Valid signature; no such blob, or a terminal one, on a route that reads the row |
 | `400` | `bad_request` | the envelope's decoding error | The `e` parameter does not decode |
 | `403` | `forbidden` | `this blob can only be uploaded through the private interface` | A public `PUT` on a blob that is not `raw` or `multipart`, or skips the scan |
 
@@ -97,6 +97,7 @@ All `422 unprocessable`, from `POST /blobs`:
 | `main: …`, `main applies to document input only` | |
 | `expires_at and expires_in are mutually exclusive`, `expires_in is out of range`, `expiration must be in the future` | |
 | `expires_at and expires_in do not apply to a blob created attached` | |
+| `` content_type `…` is not offered by this deployment (document.office_formats); `application/pdf` is `` | A DOCX or ODT `document` blob with `document.office_formats` off |
 | `attachment: …` | An invalid `owner_kind`, `owner_id` or `role` |
 
 An `attachment` with `replace` and more than 1000 other blobs at its
@@ -112,10 +113,9 @@ From `PUT /blobs/:id` on either port, and `PUT /blobs/:id/parts/:n`:
 
 | Status | Code | Message | Cause |
 |---|---|---|---|
-| `404` | `not_found` | `no such blob` | |
+| `404` | `not_found` | `not found` | |
 | `409` | `conflict` | `blob is uploading and cannot be uploaded` | Another upload is in flight |
 | `409` | `conflict` | `blob is ready and cannot be uploaded` | Write-once: it already has its bytes. Any state but `created` |
-| `409` | `conflict` | `a rows blob is built from a source, not uploaded as a file` | |
 | `409` | `conflict` | `a url blob is fetched by the service from its url, not uploaded` | |
 | `409` | `conflict` | `parts and finish apply to rows, archive and document blobs, not to a raw blob` | |
 | `409` | `conflict` | `expected part N` | A part out of sequence, or part 1 already stored |
@@ -209,8 +209,8 @@ listing's: due and scheduled jobs page in queue order`.
 | Route | Status | Code | Message |
 |---|---|---|---|
 | original | `409` | `conflict` | `blob is uploaded and not readable` |
-| original, preview, thumbnail | `404` | `not_found` | `not found`: the filename does not match |
-| original, preview, thumbnail | `400` | `bad_request` | `` disposition must be inline or attachment, not `…` ``, `filename is not valid` |
+| original, preview, thumbnail | `404` | `not_found` | `not found`: the filename does not match (a sealed URL does not compare it) |
+| original, preview, thumbnail | `400` | `bad_request` | `` disposition must be inline or attachment, not `…` `` |
 | preview | `404` | `not_found` | `preview is pending`, `preview could not be generated`, `no preview for this file`, `preview disabled for this blob` |
 | preview | `409` | `conflict` | `blob is created and not readable` |
 | original | `500` | `internal` | The object is missing or fails to decrypt; logged with the blob id |
@@ -233,6 +233,7 @@ on the job, and, for a job that was to finish its blob, on the blob as
 | `build: …` | A `rows`, `archive` or `document` build, including a document's compiler diagnostics as `path:line:column: error: message`, and what pandoc said for a DOCX or ODT that `does not convert` |
 | `webhook: …` | A delivery, with the receiver's status and the head of its body |
 | `purge: …` | Deleting objects |
+| `audit: …` | A sweep of the audit |
 | `temporary files: …` | The worker's `media.tmp_dir` |
 | `handler panicked: …` | A bug: please report it |
 

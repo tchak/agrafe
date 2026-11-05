@@ -305,7 +305,7 @@ impl Command {
     /// cannot start without one, such as LibreOffice's single-instance
     /// pipe in `/tmp`; the trade is that path-based unix sockets the child
     /// can see, such as a local Postgres's, are no longer closed to it
-    /// (Landlock scopes abstract sockets only), so it is not the default.
+    /// (Landlock governs them only from ABI 9), so it is not the default.
     /// Under bubblewrap the sockets go in the sandbox's private `/tmp`,
     /// whatever `dir` says: nothing of the host is bound for them.
     pub fn unix_sockets(&mut self, dir: impl Into<PathBuf>) -> &mut Self {

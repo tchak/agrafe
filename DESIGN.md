@@ -58,13 +58,13 @@ database or a first deployment holds.
   the blob asked for, two by default, about 110 bytes each plus a
   40-byte index entry, roughly 300 GB at a billion blobs against the
   60 GB the same facts cost as columns on `blobs`. Small next to the
-  `blobs` table and its fourteen indexes, and the opt-in kinds cost
-  nothing on the blobs that do not ask for them, where a wide row
-  would carry a `disabled` state per kind per blob; the lookup is a
-  primary-key range scan of at most six rows.
+  `blobs` table and its sixteen indexes, and the opt-in kinds to come
+  would cost nothing on the blobs that do not ask for them, where a wide
+  row would carry a `disabled` state per kind per blob; the lookup is a
+  primary-key range scan of at most two rows, the two kinds there are.
 - Hot rows and global counters do not exist. Nothing updates one row
   per upload or per read; aggregates come from metrics, estimates
-  (`pg_class.reltuples`) or bounded samples.
+  (the planner's, through `EXPLAIN`) or bounded samples.
 - The queue holds only the backlog, never the history, so it stays
   small however many blobs there are (see "Jobs").
 
@@ -81,18 +81,19 @@ into a server process. Dependencies point downwards only.
 | `agrafe-sandbox` | Running a subprocess with `setrlimit` bounds and a timeout, confined by Landlock and seccomp on Linux, and by bubblewrap where configured; the `Command` builder that declares what it reads and writes; the `[media.sandbox]` config and the startup probe | `tokio`, `libc`, `landlock`, `seccompiler` |
 | `agrafe-extract` | The `agrafe-extract` helper: pulls the one image out of a PDF or a Writer package (DOCX, ODT and their variants). Library plus binary | `agrafe-types`, `lopdf`, `zip`, `quick-xml` |
 | `agrafe-render-text` | The `agrafe-render-text` helper: rasterises a text sample. Library plus binary | `agrafe-types`, `ab_glyph` |
-| `agrafe-render-document` | The `agrafe-render-document` helper: compiles a typst workspace into a PDF, or into HTML for pandoc. Library plus binary | `typst`, `typst-pdf`, `typst-html`, `typst-assets` |
+| `agrafe-render-document` | The `agrafe-render-document` helper: compiles a typst workspace into a PDF, or into HTML for pandoc. Library plus binary | `typst`, `typst-pdf`, `typst-html`, `typst-layout`, `typst-assets` |
 | `agrafe-render-geo` | The `agrafe-render-geo` helper: reads a GeoJSON, GPX, KML, KMZ or GML file or a zipped shapefile, projects, fits, simplifies and draws it as SVG paths, with the extent it chose. Library plus binary | `agrafe-types`, `geojson`, `quick-xml`, `zip`, `serde_json` |
 | `agrafe-render` | Which files render and from what, `vips thumbnail` and `vips composite`, the icons, the drivers that spawn the helpers and pandoc, the fetcher of map backgrounds, the startup probe, the `[media]` tool config | `agrafe-types`, `agrafe-sandbox`, `reqwest` |
 | `agrafe` | The library: config, database, blobs, upload pipeline, the fetch client, the webhook, encryption, signing, storage, ClamAV, jobs, metrics, URL minting, and the `Agrafe` handle whose methods are the private API | `agrafe-crypto`, `agrafe-types`, `agrafe-render`, `sqlx`, `object_store`, `reqwest` |
 | `agrafe-axum` | The two HTTP interfaces as axum routers, the extractors, `ApiError` and the mapping of the library's errors onto status codes | `agrafe`, `axum` |
-| `agrafe-dashboard` | The HTML dashboard as an axum router: the queue census, the listings and details of jobs, blobs and attachments, the retry and discard forms; compiled templates and a vendored stylesheet | `agrafe`, `agrafe-axum` (the origin check), `axum`, `askama` |
-| `agrafe-server` | The clap entry point: `serve`, `migrate`. Produces the binary named `agrafe` | `agrafe`, `agrafe-axum`, `agrafe-dashboard` |
+| `agrafe-dashboard` | The HTML dashboard as an axum router: the queue census, the listings and details of jobs, blobs and attachments, the retry and discard forms; compiled templates and a vendored stylesheet | `agrafe`, `agrafe-axum` (the origin check and the request span), `axum`, `askama` |
+| `agrafe-server` | The clap entry point: `serve`, `migrate`, `audit`. Produces the binary named `agrafe` | `agrafe`, `agrafe-axum`, `agrafe-dashboard` |
 
 The helpers are separate binaries, not subcommands of the server, so that
-the server links none of their parsers: `lopdf`, `zip`, `quick-xml`,
-`ab_glyph`, `typst` and `geojson` exist only in processes the sandbox
-bounds. A new map format is a reader in `agrafe-render-geo`, not a
+no user file is parsed in the server: `lopdf`, `zip`, `ab_glyph`, `typst`
+and `geojson` exist only in processes the sandbox bounds, and so does
+`quick-xml` as a reader of user files (`object_store` links it into the
+server for the store's own answers). A new map format is a reader in `agrafe-render-geo`, not a
 helper of its own: one helper, one sandbox profile, one binary, and the
 projection, extent and drawing shared. They are found on `PATH` by default (`media.extract_command`,
 `media.render_text_command`, `media.render_document_command`,
@@ -117,9 +118,13 @@ are a line or two each: parse the request, call the handle, shape the
 response. The upload body reaches the library as a stream whose error is
 boxed; the HTTP layer puts its own error in the box and takes it back out,
 so a body cut short by the size limit still answers `413` without the
-pipeline knowing what that is. Reading an original is the one place the
-HTTP layer goes below the handle, to `blob::read::Reader`, because `Range`
-handling and streaming the plaintext into a response body are its job.
+pipeline knowing what that is. The HTTP layer goes below the handle in three
+places, each because the work is its own: reading an original, to
+`blob::read::Reader`, since `Range` handling and streaming the plaintext into
+a response body are its job; taking a body, to `upload::prepare` and
+`source::prepare_part`, so that an upload is refused before it is read; and
+a sealed URL, to `Envelope::decode` and `Stored::from_envelope`, which has no
+row to ask the handle for.
 
 Three consumers exist: the standalone service, `agrafe-server`; a host
 application that builds an `Agrafe` from a configuration and a pool, nests
@@ -150,7 +155,7 @@ No signature. Reachable only from trusted networks.
 | `DELETE` | `/attachments/:id` | Detach; the last detach gives the blob back its default expiry |
 | `POST` | `/blobs/:id/urls` | Mint signed public URLs with a chosen TTL and query parameters |
 | `GET` | `/blobs/:id/original/:filename` | Original bytes, supports `Range` |
-| `GET` | `/blobs/:id/preview/:filename` | WebP preview or 404 |
+| `GET` | `/blobs/:id/preview/:filename` | WebP preview, `404`, or `409` for a blob that is not `ready` |
 | `GET` | `/blobs/:id/thumbnail/:filename` | WebP thumbnail, always 200 |
 | `GET` | `/jobs` | List jobs, cursor paginated, filterable by `kind`, `state`, `priority`, `blob_id` |
 | `GET` | `/jobs/:id` | One job, with its last error |
@@ -171,19 +176,23 @@ handlers are shared.
 | `PUT` | `/blobs/:token/:id` | Upload bytes, only `raw` and `multipart` |
 | `GET` | `/blobs/:token/:id` | Reduced metadata: id, state, scan state, the `representations` by kind, content type, category, size. `404` once the blob is `expired`, `infected` or `deleted` |
 | `GET` | `/blobs/:token/:id/original/:filename` | Original bytes, supports `Range` |
-| `GET` | `/blobs/:token/:id/preview/:filename` | WebP preview or 404 |
+| `GET` | `/blobs/:token/:id/preview/:filename` | WebP preview, `404`, or `409` before the blob is `ready` |
 | `GET` | `/blobs/:token/:id/thumbnail/:filename` | WebP thumbnail, always 200 |
 | `GET` | `/healthz` | Liveness |
 
 Blobs in a terminal state (`expired`, `infected`, `deleted`) do not exist as
-far as the public port is concerned: every public route answers `404`, upload
-included, even with a valid signature. A URL that leaks after the blob is gone
-therefore reveals nothing, not even that it once existed. The private port
+far as the public port's row lookup is concerned: every public route that reads
+the row answers `404`, upload included, even with a valid signature, and a URL
+that leaks after the blob is gone reveals nothing through it, not even that it
+once existed. A sealed read URL is the exception: it reads no row, and serves
+the blob until the purge takes its objects or the URL expires (see "Sealed
+URLs"). The private port
 keeps reporting the real state. Public request spans record the path with the
 token segment redacted, so no log level writes capabilities to log storage.
 
 The `:filename` segment of representation routes must match the blob's
-filename (percent-decoded), otherwise `404`. It exists so browsers get a
+filename (percent-decoded), otherwise `404`; a sealed URL has no row to
+compare it with, and serves under the segment its minter signed. It exists so browsers get a
 sensible download name and so a URL cannot be made to look like it serves a
 different file than it does. It is the blob's own filename on every route,
 previews and thumbnails included, even though those serve WebP: the segment
@@ -197,7 +206,7 @@ name.
 Wherever a filename is split into stem and extension (this download name,
 the archive dedupe, the sheet named after a `rows` blob), the extension is
 what follows the last dot, with a rule for compression wrappers: a last
-extension of `gz`, `bz2`, `xz`, `zst`, `lz`, `lzma`, `Z` or `br` takes the
+extension of `gz`, `bz2`, `xz`, `zst`, `lz`, `lz4`, `lzma`, `z` or `br`, in either case, takes the
 extension before it when that one is one to five ASCII alphanumerics with a
 letter among them. So `a.tar.gz` and `export.csv.gz` split before `.tar.gz`
 and `.csv.gz`, while `my.report.gz` splits before `.gz`, since `report` is
@@ -297,8 +306,9 @@ It is a second presentation of the `Agrafe` handle, in its own crate,
 presentation dependency, and a host that nests the public router or calls
 the private API in Rust should not compile templates and a stylesheet it
 never serves. The dashboard answers with HTML pages, not `ApiError`
-bodies; the one thing it takes from `agrafe-axum` is the cross-site check
-below. The library changed only to expose the queue census through the
+bodies; what it takes from `agrafe-axum` is the cross-site check below and
+the private interface's request span. The one JSON answer under its prefix is
+the refusal of the host check the binary layers around it. The library changed only to expose the queue census through the
 handle, `Agrafe::job_counts`, which `/metrics` reads too.
 
 `dashboard_router(state)` is one router with its state applied, like the
@@ -372,7 +382,7 @@ Nor can it see framing. A page that frames the dashboard and lays something
 over a Retry button gets the operator's click, and the form submitted is the
 framed page's own, so the browser marks it `same-origin`, whoever is around
 it: Fetch Metadata compares the initiator with the target and ignores the
-ancestors. So every response of the dashboard says `frame-ancestors 'none'`
+ancestors. So every response of the dashboard's router says `frame-ancestors 'none'`
 and `X-Frame-Options: DENY`, error pages included, in a policy that also
 allows no script, a page having none. A host that nests the dashboard cannot
 put it in a frame of its own either.
@@ -423,8 +433,8 @@ message = METHOD "\n" expires_unix "\n" path_and_query_after_token
 
 - `path_and_query_after_token` is the raw request target as received, starting
   at `/<id>`, including the query string if any. Nothing is decoded,
-  reordered or re-encoded. The server is the only minter, so both sides use the
-  same encoder.
+  reordered or re-encoded, so a minter, the server or a backend (see below),
+  signs the bytes it sends.
 - `HEAD` is verified as `GET`.
 - There are no permanent URLs. `signing.ttl.max` (default seven days) caps
   every TTL in config and the `ttl` a mint may ask for, and verification
@@ -449,7 +459,7 @@ message = METHOD "\n" expires_unix "\n" path_and_query_after_token
   a browser's cache keeps working across renders of a page. Shared caches
   are not meant to hold them: the read routes answer `private`, so a CDN
   in front stores nothing unless told to override it, and the deleted or
-  expired blob the row-backed routes hide at once stays out of its copy.
+  expired blob the row-backed routes hide stays out of its copy.
   The window is one setting,
   `signing.window`; the TTL is per operation (`signing.ttl.upload`,
   `metadata`, `read`), and `POST /blobs/:id/urls` may override the read and
@@ -468,10 +478,12 @@ message = METHOD "\n" expires_unix "\n" path_and_query_after_token
   write_vectors` regenerates both files.
 - Because everything after the token is signed, query parameters are a safe
   way for the minter to control behaviour: `disposition=attachment`, a
-  filename override, `wait=<ms>` for pending representations. They are
-  validated when minted, unknown names included, so a backend mistake is a
-  `422` on the private port and never a client error on a correctly signed
-  URL.
+  filename override, `wait=<ms>` for pending representations. When the server
+  mints, they are validated first, unknown names included, so a backend
+  mistake is a `422` on the private port and not a client error on a correctly
+  signed URL. A backend that mints its own gets no such check: a bad
+  `disposition`, or a `wait` that is not an integer, answers `400` when a
+  browser follows the URL.
 
 ### Sealed URLs
 
@@ -479,12 +491,13 @@ The read routes are the hot path, and the one query on it is the row
 lookup. A sealed URL carries the row instead: the **envelope**, one opaque
 string with everything serving a `ready` blob needs (the wrapped data key
 and its KEK id, the stream header and segment size, the size, checksum and
-content type of the original, the category, and for each representation
+content type of the original, the category, the scan state and the upload
+time, and for each representation
 the blob has a row for, its kind, state, version, digest and size, a
 counted list in which a `disabled` kind is absent as it is in the table;
-format in `blob::envelope`). The list carries the kinds the public port
-serves, the pictures; a data representation is private-port only and is
-never sealed. It travels as the signed query parameter `e`, so it is
+format in `blob::envelope`). The list carries every row, the two kinds
+there are being the pictures the public port serves; a data representation,
+should one come, would be private-port only and never sealed. It travels as the signed query parameter `e`, so it is
 covered by the signature like the rest of the target, and the wrapped key
 is bound to the blob id, so nothing in it needs protecting on its own. The
 public read routes with an `e` verify the signature, decode the envelope
@@ -514,7 +527,8 @@ the row up as before.
 - Nothing on the sealed path reads the row, so a blob deleted or expired
   after the URL was minted stays readable until the purge takes its
   objects (the reaper's interval plus `upload.purge_delay`) or the URL
-  expires, whichever comes first; the row-backed routes hide it at once.
+  expires, whichever comes first; the row-backed routes hide it at once, or
+  for a delete on another process within `blobs.read_cache_ttl`.
   URLs the server mints for a blob with an `expires_at` expire no later
   than the blob. A backend minting its own picks the TTL it stands behind,
   within `signing.ttl.max`.
@@ -649,8 +663,9 @@ any unattached ──► deleted
 | `deleted` | Soft deleted. Objects purged. |
 
 A blob is `expired` from the instant `expires_at` passes, not from whenever
-the reaper gets to it: every read, upload and public lookup compares
-`expires_at` with the current time and treats a blob past it as `expired`.
+the reaper gets to it: every read, upload and public lookup through the row
+compares `expires_at` with the current time and treats a blob past it as
+`expired`; a sealed URL has no row to compare, see "Sealed URLs".
 The reaper only records the state and purges the object, so expiry never
 depends on its schedule. Until it runs, private metadata still reports the
 stored state alongside the past `expires_at`.
@@ -855,7 +870,7 @@ attachments (
   created_at  timestamptz NOT NULL
 )
 UNIQUE (owner_kind, owner_id, role, blob_id)
-INDEX  (blob_id)
+INDEX  (blob_id, id)
 INDEX  (owner_kind, role, id)
 INDEX  (owner_kind, id)
 ```
@@ -908,7 +923,9 @@ table, appended at its right edge like the primary key; an attach or a
 detach moves the row between them, a write it already pays for in
 `blobs_expires_at_idx`. A test pins both plans.
 
-Each filter has its own `(column, id)` index, and filters combine by AND
+Each filter has its own index, `(column, id)` or, for `attached` and
+`failed=true`, a partial one on `(id)`; only `failed=false` has none, and is
+checked on the rows of the walk. Filters combine by AND
 with no composite index behind them: two filters are one index walked
 from the cursor and the other checked on each row. A page is cheap when
 the combination is common among the rows the walk meets, and costs as
@@ -1038,7 +1055,7 @@ formats (DOC, XLS, PPT), RTF and the macro-enabled, template, slideshow
 and master variants (DOCM, DOTX, XLSM, XLSB, PPSX, POTX, OTT, ODM, …)
 with their base, so an `.xlsm` is not `other` and gets the spreadsheet
 icon and filter. Draw's ODG and OTG are `document`s: pages, with nothing
-closer. Every `+json` or `+xml` type is `text` whatever the registry put
+closer. Every `application/*+json` or `application/*+xml` type is `text` whatever the registry put
 before the suffix (XHTML, RSS, JSON-LD, GeoJSON, GPX, KML, GML), as are JSON
 and the script and configuration types (JavaScript, YAML, TOML, SQL,
 shell, JSON lines), so they get the text sample as a thumbnail; the
@@ -1076,7 +1093,8 @@ Bytes flow once through a chain of consumers:
 4. ClamAV `INSTREAM` when the blob is not `skip_virus_scan` and the declared
    size is at or below `upload.inline_scan_max_size`. Above that, or when
    clamd cannot be reached, the scan runs as a job after storage and the
-   blob waits in `uploaded`.
+   blob waits in `uploaded`. Within a chunk the bytes reach clamd before the
+   sniffer looks at them; the verdict is read last, so nothing depends on it.
 5. Chunked AEAD encryption (see below).
 6. Multipart upload to the object store.
 
@@ -1303,11 +1321,12 @@ and none has a preview.
 When the build finishes the blob moves to `ready` with
 the checksum and the final size on the row. A failure the next attempt
 would repeat, a source line that does not parse, a row missing its key
-material, a key that does not unwrap, a stored source or member that is
+material, a key that does not unwrap under a KEK this process has, a stored source or member that is
 damaged (a broken header, a length no stream produces, a segment that fails
 authentication), or a package the ZIP writer refuses, kills the job at once
-rather than through the backoff; a bucket or database error, or an object
-cut short in transit, is retried. Out of attempts, the blob is stuck in
+rather than through the backoff; a bucket or database error, an object cut
+short in transit, or a KEK this process lacks, which a deploy may bring, is
+retried. Out of attempts, the blob is stuck in
 `uploaded`, unreadable, like a scan that never completes. No new state: `uploaded`
 already means that what the client sent is in the bucket and a job has to
 finish the blob. The source is purged with the rest of the prefix.
@@ -1660,7 +1679,7 @@ parsers, exactly what "nothing decodes user files in the API process"
 forbids.
 
 The plumbing matches the other helpers: `agrafe-render-document --workspace
-<dir> --main <path> --output <file> --format pdf|html`, stdin null, a clean environment, no
+<dir> --main <path> --output <file> --format pdf|html --max-output <bytes>`, stdin null, a clean environment, no
 configuration and no logs; what it writes on stderr is the compiler's
 diagnostics. The job writes the workspace into a fresh directory under
 `media.tmp_dir`, inline files as they are and members decrypted through
@@ -1892,8 +1911,9 @@ every listing. It never appears in `last_error`, logs or public
 metadata, its host included: migration URLs are presigned, so they are
 secrets with an expiry. The HTTP client's errors carry the URL and are stripped of it
 before they are written anywhere, and the server caps the client's own
-crates (`reqwest`, `hyper`) at `info` in its log filter, since they
-name request targets at `debug` and below. Their expiry is one more
+crates (`reqwest`, `hyper`, `hyper_util`, `h2`) at `info` in its log filter,
+since they name request targets at `debug` and below, unless `RUST_LOG`
+names one of them, which is the operator's own choice. Their expiry is one more
 reason the retry window stays short.
 
 ### The fetch job
@@ -2087,7 +2107,8 @@ sync-only seek make range requests awkward.
   range, one byte-range `GET` to the bucket, decrypt, trim, stream.
   `Content-Length` is exact. The first segment is opened before the response
   starts, so a wrong key, a tampered object or a missing one is a logged
-  `500`. A segment that fails later cannot change the status any more: the
+  `500`; from a sealed envelope a missing object is a `404` and a key that
+  does not open a `400`. A segment that fails later cannot change the status any more: the
   connection is cut, and the failure is logged, because the client cannot
   tell a corrupt object from a dropped connection.
 
@@ -2125,7 +2146,7 @@ the upload completes and the scan is deferred to a job, which is retried with
 backoff until clamd answers. In the job, a connection failure or an `ERROR`
 reply (the stream limit exceeded, for instance) is a job failure and the blob
 stays `uploaded`; once the job is out of attempts the blob is stuck there,
-unreadable, until it expires or is deleted. clamd scans only once the stream
+unreadable, until `POST /blobs/:id/retry`, an expiry or a delete. clamd scans only once the stream
 is complete, but hangs up before that at its stream limit or when it dies,
 so the client treats a failed write as "stop sending and read the reply",
 not as an error.
@@ -2208,7 +2229,8 @@ serves the icon for it and the preview endpoint `404`, each with
 `disabled` in the header, so a client can tell a choice from an
 inability. A thumbnail whose preview is disabled is rendered on its own,
 through the preview sources straight into the thumbnail box: the same
-picture, only the larger object spared. The choice is final, as the blob
+picture, only the larger object spared. A map is drawn at that box, with the
+same stroke widths in pixels, not fitted down. The choice is final, as the blob
 is write-once; turning rendering on later would take an endpoint of its
 own, which does not exist.
 
@@ -2256,7 +2278,8 @@ by magic and tries ImageMagick last, so a file declared `image/png` holding
 an XPM would reach it. Every file handed to vips is therefore sniffed again
 right before the call (`agrafe_types::sniff::loader_for`) against the same
 list, plus PNM for the pages the helpers write and vips's own `.v` for the
-map `vips composite` writes; anything else is `failed` without vips ever
+map `vips composite` writes, and `vips composite` itself takes only the
+helper's SVG and those `.v` files; anything else is `failed` without vips ever
 seeing it. The same check, narrowed to rasters, is applied to the
 background layers fetched for a map before vips is handed them. The embedded image extractor applies the same check to the
 bytes it pulls out of a PDF, since a `DCTDecode` stream holds whatever its
@@ -2570,7 +2593,7 @@ on "has preview", never on category. Sources, in order:
    invisible (rendering mode 3, a scan's OCR layer), and nothing else
    painted: no path filled or stroked, shading, inline image, clip,
    optional content, visible text, Type 3 font, graphics state that masks,
-   fades, blends or remaps, or annotation other than a link, any of which
+   fades, blends or remaps, or annotation other than a link or a popup, any of which
    could cover what the image shows, a black rectangle or a run of full
    blocks over a scan to begin with; or a DOCX/ODT with exactly one media file
    (under `word/media/` or `Pictures/`) that is a raster image, and at
@@ -2719,8 +2742,8 @@ on "has preview", never on category. Sources, in order:
    the exporting tool made up): a `GEOGCS` on the WGS 84 or the GRS 80
    ellipsoid in degrees from Greenwich is degrees, so WGS 84, RGF93 and
    ETRS89 alike, which a map preview cannot tell apart; a `PROJCS` in
-   metres over such a `GEOGCS`, a Lambert conformal conic (`1SP` or
-   `2SP` spelling) with standard parallels 44° and 49° in either order,
+   metres over such a `GEOGCS`, a Lambert conformal conic (the plain or
+   the `2SP` spelling) with standard parallels 44° and 49° in either order,
    central meridian 3°, false origin (700 000, 6 600 000) and, when
    given, latitude of origin 46.5° and scale 1, is Lambert-93, through
    the inverse the GeoJSON `crs` uses; a Mercator on the auxiliary
@@ -2811,7 +2834,8 @@ on "has preview", never on category. Sources, in order:
    side, grown to at least `min_span` metres so a single point or a tiny
    parcel still gets a readable map, then widened to the aspect ratio of
    the box: the image is the whole box, never letterboxed. The map is
-   drawn at the preview box or `max_size`, whichever is smaller. Rings and
+   drawn at the preview box, or the thumbnail's with the preview disabled,
+   or `max_size`, whichever is smaller. Rings and
    lines are simplified with Douglas–Peucker at half a pixel, 256 points
    at a time, the ends of each kept: whole, it is quadratic on a zigzag
    that keeps every point, which a file of a few hundred thousand made
@@ -2827,7 +2851,7 @@ on "has preview", never on category. Sources, in order:
    request to the provider for it.
    Points are discs with a ring, lines and polygons get a darker casing
    under the stroke, polygons use `fill-rule="evenodd"` so holes stay
-   holes, and the first drawn layer's attribution is burned into a corner
+   holes, and the attribution of the first drawn layer that has one is burned into a corner
    as outlined text, since the preview travels without a caption. A
    FeatureCollection, a Feature or a bare Geometry at the top level;
    GeometryCollections recurse. Anything else, or nothing with
@@ -2904,8 +2928,8 @@ on "has preview", never on category. Sources, in order:
    rejected, since raster coverage of a country at parcel zoom is hundreds
    of gigabytes and vector tiles need a style-aware renderer that does not
    exist in Rust and would have to be written inside a sandboxed helper.
-   Out of scope for now: XYZ and WMTS layers, caching backgrounds between
-   renders, and GML, which will be another reader in this helper.
+   Out of scope for now: XYZ and WMTS layers and caching backgrounds between
+   renders.
 A document that is not one of these has no preview, whether PDF or office:
 the first page of a PDF is its thumbnail (see "Thumbnail"), not a preview.
 
@@ -3040,11 +3064,14 @@ and remove socket files, nothing else there. The office driver asks for
 the directory LibreOffice will pick, `/tmp` when the worker can write
 there and `/var/tmp` otherwise. The trade is that path-based unix
 sockets the child can see, such as a local Postgres's, are no longer
-closed to it, since no Landlock ABI governs them (ABI 6 scopes abstract
-sockets only), and that a compromised LibreOffice may remove files under
+closed to it below Landlock ABI 9 (Linux 7.1), the first to govern them,
+with `ResolveUnix`, which the sandbox handles and grants on the writable
+directory alone (ABI 6 scopes abstract sockets only), and that a compromised LibreOffice may remove files under
 `/tmp` that its uid owns, since Landlock has no "remove sockets only"
-right. Hence the deployment advice under "Thumbnail", a render-only
-worker and no local Postgres socket, and a boot check
+right. Whether LibreOffice still starts under ABI 9, the pipe directory not
+being granted `ResolveUnix`, has not been tried; the startup probe would
+refuse it. Hence the advice below, a render-only worker, the deployment
+guide's, no local Postgres socket, and a boot check
 (`check_office_host`) that `media.tmp_dir` is outside the pipe directory,
 so that no other job's decrypted original is where the converter may
 remove files: the default work directory is the system temporary
@@ -3085,7 +3112,7 @@ Why a denylist: an allowlist has to track every syscall glibc, glib and
 libvips make and breaks silently on an upgrade, in the probe if we are
 lucky. The denylist buys what Landlock cannot: no sockets at all, which
 closes path-based unix sockets (Postgres over its socket with peer auth),
-which no Landlock ABI governs (ABI 6 scopes *abstract* sockets only); no
+which no Landlock ABI before 9 governs (ABI 6 scopes *abstract* sockets only); no
 namespaces, ptrace or kernel-facing surface from a process that only has
 to turn bytes into pixels; and, since the child runs as the worker's uid,
 none of what the same uid may do to the worker: steal its descriptors
@@ -3095,8 +3122,9 @@ check anyway), set its limits with `prlimit64`, renice it, pin it to a
 core or change its scheduling class with `setpriority` and the
 `sched_set*` calls, put its I/O in the idle class with `ioprio_set`, or
 page its memory out with `process_madvise` on a `pidfd_open`. A review
-found the scheduling calls open and a test now reaches for each from
-the child. The signal scope above
+found the scheduling calls open, and a test now reaches for `prlimit64`,
+`setpriority`, `sched_setaffinity`, `ioprio_set` and `pidfd_open` from the
+child; the other names are pinned by the list alone. The signal scope above
 closes `kill`. `EPERM` rather than kill, so a library that
 probes a feature and tolerates failure keeps working, and so the error
 shows up in the stderr tail the job already keeps.
@@ -3386,7 +3414,7 @@ outbox.
 The churn is what the table costs. A job is an insert, a claim that
 rewrites the row (not HOT: `locked_at` sits in index predicates), a
 heartbeat or two, and a delete or a dead-marking update, each version in
-every one of the eight indexes, which is more indexes than River, Oban or
+every one of the nine indexes, the primary key's included, which is more indexes than River, Oban or
 graphile-worker carry and the price of listing a state among millions of
 purges without a walk. The migration sets the table's own autovacuum: a
 fixed thousand dead rows for vacuum and analyze, where the stock fifth of
@@ -3412,9 +3440,10 @@ ones past their expiry that no purge job is going to take care of;
 declare dead the jobs out of attempts whose last lease lapsed; prune
 dead jobs that failed more than `jobs.keep_failed` (default seven days)
 ago, long enough to have been looked at, and enqueue a purge, due now,
-for the blob of each dead purge among them; hand `uploading` rows older
-than `upload.stale_after` back to `created`; prune tombstones purged more
-than `blobs.keep_purged` ago, their attachments and jobs with them.
+for the blob of each dead purge among them; hand `uploading` rows whose
+heartbeat is older than `upload.stale_after` back to `created`; prune
+tombstones purged more than `blobs.keep_purged` ago, and those with nothing
+to purge last updated as long ago, their attachments and jobs with them.
 Expiry itself never waits for the reaper, see "State machine".
 
 Each step takes at most ten thousand rows, picked on its index in the
@@ -3452,7 +3481,7 @@ that runs twice is harmless.
 
 Each row: `id` (a sequence, the listing cursor), `kind`, `blob_id`,
 `priority`, `payload`, `run_at`, `attempts`, `max_attempts`, `locked_at`,
-`locked_by`, `last_error`, `failed_at`, `created_at`. A
+`locked_by`, `last_error`, `failed_at`, `traceparent`, `created_at`. A
 worker claims the highest-priority, then oldest, due job of its kind with
 `UPDATE ... WHERE id = (SELECT ... FOR UPDATE SKIP LOCKED)`, which locks it
 and counts the attempt. A locked job is
@@ -3522,8 +3551,9 @@ never expired either. Without the row's copy, a blob whose job died a
 week ago is indistinguishable from one whose job is queued. The verdict
 follows the job that will finish the blob, not the one that died: it is
 cleared when a job of a finishing kind is enqueued, retried or succeeds
-for the blob (not the audit's stamp on a lost original, see "Audit": no
-job brings an original back), a job dying while a twin of it is live says nothing (the
+for the blob (an enqueue spares the audit's stamp on a lost original, see
+"Audit", since no job brings an original back; a retry or a success clears
+it, and the next sweep stamps it again), a job dying while a twin of it is live says nothing (the
 twin was enqueued while it ran, the running one holding no pending slot),
 and a terminal transition clears it too, since nothing is going to finish
 the blob and `GET /blobs?failed=true` is for the ones something could. A
@@ -3726,10 +3756,11 @@ What it does with a finding, each one a `warn` line in the log:
   bucket restored from an older backup: there is nothing to render from,
   and the render job would only fail its attempts and replace the
   original's stamp with its own error.
-- Missing or truncated source part under a `created` or `uploaded`
-  generated blob: report only; the build fails on it itself. The parts
-  stay after the build and go with the purge, so under a `ready` blob
-  they are accounted for and not required.
+- Missing source part under a `created` or `uploaded` generated blob, or
+  a part of a length no stream produces under any blob that reaches this
+  check, `ready` included: report only; the build fails on it itself. The
+  parts stay after the build and go with the purge, so under a `ready`
+  blob a missing one is accounted for and not required.
 What the row requires is checked only once the row has stood still for
 `upload.stale_after` before the listing passed its prefix (`updated_at`,
 kept by the trigger, against a time no later than the store's answer for
@@ -3796,9 +3827,8 @@ it fails its whole listing page on S3, Azure and GCS, and the local backend
 alone skips it, so no sweep gets past it until it is removed. The bucket is
 taken to be agrafe's, which the deployment guide asks for: only another writer
 makes such a key, the error names it, and a lenient listing would mean
-replacing the client's for a case that takes one `rm` to end. The dead job's
-place is lost with it: its retry is a duplicate of the next run its last
-attempt scheduled, so the next sweep starts over. What the listing does not show the
+replacing the client's for a case that takes one `rm` to end. The dead job
+keeps its place, and a retry once the key is gone resumes from it. What the listing does not show the
 audit does not see: a multipart upload a crashed process left open on S3
 or GCS is parts, not an object, and the bucket's
 `AbortIncompleteMultipartUpload` lifecycle rule is what reclaims them
@@ -3845,7 +3875,7 @@ too slow or the database out of reach (the wait for a connection
 counts), leaves the queue gauges at the last one's values with
 `agrafe_jobs_census_ok` at 0, and `/metrics` still answers with what the
 process knows of itself. Per process: `agrafe_job_runs_total{kind,outcome}` with `ok`, `retry`,
-`dead` and `superseded`, `agrafe_job_duration_seconds{kind}`,
+`dead`, `superseded` and `released`, `agrafe_job_duration_seconds{kind}`,
 `agrafe_workers{kind}`, zero for a kind the process does not run so that a
 kind nobody handles sums to zero rather than to nothing, and
 `agrafe_webhook_deliveries_total{event,result}`
@@ -3858,9 +3888,11 @@ act on, and `agrafe_audit_last_run_timestamp_seconds`,
 zero until one has run; gauges, since a sweep is a census and not a
 rate, and per process, since the one worker handling `audit` is the one
 that knows. They do not survive a restart: persisting a report to answer a
-weekly question is not worth a table, and the alerts in the monitoring guide
-read them through `max_over_time`, past a deploy, with a threshold of the
-interval plus a sweep, since the gauge moves only when one finishes. Those
+weekly question is not worth a table, and the staleness alert in the
+monitoring guide reads the timestamp through `max_over_time`, past a deploy,
+with a threshold of the interval plus a sweep, since the gauge moves only when
+one finishes; the findings alert reads its gauge as it is, and resolves on a
+restart. Those
 rules are `config/alerts.yml`, which the guide includes and CI runs through
 `promtool test rules`, since a rule that reads well can still fire on every
 deploy. A `worker` process has no API; it binds
@@ -3934,9 +3966,9 @@ as it takes its payload.
 The periodic `reap` and `audit` schedule their successor from inside their
 own run, where the ambient context is the run's: stored as is, it would
 chain every run since the worker started into one trace, with every purge
-and expiry webhook any of them enqueued. `reap::schedule` and
-`audit::schedule` therefore enqueue under `TraceContext::detached`, which
-sets no context, so each run is a root and its own fan-out is its trace.
+and expiry webhook any of them enqueued. `reap::schedule` therefore enqueues
+under `TraceContext::detached`, which sets no context, and
+`audit::schedule_after` writes its row without one, so each run is a root and its own fan-out is its trace.
 That fan-out is large by nature, thousands of purges from one reap on a
 big table, which is right for the logs, one id for one sweep's
 consequences, and heavy for an exporter. The exporter's queue is bounded and
@@ -3971,14 +4003,15 @@ private one the path without its query string. Inside them, `storage`
 (`op`, `path`) wraps every object store call, through `storage::Traced`,
 which `Agrafe::with_store` puts around any store; a read's span ends at the
 response head, a delete, which `object_store` runs as a stream of paths,
-has one span for the stream and no path, and listings have none, being
-streams. `sandbox`
+has one span for the stream and no path, and the streaming listings have
+none, where `list_with_delimiter` does. `sandbox`
 (`program`, `outcome`) wraps every subprocess, never naming its arguments,
 which are paths of user files. `clamav` covers the connection and the wait
 for the verdict. The fetch and webhook calls are not spanned apart: each is
 the whole of its job.
 
-**Exporters.** Sentry takes errors, as issues with their breadcrumbs, and
+**Exporters.** Sentry takes errors and panics, as issues with their
+breadcrumbs, and spans when `sentry.traces_sample_rate` is above zero, and
 OpenTelemetry takes spans over OTLP. Neither takes metrics, which stay on
 `/metrics`, nor logs, which stay on stderr. Each is optional, off until
 `[sentry] dsn` or `[otel] endpoint` is set, and independent of the other.
@@ -4098,8 +4131,8 @@ return). Postgres gives the outbox for free: no transition without its
 notification, no notification for a transition that lost its conditional
 `UPDATE`. The retries with backoff, the dead state, the `/jobs` listing,
 `POST /jobs/:id/retry` and the `keep_failed` pruning all come along. A
-delivery gets ten attempts where other jobs get five, about three hours of
-the doubling backoff rather than seven and a half minutes, so a backend
+delivery gets ten attempts, like every kind but `fetch`, about three hours of
+the doubling backoff, so a backend
 down for an hour drains its backlog with no new machinery, and an
 operator sees undelivered notifications where dead jobs already are. A
 `Retry-After` on any answer but a `2xx` delays that delivery's next
@@ -4233,7 +4266,7 @@ two agrafe installations in two schemas of one database never contend.
 | Embedded images | `lopdf`, `zip`, `quick-xml` in the sandboxed `agrafe-extract` helper |
 | Generated ZIP, XLSX, ODS | Own streaming ZIP writer (`jobs::build::zip`), `flate2` for the deflated sheet XML, XML written by hand |
 | Text thumbnails | `ab_glyph` with an embedded DejaVu Sans Mono, in the sandboxed `agrafe-render-text` helper |
-| Generated PDF documents | `typst` and `typst-pdf` with the embedded fonts of `typst-assets`, in the sandboxed `agrafe-render-document` helper |
+| Generated documents | `typst` and `typst-pdf` with the embedded fonts of `typst-assets`, in the sandboxed `agrafe-render-document` helper; DOCX and ODT through `typst-html` and pandoc, in the sandbox too |
 | Maps | `geojson`, `quick-xml` and `serde_json` in the sandboxed `agrafe-render-geo` helper, the WMS of `[media.map.layers]` through `reqwest`, `vips composite` with rsvg in the sandbox |
 | Ids | UUID v7 |
 | Object keys | `<shard>/<blob id>/<name>`, the shard the low byte of the id (see "Object keys") |
@@ -4292,13 +4325,14 @@ that keeps an irreversible step last but one:
 5. the GitHub release, its notes the changelog section.
 
 The images are Debian trixie, whose libvips carries the security fixes
-(see "libvips" in the deployment guide), built in two stages: the
+(see "libvips" in the deployment guide), built in stages: the
 toolchain in a `rust:*-slim-trixie` stage, the binaries copied into a
 `debian:trixie-slim` one, so that what runs is linked against the glibc
-it was built with and carries no compiler. Two variants, the second
-adding LibreOffice and a warmed profile: LibreOffice is 400 MB and the
+it was built with and carries no compiler, and pandoc's own package
+downloaded in a stage of its own. Two variants, the second
+adding LibreOffice with a warmed profile and pandoc: LibreOffice is 400 MB and the
 largest attack surface in the sandbox, and most deployments, every API
 process among them, never need it. The image's settings for a container
 (addresses on all interfaces, `media.tmp_dir` outside `/tmp`, the office
-converter) are a configuration file named by `AGRAFE_CONFIG`, not
+converter, pandoc and `document.office_formats`) are a configuration file named by `AGRAFE_CONFIG`, not
 environment variables, since those would override an operator's own file.

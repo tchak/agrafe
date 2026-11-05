@@ -27,8 +27,9 @@ wrapped key and the KEK's id are stored on the blob's row.
 The bytes are encrypted with a streaming AEAD in [Tink's
 AES-GCM-HKDF-STREAMING](https://developers.google.com/tink/streaming-aead/aes_gcm_hkdf_streaming)
 format, in segments of `encryption.chunk_size` (256 KiB by default). The
-object key is the stream's associated data, so a ciphertext copied to
-another key does not decrypt, and the segment nonces prevent reordering,
+object's name within its blob, `<blob id>/<name>`, is the stream's associated
+data, so a ciphertext copied under another blob or name does not decrypt,
+while a copy of the bucket to another shard layout does, and the segment nonces prevent reordering,
 truncation and swapping segments between blobs. Random access is arithmetic,
 which is what makes `Range` requests cheap.
 
@@ -149,8 +150,9 @@ server process. `vips`, `agrafe-extract`, `agrafe-render-text`,
 `agrafe-render-document`, `agrafe-render-geo` and pandoc run as subprocesses with
 a clean environment, memory, CPU, output size, process count and
 wall-clock limits. The
-file parsers they use, `lopdf`, `zip`, `quick-xml`, `ab_glyph`, `typst`
-and `geojson`, are not even linked into the server. The one network step of a
+file parsers they use, `lopdf`, `zip`, `ab_glyph`, `typst` and `geojson`,
+are not even linked into the server; `quick-xml` is, through the object
+store's client, which reads the store's own answers with it and no file. The one network step of a
 render, fetching the background of a map from a configured WMS, is the
 worker's own and sends that provider the extent of the user's geometry;
 no layer is configured by default. See [Previews and thumbnails](representations.md#sandboxing).
@@ -176,9 +178,9 @@ binary, no user namespaces and nothing to install:
   it silently. The one exception is the optional
   [LibreOffice](deployment.md#libreoffice), which cannot start without a
   unix socket in `/tmp`: it may have unix sockets, and only those, and
-  Landlock lets it create and remove socket files there. Since Landlock is
-  all that keeps a document's links inside the work directory, a worker
-  refuses to run the converter without it.
+  Landlock lets it create and remove socket files there. Since Landlock or
+  bubblewrap is all that keeps a document's links inside the work directory,
+  a worker refuses to run the converter with neither.
 
 `media.sandbox.isolation` is `"auto"` by default: a development VM, CI and
 a default Docker container all get both layers with nothing to configure,
@@ -281,8 +283,8 @@ belongs behind a proxy that has some.
 
 ## Secrets in configuration
 
-The database URL, signing keys, KEKs, bucket credentials and webhook secret
-are held in types whose debug output is redacted, so a dumped configuration
+The database URL, signing keys, KEKs, the bucket's secret keys and webhook
+secret are held in types whose debug output is redacted, so a dumped configuration
 cannot leak them. In production, pass them through `AGRAFE_` environment
 variables rather than the file, and the KEKs through `encryption.keks_file`
 where they must not rest on the host at all (see [Keeping the KEKs off the
