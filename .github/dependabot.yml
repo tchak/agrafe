@@ -1,0 +1,35 @@
+# Weekly, one pull request per ecosystem. A major release gets its own, so
+# that one needing code changes does not hold back the rest. Dependabot
+# counts 0.45 to 0.47 as a minor release: those arrive in the group, and
+# may be what breaks it.
+#
+# A release waits a week first, in which a bad one tends to get fixed or
+# yanked: tokio 1.54.0, since yanked, was replaced within two days. Cooldown
+# only delays version updates, not security ones.
+version: 2
+
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      cargo:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    ignore:
+      # Its refs name toolchains, and 1.94 is the MSRV: raised by hand.
+      - dependency-name: dtolnay/rust-toolchain
