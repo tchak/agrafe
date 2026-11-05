@@ -27,9 +27,10 @@ pub enum Category {
     /// Any `video/*` type.
     Video,
     /// Any `text/*` type except CSV and TSV, plus JSON, XML, every
-    /// `+json` or `+xml` type (GeoJSON, GPX, KML, GML, XHTML, RSS,
-    /// JSON-LD) and the script and configuration types (JavaScript, YAML,
-    /// TOML, SQL, shell, JSON lines).
+    /// `application/*` type with a `+json` or `+xml` suffix (GeoJSON,
+    /// GPX, KML, GML, XHTML, RSS, JSON-LD) and the script and
+    /// configuration types (JavaScript, YAML, TOML, SQL, shell, JSON
+    /// lines). `image/svg+xml` stays an image.
     Text,
     /// Everything else, `application/octet-stream` included.
     Other,
@@ -70,8 +71,9 @@ pub const ODT: &str = office::ODT;
 /// application that reads it (`office::format`): every Writer and Draw
 /// format is a document, every Calc one a spreadsheet, every Impress one
 /// a presentation, the macro-enabled, template and legacy variants
-/// included. A `+json` or `+xml` type is text, whatever the registry
-/// put before the suffix.
+/// included. An `application/*` type with a `+json` or `+xml` suffix is
+/// text, whatever the registry put before the suffix; another major type
+/// keeps its own category, so `image/svg+xml` is an image.
 pub fn classify(content_type: &str) -> Category {
     let content_type = crate::sniff::canonical(content_type);
     if let Some(format) = office::format(content_type) {

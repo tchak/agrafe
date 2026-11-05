@@ -3079,13 +3079,14 @@ there and `/var/tmp` otherwise. The trade is that path-based unix
 sockets the child can see, such as a local Postgres's, are no longer
 closed to it below Landlock ABI 9 (Linux 7.1), the first to govern them,
 with `ResolveUnix`, which the sandbox handles and grants on the writable
-directory alone (ABI 6 scopes abstract sockets only), and that a compromised LibreOffice may remove files under
-`/tmp` that its uid owns, since Landlock has no "remove sockets only"
-right. Whether LibreOffice still starts under ABI 9, the pipe directory not
-being granted `ResolveUnix`, has not been tried; the startup probe would
-refuse it. Hence the advice below, a render-only worker, the deployment
-guide's, no local Postgres socket, and a boot check
-(`check_office_host`) that `media.tmp_dir` is outside the pipe directory,
+directory alone (ABI 6 scopes abstract sockets only), and that a
+compromised LibreOffice may remove files under `/tmp` that its uid owns,
+since Landlock has no "remove sockets only" right. Whether LibreOffice
+still starts under ABI 9, the pipe directory not being granted
+`ResolveUnix`, has not been tried; the startup probe would refuse it.
+Hence the deployment guide's advice of a render-only worker with no local
+Postgres socket, and a boot check (`check_office_host`) that
+`media.tmp_dir` is outside the pipe directory,
 so that no other job's decrypted original is where the converter may
 remove files: the default work directory is the system temporary
 directory, which is `/tmp` itself. A LibreOffice removes its pipe on
