@@ -369,6 +369,263 @@ async fn a_lost_original_is_not_rendered_from() {
     );
 }
 
+/// Ask for a representation again as the read path does, its object gone.
+async fn render_again(app: &TestApp, id: &str, kind: &str) {
+    sqlx::query(
+        "UPDATE representations \
+         SET state = 'pending', sha256 = NULL, size = NULL, source = NULL, timed_out = NULL \
+         WHERE blob_id = $1 AND kind = $2",
+    )
+    .bind(parse_id(id))
+    .bind(kind)
+    .execute(app.state.pool())
+    .await
+    .unwrap();
+    enqueue_render(app, id).await;
+}
+
+async fn enqueue_render(app: &TestApp, id: &str) {
+    jobs::enqueue(
+        app.state.pool(),
+        JobKind::Render,
+        Some(parse_id(id)),
+        jobs::Priority::Normal,
+        json!({}),
+        Timestamp::now(),
+    )
+    .await
+    .unwrap();
+}
+
+/// Run the blob's render on its one attempt left, and return the dead job.
+async fn render_dies(app: &TestApp, id: &str) -> (i64, String) {
+    sqlx::query("UPDATE jobs SET max_attempts = 1 WHERE blob_id = $1 AND failed_at IS NULL")
+        .bind(parse_id(id))
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+    assert!(run_job(app, JobKind::Render).await);
+    sqlx::query_as(
+        "SELECT id, last_error FROM jobs \
+         WHERE blob_id = $1 AND kind = 'render' AND failed_at IS NOT NULL",
+    )
+    .bind(parse_id(id))
+    .fetch_one(app.state.pool())
+    .await
+    .unwrap()
+}
+
+/// No job brings an original back, and a job can succeed without reading
+/// it: with the original still gone, none of what a job does takes the
+/// stamp off the blob or puts its own error in its place.
+#[tokio::test]
+async fn no_job_touches_the_audits_stamp() {
+    let db = TestDatabase::new().await;
+    let app = settled_setup(db).await;
+    let photo = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
+    let id = id_of(&photo);
+    render_all(&app).await;
+    delete_object(&app, &storage_key(&app, id).await).await;
+    audit_now(&app).await;
+    let stamped = get_blob(&app, id).await["failed_at"].clone();
+    assert!(stamped.is_string());
+    let assert_stands = async |when: &str| {
+        let got = get_blob(&app, id).await;
+        assert_eq!(got["failed_at"], stamped, "{when}");
+        assert_eq!(
+            got["last_error"], "audit: the original is missing from the store",
+            "{when}"
+        );
+    };
+
+    // A render with nothing to do.
+    enqueue_render(&app, id).await;
+    render_all(&app).await;
+    assert_eq!(jobs_for(&app, id).await, Vec::<String>::new());
+    assert_stands("after a render with nothing pending").await;
+
+    // A thumbnail, from the preview in the store.
+    render_again(&app, id, "thumbnail").await;
+    render_all(&app).await;
+    let got = get_blob(&app, id).await;
+    assert_eq!(got["representations"]["thumbnail"]["state"], "ready");
+    assert_stands("after a thumbnail rendered from the preview").await;
+
+    // A preview, from the original that is not there.
+    render_again(&app, id, "preview").await;
+    let (dead, error) = render_dies(&app, id).await;
+    assert!(error.starts_with("reading the object: "), "{error}");
+    assert_stands("after a render that died").await;
+
+    // The dead job retried, each way there is.
+    app.state.retry_job(dead).await.unwrap();
+    assert_stands("after retrying the job").await;
+    render_dies(&app, id).await;
+    assert_stands("after that job died again").await;
+    let retried = app
+        .state
+        .retry_dead_jobs(Some(JobKind::Render))
+        .await
+        .unwrap();
+    assert_eq!(retried.retried, 1);
+    assert_stands("after retrying the dead jobs").await;
+    render_dies(&app, id).await;
+    app.state.retry_blob(parse_id(id)).await.unwrap();
+    assert_stands("after retrying the blob").await;
+}
+
+/// A restore puts the original back: the next sweep finds it whole, and
+/// what the listing found, the listing can take back.
+#[tokio::test]
+async fn a_restored_original_lifts_the_stamp() {
+    let db = TestDatabase::new().await;
+    let app = settled_setup(db).await;
+    let blob = ready_blob(&app, &png_bytes(3000)).await;
+    let id = id_of(&blob);
+    let key = storage_key(&app, id).await;
+    let whole = object_bytes(&app, &key).await;
+    let cases: [(&str, Option<Vec<u8>>); 2] = [
+        ("audit: the original is missing", None),
+        (
+            "audit: the original is ",
+            Some(whole[..whole.len() - 1].to_vec()),
+        ),
+    ];
+    for (stamp, damage) in cases {
+        match damage {
+            Some(bytes) => put_object(&app, &key, bytes).await,
+            None => delete_object(&app, &key).await,
+        }
+        audit_now(&app).await;
+        let got = get_blob(&app, id).await;
+        let error = got["last_error"].as_str().unwrap();
+        assert!(error.starts_with(stamp), "{error}");
+        let (_, failed) = call(&app.private, req(Method::GET, "/blobs?failed=true")).await;
+        assert_eq!(failed["items"][0]["id"], id, "{failed}");
+
+        put_object(&app, &key, whole.clone()).await;
+        let report = audit_now(&app).await;
+        assert_eq!(counts(&report), vec![], "{report}");
+        assert_eq!(report.errors, 0, "{report}");
+        let got = get_blob(&app, id).await;
+        assert_eq!(got["failed_at"], json!(null), "{stamp}");
+        assert_eq!(got["last_error"], json!(null), "{stamp}");
+        let (_, failed) = call(&app.private, req(Method::GET, "/blobs?failed=true")).await;
+        assert_eq!(failed["items"], json!([]), "{failed}");
+    }
+}
+
+/// What only a read found, only a read takes back: the right length says
+/// nothing of the bytes, and a read that could not happen says nothing
+/// either.
+#[tokio::test]
+async fn only_a_read_lifts_what_a_read_found() {
+    let db = TestDatabase::new().await;
+    let app = settled_setup(db).await;
+    let blob = ready_blob(&app, &png_bytes(3000)).await;
+    let id = id_of(&blob);
+    let key = storage_key(&app, id).await;
+    let whole = object_bytes(&app, &key).await;
+    let mut corrupt = whole.clone();
+    corrupt[1500] ^= 0xff;
+    put_object(&app, &key, corrupt).await;
+    audit_with(&app, DEEP).await;
+    let stamped = get_blob(&app, id).await;
+    let error = stamped["last_error"].as_str().unwrap();
+    assert!(
+        error.starts_with("audit: the original does not read back"),
+        "{error}"
+    );
+
+    // The listing sees nothing wrong, with the bad bytes or the good.
+    let report = audit_now(&app).await;
+    assert_eq!(counts(&report), vec![], "{report}");
+    assert_eq!(get_blob(&app, id).await["failed_at"], stamped["failed_at"]);
+    put_object(&app, &key, whole).await;
+    audit_now(&app).await;
+    assert_eq!(get_blob(&app, id).await["failed_at"], stamped["failed_at"]);
+
+    // A KEK this process lacks: no read, no verdict either way.
+    let set_kek = async |kek: &str| {
+        sqlx::query("UPDATE blobs SET kek_id = $2 WHERE id = $1")
+            .bind(parse_id(id))
+            .bind(kek)
+            .execute(app.state.pool())
+            .await
+            .unwrap();
+    };
+    let kek = get_row_kek(&app, id).await;
+    set_kek("gone").await;
+    let report = audit_with(&app, DEEP).await;
+    assert_eq!(report.errors, 1, "{report}");
+    assert_eq!(get_blob(&app, id).await["failed_at"], stamped["failed_at"]);
+    set_kek(&kek).await;
+
+    // A read that passes.
+    let report = audit_with(&app, DEEP).await;
+    assert_eq!(counts(&report), vec![], "{report}");
+    let got = get_blob(&app, id).await;
+    assert_eq!(got["failed_at"], json!(null), "{got}");
+    assert_eq!(got["last_error"], json!(null), "{got}");
+}
+
+async fn get_row_kek(app: &TestApp, id: &str) -> String {
+    sqlx::query_scalar("SELECT kek_id FROM blobs WHERE id = $1")
+        .bind(parse_id(id))
+        .fetch_one(app.state.pool())
+        .await
+        .unwrap()
+}
+
+/// An object back at the right length with the wrong bytes: the stamp the
+/// listing can take back gives way to what the read finds, in one sweep.
+#[tokio::test]
+async fn a_read_replaces_the_stamp_a_right_length_lifted() {
+    let db = TestDatabase::new().await;
+    let app = settled_setup(db).await;
+    let blob = ready_blob(&app, &png_bytes(3000)).await;
+    let id = id_of(&blob);
+    let key = storage_key(&app, id).await;
+    let mut corrupt = object_bytes(&app, &key).await;
+    corrupt[1500] ^= 0xff;
+    delete_object(&app, &key).await;
+    audit_now(&app).await;
+
+    put_object(&app, &key, corrupt).await;
+    let report = audit_with(&app, DEEP).await;
+    assert_eq!(
+        counts(&report),
+        vec![(Finding::DamagedOriginal, 1)],
+        "{report}"
+    );
+    let got = get_blob(&app, id).await;
+    let error = got["last_error"].as_str().unwrap();
+    assert!(
+        error.starts_with("audit: the original does not read back"),
+        "{error}"
+    );
+    assert!(got["failed_at"].is_string(), "{got}");
+}
+
+/// A verdict a job left is that job's retry to clear: the audit lifts its
+/// own stamp and nothing else, whatever it finds of the original.
+#[tokio::test]
+async fn the_audit_lifts_only_its_own_stamp() {
+    let db = TestDatabase::new().await;
+    let app = settled_setup(db).await;
+    let blob = ready_blob(&app, &png_bytes(100)).await;
+    let id = id_of(&blob);
+    sqlx::query("UPDATE blobs SET failed_at = now(), last_error = 'rendering: boom' WHERE id = $1")
+        .bind(parse_id(id))
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+    audit_with(&app, DEEP).await;
+    let got = get_blob(&app, id).await;
+    assert_eq!(got["last_error"], "rendering: boom");
+    assert!(got["failed_at"].is_string(), "{got}");
+}
+
 /// The merge: rows the listing has nothing for sit between listed
 /// prefixes, before the first and after the last, and each is found.
 #[tokio::test]

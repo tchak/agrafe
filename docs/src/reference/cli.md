@@ -85,6 +85,6 @@ The process exits with a non-zero status and a one-line message when it
 cannot start: a missing configuration file, an invalid configuration, an
 unreachable database, a failed migration, an address already in use, or a
 failed renderer probe. `agrafe audit` also exits non-zero when it found
-mismatches (foreign objects aside), when a stamp, a render request or a
-delete failed and the finding stands for the next run, or when another
+mismatches (foreign objects aside), when a stamp or its lifting, a render
+request or a delete failed and the finding stands for the next run, or when another
 audit was running.

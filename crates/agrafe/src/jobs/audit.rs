@@ -17,9 +17,9 @@
 //! job's payload every minute (`Progress`), and the attempt that finds
 //! them there carries on from that point, after a restart that let the
 //! lease lapse or a failure the runner retries. Acting on a finding never
-//! stops the sweep: a stamp, a render or a delete that fails is logged,
-//! counted in the report and left for the next run; only the listing and
-//! the rows failing ends an attempt.
+//! stops the sweep: a stamp, its lifting, a render or a delete that fails
+//! is logged, counted in the report and left for the next run; only the
+//! listing and the rows failing ends an attempt.
 //!
 //! The listing and the table are merged in key order, one pass over each:
 //! the cloud backends list their keys sorted, and a key is the blob's shard
@@ -110,9 +110,9 @@ pub struct Options {
 /// without a read; the deep check adds what only decrypting shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Finding {
-    /// A non-terminal blob's original is gone. Nothing can bring it back;
+    /// A non-terminal blob's original is gone. No job can bring it back;
     /// the row is stamped `failed_at` and `last_error` so the backend sees
-    /// it.
+    /// it, until a sweep finds it whole again, after a restore.
     MissingOriginal,
     /// The original is there but is not the file: a length its size does
     /// not produce, or, under `--deep`, bytes that do not decrypt to the
@@ -219,8 +219,8 @@ pub struct Report {
     /// of the listing passing them, left for the next run: an upload or
     /// a render whose row does not say so yet.
     pub young: u64,
-    /// Findings the audit could not act on: a stamp, a render request or
-    /// a delete that failed, or an original the deep check could not
+    /// Findings the audit could not act on: a stamp, its lifting, a render
+    /// request or a delete that failed, or an original the deep check could not
     /// read. Each is an `error` line in the log, and the next run finds
     /// it again.
     pub errors: u64,
@@ -612,6 +612,15 @@ macro_rules! page {
 /// Stamp left on a blob whose original the audit found missing or damaged.
 pub(crate) const STAMP: &str = "audit: ";
 
+/// [`STAMP`] as a `LIKE` pattern, for the writers of a blob's verdict that
+/// leave the audit's alone.
+pub(crate) const STAMP_LIKE: &str = "audit: %";
+
+/// How a stamp the listing can answer starts, after [`STAMP`]: the object
+/// missing, or of the wrong length. The others came from reading the
+/// bytes back, which a right length says nothing of.
+const STAMP_OF_THE_LISTING: &str = "the original is ";
+
 async fn audit(
     state: &Agrafe,
     options: Options,
@@ -812,7 +821,7 @@ fn listing(
 macro_rules! columns {
     () => {
         "id, state, expires_at, storage_key, size, chunk_size, kek_id, wrapped_key, \
-         encryption_header, checksum_sha256, source_parts, purged_at, updated_at"
+         encryption_header, checksum_sha256, source_parts, purged_at, updated_at, last_error"
     };
 }
 
@@ -843,6 +852,8 @@ struct Row {
     /// moves its representation's row and not this.
     #[sqlx(try_from = "jiff_sqlx::Timestamp")]
     updated_at: Timestamp,
+    /// The verdict on the row, which may be the audit's own stamp.
+    last_error: Option<String>,
     /// The blob's rows in `representations`, each judged by its own
     /// `updated_at`; a kind with none is `disabled` and requires nothing.
     #[sqlx(skip)]
@@ -872,6 +883,11 @@ impl Row {
 
     fn representation(&self, kind: Representation) -> Option<&Derived> {
         self.representations.iter().find(|r| r.kind == kind)
+    }
+
+    /// What the audit's stamp on the row says, if the verdict is its own.
+    fn stamp(&self) -> Option<&str> {
+        self.last_error.as_deref()?.strip_prefix(STAMP)
     }
 }
 
@@ -1181,8 +1197,7 @@ impl Sweep<'_> {
 
         // A representation is rendered from the original: with the
         // original gone or damaged, a render cannot repair it, and its
-        // job would only fail its attempts and replace the stamp with its
-        // own error.
+        // job would only fail its attempts and die.
         let mut lost = false;
         if let Some(key) = &row.storage_key {
             let name = key.strip_prefix(prefix.as_str()).unwrap_or(key);
@@ -1214,6 +1229,15 @@ impl Sweep<'_> {
                             .await;
                         }
                         _ => {
+                            // Before the deep check, whose own verdict
+                            // would otherwise find this one in its way.
+                            if want == Some(object.size)
+                                && row
+                                    .stamp()
+                                    .is_some_and(|what| what.starts_with(STAMP_OF_THE_LISTING))
+                            {
+                                self.lift(row).await;
+                            }
                             if self.sampled(row) {
                                 lost = !self.deep(row).await;
                             }
@@ -1329,7 +1353,12 @@ impl Sweep<'_> {
     async fn deep(&mut self, row: &Row) -> bool {
         self.report.deep += 1;
         match read_back(self.state, row).await {
-            Ok(digest) if row.checksum_sha256.as_deref() == Some(&digest[..]) => true,
+            Ok(digest) if row.checksum_sha256.as_deref() == Some(&digest[..]) => {
+                if row.stamp().is_some() {
+                    self.lift(row).await;
+                }
+                true
+            }
             Ok(digest) => {
                 self.stamp(
                     row,
@@ -1378,9 +1407,10 @@ impl Sweep<'_> {
 
     /// Record a finding on the original: the log line, the count, and the
     /// row's `failed_at` and `last_error` unless a verdict is on it
-    /// already, or the row moved on since it was read. An enqueue leaves
-    /// the stamp; a retry or a success clears it, and the next sweep
-    /// stamps it again. Until then the first one stands.
+    /// already, or the row moved on since it was read. The stamp is the
+    /// audit's own: no job clears or replaces it, since none brings an
+    /// original back, and the first one stands until [`Self::lift`] or a
+    /// terminal transition.
     async fn stamp(&mut self, row: &Row, finding: Finding, what: String) {
         self.report.add(finding);
         tracing::warn!(blob = %row.id, finding = %finding, "audit: {what}");
@@ -1395,6 +1425,28 @@ impl Sweep<'_> {
         .await;
         if let Err(err) = result {
             self.failed(row.id, "stamping the blob", &err);
+        }
+    }
+
+    /// The original is whole again, a restore most likely: the stamp comes
+    /// off. Only the very stamp the row was read with, so that a verdict
+    /// written since is not taken with it.
+    async fn lift(&mut self, row: &Row) {
+        let result = sqlx::query(
+            "UPDATE blobs SET failed_at = NULL, last_error = NULL \
+             WHERE id = $1 AND last_error = $2 AND state = $3 AND purged_at IS NULL",
+        )
+        .bind(row.id)
+        .bind(row.last_error.as_deref())
+        .bind(row.state.as_str())
+        .execute(self.state.pool())
+        .await;
+        match result {
+            Ok(done) if done.rows_affected() > 0 => {
+                tracing::info!(blob = %row.id, "audit: the original is whole again, lifting the stamp");
+            }
+            Ok(_) => {}
+            Err(err) => self.failed(row.id, "lifting the stamp", &err),
         }
     }
 

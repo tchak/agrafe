@@ -929,13 +929,16 @@ pub(crate) async fn retry(conn: &mut PgConnection, id: i64) -> sqlx::Result<Acti
 }
 
 /// Forget the dead job a blob's row records: something is going to finish
-/// the blob after all.
+/// the blob after all. The audit's stamp is no dead job's and stays: a job
+/// can succeed without reading the original, and the audit lifts its own.
 async fn clear_failure(exec: impl PgExecutor<'_>, blob_id: Uuid) -> sqlx::Result<()> {
     sqlx::query(
         "UPDATE blobs SET failed_at = NULL, last_error = NULL \
-         WHERE id = $1 AND failed_at IS NOT NULL",
+         WHERE id = $1 AND failed_at IS NOT NULL \
+           AND (last_error IS NULL OR last_error NOT LIKE $2)",
     )
     .bind(blob_id)
+    .bind(audit::STAMP_LIKE)
     .execute(exec)
     .await?;
     Ok(())
@@ -1016,9 +1019,11 @@ pub async fn retry_dead(
             .collect();
         sqlx::query(
             "UPDATE blobs SET failed_at = NULL, last_error = NULL \
-             WHERE id = ANY($1) AND failed_at IS NOT NULL",
+             WHERE id = ANY($1) AND failed_at IS NOT NULL \
+               AND (last_error IS NULL OR last_error NOT LIKE $2)",
         )
         .bind(&finished)
+        .bind(audit::STAMP_LIKE)
         .execute(&mut *tx)
         .await?;
         let mut kinds: Vec<&str> = retried.iter().map(|(kind, _)| kind.as_str()).collect();
@@ -1113,7 +1118,7 @@ pub async fn enqueue(
     .bind(CHANNEL)
     .bind(kind.finishes_blob())
     .bind(current_traceparent())
-    .bind(format!("{}%", audit::STAMP))
+    .bind(audit::STAMP_LIKE)
     .bind(kind.max_attempts())
     .execute(exec)
     .await?;
@@ -1387,8 +1392,10 @@ pub enum Failure {
 /// honoured when it is longer than the backoff. A death stamped on the
 /// blob is reported to the webhook, when `webhook` wants `failed`; the
 /// caller runs this in a transaction so the stamp and its notification
-/// commit together. Every write is conditioned on `job`'s holder, so an
-/// attempt whose lease another worker took over changes nothing.
+/// commit together. A death leaves the audit's stamp in place, the graver
+/// of the two, its own error staying on the job's row, and is reported all
+/// the same. Every write is conditioned on `job`'s holder, so an attempt
+/// whose lease another worker took over changes nothing.
 // Public for the integration tests, not part of the API.
 #[doc(hidden)]
 pub async fn fail(
@@ -1419,8 +1426,10 @@ pub async fn fail(
         // `jobs.keep_failed`, the stuck blob is not. Unless a twin of this
         // job, enqueued while it ran, is still going to finish the blob.
         if let Some(blob_id) = job.blob_id.filter(|_| job.kind.finishes_blob()) {
-            let stamped = sqlx::query(
-                "UPDATE blobs SET failed_at = now(), last_error = $2 \
+            let recorded = sqlx::query(
+                "UPDATE blobs SET \
+                     failed_at = CASE WHEN last_error LIKE $5 THEN failed_at ELSE now() END, \
+                     last_error = CASE WHEN last_error LIKE $5 THEN last_error ELSE $2 END \
                  WHERE id = $1 AND NOT EXISTS (\
                      SELECT 1 FROM jobs \
                      WHERE blob_id = $1 AND kind = $3 AND failed_at IS NULL AND id <> $4\
@@ -1430,11 +1439,12 @@ pub async fn fail(
             .bind(&error)
             .bind(job.kind.as_str())
             .bind(job.id)
+            .bind(audit::STAMP_LIKE)
             .execute(&mut *conn)
             .await?
             .rows_affected()
                 == 1;
-            if stamped && webhook.wants(notify::Event::Failed) {
+            if recorded && webhook.wants(notify::Event::Failed) {
                 notify::enqueue(
                     &mut *conn,
                     blob_id,

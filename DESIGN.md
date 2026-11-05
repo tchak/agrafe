@@ -3551,12 +3551,14 @@ never expired either. Without the row's copy, a blob whose job died a
 week ago is indistinguishable from one whose job is queued. The verdict
 follows the job that will finish the blob, not the one that died: it is
 cleared when a job of a finishing kind is enqueued, retried or succeeds
-for the blob (an enqueue spares the audit's stamp on a lost original, see
-"Audit", since no job brings an original back; a retry or a success clears
-it, and the next sweep stamps it again), a job dying while a twin of it is live says nothing (the
+for the blob, a job dying while a twin of it is live says nothing (the
 twin was enqueued while it ran, the running one holding no pending slot),
 and a terminal transition clears it too, since nothing is going to finish
-the blob and `GET /blobs?failed=true` is for the ones something could. A
+the blob and `GET /blobs?failed=true` is for the ones something could. The
+audit's stamp on a lost original is the exception, see "Audit": no job
+brings an original back and one can succeed without reading it, so none of
+that clears the stamp, and a job dying does not replace it, its error
+staying on its own row and its `failed` event still going out. A
 dead purge says nothing on the blob: it is housekeeping of a terminal
 blob, and the dead job itself is the evidence of the bug that enqueued it.
 
@@ -3689,13 +3691,14 @@ backend, and the rows with their cursor. A save is progress made and gives the j
 attempts back, since the attempts guard against failing without getting
 anywhere, and a restart that lets the lease lapse costs an attempt
 (`claim` counts it). What is between the last save and the failure is
-done twice, which every action tolerates: the stamp is conditional, the
+done twice, which every action tolerates: the stamp and its lifting are
+conditional, the
 render request is conditional, the delete takes `NotFound` as done; the
 counts of that stretch are added twice, which a tally lives with. The
 tally is saved by the findings' names, so a release that adds or drops a
 kind resumes a sweep in flight, the new kind starting at zero. Acting
-on a finding never ends an attempt: a stamp, a render request or a delete
-that fails, or an original the deep check cannot read, is logged at
+on a finding never ends an attempt: a stamp, its lifting, a render request
+or a delete that fails, or an original the deep check cannot read, is logged at
 `error`, counted as not acted on (`errors`, the `agrafe_audit_errors`
 gauge, a non-zero exit of the command) and left for the next run; only
 the listing and the rows failing do, and the runner retries from the
@@ -3749,13 +3752,19 @@ What it does with a finding, each one a `warn` line in the log:
   and `last_error` (`audit: ...`) unless a verdict is on it already, so
   the blob shows in `GET /blobs?failed=true` and on the attachments
   listing; no new state, and no `failed` webhook event, which is the
-  news of a dead job.
+  news of a dead job. The stamp is the audit's own: no job clears or
+  replaces it, and a sweep lifts it on finding the original whole again,
+  which is what a restore from backup looks like. One the listing left,
+  the object missing or the wrong length, comes off at the right length.
+  One the deep check left comes off only when a deep check passes, since a
+  right length says nothing of the bytes; a KEK the process lacks, or a
+  store that cannot be read, decides nothing. A verdict a job left is not
+  the audit's to lift, whatever the audit finds.
 - Representation `ready` but the object missing or the wrong length: set
   back to `pending` and the render enqueued, the read path's own repair.
   Report only when the original is missing or damaged too, the shape of a
   bucket restored from an older backup: there is nothing to render from,
-  and the render job would only fail its attempts and replace the
-  original's stamp with its own error.
+  and the render job would only fail its attempts and die.
 - Missing source part under a `created` or `uploaded` generated blob, or
   a part of a length no stream produces under any blob that reaches this
   check, `ready` included: report only; the build fails on it itself. The
@@ -3785,7 +3794,8 @@ within `upload.stale_after` of the listing passing it is what an upload
 or a render in flight looks like, its row not yet updated, and is left
 for the next run too. The stamp on a missing or damaged
 original is conditional on the state the row was read in and on no
-purge since, so a row that moved on meanwhile is not written.
+purge since, so a row that moved on meanwhile is not written; lifting it
+is conditional on the same and on the stamp being the one read.
 
 - Orphan object, under a known prefix: report by default. The row is
   authoritative, so it is garbage, and `agrafe audit --fix` deletes it,

@@ -190,6 +190,14 @@ What it finds, one `warn` line per finding and a tally in the metrics:
 | `unknown` | An object under a prefix no row has: a purge's leftover whose tombstone is gone, or a blob whose row was lost, which is what a database restored from an older backup leaves | Reports, with how many such prefixes and when their blobs were created |
 | `foreign` | A key that is not `<shard>/<blob id>/<name>` | Reports |
 
+The stamp stays until the original is whole again, which a restore from
+backup brings: a retry, a render that succeeds or a job that dies leaves it
+as it is, though a dead job still sends its `failed` webhook event. A sweep
+that finds the object back at the right length takes off a stamp for a
+missing or wrong-length original. A stamp from `--deep` comes off only on an
+`agrafe audit --deep` that reads the file back and passes: the right length
+says nothing of the bytes, and the job never decrypts.
+
 What the listing does not show, the audit does not see: a multipart
 upload a crashed process left open on S3 or GCS is parts, not an object,
 and only the bucket's lifecycle rule reclaims them, see

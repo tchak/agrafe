@@ -57,7 +57,7 @@ zero.
 | `agrafe_audit_findings` | `kind` | Mismatches found, by kind: `missing_original`, `damaged_original`, `missing_representation`, `missing_source`, `orphan`, `unknown`, `foreign` |
 | `agrafe_audit_objects` | | Objects the last audit listed in the bucket |
 | `agrafe_audit_blobs` | | Blobs the last audit checked |
-| `agrafe_audit_errors` | | Findings the last audit could not act on: a stamp, a render request, a delete or a read back that failed; the next run finds them again |
+| `agrafe_audit_errors` | | Findings the last audit could not act on: a stamp or its lifting, a render request, a delete or a read back that failed; the next run finds them again |
 | `agrafe_audit_last_run_timestamp_seconds` | | When the last audit finished, as a Unix time; zero until one has run |
 
 ## What to alert on
@@ -93,7 +93,8 @@ A sweep that dies does not wait for either: it is a dead `audit` job, which
 
 A missing original is an incident: the bytes cannot be recovered from
 agrafe's side, and the blob is listed under `GET /blobs?failed=true` with
-`audit:` at the head of its `last_error`. Orphans only cost storage; look
+`audit:` at the head of its `last_error`, until a sweep finds the object
+restored ([what lifts the stamp](jobs.md#the-audit)). Orphans only cost storage; look
 at them before the next restore, with `agrafe audit --fix` once you know
 what they are. Unknown prefixes, objects no row has, are rows lost, which
 is what a database restored from an older backup leaves: the audit's log

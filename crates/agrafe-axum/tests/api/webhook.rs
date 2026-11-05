@@ -269,6 +269,74 @@ async fn a_deferred_scan_reports_ready_or_infected() {
     receiver.quiet();
 }
 
+/// A job that dies under the audit's stamp leaves the stamp on the blob,
+/// and the backend hears of the death all the same.
+#[tokio::test]
+async fn a_dead_render_under_the_audits_stamp_reports_failed() {
+    use object_store::{ObjectStoreExt as _, path as object_path};
+
+    let db = TestDatabase::new().await;
+    let clamd = fake_clamd().await;
+    let mut receiver = receiver(Vec::new()).await;
+    let app = setup_tuned(db, clamd, |c| {
+        receiver.configure(c);
+        c.upload.stale_after = std::time::Duration::ZERO;
+    })
+    .await;
+    let photo = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
+    let id = id_of(&photo);
+    while run_job(&app, JobKind::Render).await {}
+    while run_job(&app, JobKind::Notify).await {}
+    assert_eq!(receiver.hit().body["event"], "ready");
+
+    let key = storage_key(&app, id).await;
+    app.state
+        .store()
+        .delete(&object_path::Path::from(key))
+        .await
+        .unwrap();
+    app.state
+        .audit(agrafe::jobs::audit::Options::default())
+        .await
+        .unwrap();
+    let stamped = get_blob(&app, id).await;
+    assert!(stamped["failed_at"].is_string(), "{stamped}");
+    assert_eq!(notify_job(&app, id).await, None, "a stamp is not a death");
+
+    sqlx::query(
+        "UPDATE representations \
+         SET state = 'pending', sha256 = NULL, size = NULL, source = NULL, timed_out = NULL \
+         WHERE blob_id = $1 AND kind = 'preview'",
+    )
+    .bind(parse_id(id))
+    .execute(app.state.pool())
+    .await
+    .unwrap();
+    agrafe::jobs::enqueue(
+        app.state.pool(),
+        JobKind::Render,
+        Some(parse_id(id)),
+        agrafe::jobs::Priority::Normal,
+        json!({}),
+        Timestamp::now(),
+    )
+    .await
+    .unwrap();
+    sqlx::query("UPDATE jobs SET max_attempts = 1 WHERE blob_id = $1")
+        .bind(parse_id(id))
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+    assert!(run_job(&app, JobKind::Render).await);
+
+    let got = get_blob(&app, id).await;
+    assert_eq!(got["failed_at"], stamped["failed_at"]);
+    assert_eq!(got["last_error"], stamped["last_error"]);
+    assert_eq!(notify_job(&app, id).await.unwrap().1["event"], "failed");
+    assert!(run_job(&app, JobKind::Notify).await);
+    assert_eq!(receiver.hit().body["event"], "failed");
+}
+
 #[tokio::test]
 async fn a_dead_job_reports_failed_and_its_retry_reports_ready() {
     let db = TestDatabase::new().await;
