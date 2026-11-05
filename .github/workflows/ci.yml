@@ -27,7 +27,7 @@ jobs:
     # Under a minute warm; a cold cache rebuilds every dependency.
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -90,7 +90,7 @@ jobs:
           echo "uris=$(sudo apt-get install -qq --print-uris --no-install-recommends \
             -o Dir::Cache::Archives="$HOME/apt-archives" $PACKAGES | sha256sum | cut -c1-16)" \
             >> "$GITHUB_OUTPUT"
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         id: apt-cache
         with:
           # Not partial/, which apt creates root-only.
@@ -119,12 +119,12 @@ jobs:
           sysctl kernel.apparmor_restrict_unprivileged_userns || true
       # Saved now, not at the end of the job: a run whose build or tests
       # fail still keeps the download.
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@v6
         if: steps.apt-cache.outputs.cache-hit != 'true'
         with:
           path: ~/apt-archives/*.deb
           key: ${{ steps.apt-cache.outputs.cache-primary-key }}
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install promtool
         env:
           PROMETHEUS_VERSION: 3.5.0
@@ -168,7 +168,7 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.94
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace --all-targets
