@@ -1055,6 +1055,39 @@ async fn permanent_rows_build_failures_die_at_once() {
     assert_eq!(get_blob(&app, id).await["state"], "uploaded");
 }
 
+/// A KEK this process lacks says nothing of the blob: a deploy that gives
+/// the workers a new KEK after the API started wrapping with it is over
+/// within the attempts, so the build is retried, and no verdict is left on
+/// the blob.
+#[tokio::test]
+async fn a_build_retries_a_kek_this_process_lacks() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let created = create(&app, rows_blob("rotated.csv", "text/csv")).await;
+    let id = id_of(&created);
+    let (status, _) = put_private(&app, id, lines(&SAMPLE)).await;
+    assert_eq!(status, StatusCode::OK);
+    sqlx::query("UPDATE blobs SET kek_id = 'gone' WHERE id = $1")
+        .bind(parse_id(id))
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+    assert!(run_job(&app, JobKind::Rows).await);
+    let (attempts, dead, error): (i32, bool, String) = sqlx::query_as(
+        "SELECT attempts, failed_at IS NOT NULL, last_error FROM jobs \
+         WHERE kind = 'rows' AND blob_id = $1",
+    )
+    .bind(parse_id(id))
+    .fetch_one(app.state.pool())
+    .await
+    .unwrap();
+    assert_eq!((attempts, dead), (1, false), "{error}");
+    assert!(error.contains("unknown KEK"), "{error}");
+    let shown = get_blob(&app, id).await;
+    assert_eq!(shown["state"], "uploaded");
+    assert_eq!(shown["failed_at"], Value::Null, "{shown}");
+}
+
 /// A source part damaged in the store, whether its length fits no stream
 /// or its header does not parse, fails the build for good at the first
 /// attempt: another would read the same bytes. Nothing is written.

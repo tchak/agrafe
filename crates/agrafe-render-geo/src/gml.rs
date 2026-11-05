@@ -186,9 +186,12 @@ struct Node {
     kind: Kind,
     /// The element depth it closes at.
     depth: usize,
-    /// The `srsName` it or its nearest ancestor carries, or one of its
-    /// parts', when neither does.
+    /// The `srsName` it or something inside it carries, else its nearest
+    /// ancestor's, else one of its parts'.
     srs: Option<usize>,
+    /// Whether `srs` comes from the element or something inside it, which
+    /// an enclosing element's gives way to.
+    own_srs: bool,
     /// A point's, a line's, a joined curve's positions.
     positions: Vec<Xy>,
     /// A `posList` that does not divide into positions: the geometry is
@@ -204,11 +207,12 @@ struct Node {
 }
 
 impl Node {
-    fn new(kind: Kind, depth: usize, srs: Option<usize>) -> Node {
+    fn new(kind: Kind, depth: usize, srs: Option<usize>, own_srs: bool) -> Node {
         Node {
             kind,
             depth,
             srs,
+            own_srs,
             positions: Vec::new(),
             broken: false,
             outer: None,
@@ -407,8 +411,10 @@ impl Parser {
                 self.skip = Some(depth);
                 return;
             }
-            let srs = self.srs.last().map(|&(_, at)| at);
-            self.nodes.push(Node::new(kind, depth, srs));
+            let scope = self.srs.last().copied();
+            let own_srs = scope.is_some_and(|(at, _)| at == depth);
+            self.nodes
+                .push(Node::new(kind, depth, scope.map(|(_, at)| at), own_srs));
             return;
         }
         match name {
@@ -467,13 +473,17 @@ impl Parser {
 
     /// A position element opens: its text is read, and a `srsName` on
     /// it, which the schema allows, is its geometry's when that has none
-    /// of its own or an enclosing element's.
+    /// of its own: it is nearer than an enclosing element's. The first
+    /// such position's stands.
     fn position(&mut self, leaf: Leaf) {
         self.text = Some((leaf, String::new()));
         if let Some(node) = self.nodes.last_mut()
-            && node.srs.is_none()
+            && !node.own_srs
+            && let Some(&(at, name)) = self.srs.last()
+            && at > node.depth
         {
-            node.srs = self.srs.last().map(|&(_, at)| at);
+            node.srs = Some(name);
+            node.own_srs = true;
         }
     }
 
@@ -814,6 +824,24 @@ mod tests {
                 ("line of 2 from 4 45".to_string(), Crs::Degrees),
                 ("point 6 47".to_string(), Crs::WebMercator),
                 ("point 7 48".to_string(), Crs::Degrees),
+            ]
+        );
+        // A position's is nearer than an enclosing element's, whether the
+        // collection's envelope or the feature's own.
+        let over_enclosing = gml32(
+            r#"<wfs:boundedBy><gml:Envelope srsName="EPSG:2154"/></wfs:boundedBy>
+<wfs:member><x:F><x:g><gml:Point><gml:pos srsName="EPSG:4326">4 45</gml:pos></gml:Point></x:g></x:F></wfs:member>
+<wfs:member><x:F srsName="EPSG:3857"><x:g><gml:LineString><gml:posList srsName="EPSG:4326">4 45 5 46</gml:posList></gml:LineString></x:g></x:F></wfs:member>
+<wfs:member><x:F srsName="EPSG:3857"><x:g><gml:Point srsName="EPSG:2154"><gml:pos srsName="EPSG:4326">6 47</gml:pos></gml:Point></x:g></x:F></wfs:member>
+<wfs:member><x:F><x:g><gml:Point><gml:pos>700000 6600000</gml:pos></gml:Point></x:g></x:F></wfs:member>"#,
+        );
+        assert_eq!(
+            kinds(&over_enclosing).unwrap(),
+            [
+                ("point 4 45".to_string(), Crs::Degrees),
+                ("line of 2 from 4 45".to_string(), Crs::Degrees),
+                ("point 6 47".to_string(), lambert()),
+                ("point 700000 6600000".to_string(), lambert()),
             ]
         );
         // With nothing enclosing it, a collection takes a member's.

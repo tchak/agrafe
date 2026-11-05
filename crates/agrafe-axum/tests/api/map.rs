@@ -451,6 +451,43 @@ async fn an_extent_that_fails_the_checks_rejects_the_map() {
     assert!(wms.requests().is_empty(), "{:?}", wms.requests());
 }
 
+/// What the helper wrote as the map's SVG is sniffed like any file handed
+/// to vips: vips picks its loader by magic, whatever the file is named, and
+/// a PDF takes the `dpi` option the SVG is loaded with, so without the sniff
+/// it would be drawn. The same helper with an SVG renders.
+#[tokio::test]
+async fn a_svg_that_is_not_one_rejects_the_map() {
+    use std::os::unix::fs::PermissionsExt;
+    let extent =
+        r#"{"minx":0,"miny":0,"maxx":300,"maxy":300,"width":300,"height":300,"layers":[]}"#;
+    let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300"/>"#.to_vec();
+    for (bytes, state) in [(svg, "ready"), (fixture("text.pdf"), "failed")] {
+        let db = TestDatabase::new().await;
+        let helper = std::env::temp_dir().join(format!("agrafe-bad-svg-{}", uuid::Uuid::now_v7()));
+        let octal: String = bytes.iter().map(|b| format!("\\{b:03o}")).collect();
+        // --input $2 --spec $4 --svg $6 --extent $8
+        std::fs::write(
+            &helper,
+            format!("#!/bin/sh\nprintf '{octal}' > \"$6\"\nprintf '%s' '{extent}' > \"$8\"\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let clamd = fake_clamd().await;
+        let app = setup_tuned(db, clamd, |c| {
+            c.media.render.render_geo_command = helper.to_string_lossy().into_owned();
+            c.media.render.map.max_size = 300;
+        })
+        .await;
+        let point = map_blob(&app, "point.geojson", "application/geo+json").await;
+        let id = id_of(&point);
+        render_all(&app).await;
+        let blob = get_blob(&app, id).await;
+        assert_eq!(blob["representations"]["preview"]["state"], state);
+        assert_eq!(jobs_for(&app, id).await, Vec::<String>::new(), "{state}");
+        std::fs::remove_file(&helper).unwrap();
+    }
+}
+
 #[tokio::test]
 async fn a_service_exception_fails_the_attempt() {
     let db = TestDatabase::new().await;

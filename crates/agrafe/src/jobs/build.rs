@@ -117,9 +117,11 @@ impl BuildError {
     /// refuses, a workspace file gone or a document that does not compile
     /// or convert are the blob's own; the bucket, the database, the
     /// sandbox, the compiler helper, pandoc and the temporary directory
-    /// may come back.
+    /// may come back, and so may a KEK this process lacks, as for a read:
+    /// see `ReadError::is_permanent`.
     pub fn is_permanent(&self) -> bool {
         match self {
+            BuildError::Key(UnwrapError::UnknownKek { .. }) => false,
             BuildError::Source { .. }
             | BuildError::Incomplete { .. }
             | BuildError::Key(_)

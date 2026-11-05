@@ -162,7 +162,10 @@ const BLEND_OVER: &str = "2";
 /// at 72 dpi, where its pixel `width` and `height` are its size, which is
 /// what makes it line up with the layers. vips never declines: the
 /// verdict is `Rendered` or `Rejected`. The names must not contain spaces
-/// or brackets, which vips reads as a separator and as options.
+/// or brackets, which vips reads as a separator and as options. The files
+/// are sniffed like any other handed to vips, each against the one format
+/// it should be: the SVG comes from the helper, the untrusted side, and
+/// vips picks its loader by magic whatever the file is named.
 pub(crate) async fn composite(
     config: &Config,
     dir: &Path,
@@ -170,6 +173,16 @@ pub(crate) async fn composite(
     svg: &str,
     output: &str,
 ) -> Result<Verdict<()>, Error> {
+    let expected = layers
+        .iter()
+        .map(|layer| (layer.as_str(), "vips"))
+        .chain(std::iter::once((svg, "svg")));
+    for (name, format) in expected {
+        let head = head(&dir.join(name)).await.map_err(Error::Input)?;
+        if loader_for(&head) != Some(format) {
+            return Ok(Verdict::Rejected(Rejection::Unsupported));
+        }
+    }
     let inputs: Vec<String> = layers
         .iter()
         .map(|layer| format!("{layer}[fail-on=error]"))
@@ -244,4 +257,47 @@ async fn head(path: &Path) -> std::io::Result<Vec<u8>> {
         .read_to_end(&mut head)
         .await?;
     Ok(head)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A file that is not what the composite expects is refused before
+    /// vips runs: the command does not exist, so reaching it would be an
+    /// error or a failed run, not `Unsupported`.
+    #[tokio::test]
+    async fn the_composite_sniffs_its_inputs() {
+        let config = Config {
+            vips_command: "/nonexistent/vips".into(),
+            ..Config::default()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let native = [0x08, 0xf2, 0xa6, 0xb6];
+        std::fs::write(dir.path().join("native.v"), native).unwrap();
+        std::fs::write(dir.path().join("paths.svg"), "<svg/>").unwrap();
+        // What ImageMagick would load, and a loader of the allowlist that
+        // is not the format the name stands for.
+        std::fs::write(
+            dir.path().join("xpm.svg"),
+            "/* XPM */\nstatic char *x[] = {};",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("png.svg"), b"\x89PNG\r\n\x1a\n").unwrap();
+        std::fs::write(dir.path().join("svg.v"), "<svg/>").unwrap();
+        for (layers, svg) in [
+            (vec![], "xpm.svg"),
+            (vec![], "png.svg"),
+            (vec!["native.v".to_string()], "xpm.svg"),
+            (vec!["svg.v".to_string()], "paths.svg"),
+        ] {
+            let verdict = composite(&config, dir.path(), &layers, svg, "map.v")
+                .await
+                .unwrap();
+            assert!(
+                matches!(verdict, Verdict::Rejected(Rejection::Unsupported)),
+                "{layers:?} {svg}: {verdict:?}"
+            );
+        }
+    }
 }
