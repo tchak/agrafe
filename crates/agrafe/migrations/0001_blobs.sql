@@ -36,12 +36,15 @@ CREATE TABLE blobs (
     scanned_at        timestamptz,
     scan_signature    text,
 
-    -- storage: blobs are write-once, the original lives at `<id>/original`
+    -- storage: blobs are write-once, the original lives at
+    -- `<shard>/<id>/original` (see `blob::key`)
     storage_key       text,
 
     -- generated blobs: a `rows`, `archive` or `document` blob is built
-    -- from a source that arrives in parts, stored under `<id>/source/<n>`
-    -- while the blob is still `created`. See DESIGN.md, "Generated blobs".
+    -- from a source that arrives in parts, stored under
+    -- `<shard>/<id>/source/<n>` while the blob is still `created` and deleted
+    -- once the build has finished, these counts staying. See DESIGN.md,
+    -- "Generated blobs".
     -- Parts accepted so far; the next one must be source_parts + 1.
     source_parts      integer NOT NULL DEFAULT 0 CHECK (source_parts >= 0),
     -- Lines across the parts: manifest entries for an archive or a document.
@@ -94,11 +97,14 @@ CREATE TABLE blobs (
     deleted_at          timestamptz,
     purged_at           timestamptz,
 
-    -- The job that was to finish the blob (a scan, a build or a render) ran
-    -- out of attempts: when, and its last error. Set when such a job dies,
-    -- cleared when one of its kind is enqueued or retried for the blob, so
-    -- a stuck blob stays visible after the dead job itself is pruned. See
-    -- DESIGN.md, "Jobs".
+    -- The job that was to finish the blob (a fetch, a scan, a build or a
+    -- render) ran out of attempts: when, and its last error. Set when such a
+    -- job dies, cleared when one of its kind is enqueued, retried or succeeds
+    -- for the blob, so a stuck blob stays visible after the dead job itself
+    -- is pruned. See DESIGN.md, "Jobs". The audit also stamps a lost original
+    -- here, `audit: ` at the head of the error, which no job clears or
+    -- replaces and a sweep lifts once it finds the original whole. See
+    -- DESIGN.md, "Audit".
     failed_at           timestamptz,
     last_error          text
 );
