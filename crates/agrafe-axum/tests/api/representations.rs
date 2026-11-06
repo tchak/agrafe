@@ -2048,6 +2048,76 @@ async fn thumbnails_regenerate_from_the_stored_preview() {
     );
 }
 
+/// A preview rendered again over a `ready` row, for a thumbnail that
+/// needs one it cannot use, goes back to `pending` first, as a request for
+/// a stale or missing one sets it: a row never describes an object the
+/// render is replacing. Seen with the render's record refused, as a
+/// database that went away at that statement would: the row is `pending`
+/// without a digest, not `ready` with the old digest over a new object.
+#[tokio::test]
+async fn a_preview_rendered_again_is_pending_meanwhile() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
+    let id = id_of(&blob);
+    render_all(&app).await;
+    let thumbnail = format!("/blobs/{id}/thumbnail/photo.jpg");
+    let preview = format!("/blobs/{id}/preview/photo.jpg");
+
+    // The preview's object gone and the thumbnail stale: the job renders
+    // the preview again, over a `ready` row, for the thumbnail.
+    app.state
+        .store()
+        .delete(&object_store::path::Path::from(object_key(id, "preview")))
+        .await
+        .unwrap();
+    sqlx::query("UPDATE representations SET version = 0 WHERE blob_id = $1 AND kind = 'thumbnail'")
+        .bind(parse_id(id))
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+    icon(&app, &thumbnail, "pending").await;
+    sqlx::raw_sql(
+        "CREATE FUNCTION fail_ready_preview() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN RAISE EXCEPTION 'the database went away'; END $$; \
+         CREATE TRIGGER fail_ready_preview BEFORE UPDATE ON representations FOR EACH ROW \
+         WHEN (NEW.kind = 'preview' AND NEW.state = 'ready') \
+         EXECUTE FUNCTION fail_ready_preview();",
+    )
+    .execute(app.state.pool())
+    .await
+    .unwrap();
+    assert!(run_job(&app, JobKind::Render).await);
+    let row: (String, Option<Vec<u8>>) = sqlx::query_as(
+        "SELECT state, sha256 FROM representations WHERE blob_id = $1 AND kind = 'preview'",
+    )
+    .bind(parse_id(id))
+    .fetch_one(app.state.pool())
+    .await
+    .unwrap();
+    assert_eq!(row, ("pending".to_string(), None));
+    let (status, headers, _) = fetch(&app.private, get_with(&preview, &[])).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(state_of(&headers), "pending");
+
+    // The database back, the next attempt records both.
+    sqlx::raw_sql(
+        "DROP TRIGGER fail_ready_preview ON representations; \
+         DROP FUNCTION fail_ready_preview();",
+    )
+    .execute(app.state.pool())
+    .await
+    .unwrap();
+    sqlx::query("UPDATE jobs SET run_at = now() WHERE kind = 'render'")
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+    assert!(run_job(&app, JobKind::Render).await);
+    rendered(&app, &preview).await;
+    let (_, size) = rendered(&app, &thumbnail).await;
+    assert_eq!(size, (256, 128));
+}
+
 /// A thumbnail regenerated on its own follows the verdict the preview has
 /// from this version: none from a failed preview, the text sample for a
 /// file with no preview, and a preview rendered again when its object is

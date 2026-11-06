@@ -1320,9 +1320,9 @@ pub async fn explain_reaper(conn: &mut PgConnection) -> sqlx::Result<Vec<(&'stat
 /// columns take `fallback` whatever the state: what the row recorded of
 /// an earlier one is replaced, or cleared when the render stored none, in
 /// which case the object is the caller's to delete too. Only the blob's
-/// state is a condition: the preview a thumbnail had rendered again lands
-/// on a representation that is not `pending`, and a kind with no row,
-/// `disabled`, affects none. `source` and `timed_out` are the preview's,
+/// state is a condition: a kind with no row, `disabled`, affects none, and
+/// the render job sets what it renders again back to `pending` first, see
+/// `reset_representation`. `source` and `timed_out` are the preview's,
 /// see `RepresentationRow`; the thumbnail passes none.
 ///
 /// The blob's row is read `FOR SHARE`, not merely joined: a delete in
@@ -1375,6 +1375,47 @@ pub(crate) async fn finish_representation(
     Ok(result.rows_affected() == 1)
 }
 
+/// Set `kind` back to `pending` while the blob is still `ready` and has a
+/// row for the kind: the format, digest and the preview's own columns go,
+/// the version and the WebP fallback stay, see `request_representation`.
+/// The blob's priority comes back, for a job to take, or `None` when no
+/// row was touched. The blob's row is read `FOR SHARE`, so a delete in
+/// flight is waited for and no row is reset for a blob it has just
+/// deleted.
+async fn reset(
+    exec: impl PgExecutor<'_>,
+    id: Uuid,
+    kind: Representation,
+) -> sqlx::Result<Option<i16>> {
+    sqlx::query_scalar(
+        "UPDATE representations r \
+         SET state = $3, format = NULL, sha256 = NULL, size = NULL, source = NULL, \
+             timed_out = NULL \
+         FROM (SELECT id, priority FROM blobs WHERE id = $1 AND state = $4 FOR SHARE) b \
+         WHERE b.id = r.blob_id AND r.kind = $2 \
+         RETURNING b.priority",
+    )
+    .bind(id)
+    .bind(kind.as_str())
+    .bind(RepresentationState::Pending.as_str())
+    .bind(BlobState::Ready.as_str())
+    .fetch_optional(exec)
+    .await
+}
+
+/// Set `kind` back to `pending` without queuing anything: the render
+/// job's, before it renders again a kind whose row is not `pending`, the
+/// preview a thumbnail needs and cannot use. The row then never describes
+/// an object the render is replacing, and `finish_representation` records
+/// the new one. `false` when the blob is no longer `ready`.
+pub(crate) async fn reset_representation(
+    pool: &PgPool,
+    id: Uuid,
+    kind: Representation,
+) -> sqlx::Result<bool> {
+    Ok(reset(pool, id, kind).await?.is_some())
+}
+
 /// Ask for `kind` to be (re)generated: the representation goes back to
 /// `pending` and a job is enqueued, if the blob is still `ready` and has a
 /// row for the kind, one disabled at creation having none. The lazy path
@@ -1392,21 +1433,7 @@ pub(crate) async fn request_representation(
     kind: Representation,
 ) -> sqlx::Result<bool> {
     let mut tx = pool.begin().await?;
-    let rank: Option<i16> = sqlx::query_scalar(
-        "UPDATE representations r \
-         SET state = $3, format = NULL, sha256 = NULL, size = NULL, source = NULL, \
-             timed_out = NULL \
-         FROM (SELECT id, priority FROM blobs WHERE id = $1 AND state = $4 FOR SHARE) b \
-         WHERE b.id = r.blob_id AND r.kind = $2 \
-         RETURNING b.priority",
-    )
-    .bind(id)
-    .bind(kind.as_str())
-    .bind(RepresentationState::Pending.as_str())
-    .bind(BlobState::Ready.as_str())
-    .fetch_optional(&mut *tx)
-    .await?;
-    let Some(rank) = rank else {
+    let Some(rank) = reset(&mut *tx, id, kind).await? else {
         tx.rollback().await?;
         return Ok(false);
     };

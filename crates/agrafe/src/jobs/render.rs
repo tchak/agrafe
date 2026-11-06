@@ -195,7 +195,8 @@ impl<'a> Render<'a> {
 
     /// The preview the thumbnail derives from: rendered now when it is
     /// pending, or when the thumbnail needs one and the stored one is from
-    /// another variant version or gone. A verdict from this version stands.
+    /// another variant version or gone, which sets it back to `pending`
+    /// first. A verdict from this version stands.
     async fn preview(&mut self, pending: bool) -> Result<Preview, JobError> {
         if pending {
             return self.fresh_preview().await;
@@ -207,13 +208,27 @@ impl<'a> Render<'a> {
         Ok(match (row.state, current) {
             (RepresentationState::Ready, true) => match self.stored_preview().await? {
                 Some(path) => Preview::Ready(path),
-                None => return self.fresh_preview().await,
+                None => return self.preview_again().await,
             },
             (state @ (RepresentationState::Failed | RepresentationState::Unavailable), true) => {
                 Preview::Missing(NoPicture::stored(state, row.timed_out))
             }
-            _ => return self.fresh_preview().await,
+            _ => return self.preview_again().await,
         })
+    }
+
+    /// Render the preview again over what its row has, for a thumbnail
+    /// that cannot use it: the row goes back to `pending` first, as a
+    /// request for a stale or missing preview sets it, so that no request
+    /// is answered from a digest whose object the render is replacing; the
+    /// render then records the new one, as for any pending preview. A row
+    /// that refuses, the blob gone meanwhile, changes nothing here:
+    /// `finish` finds that out and drops what it wrote.
+    async fn preview_again(&mut self) -> Result<Preview, JobError> {
+        repo::reset_representation(self.state.pool(), self.blob.id, Representation::Preview)
+            .await?;
+        self.state.heads().invalidate(self.blob.id);
+        self.fresh_preview().await
     }
 
     /// Render the picture into the preview box, record the outcome, and

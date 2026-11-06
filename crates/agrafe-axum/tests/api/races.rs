@@ -477,11 +477,12 @@ async fn due_now(app: &TestApp, id: &str) {
     .await;
 }
 
-/// After a version bump the second representation's request enqueues a
-/// twin while the first's render runs. It waits, its attempt refunded,
-/// without decoding the original beside the other, and finds nothing left.
+/// After a version bump the thumbnail's request queues one render, which
+/// sets the stale preview back to `pending` before rendering it for the
+/// thumbnail: a request for the preview while that runs finds it pending
+/// and queues nothing, and the one job finishes both.
 #[tokio::test]
-async fn a_second_render_waits_for_the_one_running() {
+async fn one_render_takes_both_stale_representations() {
     let db = TestDatabase::new().await;
     let app = setup(db).await;
     let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
@@ -498,20 +499,15 @@ async fn a_second_render_waits_for_the_one_running() {
     let hold = app.gate.hold(At::Put, &object_key(&id, "preview"));
     let first = spawn_job(&app, JobKind::Render);
     hold.reached().await;
+    // Set back before its put, so that nothing is served from the digest
+    // of the object being replaced, and nothing more is queued.
+    let shown = get_blob(&app, &id).await;
+    assert_eq!(
+        shown["representations"]["preview"]["state"], "pending",
+        "{shown}"
+    );
     ask_for(&app, &id, "preview").await;
-    assert_eq!(
-        renders(&app, &id).await,
-        [(true, 1, false), (false, 0, false)]
-    );
-
-    // No gate holds this one, so it would finish if it rendered.
-    assert!(run_job(&app, JobKind::Render).await);
-    assert_eq!(
-        renders(&app, &id).await,
-        [(true, 1, false), (false, 0, true)],
-        "unlocked, its attempt refunded, due later"
-    );
-    assert!(!run_job(&app, JobKind::Render).await, "not due yet");
+    assert_eq!(renders(&app, &id).await, [(true, 1, false)]);
 
     hold.release();
     assert!(within("the job", first).await.unwrap());
@@ -524,15 +520,13 @@ async fn a_second_render_waits_for_the_one_running() {
         shown["representations"]["preview"]["state"], "ready",
         "{shown}"
     );
-
-    due_now(&app, &id).await;
-    assert!(run_job(&app, JobKind::Render).await);
     assert_eq!(renders(&app, &id).await, []);
 }
 
 /// What the running job read before the request is not its to render: the
-/// twin, having waited, does it. Skipping the enqueue while a render runs
-/// would leave the preview `pending` for good.
+/// twin, having waited with its attempt refunded, without decoding the
+/// original beside the other, does it. Skipping the enqueue while a render
+/// runs would leave the preview `pending` for good.
 #[tokio::test]
 async fn a_representation_asked_for_during_a_render_is_not_lost() {
     let db = TestDatabase::new().await;
@@ -559,7 +553,18 @@ async fn a_representation_asked_for_during_a_render_is_not_lost() {
     )
     .await;
     ask_for(&app, &id, "preview").await;
+    assert_eq!(
+        renders(&app, &id).await,
+        [(true, 1, false), (false, 0, false)]
+    );
+    // No gate holds this one, so it would finish if it rendered.
     assert!(run_job(&app, JobKind::Render).await);
+    assert_eq!(
+        renders(&app, &id).await,
+        [(true, 1, false), (false, 0, true)],
+        "unlocked, its attempt refunded, due later"
+    );
+    assert!(!run_job(&app, JobKind::Render).await, "not due yet");
 
     hold.release();
     assert!(within("the job", first).await.unwrap());

@@ -2418,7 +2418,7 @@ preview. The preview's row keeps that apart from any other `failed`
 later job over the verdict, after a version bump asked for the preview first
 or a retry of a thumbnail whose write failed, gets the same answer: one file,
 one verdict, in whatever order it was asked for. A preview from another version, or whose object is gone or does
-not open, is rendered again first. The thumbnail thus appears after the preview rather
+not open, is rendered again first, set back to `pending` meanwhile. The thumbnail thus appears after the preview rather
 than alongside it, a few seconds for a large image, which the icon
 placeholder and `wait` cover.
 
@@ -2491,7 +2491,18 @@ objects, and the associated data is the object's name within the blob,
 as for the original.
 They are small and served whole, with a strong `ETag` of the content and
 `Cache-Control: private, max-age=86400`: not `immutable`, since a version
-bump changes them under the same URL. Each representation's row records
+bump changes them under the same URL. The `ETag` names the picture of one
+variant version: a sealed URL carries the digest its envelope was minted
+with and serves without the row, so a picture rendered again at the same
+version, its object having gone missing, is served under the old tag
+until the URL is minted again, which asks of a version that it render one
+picture, the promise `media.variant_version` makes anyway. A row, on the
+other hand, always describes the object in the bucket: the render job
+sets a representation back to `pending` before it renders over its
+object, as a request for a stale or missing one does
+(`repo::reset_representation`), and records the new digest with `ready`
+after, so no request is answered from the old digest over the new bytes.
+Each representation's row records
 the format, the SHA-256 and the size of the rendered picture (`format`,
 `sha256`, `size`), set with
 `ready` and cleared with any other state, which `CHECK`s on the table
