@@ -56,11 +56,17 @@ async fn workers_wake_on_notify_and_stop_on_shutdown() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["state"], "uploaded");
     wait_for_state(&app, id, "ready").await;
-    assert_eq!(
-        jobs_for(&app, id).await,
-        ["render"],
-        "left for a render worker"
-    );
+    // The scan commits the blob before the runner removes its row, on a
+    // connection of its own: ready, the scan may still be listed a moment.
+    let mut left = Vec::new();
+    for _ in 0..100 {
+        left = jobs_for(&app, id).await;
+        if left != ["scan"] && left != ["render", "scan"] {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(left, ["render"], "left for a render worker");
 
     // The listener's connection dies: it comes back, and the next enqueue
     // still wakes a worker an hour before the poll would.
