@@ -31,8 +31,8 @@ assumes one. The category icons served in a thumbnail's place are in
 WebP fallback](#the-webp-fallback) they are chosen as the pictures are.
 
 Changing `media.format` affects what is rendered from then on. To convert
-what exists, bump `media.variant_version` with it: every picture is then
-regenerated in the new format on its next request, as for any other
+what exists, bump `media.representation_version` with it: every picture is
+then regenerated in the new format on its next request, as for any other
 renderer change (see [Regenerating](#regenerating)). Until then, or
 without the bump, old pictures stay in the format they were built with
 and say so.
@@ -65,9 +65,9 @@ it, which is why the setting is refused without `"jxl"`.
 
 Turning it on takes no bump: a JPEG XL picture rendered before, with no
 WebP beside it, is regenerated on its next request, as a picture of
-another variant version is. Turning it off is unsetting the key and
-bumping `media.variant_version`: each regeneration removes the WebP it no
-longer wants.
+another representation version is. Turning it off is unsetting the key and
+bumping `media.representation_version`: each regeneration removes the WebP
+it no longer wants.
 
 ## What gets rendered
 
@@ -109,8 +109,8 @@ pins macro security to "very high", with no trusted location and macro
 execution switched off, besides. Without a converter, office
 files get the icon, as they do when the file is over
 `media.max_source_size`. Turning it on later regenerates existing
-thumbnails through a `media.variant_version` bump. Spreadsheets exported
-by agrafe are ordinary blobs and get a thumbnail too.
+thumbnails through a `media.representation_version` bump. Spreadsheets
+exported by agrafe are ordinary blobs and get a thumbnail too.
 
 A user interface should key on whether a blob has a preview
 (`representations.preview.state` is `ready`), never on its category.
@@ -309,8 +309,8 @@ can tell a placeholder from the final answer.
 Ready images carry a strong `ETag` of their content and answer `304` and
 `HEAD` without reading the object, with the `Content-Type` of the format
 they were rendered in; a WebP fallback has an `ETag` of its own. They
-are not `immutable`: a variant version bump changes them under the same
-URL, their format included.
+are not `immutable`: a representation version bump changes them under the
+same URL, their format included.
 
 ### Waiting for a render
 
@@ -327,8 +327,8 @@ On the public port `wait` must be part of the signed query.
 
 ## Regenerating
 
-Each representation records the `media.variant_version` it was built with.
-Bump the version in the configuration, and every representation is
+Each representation records the `media.representation_version` it was built
+with. Bump the version in the configuration, and every representation is
 regenerated on its next request, `failed` and `unavailable` ones included,
 since a new renderer may do better. The request that notices the old
 version serves the placeholder and queues the render.

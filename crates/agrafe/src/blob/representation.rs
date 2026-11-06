@@ -90,7 +90,7 @@ pub enum Resolved {
 
 impl Agrafe {
     /// What to serve for `kind` of `blob`, queueing a render when what is
-    /// there is missing or was built with another variant version.
+    /// there is missing or was built with another representation version.
     pub async fn representation(
         &self,
         blob: &BlobHead,
@@ -151,9 +151,15 @@ async fn resolve(state: &Agrafe, blob: &BlobHead, kind: Representation) -> Resul
     if !matches!(
         rep_state,
         RepresentationState::Pending | RepresentationState::Disabled
-    ) && blob.representations.version(kind) != Some(media.variant_version)
+    ) && blob.representations.version(kind) != Some(media.representation_version)
     {
-        return regenerate(state, blob, kind, "built with another variant version").await;
+        return regenerate(
+            state,
+            blob,
+            kind,
+            "built with another representation version",
+        )
+        .await;
     }
     match rep_state {
         RepresentationState::Ready => match blob.representations.rendered(kind) {
@@ -191,7 +197,7 @@ async fn regenerate(
 /// stores beside its pictures (`media.webp_fallback`): one rendered before
 /// the setting was turned on, which would go to the browsers the fallback
 /// is for as it is. Such a picture is regenerated on request, as one of
-/// another variant version is, so turning the fallback on takes no bump.
+/// another representation version is, so turning the fallback on takes no bump.
 /// A WebP picture needs none and is served as it is.
 pub fn lacks_fallback(
     render: &agrafe_render::Config,

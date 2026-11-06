@@ -6,9 +6,10 @@ CREATE TABLE representations (
     kind       text NOT NULL CHECK (kind IN ('thumbnail', 'preview')),
     state      text NOT NULL DEFAULT 'pending'
                CHECK (state IN ('pending', 'ready', 'failed', 'unavailable')),
-    -- The kind's version it was last built with, `media.variant_version`
-    -- for the pictures, so a bump can regenerate one without touching the
-    -- others. NULL before the first render.
+    -- The kind's version it was last built with,
+    -- `media.representation_version` for the pictures, so a bump can
+    -- regenerate one without touching the others. NULL before the first
+    -- render.
     version    integer,
     -- What was built: the format it was encoded in, `media.format` at the
     -- time, which names what is served whatever the setting says today,

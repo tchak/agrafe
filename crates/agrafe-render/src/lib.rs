@@ -68,7 +68,7 @@ pub struct Config {
     /// The format thumbnails and previews are encoded in, `media.format`:
     /// WebP by default, JPEG XL opt-in. Each representation records the
     /// format it was built with and is served as that; changing this
-    /// setting takes a `media.variant_version` bump to regenerate what
+    /// setting takes a `media.representation_version` bump to regenerate what
     /// exists. The icons served in a thumbnail's place follow it at once,
     /// being embedded in every format.
     #[serde(default)]

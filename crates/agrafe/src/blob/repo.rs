@@ -1419,8 +1419,8 @@ pub(crate) async fn reset_representation(
 /// Ask for `kind` to be (re)generated: the representation goes back to
 /// `pending` and a job is enqueued, if the blob is still `ready` and has a
 /// row for the kind, one disabled at creation having none. The lazy path
-/// of the `GET` handler, for a missing object or a stale variant version.
-/// What the row recorded of the last render goes with it; the version
+/// of the `GET` handler, for a missing object or a stale representation
+/// version. What the row recorded of the last render goes with it; the version
 /// stays until the next one, being what the object still in the bucket
 /// was built with, and so does the WebP fallback, an object still in the
 /// bucket too, which the render replaces or removes. The blob's row is
