@@ -14,6 +14,8 @@ becomes the GitHub release's notes.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-06
+
 The first release.
 
 ### Added
@@ -84,4 +86,5 @@ The first release.
 - **Docker images** on the GitHub Container Registry, with and without
   LibreOffice and pandoc.
 
-[Unreleased]: https://github.com/tchak/agrafe/commits/main
+[Unreleased]: https://github.com/tchak/agrafe/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/tchak/agrafe/releases/tag/v0.1.0
