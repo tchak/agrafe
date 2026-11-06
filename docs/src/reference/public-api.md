@@ -75,7 +75,7 @@ The reduced metadata of a blob, for a browser to poll after an upload.
   "size": 482113,
   "scan_state": "clean",
   "representations": {
-    "thumbnail": {"state": "ready", "checksum": "R0lGODlhAQABAIAAAP…", "size": 4210},
+    "thumbnail": {"state": "ready", "format": "webp", "checksum": "R0lGODlhAQABAIAAAP…", "size": 4210},
     "preview": {"state": "pending", "source": null}
   }
 }
@@ -89,7 +89,7 @@ The reduced metadata of a blob, for a browser to poll after an upload.
 | `category` | string | `image`, `document`, `spreadsheet`, `presentation`, `archive`, `audio`, `video`, `text`, `other` |
 | `size` | integer or null | Bytes; null for a generated blob not yet built, but for an archive's running estimate |
 | `scan_state` | string | `pending`, `clean`, `infected`, `skipped` |
-| `representations` | object | One entry per kind the blob asked for, `thumbnail` and `preview`, the same object as the [private metadata's](private-api.md#blob-metadata): `state` (`pending`, `ready`, `failed`, `unavailable`), with `ready` the `checksum` and `size` of the WebP, and the preview's `source`. A kind left out at creation is absent: `disabled` |
+| `representations` | object | One entry per kind the blob asked for, `thumbnail` and `preview`, the same object as the [private metadata's](private-api.md#blob-metadata): `state` (`pending`, `ready`, `failed`, `unavailable`), with `ready` the `format`, `checksum` and `size` of the picture, and the preview's `source`. A kind left out at creation is absent: `disabled` |
 
 ## `GET /blobs/:token/:id/original/:filename`
 
@@ -140,19 +140,21 @@ get the whole file with `200`.
 
 ## `GET /blobs/:token/:id/thumbnail/:filename`
 
-The thumbnail, a WebP. Always an image while the blob exists: the rendered
-thumbnail, or the category icon.
+The thumbnail, an image. Always one while the blob exists: the rendered
+thumbnail or the category icon, in the deployment's `media.format` (WebP
+by default, or JPEG XL). `Content-Type` says which; a client must not
+assume a format.
 
 **Signed query.** `disposition`, `filename` and `e` as for the original,
 plus `wait`, milliseconds from `0` to `30000` to hold the request while the
 thumbnail is pending or the blob is not yet `ready`. The download name gets
-a `.webp` extension.
+the extension of what is served, `.webp` or `.jxl`.
 
 **Response headers.**
 
 | Header | Value |
 |---|---|
-| `Content-Type` | `image/webp` |
+| `Content-Type` | `image/webp` or `image/jxl`: the format recorded when the thumbnail was rendered, or the current `media.format` for the icon |
 | `X-Representation-State` | `ready`, `pending`, `failed`, `unavailable` or `disabled` |
 | `ETag` | On a rendered thumbnail |
 | `Cache-Control` | `private, max-age=86400`, or `no-store` while pending |
@@ -165,7 +167,8 @@ a `.webp` extension.
 
 ## `GET /blobs/:token/:id/preview/:filename`
 
-The preview, a WebP, for blobs that have one.
+The preview, an image in the deployment's `media.format`, for blobs that
+have one.
 
 **Signed query.** As for the thumbnail.
 

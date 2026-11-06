@@ -305,7 +305,8 @@ async fn a_dead_render_under_the_audits_stamp_reports_failed() {
 
     sqlx::query(
         "UPDATE representations \
-         SET state = 'pending', sha256 = NULL, size = NULL, source = NULL, timed_out = NULL \
+         SET state = 'pending', format = NULL, sha256 = NULL, size = NULL, source = NULL, \
+             timed_out = NULL \
          WHERE blob_id = $1 AND kind = 'preview'",
     )
     .bind(parse_id(id))

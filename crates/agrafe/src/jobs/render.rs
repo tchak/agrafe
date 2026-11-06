@@ -43,11 +43,6 @@ use crate::blob::{repo, representation};
 use crate::config::MediaConfig;
 use crate::upload;
 
-/// The preview's file in the work directory.
-const PREVIEW: &str = "preview.webp";
-/// The thumbnail's file in the work directory.
-const THUMBNAIL: &str = "thumbnail.webp";
-
 pub async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
     if job.kind != JobKind::Render {
         return Err(JobError::Unhandled(job.kind));
@@ -88,8 +83,9 @@ pub async fn run(state: &Agrafe, job: &Job) -> Result<(), JobError> {
 
 /// What the thumbnail is derived from.
 enum Preview {
-    /// A WebP in the work directory, rendered now or decrypted from the
-    /// store.
+    /// A picture in the work directory, rendered now or decrypted from the
+    /// store, in whatever format that one was built with: vips picks its
+    /// loader by the bytes.
     Ready(PathBuf),
     /// There is none, and why: the thumbnail comes from the fallback.
     Missing(NoPicture),
@@ -176,6 +172,12 @@ impl<'a> Render<'a> {
         self.workdir.path().join(name)
     }
 
+    /// Where the `kind` picture is rendered to, named for the format `fit`
+    /// encodes it in, which is what vips picks its saver by.
+    fn output(&self, kind: Representation, fit: Fit) -> PathBuf {
+        self.path(&fit.file_name(kind.as_str()))
+    }
+
     /// The preview the thumbnail derives from: rendered now when it is
     /// pending, or when the thumbnail needs one and the stored one is from
     /// another variant version or gone. A verdict from this version stands.
@@ -200,12 +202,11 @@ impl<'a> Render<'a> {
     }
 
     /// Render the picture into the preview box, record the outcome, and
-    /// leave the WebP in the work directory.
+    /// leave the picture in the work directory.
     async fn fresh_preview(&mut self) -> Result<Preview, JobError> {
-        let output = self.path(PREVIEW);
-        let verdict = self
-            .picture(Fit::preview(&self.media().render), &output)
-            .await?;
+        let fit = Fit::preview(&self.media().render);
+        let output = self.output(Representation::Preview, fit);
+        let verdict = self.picture(fit, &output).await?;
         let preview = match &verdict {
             Verdict::Rendered(_) => Preview::Ready(output),
             Verdict::Rejected(rejection) => Preview::Missing(NoPicture::rejected(rejection)),
@@ -224,7 +225,7 @@ impl<'a> Render<'a> {
     /// disabled, or else whatever the file gets without a picture.
     async fn thumbnail(&mut self, preview: &Preview) -> Result<(), JobError> {
         let fit = Fit::thumbnail(&self.media().render);
-        let output = self.path(THUMBNAIL);
+        let output = self.output(Representation::Thumbnail, fit);
         let (state, bytes) = match preview {
             Preview::Ready(path) => {
                 let verdict = self.fit(path, Input::Raster, fit, &output).await?;
@@ -344,7 +345,7 @@ impl<'a> Render<'a> {
         fit: Fit,
         output: &Path,
     ) -> Result<Verdict<Vec<u8>>, JobError> {
-        let verdict = vips::to_webp(&self.media().render, input, kind, output, fit).await?;
+        let verdict = vips::render(&self.media().render, input, kind, output, fit).await?;
         if let Verdict::Rejected(rejection) = &verdict {
             let input = input.file_name().unwrap_or_default().to_string_lossy();
             tracing::warn!(%input, ?kind, %rejection, "rendering failed");
@@ -362,8 +363,8 @@ impl<'a> Render<'a> {
             Some(Fallback::FirstPage) if !self.too_large() => {
                 let fit = Fit::thumbnail(&self.media().render);
                 let original = self.whole_original().await?;
-                self.fit(&original, Input::Page, fit, &self.path(THUMBNAIL))
-                    .await
+                let output = self.output(Representation::Thumbnail, fit);
+                self.fit(&original, Input::Page, fit, &output).await
             }
             Some(Fallback::ConvertedFirstPage) if !self.too_large() => {
                 self.converted_first_page().await
@@ -395,8 +396,8 @@ impl<'a> Render<'a> {
         match converted {
             Verdict::Rendered(pdf) => {
                 let fit = Fit::thumbnail(&media.render);
-                self.fit(&pdf, Input::Page, fit, &self.path(THUMBNAIL))
-                    .await
+                let output = self.output(Representation::Thumbnail, fit);
+                self.fit(&pdf, Input::Page, fit, &output).await
             }
             Verdict::Declined => {
                 tracing::info!("the office converter wrote no PDF");
@@ -420,8 +421,8 @@ impl<'a> Render<'a> {
         let fit = Fit::thumbnail(&media.render);
         match helpers::render_text(&media.render, &sample, &page, fit).await? {
             Verdict::Rendered(()) => {
-                self.fit(&page, Input::Raster, fit, &self.path(THUMBNAIL))
-                    .await
+                let output = self.output(Representation::Thumbnail, fit);
+                self.fit(&page, Input::Raster, fit, &output).await
             }
             Verdict::Declined => Ok(Verdict::Declined),
             Verdict::Rejected(rejection) => {
@@ -443,8 +444,10 @@ impl<'a> Render<'a> {
     ) -> Result<(), JobError> {
         let rendered = match &bytes {
             Some(bytes) => {
-                let rendered = representation::store(self.state, &self.stored, kind, bytes).await?;
-                tracing::info!(?source, bytes = bytes.len(), "{kind} rendered");
+                let format = self.media().render.format;
+                let rendered =
+                    representation::store(self.state, &self.stored, kind, format, bytes).await?;
+                tracing::info!(?source, %format, bytes = bytes.len(), "{kind} rendered");
                 Some(rendered)
             }
             None => None,
@@ -480,7 +483,9 @@ impl<'a> Render<'a> {
 
     /// The stored preview, decrypted into the work directory; `None` when
     /// the object is gone or does not open, and the original can give it
-    /// again.
+    /// again. Named `preview`, with no extension: it is in the format it
+    /// was built with, which vips tells by the bytes, and a stale name
+    /// must not suggest otherwise.
     async fn stored_preview(&self) -> Result<Option<PathBuf>, JobError> {
         let loaded = representation::load(self.state, &self.stored, Representation::Preview).await;
         let bytes = match loaded {
@@ -495,7 +500,7 @@ impl<'a> Render<'a> {
             }
             Err(err) => return Err(err.into()),
         };
-        let path = self.path(PREVIEW);
+        let path = self.path("preview");
         tokio::fs::write(&path, bytes).await?;
         Ok(Some(path))
     }

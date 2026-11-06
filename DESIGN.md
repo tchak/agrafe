@@ -11,8 +11,8 @@ reference when code and intuition disagree.
 ## Goals
 
 - Store files uploaded by end users (through browsers) or by backends.
-- Serve each file as the original plus two derived representations: a WebP
-  preview and a WebP thumbnail.
+- Serve each file as the original plus two derived representations: a
+  preview and a thumbnail, pictures in WebP or JPEG XL.
 - Encrypt everything at rest with keys the storage provider never sees.
 - Scan everything with ClamAV unless the backend explicitly vouches for the
   source.
@@ -155,8 +155,8 @@ No signature. Reachable only from trusted networks.
 | `DELETE` | `/attachments/:id` | Detach; the last detach gives the blob back its default expiry |
 | `POST` | `/blobs/:id/urls` | Mint signed public URLs with a chosen TTL and query parameters |
 | `GET` | `/blobs/:id/original/:filename` | Original bytes, supports `Range` |
-| `GET` | `/blobs/:id/preview/:filename` | WebP preview, `404`, or `409` for a blob that is not `ready` |
-| `GET` | `/blobs/:id/thumbnail/:filename` | WebP thumbnail, always 200 |
+| `GET` | `/blobs/:id/preview/:filename` | The preview, `404`, or `409` for a blob that is not `ready` |
+| `GET` | `/blobs/:id/thumbnail/:filename` | The thumbnail, always 200 |
 | `GET` | `/jobs` | List jobs, cursor paginated, filterable by `kind`, `state`, `priority`, `blob_id` |
 | `GET` | `/jobs/:id` | One job, with its last error |
 | `POST` | `/jobs/retry` | Give every dead job, or every dead job of a `kind`, its attempts back and run it now |
@@ -176,8 +176,8 @@ handlers are shared.
 | `PUT` | `/blobs/:token/:id` | Upload bytes, only `raw` and `multipart` |
 | `GET` | `/blobs/:token/:id` | Reduced metadata: id, state, scan state, the `representations` by kind, content type, category, size. `404` once the blob is `expired`, `infected` or `deleted` |
 | `GET` | `/blobs/:token/:id/original/:filename` | Original bytes, supports `Range` |
-| `GET` | `/blobs/:token/:id/preview/:filename` | WebP preview, `404`, or `409` before the blob is `ready` |
-| `GET` | `/blobs/:token/:id/thumbnail/:filename` | WebP thumbnail, always 200 |
+| `GET` | `/blobs/:token/:id/preview/:filename` | The preview, `404`, or `409` before the blob is `ready` |
+| `GET` | `/blobs/:token/:id/thumbnail/:filename` | The thumbnail, always 200 |
 | `GET` | `/healthz` | Liveness |
 
 Blobs in a terminal state (`expired`, `infected`, `deleted`) do not exist as
@@ -195,13 +195,14 @@ filename (percent-decoded), otherwise `404`; a sealed URL has no row to
 compare it with, and serves under the segment its minter signed. It exists so browsers get a
 sensible download name and so a URL cannot be made to look like it serves a
 different file than it does. It is the blob's own filename on every route,
-previews and thumbnails included, even though those serve WebP: the segment
-names the file the representation is of, and the download name comes from
-`Content-Disposition`, which for a representation is the filename with a
-`.webp` extension in place of its own (`photo.jpg` → `photo.webp`, `README`
-→ `README.webp`, `archive.tar.gz` → `archive.webp`). Browsers take the
-header over the URL, so a saved preview is never a WebP file with a `.jpg`
-name.
+previews and thumbnails included, even though those serve a picture in
+another format: the segment names the file the representation is of, and
+the download name comes from `Content-Disposition`, which for a
+representation is the filename with the picture format's extension in
+place of its own (`photo.jpg` → `photo.webp`, `README` → `README.webp`,
+`archive.tar.gz` → `archive.webp`; `.jxl` for a JPEG XL). Browsers take
+the header over the URL, so a saved preview is never a WebP file with a
+`.jpg` name.
 
 Wherever a filename is split into stem and extension (this download name,
 the archive dedupe, the sheet named after a `rows` blob), the extension is
@@ -221,7 +222,7 @@ for a cosmetic rule, so "is a known extension" is replaced by "looks like
 one", and the cap of five letters is what lets `jsonl` and `fastq`
 through. It also lets `notes`, `data` and `draft` through: `my.notes.gz`
 splits before `.notes.gz`. That costs a dedupe counter in an odd place
-(`my-1.notes.gz`), a sheet named `my` and a preview called `my.webp`,
+(`my-1.notes.gz`), a sheet named `my` and a WebP preview called `my.webp`,
 all of them cosmetic, and is preferred to the alternatives: the last dot
 alone, which breaks every `a.tar.gz` and is what Rails, Go and Firefox
 live with; a curated list, which is what Chromium (`tar` only) and the
@@ -493,9 +494,9 @@ string with everything serving a `ready` blob needs (the wrapped data key
 and its KEK id, the stream header and segment size, the size, checksum and
 content type of the original, the category, the scan state and the upload
 time, and for each representation
-the blob has a row for, its kind, state, version, digest and size, a
-counted list in which a `disabled` kind is absent as it is in the table;
-format in `blob::envelope`). The list carries every row, the two kinds
+the blob has a row for, its kind, state, version, format, digest and
+size, a counted list in which a `disabled` kind is absent as it is in
+the table; format in `blob::envelope`). The list carries every row, the two kinds
 there are being the pictures the public port serves; a data representation,
 should one come, would be private-port only and never sealed. It travels as the signed query parameter `e`, so it is
 covered by the signature like the rest of the target, and the wrapped key
@@ -2204,8 +2205,8 @@ and kind, keyed by the pair and nothing else: nothing refers to a
 representation by an id of its own, jobs are per blob and objects are
 `<shard>/<blob id>/<kind>`, so the primary key is the one-per-kind
 guarantee, the lookup path and the table's only index. The row carries
-the state, the version, the digest and size of what was rendered (held
-to `ready` by a `CHECK` pair), the kind's own columns, nullable with a
+the state, the version, the format, digest and size of what was rendered
+(held to `ready` by a `CHECK` each), the kind's own columns, nullable with a
 `CHECK` each (`source` and `timed_out` for the preview; the kinds are few
 and known, and a `detail jsonb` would lose the `CHECK`s and the typed
 decode for nothing), and an `updated_at` of its own, kept by the trigger
@@ -2220,16 +2221,65 @@ update waits for its verdict and sees the state it leaves, as the
 conditional update on `blobs` did when the states were its columns, and a
 `ready` picture is never recorded on a deleted blob. The rows live and
 die with the blob: a terminal blob keeps them until the reaper prunes the
-tombstone, and `ON DELETE CASCADE` takes them. A `representations jsonb`
+tombstone, and `ON DELETE CASCADE` takes them. In the metadata the rows
+appear as one `representations` object keyed by kind, each entry with its
+`state` and, with `ready`, the `format`, `checksum` and `size`, the
+preview's with its `source`; `version` and `timed_out` stay private to
+the row. A `representations jsonb`
 column on `blobs` was considered and rejected (no join, but a conditional
 update on a nested path is clumsy, nothing checks it, and the audit cannot
 index it); so was a blob row per representation, Active Storage's variant
 records, which pay for an identity, a key, a checksum and a purge cycle
 of their own, none of which a representation that lives and dies with its
-blob needs. In the metadata the rows appear as one `representations`
-object keyed by kind, each entry with its `state` and, with `ready`, the
-`checksum` and `size`, the preview's with its `source`; `version` and
-`timed_out` stay private to the row.
+blob needs.
+
+*Format.* The pictures are WebP by default, or JPEG XL where the
+deployment chooses it (`media.format`); the choice is the deployment's,
+not the API's, and nothing in the contract says WebP. Each row records
+the format it was rendered in, beside the digest and size and held to
+`ready` like them, and the picture is served as the row says, not as the
+configuration says today: `Content-Type`, download extension and the
+metadata's `format` come from the row (or the envelope, which carries the
+format too). A client reads the type from the response and
+never assumes one. The icons served in a thumbnail's place are rendered
+at build time in every format and served in `media.format`, so that a
+deployment answers its representation routes in one format, placeholder
+included; a change of setting switches them at once, nothing to
+regenerate.
+
+JPEG XL is the format the web is moving to: Safari since 17 (2023),
+Chrome since 155 and Firefox since 158 (both October 2026) decode it by
+default; Edge, the Firefox ESR of 2026 and devices on an old iOS do not
+yet, and the agents of an administration are that tail. So WebP stays
+the default and JPEG XL is opt-in, and switching is a configuration
+change plus a `media.variant_version` bump that regenerates every
+picture lazily, as any renderer change does, never an API break: the
+default can flip in a later release with a changelog line. Making JPEG
+XL the default now was rejected, since it would need a WebP fallback for
+the tail, and a fallback stored beside every picture is a second object,
+encode and digest pair per representation, at a billion blobs, paid by
+every deployment for the year or two the tail lasts. Should a deployment
+want JPEG XL before the tail is gone, the fallback is designed, not
+built: `media.webp_fallback = true`, one more object per kind at
+`<kind>.webp` and a nullable digest and size pair on the row and in the
+envelope, a signed `format` query parameter for `<picture>` sources and
+downloads, and content negotiation on `Accept` with `Vary: Accept` when
+the parameter is absent, so an `<img>` tag keeps working everywhere. A
+boolean, not a format: WebP is the only format every browser decodes,
+so the only fallback there is, and the name says so. Explicit, not
+implied by `format = "jxl"`: a second encode, object and digest per
+picture is a cost an operator writes down, a deployment whose clients
+are all known wants JPEG XL without it, and the day the default flips
+to JPEG XL the fallback must not come along for everyone. It is
+refused at startup unless `format` is `"jxl"`, since it means nothing
+otherwise. Regeneration deletes a `<kind>.webp` the setting no longer
+asks for, so turning it off is unsetting the key and bumping the
+version; the release that drops the code makes the key a startup error
+and the same bump clears what is left. AVIF was considered for
+both roles and rejected: as a fallback its own tail (Edge before 121,
+Safari before 16) overlaps the one it would cover, and as an interim
+default it would mean two full regenerations instead of one, for an
+encoder several times slower than WebP's. It stays an input format.
 
 A representation left out of `representations` at creation is `disabled`,
 which is the absence of a row: never stored, so neither the eager render
@@ -2252,7 +2302,9 @@ own, which does not exist.
 Everything goes through one operation, `vips thumbnail`, run as a subprocess
 (see "Sandboxing"): shrink-on-load where the format allows it, EXIF
 orientation applied, colour converted to sRGB, every piece of metadata
-dropped, lossy WebP out. The image is scaled to fit the box, never cropped.
+dropped, a lossy WebP or JPEG XL out (`media.format`, which vips picks the
+saver by from the output's extension). The image is scaled to fit the
+box, never cropped.
 Pixels are never enlarged, a small image stays small; a PDF page or an SVG
 is vector with a nominal size, so it is rendered at whatever scale fills
 the box. `--fail-on error` makes a truncated or malformed file a rejection
@@ -2264,7 +2316,7 @@ is the job's work directory, so anything it spills is cleaned up with it.
 Only files with a known source are attempted:
 
 - image types libvips loads natively: JPEG, PNG, GIF, WebP, TIFF, HEIF/AVIF,
-  SVG, JPEG 2000. Everything else under `image/*` would go through
+  JPEG XL, SVG, JPEG 2000. Everything else under `image/*` would go through
   ImageMagick, more attack surface than it is worth, and gets the icon.
   BMP is in that tail: libvips has no loader of its own for it, whatever
   the format's age suggests;
@@ -2396,7 +2448,8 @@ as for the original.
 They are small and served whole, with a strong `ETag` of the content and
 `Cache-Control: private, max-age=86400`: not `immutable`, since a version
 bump changes them under the same URL. Each representation's row records
-the SHA-256 and the size of the rendered WebP (`sha256`, `size`), set with
+the format, the SHA-256 and the size of the rendered picture (`format`,
+`sha256`, `size`), set with
 `ready` and cleared with any other state, which `CHECK`s on the table
 hold, so a conditional request answered `304` and a `HEAD` never read the
 object; only a `GET` with a body to send does.
@@ -2456,16 +2509,18 @@ parameters `disposition` (`inline`, the default, or `attachment`) and
 
 ### Thumbnail
 
-Always exists. WebP, autorotated from EXIF, fitted into the
-`media.thumbnail` box. For files that cannot be rendered, a pre-rendered
-category icon with a type badge, served with the same URL shape. The icons
-are rendered from `crates/agrafe-render/assets/icons/icon.svg` by
-`scripts/icons.sh` and embedded in the binary, so serving one needs no
-renderer and no asset directory.
+Always exists. A picture in `media.format`, autorotated from EXIF, fitted
+into the `media.thumbnail` box. For files that cannot be rendered, a
+pre-rendered category icon with a type badge, served with the same URL
+shape and in the same `media.format`. The icons are rendered from
+`crates/agrafe-render/assets/icons/icon.svg` by `scripts/icons.sh`, once
+per format (lossless for JPEG XL, which is smaller than lossy on flat
+colours), and embedded in the binary, so serving one needs no renderer
+and no asset directory.
 
 | Blob | Thumbnail | Served | `Cache-Control` |
 |---|---|---|---|
-| `ready` | `ready` | the WebP | `private, max-age=86400` |
+| `ready` | `ready` | the picture | `private, max-age=86400` |
 | `ready` | `pending` | icon, `X-Representation-State: pending` | `no-store` |
 | `ready` | `failed`, `unavailable`, `disabled` | icon, state in the header | `private, max-age=86400` |
 | not yet `ready` | any | icon, `pending` | `no-store` |
@@ -2589,10 +2644,11 @@ costs, is under "Sandboxing".
 
 ### Preview
 
-WebP, not JPEG: smaller, lossless-capable, alpha, universally supported, and it
-shares one encoder with thumbnails. Bounded to `media.preview.max_dimension`,
-autorotated, always transcoded so decoder bombs and malformed containers never
-reach a client.
+WebP, not JPEG: smaller, lossless-capable, alpha, universally supported,
+and it shares one encoder with thumbnails; or JPEG XL, by the same
+`media.format` (see "Derived representations", *Format*). Bounded to
+`media.preview.max_dimension`, autorotated, always transcoded so decoder
+bombs and malformed containers never reach a client.
 
 Preview exists for every file we can render, not only images. The UI must key
 on "has preview", never on category. Sources, in order:

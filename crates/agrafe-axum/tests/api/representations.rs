@@ -84,7 +84,9 @@ async fn image_gets_a_thumbnail_and_a_preview() {
     assert!(!run_job(&app, JobKind::Render).await);
     let blob = get_blob(&app, id).await;
     assert_eq!(blob["representations"]["thumbnail"]["state"], "ready");
+    assert_eq!(blob["representations"]["thumbnail"]["format"], "webp");
     assert_eq!(blob["representations"]["preview"]["state"], "ready");
+    assert_eq!(blob["representations"]["preview"]["format"], "webp");
     assert_eq!(blob["representations"]["preview"]["source"], "image");
 
     // Fitted into the box, upright, never enlarged.
@@ -168,6 +170,129 @@ async fn image_gets_a_thumbnail_and_a_preview() {
         .await
         .unwrap();
     assert_ne!(&stored[..4], b"RIFF");
+}
+
+/// A JPEG XL upload is a picture like any other, rendered into the
+/// deployment's format, WebP by default.
+#[tokio::test]
+async fn jxl_uploads_get_a_thumbnail_and_a_preview() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    // The rotated JPEG made upright by vips, 300x600.
+    let blob = ready_file(&app, "photo.jxl", "image/jxl", &fixture("photo.jxl")).await;
+    let id = id_of(&blob);
+    assert_eq!(blob["category"], "image");
+    render_all(&app).await;
+    let blob = get_blob(&app, id).await;
+    assert_eq!(blob["representations"]["preview"]["state"], "ready");
+    assert_eq!(blob["representations"]["preview"]["source"], "image");
+    assert_eq!(blob["representations"]["preview"]["format"], "webp");
+    let (_, size) = rendered(&app, &format!("/blobs/{id}/thumbnail/photo.jxl")).await;
+    assert_eq!(size, (128, 256));
+    let (headers, size) = rendered(&app, &format!("/blobs/{id}/preview/photo.jxl")).await;
+    assert_eq!(size, (200, 400));
+    assert_eq!(
+        headers["content-disposition"],
+        "inline; filename=\"photo.webp\"; filename*=UTF-8''photo%2Ewebp"
+    );
+}
+
+/// With `media.format = "jxl"`, the pictures are JPEG XL, named and typed
+/// as such on the row, in the metadata, in the envelope and in the
+/// response, and so is the icon served in a thumbnail's place.
+#[tokio::test]
+async fn jxl_is_an_opt_in_output_format() {
+    use agrafe::blob::ImageFormat;
+
+    let db = TestDatabase::new().await;
+    let app = setup_tuned(db, fake_clamd().await, |c| {
+        c.media.render.format = ImageFormat::Jxl;
+    })
+    .await;
+    let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("rotated.jpg")).await;
+    let id = id_of(&blob);
+    let thumbnail = format!("/blobs/{id}/thumbnail/photo.jpg");
+    let preview = format!("/blobs/{id}/preview/photo.jpg");
+
+    // The placeholder is the JPEG XL icon, and its download name says so.
+    let headers = pending_jxl_icon(&app, &thumbnail).await;
+    assert_eq!(
+        headers["content-disposition"],
+        "inline; filename=\"photo.jxl\"; filename*=UTF-8''photo%2Ejxl"
+    );
+
+    assert!(run_job(&app, JobKind::Render).await);
+    let blob = get_blob(&app, id).await;
+    assert_eq!(blob["representations"]["thumbnail"]["format"], "jxl");
+    assert_eq!(blob["representations"]["preview"]["format"], "jxl");
+
+    // The picture, from the row.
+    let (headers, size) = rendered_jxl(&app, &thumbnail).await;
+    assert_eq!(size, (128, 256));
+    assert_eq!(
+        headers["content-disposition"],
+        "inline; filename=\"photo.jxl\"; filename*=UTF-8''photo%2Ejxl"
+    );
+    let etag = headers["etag"].to_str().unwrap().to_string();
+    let (_, size) = rendered_jxl(&app, &preview).await;
+    assert_eq!(size, (200, 400));
+
+    // `HEAD` answers from the row, with the format it records.
+    let head = Request::builder()
+        .method(Method::HEAD)
+        .uri(&thumbnail)
+        .body(Body::empty())
+        .unwrap();
+    let (status, headers, body) = fetch(&app.private, head).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["content-type"], "image/jxl");
+    assert!(body.is_empty());
+
+    // The sealed public URL serves from the envelope, which carries the
+    // format too.
+    let (status, headers, body) =
+        fetch(&app.public, get_with(&public_url(&blob, "thumbnail"), &[])).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["content-type"], "image/jxl");
+    assert_eq!(headers["etag"], etag.as_str());
+    assert_eq!(jxl_size(&body), (128, 256));
+
+    // A thumbnail regenerated on its own is made from the stored preview,
+    // a JPEG XL the loader allowlist lets through.
+    sqlx::query("UPDATE representations SET version = 0 WHERE blob_id = $1 AND kind = 'thumbnail'")
+        .bind(parse_id(id))
+        .execute(app.state.pool())
+        .await
+        .unwrap();
+    pending_jxl_icon(&app, &thumbnail).await;
+    assert!(run_job(&app, JobKind::Render).await);
+    let (_, size) = rendered_jxl(&app, &thumbnail).await;
+    assert_eq!(size, (128, 256));
+}
+
+/// The icon served in a pending thumbnail's place on a deployment with
+/// `media.format = "jxl"`: a JPEG XL like the pictures.
+async fn pending_jxl_icon(app: &TestApp, uri: &str) -> HeaderMap {
+    let (status, headers, body) = fetch(&app.private, get_with(uri, &[])).await;
+    assert_eq!(status, StatusCode::OK, "{uri}");
+    assert_eq!(headers["content-type"], "image/jxl");
+    assert_eq!(state_of(&headers), "pending");
+    assert_eq!(cache_of(&headers), "no-store");
+    assert!(!headers.contains_key("etag"));
+    assert_eq!(jxl_size(&body), (256, 256));
+    headers
+}
+
+/// A rendered representation of a deployment on `media.format = "jxl"`:
+/// `200`, JPEG XL, with its size.
+async fn rendered_jxl(app: &TestApp, uri: &str) -> (HeaderMap, (u32, u32)) {
+    let (status, headers, body) = fetch(&app.private, get_with(uri, &[])).await;
+    assert_eq!(status, StatusCode::OK, "{uri}");
+    assert_eq!(headers["content-type"], "image/jxl");
+    assert_eq!(state_of(&headers), "ready");
+    assert_eq!(cache_of(&headers), "private, max-age=86400");
+    assert_eq!(headers["content-length"], body.len().to_string().as_str());
+    (headers, jxl_size(&body))
 }
 
 #[tokio::test]
@@ -1245,7 +1370,8 @@ async fn representations_regenerate_when_missing_or_stale() {
 
     // A failed representation is retried on a version bump as well.
     sqlx::query(
-        "UPDATE representations SET state = 'failed', sha256 = NULL, size = NULL, version = 0 \
+        "UPDATE representations SET state = 'failed', format = NULL, sha256 = NULL, size = NULL, \
+         version = 0 \
          WHERE blob_id = $1 AND kind = 'thumbnail'",
     )
     .bind(parse_id(id))
@@ -1268,13 +1394,15 @@ async fn the_row_holds_a_digest_and_a_size_with_ready_alone() {
     render_all(&app).await;
 
     for statement in [
+        "UPDATE representations SET format = NULL WHERE blob_id = $1 AND kind = 'thumbnail'",
+        "UPDATE representations SET format = 'avif' WHERE blob_id = $1 AND kind = 'thumbnail'",
         "UPDATE representations SET sha256 = NULL WHERE blob_id = $1 AND kind = 'thumbnail'",
         "UPDATE representations SET size = NULL WHERE blob_id = $1 AND kind = 'thumbnail'",
         "UPDATE representations SET state = 'pending' WHERE blob_id = $1 AND kind = 'thumbnail'",
         "UPDATE representations SET sha256 = NULL WHERE blob_id = $1 AND kind = 'preview'",
         "UPDATE representations SET size = NULL WHERE blob_id = $1 AND kind = 'preview'",
         "UPDATE representations SET state = 'failed' WHERE blob_id = $1 AND kind = 'preview'",
-        "UPDATE representations SET state = 'disabled', sha256 = NULL, size = NULL \
+        "UPDATE representations SET state = 'disabled', format = NULL, sha256 = NULL, size = NULL \
          WHERE blob_id = $1 AND kind = 'preview'",
     ] {
         let err = sqlx::query(statement)

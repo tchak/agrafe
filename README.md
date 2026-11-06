@@ -6,8 +6,8 @@
 [![Rust 1.94+](https://img.shields.io/badge/rust-1.94%2B-orange.svg)](https://www.rust-lang.org)
 [![Edition 2024](https://img.shields.io/badge/edition-2024-orange.svg)](https://doc.rust-lang.org/edition-guide/rust-2024/)
 
-A file storage service: encrypted at rest, virus scanned, with WebP previews
-and thumbnails, and server-side generation of spreadsheets, ZIP archives and
+A file storage service: encrypted at rest, virus scanned, with previews and
+thumbnails (WebP, or JPEG XL), and server-side generation of spreadsheets, ZIP archives and
 PDF, DOCX and ODT documents. Rust, Postgres, and an object store: S3-compatible, Azure
 Blob Storage or Google Cloud Storage.
 

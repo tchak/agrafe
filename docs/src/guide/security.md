@@ -233,9 +233,9 @@ anonymous uploader cannot learn what to evade.
 
 Originals carry `X-Content-Type-Options: nosniff` and
 `Content-Security-Policy: sandbox`, so an uploaded HTML page or SVG never
-runs scripts as your origin. Previews and thumbnails are always transcoded
-to WebP, so decoder bombs and malformed containers never reach a client, and
-all metadata is stripped from images, EXIF location included.
+runs scripts as your origin. Previews and thumbnails are always transcoded,
+to WebP or JPEG XL, so decoder bombs and malformed containers never reach a
+client, and all metadata is stripped from images, EXIF location included.
 
 Uploaded filenames cannot contain path separators, control characters or
 bidirectional formatting characters, which can disguise an extension

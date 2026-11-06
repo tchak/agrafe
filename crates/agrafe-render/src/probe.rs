@@ -147,6 +147,11 @@ const PROBE_LOADERS: &[(&str, &str, &[u8])] = &[
         "pixel.jp2",
         include_bytes!("../assets/probe/pixel.jp2"),
     ),
+    (
+        "a JPEG XL",
+        "pixel.jxl",
+        include_bytes!("../assets/probe/pixel.jxl"),
+    ),
 ];
 const PROBE_PDF: &[u8] = include_bytes!("../assets/probe/page.pdf");
 const PROBE_IMAGE_PDF: &[u8] = include_bytes!("../assets/probe/image.pdf");
@@ -239,12 +244,13 @@ fn canonical(path: &Path) -> std::path::PathBuf {
 
 /// Render a text sample, a one-pixel PNG, a one-page PDF, the JPEG pulled
 /// out of a PDF that wraps one, an image for each optional loader on the
-/// allowlist (GIF, WebP, TIFF, HEIC, AVIF, JPEG 2000) and the map of a
-/// one-point GeoJSON through the exact command lines the jobs use. vips
-/// exits non-zero for a bad file and for a missing loader or an unknown
-/// option alike, so without this a libvips built without PDF, SVG or HEIF
-/// support, or too old for an option, would mark every file `failed`
-/// instead of failing the deployment. The
+/// allowlist (GIF, WebP, TIFF, HEIC, AVIF, JPEG 2000, JPEG XL) and the map
+/// of a one-point GeoJSON through the exact command lines the jobs use,
+/// into `media.format`, so a libvips without that saver is found out too.
+/// vips exits non-zero for a bad file and for a missing loader or an
+/// unknown option alike, so without this a libvips built without PDF, SVG
+/// or HEIF support, or too old for an option, would mark every file
+/// `failed` instead of failing the deployment. The
 /// text sample, the wrapped JPEG and the map also catch a
 /// `render_text_command`, an `extract_command` or a `render_geo_command`
 /// that is not the helper: a missing one fails every job, a wrong one
@@ -301,7 +307,7 @@ async fn probe_tools(config: &Config, tmp_dir: Option<&Path>) -> Result<(), Prob
     tokio::fs::write(&pixel, PROBE_PNG).await?;
     let pdf = workdir.path().join("page.pdf");
     tokio::fs::write(&pdf, PROBE_PDF).await?;
-    let output = workdir.path().join("probe.webp");
+    let output = workdir.path().join(fit.file_name("probe"));
     let mut inputs = vec![
         ("a PNG", pixel, Input::Raster),
         ("a PDF page", pdf, Input::Page),
@@ -315,7 +321,7 @@ async fn probe_tools(config: &Config, tmp_dir: Option<&Path>) -> Result<(), Prob
     }
     for (what, input, kind) in inputs {
         let vips = config.vips_command.clone();
-        let verdict = vips::to_webp(config, &input, kind, &output, fit)
+        let verdict = vips::render(config, &input, kind, &output, fit)
             .await
             .map_err(|source| ProbeError::Render {
                 what,
@@ -378,7 +384,7 @@ async fn probe_tools(config: &Config, tmp_dir: Option<&Path>) -> Result<(), Prob
         }
     }
     let map = workdir.path().join(geo::MAP);
-    let verdict = vips::to_webp(config, &map, Input::Raster, &output, fit)
+    let verdict = vips::render(config, &map, Input::Raster, &output, fit)
         .await
         .map_err(|source| ProbeError::Render {
             what: "a map",
@@ -411,7 +417,7 @@ pub async fn probe_office(config: &Config, tmp_dir: Option<&Path>) -> Result<(),
     let command = config.office.command.clone().unwrap_or_default();
     let workdir = crate::workdir(tmp_dir)?;
     let fit = Fit::thumbnail(config);
-    let output = workdir.path().join("probe.webp");
+    let output = workdir.path().join(fit.file_name("probe"));
     for (what, name, content_type, bytes, two_pages) in [
         ("a two-page DOCX", "writer", DOCX, PROBE_DOCX, true),
         ("a two-page XLSX", "calc", XLSX, PROBE_XLSX, true),
@@ -439,7 +445,7 @@ pub async fn probe_office(config: &Config, tmp_dir: Option<&Path>) -> Result<(),
             }
         };
         let vips = config.vips_command.clone();
-        let render = |page| vips::page_to_webp(config, &pdf, page, &output, fit);
+        let render = |page| vips::render_page(config, &pdf, page, &output, fit);
         if let Verdict::Rejected(rejection) =
             render(0).await.map_err(|source| ProbeError::Render {
                 what,

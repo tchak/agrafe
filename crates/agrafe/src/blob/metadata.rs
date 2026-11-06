@@ -16,7 +16,7 @@ use uuid::Uuid;
 use super::envelope::Envelope;
 use super::urls::BlobUrls;
 use super::{
-    Blob, BlobState, InputType, PreviewSource, Representation, RepresentationRow,
+    Blob, BlobState, ImageFormat, InputType, PreviewSource, Representation, RepresentationRow,
     RepresentationState, Representations, ScanState,
 };
 use crate::app::Agrafe;
@@ -206,10 +206,13 @@ pub struct RepresentationMetadata {
     /// Where the rendering stands; never `disabled`, that kind being
     /// absent.
     pub state: RepresentationState,
-    /// SHA-256 of the rendered WebP, base64, with `ready`.
+    /// The format the picture is served in, `webp` or `jxl`, with `ready`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<ImageFormat>,
+    /// SHA-256 of the rendered picture, base64, with `ready`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checksum: Option<String>,
-    /// Size of the rendered WebP in bytes, with `ready`.
+    /// Size of the rendered picture in bytes, with `ready`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<i64>,
     /// What the kind records besides.
@@ -236,6 +239,7 @@ impl RepresentationMetadata {
     pub fn new(row: &RepresentationRow) -> Self {
         Self {
             state: row.state,
+            format: row.rendered.map(|r| r.format),
             checksum: row.rendered.map(|r| STANDARD.encode(r.sha256)),
             size: row.rendered.and_then(|r| i64::try_from(r.size).ok()),
             detail: match row.kind {

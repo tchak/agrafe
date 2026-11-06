@@ -1,7 +1,9 @@
 #!/bin/sh
 # Renders the thumbnail placeholder icons embedded in agrafe-render from
-# crates/agrafe-render/assets/icons/icon.svg. Needs `vips` with SVG support. The
-# results are committed; run this only to change the design.
+# crates/agrafe-render/assets/icons/icon.svg, once per output format
+# (`media.format`): WebP and JPEG XL. Needs `vips` with SVG, WebP and JPEG
+# XL support. The results are committed; run this only to change the design
+# or to add a format.
 set -eu
 cd "$(dirname "$0")/../crates/agrafe-render/assets/icons"
 tmp=$(mktemp -d)
@@ -11,6 +13,9 @@ render() {
     name=$1 color=$2 label=$3
     sed -e "s/{COLOR}/$color/" -e "s/{LABEL}/$label/" icon.svg > "$tmp/$name.svg"
     vips copy "$tmp/$name.svg" "$name.webp[Q=90,keep=none]"
+    # Flat colours and text: lossless JPEG XL is a quarter the size of
+    # lossy at the same quality setting.
+    vips copy "$tmp/$name.svg" "$name.jxl[lossless,keep=none]"
 }
 
 # Categories.

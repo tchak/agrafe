@@ -1,15 +1,17 @@
-//! Rasterising a file to a bounded WebP with `vips thumbnail`, and
-//! stacking the layers of a map with `vips composite`.
+//! Rasterising a file to a bounded picture, WebP or JPEG XL, with `vips
+//! thumbnail`, and stacking the layers of a map with `vips composite`.
 //!
 //! One operation covers every input: images are decoded with shrink-on-load
 //! where the format allows it, PDFs are rendered at the scale that fits the
 //! box, EXIF orientation is applied, colour is converted to sRGB and every
 //! piece of metadata is dropped. The output is always a freshly encoded
-//! WebP, so nothing from the input container reaches a client.
+//! picture in the configured format, so nothing from the input container
+//! reaches a client.
 
 use std::path::Path;
 
 use agrafe_sandbox as sandbox;
+use agrafe_types::ImageFormat;
 use agrafe_types::sniff::{LOADER_SNIFF_LEN, loader_for};
 use tokio::io::AsyncReadExt;
 
@@ -20,35 +22,45 @@ use crate::{Config, Error, Rejection, Verdict};
 /// address space limit is then the same on a 4-core box and a 64-core one.
 const VIPS_CONCURRENCY: &str = "2";
 
-/// Target box and encoder quality. The image is scaled to fit inside the
-/// box, never cropped.
+/// Target box, output format and encoder quality. The image is scaled to
+/// fit inside the box, never cropped.
 #[derive(Debug, Clone, Copy)]
 pub struct Fit {
     /// The box's width, in pixels.
     pub width: u32,
     /// The box's height, in pixels.
     pub height: u32,
-    /// The WebP encoder's quality, `0..=100`.
+    /// The format the picture is encoded in, `media.format`.
+    pub format: ImageFormat,
+    /// The encoder's quality, `0..=100`.
     pub quality: u8,
 }
 
 impl Fit {
-    /// The `[media.thumbnail]` box and quality.
+    /// The `[media.thumbnail]` box and quality, in `media.format`.
     pub fn thumbnail(config: &Config) -> Self {
         Self {
             width: config.thumbnail.width,
             height: config.thumbnail.height,
+            format: config.format,
             quality: config.thumbnail.quality,
         }
     }
 
-    /// The `[media.preview]` box, a square, and quality.
+    /// The `[media.preview]` box, a square, and quality, in `media.format`.
     pub fn preview(config: &Config) -> Self {
         Self {
             width: config.preview.max_dimension,
             height: config.preview.max_dimension,
+            format: config.format,
             quality: config.preview.quality,
         }
+    }
+
+    /// The name of a picture in this format, `stem` with the format's
+    /// extension: vips picks its saver by it.
+    pub fn file_name(&self, stem: &str) -> String {
+        format!("{stem}.{}", self.format.extension())
     }
 }
 
@@ -74,11 +86,13 @@ impl Input {
     }
 }
 
-/// Render `input` into `output` as a WebP fitting `fit`, and return its
-/// bytes. `output` must not contain `[`, which vips reads as options, and
-/// its directory is where vips spills intermediates. vips never declines:
-/// the verdict is `Rendered` or `Rejected`.
-pub async fn to_webp(
+/// Render `input` into `output` as a picture in `fit`'s format fitting its
+/// box, and return its bytes. `output` is named by [`Fit::file_name`], so
+/// that its extension is the format's, which is what vips picks the saver
+/// by; it must not contain `[`, which vips reads as options, and its
+/// directory is where vips spills intermediates. vips never declines: the
+/// verdict is `Rendered` or `Rejected`.
+pub async fn render(
     config: &Config,
     input: &Path,
     kind: Input,
@@ -89,10 +103,10 @@ pub async fn to_webp(
 }
 
 /// Render page `page`, counted from zero, of `input`, a document, like
-/// [`to_webp`]. A page the document does not have is a `Rejected`, which
+/// [`render`]. A page the document does not have is a `Rejected`, which
 /// is how the probe tells a one-page PDF from a longer one without a PDF
 /// parser. `input` must not contain `[` either.
-pub(crate) async fn page_to_webp(
+pub(crate) async fn render_page(
     config: &Config,
     input: &Path,
     page: u32,
@@ -110,10 +124,15 @@ async fn thumbnail(
     output: &Path,
     fit: Fit,
 ) -> Result<Verdict<Vec<u8>>, Error> {
+    debug_assert_eq!(
+        output.extension().and_then(|ext| ext.to_str()),
+        Some(fit.format.extension()),
+        "the output is named for another format than it is encoded in"
+    );
     let Some(loader) = loader_for(&head(input).await.map_err(Error::Input)?) else {
         return Ok(Verdict::Rejected(Rejection::Unsupported));
     };
-    tracing::debug!(loader, "rendering");
+    tracing::debug!(loader, format = %fit.format, "rendering");
     let size = match kind {
         Input::Raster => "down",
         Input::Page => "both",
@@ -156,7 +175,7 @@ async fn thumbnail(
 const BLEND_OVER: &str = "2";
 
 /// Stack `layers`, bottom to top, and `svg` over them into `output`, all
-/// of them file names in `dir`, in vips's native format for `to_webp` to
+/// of them file names in `dir`, in vips's native format for `render` to
 /// pick up. The output takes the size of the bottom image, so the layers
 /// must already be the SVG's size, see [`fit_layer`]. The SVG is rendered
 /// at 72 dpi, where its pixel `width` and `height` are its size, which is

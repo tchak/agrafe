@@ -13,7 +13,8 @@
 //! u8 count, then per representation:
 //!   str kind, str state,
 //!   u8 has version, i32 version                  (when present)
-//!   u8 rendered, bytes sha256 (32), u64 size     (when rendered)
+//!   u8 rendered, bytes sha256 (32), u64 size,    (when rendered)
+//!     str format
 //! ```
 //!
 //! Integers are big endian. Every value round-trips: microseconds are
@@ -58,8 +59,8 @@ pub struct SealedRepresentation {
     pub state: RepresentationState,
     /// The version it was rendered with; `None` before its first render.
     pub version: Option<i32>,
-    /// The digest and size of the rendered WebP, when the row recorded
-    /// both.
+    /// The format, digest and size of the rendered picture, when the row
+    /// recorded them.
     pub rendered: Option<Rendered>,
 }
 
@@ -211,6 +212,7 @@ impl Envelope {
                     w.u8(1);
                     w.bytes(&r.sha256);
                     w.u64(r.size);
+                    w.str(r.format.as_str());
                 }
                 None => w.u8(0),
             }
@@ -267,10 +269,16 @@ impl Envelope {
             };
             let rendered = match r.u8()? {
                 0 => None,
-                1 => Some(Rendered {
-                    sha256: r.bytes()?.try_into().map_err(|_| EnvelopeError)?,
-                    size: r.u64()?,
-                }),
+                1 => {
+                    let sha256 = r.bytes()?.try_into().map_err(|_| EnvelopeError)?;
+                    let size = r.u64()?;
+                    let format = r.str()?.parse().map_err(|_| EnvelopeError)?;
+                    Some(Rendered {
+                        format,
+                        sha256,
+                        size,
+                    })
+                }
                 _ => return Err(EnvelopeError),
             };
             representations.push(SealedRepresentation {
@@ -375,6 +383,7 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::blob::ImageFormat;
     use agrafe_crypto::streaming::HEADER_LEN;
 
     fn sample() -> Envelope {
@@ -400,6 +409,7 @@ mod tests {
                     state: RepresentationState::Ready,
                     version: Some(3),
                     rendered: Some(Rendered {
+                        format: ImageFormat::Jxl,
                         sha256: [4u8; 32],
                         size: 12_345,
                     }),
@@ -436,6 +446,7 @@ mod tests {
         let mut env = sample();
         env.representations[0].version = Some(0);
         env.representations[0].rendered = Some(Rendered {
+            format: ImageFormat::Webp,
             sha256: [4u8; 32],
             size: u64::from(u32::MAX) + 1,
         });
@@ -443,6 +454,7 @@ mod tests {
         let thumbnail = decoded.representation(Representation::Thumbnail).unwrap();
         assert_eq!(thumbnail.version, Some(0));
         assert_eq!(thumbnail.rendered.unwrap().size, u64::from(u32::MAX) + 1);
+        assert_eq!(thumbnail.rendered.unwrap().format, ImageFormat::Webp);
         assert_eq!(decoded.uploaded_at.unwrap().subsec_microsecond(), 123_456);
         assert_eq!(decoded, env);
     }

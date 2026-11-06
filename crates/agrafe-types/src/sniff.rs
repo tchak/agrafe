@@ -299,6 +299,7 @@ pub fn loader_for(head: &[u8]) -> Option<&'static str> {
         Some("image/webp") => return Some("webp"),
         Some("image/tiff") => return Some("tiff"),
         Some("image/heif" | "image/avif") => return Some("heif"),
+        Some("image/jxl") => return Some("jxl"),
         Some("image/jp2") => return Some("jp2k"),
         Some("application/pdf") => return Some("pdf"),
         // Text sniffers fire on XML, so an SVG falls through to its own
@@ -349,6 +350,16 @@ mod tests {
             Some("svg")
         );
         assert_eq!(loader_for(&[0xff, 0x4f, 0xff, 0x51, 0, 0x2f]), Some("jp2k"));
+        // A JPEG XL codestream, as `vips thumbnail` writes one, and the
+        // container, as `vips copy` and cameras write it.
+        assert_eq!(
+            loader_for(&[0xff, 0x0a, 0x78, 0x0c, 0x8e, 0x0d]),
+            Some("jxl")
+        );
+        assert_eq!(
+            loader_for(b"\0\0\0\x0cJXL \r\n\x87\n\0\0\0\x14ftypjxl "),
+            Some("jxl")
+        );
         // Known to infer, not to the allowlist: a camera raw file.
         assert_eq!(loader_for(b"II*\0\x10\0\0\0CR\x02\0"), None);
         // Known to infer, loadable by vips, but only through ImageMagick:
@@ -367,6 +378,10 @@ mod tests {
             Some("image/png")
         );
         assert_eq!(sniff(b"%PDF-1.4\n"), Some("application/pdf"));
+        assert_eq!(
+            sniff(&[0xff, 0x0a, 0x78, 0x0c, 0x8e, 0x0d]),
+            Some("image/jxl")
+        );
         assert_eq!(sniff(b"hello, world"), None);
         assert_eq!(sniff(b""), None);
         assert_eq!(sniff(br#"{"a": 1}"#), None);

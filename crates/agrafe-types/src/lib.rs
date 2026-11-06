@@ -10,6 +10,7 @@ pub mod classify;
 pub mod geojson;
 pub mod gml;
 pub mod gpx;
+pub mod image;
 pub mod kml;
 pub mod map;
 pub mod office;
@@ -20,6 +21,7 @@ mod xml;
 mod zip;
 
 pub use classify::{Category, classify};
+pub use image::ImageFormat;
 
 /// Error returned when a text column holds a value outside an enum.
 #[derive(Debug, thiserror::Error)]

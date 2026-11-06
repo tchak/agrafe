@@ -23,6 +23,7 @@ use uuid::Uuid;
 use crate::app::Agrafe;
 use crate::classify::Category;
 use crate::jobs::Priority;
+pub use agrafe_types::ImageFormat;
 pub use repo::{DEFAULT_LIMIT, ListParams, MAX_LIMIT, Page};
 
 /// Why a blob could not be deleted.
@@ -338,7 +339,7 @@ pub enum RepresentationState {
     /// To be rendered by a `render` job, from the upload or from the
     /// lazy repair of a missing object or a stale variant version.
     Pending,
-    /// Rendered and stored; served as WebP.
+    /// Rendered and stored; served in the format the row records.
     Ready,
     /// A renderer rejected the file. Final for this variant version.
     Failed,
@@ -364,10 +365,10 @@ agrafe_types::str_enum!(RepresentationState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Representation {
-    /// A WebP fitted into the `media.thumbnail` box; the category icon is
-    /// served in its place when there is none.
+    /// A picture fitted into the `media.thumbnail` box; the category icon
+    /// is served in its place when there is none.
     Thumbnail,
-    /// A WebP of the whole file bounded by `media.preview.max_dimension`.
+    /// A picture of the whole file bounded by `media.preview.max_dimension`.
     Preview,
 }
 
@@ -377,18 +378,27 @@ agrafe_types::str_enum!(Representation {
 });
 
 /// What the row records of a rendered representation: enough to answer a
-/// conditional or `HEAD` request without reading the object.
+/// conditional or `HEAD` request without reading the object, and to name
+/// what is served.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rendered {
-    /// SHA-256 of the rendered WebP.
+    /// The format the picture was encoded in, `media.format` when it was
+    /// rendered: what its `Content-Type` and download name say.
+    pub format: ImageFormat,
+    /// SHA-256 of the rendered picture.
     pub sha256: [u8; 32],
-    /// Size of the rendered WebP in bytes.
+    /// Size of the rendered picture in bytes.
     pub size: u64,
 }
 
 impl Rendered {
-    pub(crate) fn from_columns(sha256: Option<&[u8]>, size: Option<i64>) -> Option<Self> {
+    pub(crate) fn from_columns(
+        format: Option<&str>,
+        sha256: Option<&[u8]>,
+        size: Option<i64>,
+    ) -> Option<Self> {
         Some(Self {
+            format: format?.parse().ok()?,
             sha256: sha256?.try_into().ok()?,
             size: u64::try_from(size?).ok()?,
         })

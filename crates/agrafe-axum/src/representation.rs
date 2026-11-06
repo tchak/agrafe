@@ -22,7 +22,7 @@ use agrafe::blob::envelope::Envelope;
 use agrafe::blob::read::ReadError;
 use agrafe::blob::representation::{self, Resolved};
 use agrafe::blob::urls::MAX_WAIT;
-use agrafe::blob::{BlobHead, Rendered, Representation, RepresentationState};
+use agrafe::blob::{BlobHead, ImageFormat, Rendered, Representation, RepresentationState};
 use agrafe::encryption::UnwrapError;
 use agrafe::filename::split_extension;
 use agrafe::icons;
@@ -91,8 +91,16 @@ pub async fn serve(
         blob = refetch(state, blob.id, port).await?;
     };
 
-    let name = webp_name(query.filename.as_deref().unwrap_or(&blob.filename));
-    let disposition = original::content_disposition(query.disposition.as_deref(), &name)?;
+    // The download name takes the extension of what is served: the
+    // picture's recorded format, or the deployment's for the icon.
+    let filename = query.filename.as_deref().unwrap_or(&blob.filename);
+    let disposition = |format: ImageFormat| {
+        original::content_disposition(
+            query.disposition.as_deref(),
+            &picture_name(filename, format),
+        )
+    };
+    let icon_format = state.config().media.render.format;
     match served {
         Resolved::Ready(rendered) => {
             let served = image(
@@ -100,7 +108,7 @@ pub async fn serve(
                 &blob,
                 kind,
                 rendered,
-                disposition.clone(),
+                disposition(rendered.format)?,
                 method,
                 headers,
                 Origin::Row,
@@ -113,14 +121,20 @@ pub async fn serve(
                     kind,
                     &blob,
                     RepresentationState::Pending,
-                    disposition,
+                    icon_format,
+                    disposition(icon_format)?,
                     method,
                 ),
             }
         }
-        Resolved::Placeholder(rep_state) => {
-            placeholder(kind, &blob, rep_state, disposition, method)
-        }
+        Resolved::Placeholder(rep_state) => placeholder(
+            kind,
+            &blob,
+            rep_state,
+            icon_format,
+            disposition(icon_format)?,
+            method,
+        ),
         Resolved::NotReady(blob_state) => match kind {
             Representation::Thumbnail => {
                 let rep_state = if blob_state.is_terminal() {
@@ -128,7 +142,14 @@ pub async fn serve(
                 } else {
                     RepresentationState::Pending
                 };
-                placeholder(kind, &blob, rep_state, disposition, method)
+                placeholder(
+                    kind,
+                    &blob,
+                    rep_state,
+                    icon_format,
+                    disposition(icon_format)?,
+                    method,
+                )
             }
             Representation::Preview => Err(ApiError::Conflict(format!(
                 "blob is {blob_state} and not readable"
@@ -167,7 +188,10 @@ pub async fn serve_sealed(
         return Ok(None);
     }
     let blob = envelope.head(id, filename);
-    let name = webp_name(query.filename.as_deref().unwrap_or(filename));
+    let name = picture_name(
+        query.filename.as_deref().unwrap_or(filename),
+        rendered.format,
+    );
     let disposition = original::content_disposition(query.disposition.as_deref(), &name)?;
     image(
         state,
@@ -221,7 +245,12 @@ async fn image(
         return Ok(Some(response));
     }
     if method == Method::HEAD {
-        webp_headers(response.headers_mut(), rendered.size, disposition);
+        picture_headers(
+            response.headers_mut(),
+            rendered.format,
+            rendered.size,
+            disposition,
+        );
         return Ok(Some(response));
     }
     let loaded = match origin {
@@ -238,18 +267,25 @@ async fn image(
     let Some(bytes) = loaded else {
         return Ok(None);
     };
-    webp_headers(response.headers_mut(), bytes.len() as u64, disposition);
+    picture_headers(
+        response.headers_mut(),
+        rendered.format,
+        bytes.len() as u64,
+        disposition,
+    );
     *response.body_mut() = Body::from(bytes);
     Ok(Some(response))
 }
 
 /// What stands in for a representation that is not there: the icon for a
-/// thumbnail, a `404` for a preview. A pending one must not be cached, the
-/// client is expected back.
+/// thumbnail, in the deployment's `media.format` like the pictures, a
+/// `404` for a preview. A pending one must not be cached, the client is
+/// expected back.
 fn placeholder(
     kind: Representation,
     blob: &BlobHead,
     rep_state: RepresentationState,
+    format: ImageFormat,
     disposition: HeaderValue,
     method: &Method,
 ) -> ApiResult<Response> {
@@ -260,9 +296,14 @@ fn placeholder(
     };
     let mut response = match kind {
         Representation::Thumbnail => {
-            let icon = icons::icon_for(blob.category, &blob.content_type);
+            let icon = icons::icon_for(format, blob.category, &blob.content_type);
             let mut response = Response::new(Body::empty());
-            webp_headers(response.headers_mut(), icon.len() as u64, disposition);
+            picture_headers(
+                response.headers_mut(),
+                format,
+                icon.len() as u64,
+                disposition,
+            );
             if method != Method::HEAD {
                 *response.body_mut() = Body::from(icon);
             }
@@ -283,8 +324,11 @@ fn placeholder(
     Ok(response)
 }
 
-fn webp_headers(h: &mut HeaderMap, len: u64, disposition: HeaderValue) {
-    h.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/webp"));
+fn picture_headers(h: &mut HeaderMap, format: ImageFormat, len: u64, disposition: HeaderValue) {
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(format.content_type()),
+    );
     h.insert(header::CONTENT_LENGTH, HeaderValue::from(len));
     h.insert(header::CONTENT_DISPOSITION, disposition);
     h.insert(
@@ -297,11 +341,11 @@ fn state_value(state: RepresentationState) -> HeaderValue {
     HeaderValue::from_static(state.as_str())
 }
 
-/// The download name of a representation: the file's name with a `.webp`
-/// extension in place of its own.
-fn webp_name(filename: &str) -> String {
+/// The download name of a representation: the file's name with the
+/// picture format's extension in place of its own.
+fn picture_name(filename: &str, format: ImageFormat) -> String {
     let (stem, _) = split_extension(filename);
-    format!("{stem}.webp")
+    format!("{stem}.{}", format.extension())
 }
 
 #[cfg(test)]
@@ -309,11 +353,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn webp_names() {
-        assert_eq!(webp_name("photo été.jpg"), "photo été.webp");
-        assert_eq!(webp_name("archive.tar.gz"), "archive.webp");
-        assert_eq!(webp_name("my.report.pdf"), "my.report.webp");
-        assert_eq!(webp_name("README"), "README.webp");
-        assert_eq!(webp_name(".bashrc"), ".bashrc.webp");
+    fn picture_names() {
+        let webp = |name| picture_name(name, ImageFormat::Webp);
+        assert_eq!(webp("photo été.jpg"), "photo été.webp");
+        assert_eq!(webp("archive.tar.gz"), "archive.webp");
+        assert_eq!(webp("my.report.pdf"), "my.report.webp");
+        assert_eq!(webp("README"), "README.webp");
+        assert_eq!(webp(".bashrc"), ".bashrc.webp");
+        assert_eq!(picture_name("photo.jpg", ImageFormat::Jxl), "photo.jxl");
     }
 }

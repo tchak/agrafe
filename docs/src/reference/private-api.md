@@ -80,8 +80,8 @@ Every blob route answers with the full metadata, the same object the
   "scanned_at": "2026-10-19T09:12:03.418273Z",
   "scan_signature": null,
   "representations": {
-    "thumbnail": {"state": "ready", "checksum": "R0lGODlhAQABAIAAAP…", "size": 4210},
-    "preview": {"state": "ready", "checksum": "iVBORw0KGgoAAAANSU…", "size": 88412, "source": "image"}
+    "thumbnail": {"state": "ready", "format": "webp", "checksum": "R0lGODlhAQABAIAAAP…", "size": 4210},
+    "preview": {"state": "ready", "format": "webp", "checksum": "iVBORw0KGgoAAAANSU…", "size": 88412, "source": "image"}
   },
   "source_parts": null,
   "source_rows": null,
@@ -153,8 +153,9 @@ Each entry of `representations`:
 | Field | Type | Description |
 |---|---|---|
 | `state` | string | `pending`, `ready`, `failed`, `unavailable`. Never `disabled`: that kind has no entry |
-| `checksum` | string | SHA-256 of the rendered WebP, base64. With `ready` only |
-| `size` | integer | Bytes of the rendered WebP. With `ready` only |
+| `format` | string | `webp` or `jxl`: what the picture is encoded in, `media.format` when it was rendered, and so what its route serves. With `ready` only |
+| `checksum` | string | SHA-256 of the rendered picture, base64. With `ready` only |
+| `size` | integer | Bytes of the rendered picture. With `ready` only |
 | `source` | string or null | The preview's entry only: `image`, `embedded_image`, `geojson`, `gpx`, `kml` (a KMZ's document too), `shapefile` or `gml` once a preview is rendered |
 
 ### `POST /blobs`

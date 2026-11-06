@@ -10,8 +10,8 @@ again:
   in memory;
 - it **encrypts** every object at rest with a key per file, wrapped by keys
   only your deployment holds, so the storage provider cannot read anything;
-- it renders a **WebP preview and thumbnail** in sandboxed subprocesses, so
-  no user file is ever decoded inside the server;
+- it renders a **preview and a thumbnail**, WebP or JPEG XL, in sandboxed
+  subprocesses, so no user file is ever decoded inside the server;
 - it serves everything through **signed, expiring URLs**, so a browser never
   needs credentials and a leaked link dies on its own;
 - it **generates files** server side: CSV, XLSX and ODS spreadsheets from

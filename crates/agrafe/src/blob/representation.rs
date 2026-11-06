@@ -15,7 +15,9 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::read::{ReadError, Stored};
-use super::{BlobHead, BlobState, Rendered, Representation, RepresentationState, repo};
+use super::{
+    BlobHead, BlobState, ImageFormat, Rendered, Representation, RepresentationState, repo,
+};
 use crate::app::Agrafe;
 
 /// Why a representation could not be resolved, stored or loaded.
@@ -167,13 +169,14 @@ async fn resolve(state: &Agrafe, blob: &BlobHead, kind: Representation) -> Resul
     }
 }
 
-/// Encrypt `plaintext` and write it as the `kind` of the blob `stored`
-/// describes, replacing any previous version. What the row should record
-/// of it comes back.
+/// Encrypt `plaintext`, a picture in `format`, and write it as the `kind`
+/// of the blob `stored` describes, replacing any previous version. What
+/// the row should record of it comes back.
 pub async fn store(
     state: &Agrafe,
     stored: &Stored,
     kind: Representation,
+    format: ImageFormat,
     plaintext: &[u8],
 ) -> Result<Rendered, Error> {
     let blob_id = stored.blob_id;
@@ -203,6 +206,7 @@ pub async fn store(
             source,
         })?;
     Ok(Rendered {
+        format,
         sha256: Sha256::digest(plaintext).into(),
         size: plaintext.len() as u64,
     })

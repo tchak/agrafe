@@ -140,6 +140,8 @@ macro_rules! representation_columns {
             $r,
             ".version AS rep_version, ",
             $r,
+            ".format AS rep_format, ",
+            $r,
             ".sha256 AS rep_sha256, ",
             $r,
             ".size AS rep_size, ",
@@ -157,6 +159,7 @@ struct RepresentationColumns {
     rep_kind: Option<String>,
     rep_state: Option<String>,
     rep_version: Option<i32>,
+    rep_format: Option<String>,
     rep_sha256: Option<Vec<u8>>,
     rep_size: Option<i64>,
     rep_source: Option<String>,
@@ -174,7 +177,11 @@ impl RepresentationColumns {
             kind: kind.parse().map_err(decode)?,
             state: state.parse().map_err(decode)?,
             version: self.rep_version,
-            rendered: Rendered::from_columns(self.rep_sha256.as_deref(), self.rep_size),
+            rendered: Rendered::from_columns(
+                self.rep_format.as_deref(),
+                self.rep_sha256.as_deref(),
+                self.rep_size,
+            ),
             source: self
                 .rep_source
                 .as_deref()
@@ -1326,14 +1333,16 @@ pub(crate) async fn finish_representation(
         .map_err(|e| sqlx::Error::Encode(e.into()))?;
     let result = sqlx::query(
         "UPDATE representations r \
-         SET state = $3, version = $4, sha256 = $5, size = $6, source = $7, timed_out = $8 \
-         FROM (SELECT id FROM blobs WHERE id = $1 AND state = $9 FOR SHARE) b \
+         SET state = $3, version = $4, format = $5, sha256 = $6, size = $7, source = $8, \
+             timed_out = $9 \
+         FROM (SELECT id FROM blobs WHERE id = $1 AND state = $10 FOR SHARE) b \
          WHERE b.id = r.blob_id AND r.kind = $2",
     )
     .bind(id)
     .bind(kind.as_str())
     .bind(state.as_str())
     .bind(version)
+    .bind(rendered.map(|r| r.format.as_str()))
     .bind(rendered.map(|r| r.sha256.to_vec()))
     .bind(size)
     .bind(source.map(PreviewSource::as_str))
@@ -1361,7 +1370,8 @@ pub(crate) async fn request_representation(
     let mut tx = pool.begin().await?;
     let rank: Option<i16> = sqlx::query_scalar(
         "UPDATE representations r \
-         SET state = $3, sha256 = NULL, size = NULL, source = NULL, timed_out = NULL \
+         SET state = $3, format = NULL, sha256 = NULL, size = NULL, source = NULL, \
+             timed_out = NULL \
          FROM (SELECT id, priority FROM blobs WHERE id = $1 AND state = $4 FOR SHARE) b \
          WHERE b.id = r.blob_id AND r.kind = $2 \
          RETURNING b.priority",

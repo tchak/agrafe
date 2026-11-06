@@ -255,6 +255,16 @@ max_inline_scans = 4
 # Bump to regenerate every derived representation on next request. At
 # least 1: zero means "none" inside sealed URLs.
 variant_version = 1
+# What thumbnails and previews are encoded in: "webp", which every browser
+# decodes, or "jxl", JPEG XL, which Safari 17, Chrome 155 and Firefox 158
+# decode and Edge and the Firefox ESR of 2026 do not yet. Each picture
+# records the format it was built with and is served as that, with the
+# matching Content-Type and download extension, so the setting can change
+# at any time: bump `variant_version` with it to regenerate what exists,
+# or leave the pictures as they are until they are rendered again. The
+# icons served in a thumbnail's place follow the setting at once. libvips
+# must be built with libjxl for "jxl"; the startup probe checks.
+format = "webp"
 # The libvips command line tool, run as a sandboxed subprocess for every
 # render. Debian: libvips-tools; macOS: brew install vips. A build with
 # pdfium renders PDFs more safely than one with poppler.
@@ -329,6 +339,9 @@ readable = []
 [media.thumbnail]
 width = 256
 height = 256
+# The encoder's quality, 0 to 100. The same number is not the same loss in
+# both formats: WebP takes it as libwebp's quality, and for JPEG XL libvips
+# maps it to a Butteraugli distance as libjxl does, 1.9 at 80 and 1.0 at 90.
 quality = 80
 
 [media.preview]

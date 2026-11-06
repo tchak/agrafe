@@ -5,7 +5,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use agrafe::blob::{
-    BlobState, InputType, PreviewSource, Representation, RepresentationState, ScanState,
+    BlobState, ImageFormat, InputType, PreviewSource, Representation, RepresentationState,
+    ScanState,
 };
 use agrafe::classify::Category;
 use agrafe::jobs::{JobKind, Priority};
@@ -50,6 +51,10 @@ fn expected() -> BTreeMap<Column, BTreeSet<String>> {
             values(Representation::ALL, |v| v.as_str().into()),
         ),
         (("representations", "state"), representation_states),
+        (
+            ("representations", "format"),
+            values(ImageFormat::ALL, |v| v.as_str().into()),
+        ),
         (
             ("representations", "source"),
             values(PreviewSource::ALL, |v| v.as_str().into()),

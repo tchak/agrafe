@@ -452,7 +452,8 @@ async fn a_part_under_a_row_that_just_changed_is_left_alone() {
 async fn render_again(app: &TestApp, id: &str, kind: &str) {
     sqlx::query(
         "UPDATE representations \
-         SET state = 'pending', sha256 = NULL, size = NULL, source = NULL, timed_out = NULL \
+         SET state = 'pending', format = NULL, sha256 = NULL, size = NULL, source = NULL, \
+             timed_out = NULL \
          WHERE blob_id = $1 AND kind = $2",
     )
     .bind(parse_id(id))
@@ -1345,7 +1346,7 @@ async fn representation_objects_are_checked_against_the_row_state() {
     render_all(&app).await;
 
     sqlx::query(
-        "UPDATE representations SET state = 'pending', sha256 = NULL, size = NULL \
+        "UPDATE representations SET state = 'pending', format = NULL, sha256 = NULL, size = NULL \
          WHERE blob_id = $1 AND kind = 'thumbnail'",
     )
     .bind(parse_id(id))
@@ -1353,7 +1354,7 @@ async fn representation_objects_are_checked_against_the_row_state() {
     .await
     .unwrap();
     sqlx::query(
-        "UPDATE representations SET state = 'failed', sha256 = NULL, size = NULL \
+        "UPDATE representations SET state = 'failed', format = NULL, sha256 = NULL, size = NULL \
          WHERE blob_id = $1 AND kind = 'preview'",
     )
     .bind(parse_id(id))

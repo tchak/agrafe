@@ -4,7 +4,7 @@
 //! it chose; this module, trusted code in the
 //! worker, fetches one WMS `GetMap` image per background layer that
 //! applies to that extent; `vips composite` stacks the layers and the SVG
-//! into a raster that then goes through `to_webp` like any picture.
+//! into a raster that then goes through `vips::render` like any picture.
 //!
 //! The background comes from whatever WMS the configuration names, as a
 //! URL template with the bounding box and the pixel size filled in; no
@@ -575,6 +575,7 @@ fn host_of(url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agrafe_types::ImageFormat;
     use agrafe_types::map::HALF_WORLD;
 
     #[test]
@@ -683,6 +684,7 @@ mod tests {
             Fit {
                 width: 400,
                 height: 300,
+                format: ImageFormat::Webp,
                 quality: 80,
             },
         );
@@ -762,6 +764,7 @@ mod tests {
         let fit = Fit {
             width: 2048,
             height: 2048,
+            format: ImageFormat::Webp,
             quality: 85,
         };
         let spec = config.spec(Format::Gpx, fit);
@@ -772,6 +775,7 @@ mod tests {
         let small = Fit {
             width: 256,
             height: 128,
+            format: ImageFormat::Webp,
             quality: 80,
         };
         let spec = config.spec(Format::GeoJson, small);

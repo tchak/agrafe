@@ -106,10 +106,13 @@ its default expiry. See [Attachments and lifetime](attachments.md).
 Each blob is served as up to three things:
 
 - the **original**, the bytes as uploaded, with `Range` support;
-- a **preview**, a WebP of at most 2048 pixels for images, maps and
+- a **preview**, a picture of at most 2048 pixels for images, maps and
   documents that only wrap an image;
-- a **thumbnail**, a WebP fitted into 256×256 that always exists, falling
+- a **thumbnail**, a picture fitted into 256×256 that always exists, falling
   back to a category icon.
+
+Both are WebP by default, or JPEG XL where the deployment chooses it
+(`media.format`); the `Content-Type` and the metadata's `format` say which.
 
 See [Serving files](serving.md) and [Previews and
 thumbnails](representations.md).
