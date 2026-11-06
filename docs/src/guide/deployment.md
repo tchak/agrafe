@@ -214,7 +214,8 @@ features.
 - JPEG XL, in and out, needs a libvips built with libjxl, which Debian's
   and Homebrew's are. The probe renders a JPEG XL pixel, and renders every
   probe file into `media.format`, so a build without the saver that
-  format needs stops the workers too.
+  format needs stops the workers too. With `media.webp_fallback` it also
+  transcodes a picture to WebP, so the WebP saver is checked as well.
 
 ## pandoc
 

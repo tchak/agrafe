@@ -132,11 +132,13 @@ The same three read routes exist on the private port without a token:
 
 ```sh
 curl -s "localhost:8080/blobs/$ID/original/report.pdf" -o report.pdf
-curl -s "localhost:8080/blobs/$ID/thumbnail/report.pdf" -o thumb.webp
+curl -sOJ "localhost:8080/blobs/$ID/thumbnail/report.pdf"
 ```
 
-They take the same `disposition`, `filename`, `wait` and `format` query
-parameters, unsigned. The private port reports terminal blobs by their state: the
+`-OJ` saves the thumbnail under its download name, `report.webp` or
+`report.jxl` as the deployment serves it. The routes take the same
+`disposition`, `filename`, `wait` and `format` query parameters,
+unsigned. The private port reports terminal blobs by their state: the
 original answers `409`, the thumbnail the icon with
 `X-Representation-State: unavailable`.
 

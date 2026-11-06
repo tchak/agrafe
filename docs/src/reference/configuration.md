@@ -198,7 +198,7 @@ above `max_inline_scans` plus `jobs.concurrency.scan`.
 |---|---|---|
 | `variant_version` | `1` | Bump to regenerate every representation on its next request. At least 1 |
 | `format` | `"webp"` | What thumbnails and previews are encoded in: `"webp"` or `"jxl"`. Each picture records its own and is served as recorded; bump `variant_version` to convert what exists |
-| `webp_fallback` | `false` | Store a WebP beside each JPEG XL picture and serve it to clients whose `Accept` leaves `image/jxl` out, or on `format=webp`. Needs `format = "jxl"` |
+| `webp_fallback` | `false` | Store a WebP beside each JPEG XL picture and serve it to clients whose `Accept` header does not name `image/jxl` (one with no `Accept` at all gets the JPEG XL), or on `format=webp`. Needs `format = "jxl"` |
 | `vips_command` | `"vips"` | The libvips command line tool |
 | `extract_command` | `"agrafe-extract"` | The embedded image helper |
 | `render_text_command` | `"agrafe-render-text"` | The text thumbnail helper |
@@ -226,14 +226,14 @@ above `max_inline_scans` plus `jobs.concurrency.scan`.
 |---|---|---|
 | `width` | `256` | Box width in pixels |
 | `height` | `256` | Box height in pixels |
-| `quality` | `80` | WebP quality |
+| `quality` | `80` | Encoder quality, `0` to `100`: libwebp's quality for WebP, a Butteraugli distance for JPEG XL by libjxl's mapping (1.9 at 80) |
 
 ### `[media.preview]`
 
 | Key | Default | Description |
 |---|---|---|
 | `max_dimension` | `2048` | Longest side in pixels |
-| `quality` | `85` | WebP quality |
+| `quality` | `85` | Encoder quality, as for the thumbnail (a distance of 1.45 at 85 for JPEG XL) |
 
 ### `[media.embedded_image]`
 

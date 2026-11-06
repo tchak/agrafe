@@ -2245,9 +2245,9 @@ metadata's `format` come from the row (or the envelope, which carries the
 format too). A client reads the type from the response and
 never assumes one. The icons served in a thumbnail's place are rendered
 at build time in every format and served in `media.format`, so that a
-deployment answers its representation routes in one format, placeholder
-included; a change of setting switches them at once, nothing to
-regenerate.
+placeholder is in the format of the picture that replaces it; a change
+of setting switches them at once, nothing to regenerate, and with the
+WebP fallback they are chosen between as the pictures are (below).
 
 JPEG XL is the format the web is moving to: Safari since 17 (2023),
 Chrome since 155 and Firefox since 158 (both October 2026) decode it by
@@ -2567,8 +2567,10 @@ parameters `disposition` (`inline`, the default, or `attachment`) and
 Always exists. A picture in `media.format`, autorotated from EXIF, fitted
 into the `media.thumbnail` box. For files that cannot be rendered, a
 pre-rendered category icon with a type badge, served with the same URL
-shape and in the same `media.format`. The icons are rendered from
-`crates/agrafe-render/assets/icons/icon.svg` by `scripts/icons.sh`, once
+shape and in the format the picture would be: `media.format`, or WebP
+by the fallback's `format` and `Accept` rule (see "Format"). The icons
+are rendered from `crates/agrafe-render/assets/icons/icon.svg` by
+`scripts/icons.sh`, once
 per format (lossless for JPEG XL, which is smaller than lossy on flat
 colours), and embedded in the binary, so serving one needs no renderer
 and no asset directory.
@@ -2596,7 +2598,8 @@ the result is the same on every host and needs no font, fontconfig or
 shaping library installed. The trade: no shaping, so Arabic or Indic text
 comes out as unconnected glyphs and anything outside Latin, Greek and
 Cyrillic as the notdef box. The helper writes a PGM at twice the box, and
-vips downsizes it into the WebP like any other raster. There is no text
+vips downsizes it into the thumbnail, in `media.format`, like any other
+raster. There is no text
 preview: a preview that cannot be read is not worth rendering. A GeoJSON
 file is a text file with a picture: its thumbnail is its map fitted into
 the box, and the text sample when it holds no geometry to draw, or a
@@ -2762,7 +2765,7 @@ on "has preview", never on category. Sources, in order:
    the drawing silently; the image still covers the bounding box, so it
    is stretched rather than refused. Then `vips composite` stacks the
    fitted layers and the SVG, in the sandbox, into a `.v` that goes
-   through `to_webp` as a raster like any picture: the background PNGs
+   through `vips::render` as a raster like any picture: the background PNGs
    are untrusted bytes decoded where untrusted bytes are decoded, and the
    SVG goes through the rsvg loader the `image/svg+xml` source already
    relies on. At 72 dpi an SVG with `width` and `height` in pixels renders
@@ -3361,7 +3364,7 @@ sandbox could not tell an input from an output. `agrafe_sandbox::Command`
 replaces the bare `tokio::process::Command`: `arg`, `env`, `current_dir`
 as before, plus `readable(path)` for a file the child reads and
 `writable(dir)` for the one directory it writes. Every caller
-(`vips::to_webp`, `composite`, `fit_layer`, the four helpers, pandoc, the probe)
+(`vips::render`, `composite`, `fit_layer`, the four helpers, pandoc, the probe)
 has one input and one work directory, and the input lives in that
 directory, so each declares `writable(workdir)` and the argv falls under
 it; the declaration stays explicit because the confinement is the
@@ -3831,7 +3834,8 @@ last save.
 
 Three things can be wrong, at different costs. A row says present and the
 bucket says missing: a non-terminal blob without its original, or
-a representation `ready` without its WebP. The bucket has objects no row
+a representation `ready` without its picture, or without the WebP
+fallback its row records. The bucket has objects no row
 accounts for: an original under a row that never recorded it (a `PUT`
 whose row update failed), a part or a representation the row says is not
 there, a purged blob's leftovers, which are orphans, and a prefix with no

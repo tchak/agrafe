@@ -184,7 +184,7 @@ What it finds, one `warn` line per finding and a tally in the metrics:
 |---|---|---|
 | `missing_original` | A blob that is not expired, deleted or infected has no `original` object | Stamps `failed_at` and `last_error` on the blob, so it shows in `GET /blobs?failed=true` |
 | `damaged_original` | The original has a length its size does not produce (or, under `--deep`, does not decrypt to its checksum) | The same stamp |
-| `missing_representation` | A thumbnail or preview the row says is `ready` is missing or the wrong length | Sets it back to `pending` and enqueues the render |
+| `missing_representation` | A thumbnail or preview the row says is `ready` is missing or the wrong length, or so is the WebP fallback the row records | Sets it back to `pending` and enqueues the render |
 | `missing_source` | A source part a generated blob still needs is missing or truncated | Reports; the build fails on it itself |
 | `orphan` | An object under a known blob that its row does not account for: a purged blob's leftovers, an original under a row that never recorded it, a representation the row says is not there, a source part a finished build left behind | Reports |
 | `unknown` | An object under a prefix no row has: a purge's leftover whose tombstone is gone, or a blob whose row was lost, which is what a database restored from an older backup leaves | Reports, with how many such prefixes and when their blobs were created |
