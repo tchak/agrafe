@@ -41,12 +41,28 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+  # Two jobs, side by side. `Test` runs the workspace, the API suite's
+  # renders confined by Landlock and seccomp, which is what a deployment
+  # without bubblewrap gets, every Docker one included. `Test under
+  # bubblewrap` runs the API suite again with every tool through
+  # `/usr/bin/bwrap`, where Landlock yields to a mount namespace that checks
+  # the system set harder (a path Landlock lets `stat` does not exist
+  # there). The main ruleset requires `Test` by name.
   test:
-    name: Test
+    name: ${{ matrix.name }}
     runs-on: ubuntu-26.04
     # Two to three minutes warm. nextest kills a stuck test after a minute;
     # this bounds the rest, a build or a service that never answers.
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Test
+            packages: --workspace
+          - name: Test under bubblewrap
+            packages: -p agrafe-axum
+            bubblewrap: /usr/bin/bwrap
     services:
       postgres:
         image: postgres:17
@@ -68,6 +84,9 @@ jobs:
       # sandbox tests, bubblewrap's included, must confine, not skip, so a
       # regression is not a green empty suite.
       AGRAFE_SANDBOX_REQUIRED: 1
+      # Line numbers in a panic's backtrace, without the rest of the debug
+      # info: a smaller cache to restore and less to link.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       # LibreOffice for the office thumbnail tests, which skip without it;
       # bubblewrap for the sandbox's bubblewrap tests, likewise; pandoc for
@@ -119,13 +138,16 @@ jobs:
           sysctl kernel.apparmor_restrict_unprivileged_userns || true
       # Saved now, not at the end of the job: a run whose build or tests
       # fail still keeps the download.
+      # By `Test` alone: the two jobs would race for the same key.
       - uses: actions/cache/save@v6
-        if: steps.apt-cache.outputs.cache-hit != 'true'
+        if: ${{ steps.apt-cache.outputs.cache-hit != 'true' && !matrix.bubblewrap }}
         with:
           path: ~/apt-archives/*.deb
           key: ${{ steps.apt-cache.outputs.cache-primary-key }}
       - uses: actions/checkout@v7
+      # The alert rules and the /metrics lint are checked once, in `Test`.
       - name: Install promtool
+        if: ${{ !matrix.bubblewrap }}
         env:
           PROMETHEUS_VERSION: 3.5.0
           PROMETHEUS_SHA256: e811827af26d822afb09a4f28314f61b618b12cff5369835a67f674d8b46f39a
@@ -138,30 +160,38 @@ jobs:
           promtool --version
       # The rules the monitoring guide publishes, before the long build.
       - name: Check the alert rules
+        if: ${{ !matrix.bubblewrap }}
         run: |
           promtool check rules config/alerts.yml
-          promtool test rules config/alerts.test.yml
+          promtool test rules config/alerts.test.yml config/alerts.days.test.yml
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
+      # Both jobs build the same thing: one cache, saved by `Test`.
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test
+          save-if: ${{ !matrix.bubblewrap }}
+      # The whole workspace in both: the API suite runs the helpers' binaries.
       - name: Build
         run: cargo build --workspace --all-targets
       # No doctests in the workspace: nextest runs everything there is.
       - name: Test
-        run: cargo nextest run --workspace --profile ci
         env:
-          # The metrics test lints what /metrics exposes; it skips without this.
-          AGRAFE_TEST_PROMTOOL: /usr/local/bin/promtool
-      # The real tools through bubblewrap: the probe, vips, the helpers
-      # and LibreOffice. A mount namespace checks the system set harder
-      # than Landlock does (a path Landlock lets `stat` does not exist
-      # here), so what the API suite renders is run under it too.
-      - name: Test the renders under bubblewrap
-        run: cargo nextest run -p agrafe-axum --profile ci
-        env:
-          AGRAFE_TEST_BUBBLEWRAP: /usr/bin/bwrap
+          PACKAGES: ${{ matrix.packages }}
+          BUBBLEWRAP: ${{ matrix.bubblewrap }}
+        run: |
+          # Set or absent, never empty: the suite reads an empty path as one.
+          if [[ -n $BUBBLEWRAP ]]; then
+            # The real tools through bubblewrap: the probe, vips, the helpers
+            # and LibreOffice.
+            export AGRAFE_TEST_BUBBLEWRAP=$BUBBLEWRAP
+          else
+            # The metrics test lints what /metrics exposes; it skips without this.
+            export AGRAFE_TEST_PROMTOOL=/usr/local/bin/promtool
+          fi
+          cargo nextest run $PACKAGES --profile ci
 
   # The oldest toolchain the workspace builds with, its `rust-version`.
   # The job's name carries no version: the main ruleset requires it by

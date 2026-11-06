@@ -67,8 +67,9 @@ grows when a kind's workers cannot keep up, when no process handles the
 kind, or, for one priority alone, when higher priorities starve it.
 
 These rules are `config/alerts.yml` in the repository, and
-`config/alerts.test.yml` beside it runs them with `promtool test rules`, which
-is how to check the changes you make to them:
+`config/alerts.test.yml` and `config/alerts.days.test.yml` beside it run them
+with `promtool test rules`, which is how to check the changes you make to
+them:
 
 ```yaml
 {{#include ../../../config/alerts.yml}}

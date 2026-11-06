@@ -1,0 +1,80 @@
+# promtool test rules config/alerts.days.test.yml
+#
+# The staleness alert, over weeks. promtool evaluates every rule at each
+# evaluation_interval from zero to a test's last eval_time, so these tests
+# run hourly rather than by the minute of alerts.test.yml: a month of
+# minutes is tens of thousands of evaluations of a fifteen-day window. The
+# rule has no `for:`, so the hour changes nothing it decides.
+rule_files: [alerts.yml]
+evaluation_interval: 1h
+
+tests:
+  # A new deployment, its first sweep due a week in: quiet for two weeks, then
+  # it fires if none has finished. promtool's clock starts at the epoch, so the
+  # deployment starts on day 20, for time() to be well past the threshold, as
+  # it is in production.
+  - interval: 1h
+    input_series:
+      - series: agrafe_audit_last_run_timestamp_seconds{instance="a"}
+        values: "_x480 0x480"
+    alert_rule_test:
+      - eval_time: 21d
+        alertname: AgrafeAuditStale
+        exp_alerts: []
+      - eval_time: 33d
+        alertname: AgrafeAuditStale
+        exp_alerts: []
+      - eval_time: 35d
+        alertname: AgrafeAuditStale
+        exp_alerts:
+          - exp_annotations:
+              summary: "no agrafe audit has finished for over two weeks: GET /jobs?kind=audit"
+
+  # An audit finished on day 7, and a deploy on day 8 reset the gauge: quiet
+  # through a week's interval and a long sweep, then it fires.
+  - interval: 1d
+    input_series:
+      - series: agrafe_audit_last_run_timestamp_seconds{instance="a"}
+        values: "0 0 0 0 0 0 0 604800 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
+    alert_rule_test:
+      - eval_time: 9d
+        alertname: AgrafeAuditStale
+        exp_alerts: []
+      - eval_time: 20d
+        alertname: AgrafeAuditStale
+        exp_alerts: []
+      - eval_time: 22d
+        alertname: AgrafeAuditStale
+        exp_alerts:
+          - exp_annotations:
+              summary: "no agrafe audit has finished for over two weeks: GET /jobs?kind=audit"
+
+  # A deployment that never finished one, once it has been up two weeks.
+  - interval: 1d
+    input_series:
+      - series: agrafe_audit_last_run_timestamp_seconds{instance="a"}
+        values: "0x20"
+    alert_rule_test:
+      - eval_time: 15d
+        alertname: AgrafeAuditStale
+        exp_alerts:
+          - exp_annotations:
+              summary: "no agrafe audit has finished for over two weeks: GET /jobs?kind=audit"
+
+  # Weekly audits across a fleet: another process at zero, and the worker
+  # replaced under a new instance label. Quiet throughout.
+  - interval: 1d
+    input_series:
+      - series: agrafe_audit_last_run_timestamp_seconds{instance="old"}
+        values: "0 0 0 0 0 0 0 0 0 864000 864000 864000 864000 864000 864000 864000 864000 864000 864000 864000"
+      - series: agrafe_audit_last_run_timestamp_seconds{instance="api"}
+        values: "0x30"
+      - series: agrafe_audit_last_run_timestamp_seconds{instance="new"}
+        values: "_x19 864000 864000 864000 864000 864000 864000 864000 864000 1728000"
+    alert_rule_test:
+      - eval_time: 20d
+        alertname: AgrafeAuditStale
+        exp_alerts: []
+      - eval_time: 28d
+        alertname: AgrafeAuditStale
+        exp_alerts: []

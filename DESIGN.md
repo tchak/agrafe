@@ -3332,7 +3332,7 @@ runner, whose AppArmor grants it the namespace with nothing to
 configure. `AGRAFE_TEST_BUBBLEWRAP=/usr/bin/bwrap` puts the whole
 integration suite through bubblewrap: the probe, vips, the helpers and
 LibreOffice under the real namespaces. CI runs the API suite that way
-as a second step, since a mount namespace checks the system set harder
+in a second job beside the first, since a mount namespace checks the system set harder
 than Landlock does (the `/proc` LibreOffice needs is the example), and
 the same variable serves on the Lima VM.
 

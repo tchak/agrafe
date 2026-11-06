@@ -1,0 +1,7 @@
+# actionlint (https://github.com/rhysd/actionlint): `actionlint` at the
+# root of the checkout lints .github/workflows. Its list of GitHub-hosted
+# runners stops short of the ones the workflows run on.
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04
+    - ubuntu-26.04-arm
