@@ -664,14 +664,23 @@ def main():
                             "-keyout", str(key), "-out", str(cert)],
                            check=True, capture_output=True, timeout=60)
             print(f"self-signed.crt.pem: {cert.stat().st_size} bytes")
-    heic = PROBE / "pixel.heic"
-    if not heic.exists() or "--legacy" in sys.argv:
+    # What Pillow cannot write without a plugin: the probe's HEIC and JPEG
+    # XL, and a JPEG XL photo for the tests, the rotated JPEG made upright
+    # (300x600) by `vips thumbnail`, which applies its orientation.
+    for name, source, args in [
+        (PROBE / "pixel.heic", PROBE / "pixel.png", ["copy", "{source}", "{name}[compression=hevc]"]),
+        (PROBE / "pixel.jxl", PROBE / "pixel.png", ["copy", "{source}", "{name}"]),
+        (HERE / "photo.jxl", HERE / "rotated.jpg", ["thumbnail", "{source}", "{name}", "600"]),
+    ]:
+        label = f"probe/{name.name}" if name.parent == PROBE else name.name
+        if name.exists() and "--legacy" not in sys.argv:
+            continue
         if shutil.which("vips") is None:
-            print("probe/pixel.heic: not written, no vips found")
-        else:
-            subprocess.run(["vips", "copy", str(PROBE / "pixel.png"), f"{heic}[compression=hevc]"],
-                           check=True, capture_output=True, timeout=60)
-            print(f"probe/pixel.heic: {heic.stat().st_size} bytes, from pixel.png")
+            print(f"{label}: not written, no vips found")
+            continue
+        command = ["vips"] + [arg.format(source=source, name=name) for arg in args]
+        subprocess.run(command, check=True, capture_output=True, timeout=60)
+        print(f"{label}: {name.stat().st_size} bytes, from {source.name}")
 
 
 if __name__ == "__main__":

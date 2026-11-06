@@ -308,6 +308,66 @@ async fn a_missing_representation_is_rendered_again() {
     assert_eq!(report.objects, 3);
 }
 
+/// The WebP fallback at `<kind>.webp` is the row's to account for: one the
+/// row does not record is an orphan, one it records and the bucket lacks,
+/// or holds at the wrong size, has the picture rendered again.
+#[tokio::test]
+async fn the_webp_fallback_is_accounted_for_by_its_row() {
+    use agrafe::blob::ImageFormat;
+
+    let db = TestDatabase::new().await;
+    let app = setup_tuned(db, fake_clamd().await, |c| {
+        c.upload.stale_after = Duration::ZERO;
+        c.media.render.format = ImageFormat::Jxl;
+        c.media.render.webp_fallback = true;
+    })
+    .await;
+    let photo = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("photo.jpg")).await;
+    let id = id_of(&photo);
+    render_all(&app).await;
+    let report = audit_now(&app).await;
+    assert_eq!(counts(&report), vec![], "{report}");
+    assert_eq!(
+        report.objects, 5,
+        "original, two pictures and their two fallbacks"
+    );
+
+    // The fallback gone, and the preview's the wrong size.
+    delete_object(&app, &object_key(id, "thumbnail.webp")).await;
+    put_object(&app, &object_key(id, "preview.webp"), vec![0; 10]).await;
+    let report = audit_now(&app).await;
+    assert_eq!(
+        counts(&report),
+        vec![(Finding::MissingRepresentation, 2)],
+        "{report}"
+    );
+    let got = get_blob(&app, id).await;
+    assert_eq!(got["representations"]["thumbnail"]["state"], "pending");
+    assert_eq!(got["representations"]["preview"]["state"], "pending");
+    render_all(&app).await;
+    let report = audit_now(&app).await;
+    assert_eq!(counts(&report), vec![], "{report}");
+    assert_eq!(report.objects, 5);
+
+    // A fallback the row does not record: an orphan, deleted under --fix.
+    sqlx::query(
+        "UPDATE representations SET fallback_sha256 = NULL, fallback_size = NULL \
+         WHERE blob_id = $1 AND kind = 'preview'",
+    )
+    .bind(parse_id(id))
+    .execute(app.state.pool())
+    .await
+    .unwrap();
+    let report = audit_with(&app, FIX).await;
+    assert_eq!(counts(&report), vec![(Finding::Orphan, 1)], "{report}");
+    assert_eq!(report.deleted, 1);
+    assert!(
+        !object_keys(&app)
+            .await
+            .contains(&object_key(id, "preview.webp"))
+    );
+}
+
 /// A rendered blob whose whole prefix is gone, a bucket restored from an
 /// older backup: the representations cannot be rendered again from an
 /// original that is not there, so they are reported, not re-rendered, and
@@ -452,7 +512,8 @@ async fn a_part_under_a_row_that_just_changed_is_left_alone() {
 async fn render_again(app: &TestApp, id: &str, kind: &str) {
     sqlx::query(
         "UPDATE representations \
-         SET state = 'pending', sha256 = NULL, size = NULL, source = NULL, timed_out = NULL \
+         SET state = 'pending', format = NULL, sha256 = NULL, size = NULL, source = NULL, \
+             timed_out = NULL \
          WHERE blob_id = $1 AND kind = $2",
     )
     .bind(parse_id(id))
@@ -1345,7 +1406,7 @@ async fn representation_objects_are_checked_against_the_row_state() {
     render_all(&app).await;
 
     sqlx::query(
-        "UPDATE representations SET state = 'pending', sha256 = NULL, size = NULL \
+        "UPDATE representations SET state = 'pending', format = NULL, sha256 = NULL, size = NULL \
          WHERE blob_id = $1 AND kind = 'thumbnail'",
     )
     .bind(parse_id(id))
@@ -1353,7 +1414,7 @@ async fn representation_objects_are_checked_against_the_row_state() {
     .await
     .unwrap();
     sqlx::query(
-        "UPDATE representations SET state = 'failed', sha256 = NULL, size = NULL \
+        "UPDATE representations SET state = 'failed', format = NULL, sha256 = NULL, size = NULL \
          WHERE blob_id = $1 AND kind = 'preview'",
     )
     .bind(parse_id(id))

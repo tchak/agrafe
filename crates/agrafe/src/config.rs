@@ -5,6 +5,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use agrafe_types::ImageFormat;
 use agrafe_types::allowlist::Allowlist;
 use bytesize::ByteSize;
 use figment::Figment;
@@ -163,6 +164,13 @@ impl Config {
             // back to the row.
             return Err(ConfigError::Invalid(
                 "media.variant_version must be at least 1".into(),
+            ));
+        }
+        if self.media.render.webp_fallback && self.media.render.format != ImageFormat::Jxl {
+            return Err(ConfigError::Invalid(
+                "media.webp_fallback needs media.format = \"jxl\": a WebP picture needs no \
+                 fallback"
+                    .into(),
             ));
         }
         if let Some(dir) = self.media.tmp_dir.as_ref().filter(|dir| !dir.is_absolute()) {
@@ -1377,8 +1385,8 @@ pub struct MediaConfig {
     /// read from the same `[media]` table: `vips_command`,
     /// `extract_command`, `render_text_command`,
     /// `render_document_command`, `render_geo_command`, `pandoc_command`,
-    /// `thumbnail`, `preview`, `embedded_image`, `map`, `office`,
-    /// `sandbox`.
+    /// `format`, `webp_fallback`, `thumbnail`, `preview`,
+    /// `embedded_image`, `map`, `office`, `sandbox`.
     pub render: agrafe_render::Config,
 }
 
@@ -2194,6 +2202,23 @@ mod tests {
                 config.media.tmp_dir.as_deref(),
                 Some(Path::new("/var/tmp/agrafe"))
             );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn the_webp_fallback_needs_jpeg_xl() {
+        Jail::expect_with(|jail| {
+            jail.set_env("AGRAFE_MEDIA__WEBP_FALLBACK", "true");
+            let err = load(&example()).unwrap_err().to_string();
+            assert!(
+                err.contains("media.webp_fallback needs media.format = \"jxl\""),
+                "{err}"
+            );
+            jail.set_env("AGRAFE_MEDIA__FORMAT", "jxl");
+            let config = load(&example())?;
+            assert!(config.media.render.webp_fallback);
+            assert_eq!(config.media.render.format, ImageFormat::Jxl);
             Ok(())
         });
     }

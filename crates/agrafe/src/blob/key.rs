@@ -19,7 +19,7 @@
 use object_store::path::Path;
 use uuid::Uuid;
 
-use super::Representation;
+use super::{Object, Representation};
 
 /// The shard of a blob: the low byte of its id, the last two hex digits
 /// of its text form.
@@ -42,6 +42,22 @@ pub fn original(id: Uuid) -> String {
 /// A representation, `<shard>/<blob id>/thumbnail` or `.../preview`.
 pub fn representation(id: Uuid, kind: Representation) -> String {
     format!("{:02x}/{id}/{kind}", shard(id))
+}
+
+/// The WebP fallback of a representation, `<shard>/<blob id>/thumbnail.webp`
+/// or `.../preview.webp`: the only object with an extension, the picture
+/// at `<kind>` being in whatever format its row records.
+pub fn fallback(id: Uuid, kind: Representation) -> String {
+    format!("{:02x}/{id}/{kind}.webp", shard(id))
+}
+
+/// The object of a representation, see [`representation`] and
+/// [`fallback`].
+pub fn object(id: Uuid, kind: Representation, object: Object) -> String {
+    match object {
+        Object::Picture => representation(id, kind),
+        Object::Fallback => fallback(id, kind),
+    }
 }
 
 /// Source part `n` of a generated blob, `<shard>/<blob id>/source/<n>`.
@@ -105,6 +121,18 @@ mod tests {
         assert_eq!(
             representation(id, Representation::Thumbnail),
             format!("ab/{id}/thumbnail")
+        );
+        assert_eq!(
+            fallback(id, Representation::Preview),
+            format!("ab/{id}/preview.webp")
+        );
+        assert_eq!(
+            object(id, Representation::Thumbnail, Object::Fallback),
+            format!("ab/{id}/thumbnail.webp")
+        );
+        assert_eq!(
+            object(id, Representation::Thumbnail, Object::Picture),
+            representation(id, Representation::Thumbnail)
         );
         assert_eq!(source(id, 3), format!("ab/{id}/source/3"));
         let low: Uuid = "01999e6c-0000-7000-8000-000000000005".parse().unwrap();

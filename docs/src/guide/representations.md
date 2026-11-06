@@ -3,10 +3,10 @@
 Every `ready` blob gets up to two derived images, rendered by workers right
 after the scan:
 
-- the **thumbnail**, a WebP fitted into `media.thumbnail` (256×256 by
+- the **thumbnail**, a picture fitted into `media.thumbnail` (256×256 by
   default). It always exists: a file that cannot be rendered gets a category
   icon with a type badge;
-- the **preview**, a WebP of at most `media.preview.max_dimension` (2048
+- the **preview**, a picture of at most `media.preview.max_dimension` (2048
   pixels by default) on its longest side, for files that are pictures.
 
 Images are scaled to fit and never cropped; a raster is never enlarged,
@@ -14,11 +14,65 @@ where an SVG fills the box. EXIF orientation
 is applied, colours are converted to sRGB, and every piece of metadata is
 stripped.
 
+## Format
+
+Both pictures are encoded in `media.format`: **WebP** by default, which
+every browser decodes, or **JPEG XL** (`"jxl"`), which Safari 17, Chrome
+155 and Firefox 158 decode by default and Edge and the Firefox ESR of
+2026 do not yet. A deployment whose users are on those keeps WebP for
+now; one that is not may switch.
+
+Each picture records the format it was rendered in, and is served as
+that: `Content-Type` is `image/webp` or `image/jxl`, the download name
+ends in `.webp` or `.jxl`, and the metadata's entry carries `format`. A
+client reads the type from the response or the metadata and never
+assumes one. The category icons served in a thumbnail's place are in
+`media.format` too, and follow a change of setting at once.
+
+Changing `media.format` affects what is rendered from then on. To convert
+what exists, bump `media.variant_version` with it: every picture is then
+regenerated in the new format on its next request, as for any other
+renderer change (see [Regenerating](#regenerating)). Until then, or
+without the bump, old pictures stay in the format they were built with
+and say so.
+
+### The WebP fallback
+
+A deployment that wants JPEG XL while some of its users are on a browser
+that does not decode it sets `media.webp_fallback = true` with
+`media.format = "jxl"`. Each picture is then stored twice, as rendered
+and transcoded to WebP, and the metadata's entry lists the second under
+`fallback`. Which one a request gets:
+
+- `?format=webp` or `?format=jxl` in the signed query names it. A format
+  the picture is not stored in gets the picture as stored, under its own
+  `Content-Type`: browsers decode by the bytes, so it shows, where a `404`
+  would be a broken image. Minting refuses a `format` the deployment does
+  not store, so a backend finds out at once.
+- Without `format`, the request's `Accept` header decides: the JPEG XL
+  when it names `image/jxl`, as Safari, Chrome and Firefox do once they
+  decode it, the WebP otherwise, `*/*` included. A request with no
+  `Accept` header at all, which no browser sends, gets the picture as
+  stored. The response then carries `Vary: Accept`.
+
+So an `<img>` tag works everywhere with no change, a `<picture>` can
+offer both with `format`, and a download names the one it got. The icon
+served in a thumbnail's place follows the same rule. The fallback costs
+a second encode and a second object per picture; a deployment whose
+clients all decode JPEG XL leaves it off, and one on WebP has no use for
+it, which is why the setting is refused without `"jxl"`.
+
+Turning it on takes no bump: a JPEG XL picture rendered before, with no
+WebP beside it, is regenerated on its next request, as a picture of
+another variant version is. Turning it off is unsetting the key and
+bumping `media.variant_version`: each regeneration removes the WebP it no
+longer wants.
+
 ## What gets rendered
 
 | File | Preview | Thumbnail |
 |---|---|---|
-| JPEG, PNG, GIF, WebP, TIFF, HEIF/AVIF, SVG, JPEG 2000 | the image | the image |
+| JPEG, PNG, GIF, WebP, TIFF, HEIF/AVIF, JPEG XL, SVG, JPEG 2000 | the image | the image |
 | PDF, DOCX or ODT (or a DOCM, DOTX, OTT, ODM, … variant) that wraps a single image | the embedded image | the embedded image |
 | Other PDF | none | the first page |
 | Other office files: Word, Excel and PowerPoint, their Office 97-2003, macro-enabled and template variants, RTF, OpenDocument texts, spreadsheets, presentations and drawings | none | the first page or slide, through [LibreOffice](deployment.md#libreoffice) when `media.office.command` is set; the icon otherwise |
@@ -211,15 +265,18 @@ asked for at creation, keyed by kind:
 
 ```json
 "representations": {
-  "thumbnail": {"state": "ready", "checksum": "R0lGODlhAQABAIAAAP…", "size": 4210},
+  "thumbnail": {"state": "ready", "format": "webp", "checksum": "R0lGODlhAQABAIAAAP…", "size": 4210},
   "preview": {"state": "failed", "source": null}
 }
 ```
 
-Each entry carries a `state`, and with `ready` the `checksum` (SHA-256 of
-the WebP, base64) and `size` that the conditional requests below are
-answered from; the preview's entry carries its `source`, what it was
-rendered from. The state is one of:
+Each entry carries a `state`, and with `ready` the `format` (`webp` or
+`jxl`, see [Format](#format)), the `checksum` (SHA-256 of the picture,
+base64) and the `size` that the conditional requests below are answered
+from, plus a `fallback` object with the same three fields where a WebP
+fallback is stored (see [The WebP fallback](#the-webp-fallback)); the
+preview's entry carries its `source`, what it was rendered from. The
+state is one of:
 
 | State | Meaning |
 |---|---|
@@ -242,15 +299,17 @@ can tell a placeholder from the final answer.
 
 | Blob | Representation | Thumbnail route | Preview route |
 |---|---|---|---|
-| `ready` | `ready` | the WebP, `private, max-age=86400` | the WebP, `private, max-age=86400` |
+| `ready` | `ready` | the picture, `private, max-age=86400` | the picture, `private, max-age=86400` |
 | `ready` | `pending` | the icon, `no-store` | `404`, `preview is pending` |
 | `ready` | `failed`, `unavailable`, `disabled` | the icon, `private, max-age=86400` | `404` with the reason |
 | not yet `ready` | any | the icon, `pending`, `no-store` | `409` |
 | terminal | any | private port: the icon, `unavailable`; public port: `404` | private port: `409`; public port: `404` |
 
 Ready images carry a strong `ETag` of their content and answer `304` and
-`HEAD` without reading the object. They are not `immutable`: a variant
-version bump changes them under the same URL.
+`HEAD` without reading the object, with the `Content-Type` of the format
+they were rendered in; a WebP fallback has an `ETag` of its own. They
+are not `immutable`: a variant version bump changes them under the same
+URL, their format included.
 
 ### Waiting for a render
 
@@ -318,9 +377,11 @@ fail the job and retry it.
 
 Before the workers start, agrafe checks that the sandbox refuses a read it
 did not grant, then renders a text sample, a one-pixel PNG, a one-page PDF,
-a GIF, a WebP, a TIFF, a HEIC, an AVIF, a JPEG 2000 image, the JPEG `agrafe-extract` pulls out of a PDF wrapping one and the map of a
-one-point GeoJSON, without a background layer, through
-the exact command lines the jobs use, and, with `media.office.command`
+a GIF, a WebP, a TIFF, a HEIC, an AVIF, a JPEG 2000 image, a JPEG XL
+image, the JPEG `agrafe-extract` pulls out of a PDF wrapping one and the
+map of a one-point GeoJSON, without a background layer, through the exact
+command lines the jobs use and into `media.format`, so a libvips without
+that saver fails the start too, and, with `media.office.command`
 set, converts a two-page DOCX, XLSX and ODG, a two-slide PPTX and an ODT
 with a macro through LibreOffice, and checks that each two-page file came
 out as one page and that the macro did not run. The process refuses to start if any

@@ -11,7 +11,7 @@ use uuid::Uuid;
 use super::create::NewBlob;
 use super::{
     Blob, BlobHead, BlobState, InputType, PreviewSource, Rendered, Representation,
-    RepresentationRow, RepresentationState, Representations, ScanOutcome, ScanState,
+    RepresentationRow, RepresentationState, Representations, ScanOutcome, ScanState, WebpFallback,
 };
 use crate::attachment;
 use crate::clamav::Verdict;
@@ -140,9 +140,15 @@ macro_rules! representation_columns {
             $r,
             ".version AS rep_version, ",
             $r,
+            ".format AS rep_format, ",
+            $r,
             ".sha256 AS rep_sha256, ",
             $r,
             ".size AS rep_size, ",
+            $r,
+            ".fallback_sha256 AS rep_fallback_sha256, ",
+            $r,
+            ".fallback_size AS rep_fallback_size, ",
             $r,
             ".source AS rep_source, ",
             $r,
@@ -157,8 +163,11 @@ struct RepresentationColumns {
     rep_kind: Option<String>,
     rep_state: Option<String>,
     rep_version: Option<i32>,
+    rep_format: Option<String>,
     rep_sha256: Option<Vec<u8>>,
     rep_size: Option<i64>,
+    rep_fallback_sha256: Option<Vec<u8>>,
+    rep_fallback_size: Option<i64>,
     rep_source: Option<String>,
     rep_timed_out: Option<bool>,
 }
@@ -174,7 +183,15 @@ impl RepresentationColumns {
             kind: kind.parse().map_err(decode)?,
             state: state.parse().map_err(decode)?,
             version: self.rep_version,
-            rendered: Rendered::from_columns(self.rep_sha256.as_deref(), self.rep_size),
+            rendered: Rendered::from_columns(
+                self.rep_format.as_deref(),
+                self.rep_sha256.as_deref(),
+                self.rep_size,
+            ),
+            fallback: WebpFallback::from_columns(
+                self.rep_fallback_sha256.as_deref(),
+                self.rep_fallback_size,
+            ),
             source: self
                 .rep_source
                 .as_deref()
@@ -1296,13 +1313,17 @@ pub async fn explain_reaper(conn: &mut PgConnection) -> sqlx::Result<Vec<(&'stat
 }
 
 /// Record the outcome of rendering `kind` for `id` on its row, along with
-/// the version it was built with and, for `ready`, what was rendered, while
-/// the blob is still `ready`: `false` when it no longer is, and the purge
-/// may have been and gone, so what was written is the caller's to delete.
-/// Only the blob's state is a condition: the preview a thumbnail had
-/// rendered again lands on a representation that is not `pending`, and a
-/// kind with no row, `disabled`, affects none. `source` and `timed_out`
-/// are the preview's, see `RepresentationRow`; the thumbnail passes none.
+/// the version it was built with and, for `ready`, what was rendered, the
+/// WebP fallback stored beside it included, while the blob is still
+/// `ready`: `false` when it no longer is, and the purge may have been and
+/// gone, so what was written is the caller's to delete. The fallback
+/// columns take `fallback` whatever the state: what the row recorded of
+/// an earlier one is replaced, or cleared when the render stored none, in
+/// which case the object is the caller's to delete too. Only the blob's
+/// state is a condition: a kind with no row, `disabled`, affects none, and
+/// the render job sets what it renders again back to `pending` first, see
+/// `reset_representation`. `source` and `timed_out` are the preview's,
+/// see `RepresentationRow`; the thumbnail passes none.
 ///
 /// The blob's row is read `FOR SHARE`, not merely joined: a delete in
 /// flight holds it `FOR UPDATE`, so the update waits for the delete's
@@ -1319,49 +1340,57 @@ pub(crate) async fn finish_representation(
     timed_out: bool,
     version: i32,
     rendered: Option<Rendered>,
+    fallback: Option<WebpFallback>,
 ) -> sqlx::Result<bool> {
+    let encode = |e: std::num::TryFromIntError| sqlx::Error::Encode(e.into());
     let size = rendered
         .map(|r| i64::try_from(r.size))
         .transpose()
-        .map_err(|e| sqlx::Error::Encode(e.into()))?;
+        .map_err(encode)?;
+    let fallback_size = fallback
+        .map(|f| i64::try_from(f.size))
+        .transpose()
+        .map_err(encode)?;
     let result = sqlx::query(
         "UPDATE representations r \
-         SET state = $3, version = $4, sha256 = $5, size = $6, source = $7, timed_out = $8 \
-         FROM (SELECT id FROM blobs WHERE id = $1 AND state = $9 FOR SHARE) b \
+         SET state = $3, version = $4, format = $5, sha256 = $6, size = $7, source = $8, \
+             timed_out = $9, fallback_sha256 = $11, fallback_size = $12 \
+         FROM (SELECT id FROM blobs WHERE id = $1 AND state = $10 FOR SHARE) b \
          WHERE b.id = r.blob_id AND r.kind = $2",
     )
     .bind(id)
     .bind(kind.as_str())
     .bind(state.as_str())
     .bind(version)
+    .bind(rendered.map(|r| r.format.as_str()))
     .bind(rendered.map(|r| r.sha256.to_vec()))
     .bind(size)
     .bind(source.map(PreviewSource::as_str))
     .bind(timed_out.then_some(true))
     .bind(BlobState::Ready.as_str())
+    .bind(fallback.map(|f| f.sha256.to_vec()))
+    .bind(fallback_size)
     .execute(exec)
     .await?;
     Ok(result.rows_affected() == 1)
 }
 
-/// Ask for `kind` to be (re)generated: the representation goes back to
-/// `pending` and a job is enqueued, if the blob is still `ready` and has a
-/// row for the kind, one disabled at creation having none. The lazy path
-/// of the `GET` handler, for a missing object or a stale variant version.
-/// What the row recorded of the last render goes with it; the version
-/// stays until the next one, being what the object still in the bucket
-/// was built with. The blob's row is read `FOR SHARE`, as
-/// `finish_representation` reads it, so a delete in flight is waited for
-/// and no render is asked for a blob it has just deleted.
-pub(crate) async fn request_representation(
-    pool: &PgPool,
+/// Set `kind` back to `pending` while the blob is still `ready` and has a
+/// row for the kind: the format, digest and the preview's own columns go,
+/// the version and the WebP fallback stay, see `request_representation`.
+/// The blob's priority comes back, for a job to take, or `None` when no
+/// row was touched. The blob's row is read `FOR SHARE`, so a delete in
+/// flight is waited for and no row is reset for a blob it has just
+/// deleted.
+async fn reset(
+    exec: impl PgExecutor<'_>,
     id: Uuid,
     kind: Representation,
-) -> sqlx::Result<bool> {
-    let mut tx = pool.begin().await?;
-    let rank: Option<i16> = sqlx::query_scalar(
+) -> sqlx::Result<Option<i16>> {
+    sqlx::query_scalar(
         "UPDATE representations r \
-         SET state = $3, sha256 = NULL, size = NULL, source = NULL, timed_out = NULL \
+         SET state = $3, format = NULL, sha256 = NULL, size = NULL, source = NULL, \
+             timed_out = NULL \
          FROM (SELECT id, priority FROM blobs WHERE id = $1 AND state = $4 FOR SHARE) b \
          WHERE b.id = r.blob_id AND r.kind = $2 \
          RETURNING b.priority",
@@ -1370,9 +1399,41 @@ pub(crate) async fn request_representation(
     .bind(kind.as_str())
     .bind(RepresentationState::Pending.as_str())
     .bind(BlobState::Ready.as_str())
-    .fetch_optional(&mut *tx)
-    .await?;
-    let Some(rank) = rank else {
+    .fetch_optional(exec)
+    .await
+}
+
+/// Set `kind` back to `pending` without queuing anything: the render
+/// job's, before it renders again a kind whose row is not `pending`, the
+/// preview a thumbnail needs and cannot use. The row then never describes
+/// an object the render is replacing, and `finish_representation` records
+/// the new one. `false` when the blob is no longer `ready`.
+pub(crate) async fn reset_representation(
+    pool: &PgPool,
+    id: Uuid,
+    kind: Representation,
+) -> sqlx::Result<bool> {
+    Ok(reset(pool, id, kind).await?.is_some())
+}
+
+/// Ask for `kind` to be (re)generated: the representation goes back to
+/// `pending` and a job is enqueued, if the blob is still `ready` and has a
+/// row for the kind, one disabled at creation having none. The lazy path
+/// of the `GET` handler, for a missing object or a stale variant version.
+/// What the row recorded of the last render goes with it; the version
+/// stays until the next one, being what the object still in the bucket
+/// was built with, and so does the WebP fallback, an object still in the
+/// bucket too, which the render replaces or removes. The blob's row is
+/// read `FOR SHARE`, as `finish_representation` reads it, so a delete in
+/// flight is waited for and no render is asked for a blob it has just
+/// deleted.
+pub(crate) async fn request_representation(
+    pool: &PgPool,
+    id: Uuid,
+    kind: Representation,
+) -> sqlx::Result<bool> {
+    let mut tx = pool.begin().await?;
+    let Some(rank) = reset(&mut *tx, id, kind).await? else {
         tx.rollback().await?;
         return Ok(false);
     };

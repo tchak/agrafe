@@ -13,7 +13,9 @@
 //! u8 count, then per representation:
 //!   str kind, str state,
 //!   u8 has version, i32 version                  (when present)
-//!   u8 rendered, bytes sha256 (32), u64 size     (when rendered)
+//!   u8 rendered, bytes sha256 (32), u64 size,    (when rendered)
+//!     str format
+//!   u8 fallback, bytes sha256 (32), u64 size     (when a WebP fallback is stored)
 //! ```
 //!
 //! Integers are big endian. Every value round-trips: microseconds are
@@ -35,7 +37,7 @@ use uuid::Uuid;
 
 use super::{
     BlobHead, BlobState, Rendered, Representation, RepresentationRow, RepresentationState,
-    Representations, ScanState,
+    Representations, ScanState, WebpFallback,
 };
 use crate::classify::Category;
 use crate::encryption::MAX_CHUNK_SIZE;
@@ -58,9 +60,12 @@ pub struct SealedRepresentation {
     pub state: RepresentationState,
     /// The version it was rendered with; `None` before its first render.
     pub version: Option<i32>,
-    /// The digest and size of the rendered WebP, when the row recorded
-    /// both.
+    /// The format, digest and size of the rendered picture, when the row
+    /// recorded them.
     pub rendered: Option<Rendered>,
+    /// The digest and size of the WebP fallback stored beside it, when
+    /// the row recorded one.
+    pub fallback: Option<WebpFallback>,
 }
 
 impl SealedRepresentation {
@@ -70,6 +75,7 @@ impl SealedRepresentation {
             state: row.state,
             version: row.version,
             rendered: row.rendered,
+            fallback: row.fallback,
         }
     }
 
@@ -79,6 +85,7 @@ impl SealedRepresentation {
             state: self.state,
             version: self.version,
             rendered: self.rendered,
+            fallback: self.fallback,
             source: None,
             timed_out: false,
         }
@@ -211,6 +218,15 @@ impl Envelope {
                     w.u8(1);
                     w.bytes(&r.sha256);
                     w.u64(r.size);
+                    w.str(r.format.as_str());
+                }
+                None => w.u8(0),
+            }
+            match rep.fallback {
+                Some(f) => {
+                    w.u8(1);
+                    w.bytes(&f.sha256);
+                    w.u64(f.size);
                 }
                 None => w.u8(0),
             }
@@ -267,10 +283,25 @@ impl Envelope {
             };
             let rendered = match r.u8()? {
                 0 => None,
-                1 => Some(Rendered {
-                    sha256: r.bytes()?.try_into().map_err(|_| EnvelopeError)?,
-                    size: r.u64()?,
-                }),
+                1 => {
+                    let sha256 = r.bytes()?.try_into().map_err(|_| EnvelopeError)?;
+                    let size = r.u64()?;
+                    let format = r.str()?.parse().map_err(|_| EnvelopeError)?;
+                    Some(Rendered {
+                        format,
+                        sha256,
+                        size,
+                    })
+                }
+                _ => return Err(EnvelopeError),
+            };
+            let fallback = match r.u8()? {
+                0 => None,
+                1 => {
+                    let sha256 = r.bytes()?.try_into().map_err(|_| EnvelopeError)?;
+                    let size = r.u64()?;
+                    Some(WebpFallback { sha256, size })
+                }
                 _ => return Err(EnvelopeError),
             };
             representations.push(SealedRepresentation {
@@ -278,6 +309,7 @@ impl Envelope {
                 state,
                 version,
                 rendered,
+                fallback,
             });
         }
         if !r.0.is_empty() {
@@ -375,6 +407,7 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::blob::ImageFormat;
     use agrafe_crypto::streaming::HEADER_LEN;
 
     fn sample() -> Envelope {
@@ -400,8 +433,13 @@ mod tests {
                     state: RepresentationState::Ready,
                     version: Some(3),
                     rendered: Some(Rendered {
+                        format: ImageFormat::Jxl,
                         sha256: [4u8; 32],
                         size: 12_345,
+                    }),
+                    fallback: Some(WebpFallback {
+                        sha256: [5u8; 32],
+                        size: 23_456,
                     }),
                 },
                 SealedRepresentation {
@@ -409,6 +447,7 @@ mod tests {
                     state: RepresentationState::Pending,
                     version: None,
                     rendered: None,
+                    fallback: None,
                 },
             ],
         }
@@ -418,7 +457,8 @@ mod tests {
     fn round_trips() {
         let env = sample();
         let encoded = env.encode();
-        assert!(encoded.len() < 400, "{}", encoded.len());
+        // Short enough for a URL, with both pictures and a fallback.
+        assert!(encoded.len() < 480, "{}", encoded.len());
         assert_eq!(Envelope::decode(&encoded).unwrap(), env);
         let id = Uuid::now_v7();
         let head = env.head(id, "photo.jpg");
@@ -436,15 +476,27 @@ mod tests {
         let mut env = sample();
         env.representations[0].version = Some(0);
         env.representations[0].rendered = Some(Rendered {
+            format: ImageFormat::Webp,
             sha256: [4u8; 32],
             size: u64::from(u32::MAX) + 1,
         });
+        env.representations[0].fallback = None;
         let decoded = Envelope::decode(&env.encode()).unwrap();
         let thumbnail = decoded.representation(Representation::Thumbnail).unwrap();
         assert_eq!(thumbnail.version, Some(0));
         assert_eq!(thumbnail.rendered.unwrap().size, u64::from(u32::MAX) + 1);
+        assert_eq!(thumbnail.rendered.unwrap().format, ImageFormat::Webp);
+        assert_eq!(thumbnail.fallback, None);
         assert_eq!(decoded.uploaded_at.unwrap().subsec_microsecond(), 123_456);
         assert_eq!(decoded, env);
+        // The fallback is kept through a pending render, as the row keeps
+        // it, so it travels with any state.
+        let mut env = sample();
+        env.representations[1].fallback = Some(WebpFallback {
+            sha256: [6u8; 32],
+            size: 7,
+        });
+        assert_eq!(Envelope::decode(&env.encode()).unwrap(), env);
     }
 
     #[test]

@@ -704,6 +704,75 @@ pub fn webp_size(bytes: &[u8]) -> (u32, u32) {
     }
 }
 
+/// Width and height of a JPEG XL image, from the `SizeHeader` that opens
+/// its codestream: the bare one `vips thumbnail` writes, or the one in the
+/// `jxlc` box of the container `vips copy` writes.
+pub fn jxl_size(bytes: &[u8]) -> (u32, u32) {
+    let codestream = if bytes.starts_with(b"\0\0\0\x0cJXL \r\n\x87\n") {
+        // ISOBMFF boxes: a big-endian length, a type, and the payload.
+        let mut at = 12;
+        loop {
+            let len = u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
+            let kind = &bytes[at + 4..at + 8];
+            let (header, len) = match len {
+                0 => (8, bytes.len() - at),
+                1 => (
+                    16,
+                    u64::from_be_bytes(bytes[at + 8..at + 16].try_into().unwrap()) as usize,
+                ),
+                len => (8, len),
+            };
+            if kind == b"jxlc" {
+                break &bytes[at + header..at + len];
+            }
+            at += len;
+        }
+    } else {
+        bytes
+    };
+    assert_eq!(&codestream[..2], &[0xff, 0x0a], "JPEG XL codestream");
+    // Fields are packed least significant bit first, from the byte after
+    // the signature.
+    let mut at = 16usize;
+    let mut bits = |n: usize| -> u32 {
+        let mut v = 0u32;
+        for i in 0..n {
+            let bit = (codestream[at / 8] >> (at % 8)) & 1;
+            v |= u32::from(bit) << i;
+            at += 1;
+        }
+        v
+    };
+    // A `U32(Bits(9), Bits(13), Bits(18), Bits(30))` field, plus one.
+    let dimension = |bits: &mut dyn FnMut(usize) -> u32| -> u32 {
+        let width = match bits(2) {
+            0 => 9,
+            1 => 13,
+            2 => 18,
+            _ => 30,
+        };
+        bits(width) + 1
+    };
+    let small = bits(1) == 1;
+    let height = if small {
+        (bits(5) + 1) * 8
+    } else {
+        dimension(&mut bits)
+    };
+    let width = match bits(3) {
+        0 if small => (bits(5) + 1) * 8,
+        0 => dimension(&mut bits),
+        1 => height,
+        2 => height * 12 / 10,
+        3 => height * 4 / 3,
+        4 => height * 3 / 2,
+        5 => height * 16 / 9,
+        6 => height * 5 / 4,
+        _ => height * 2,
+    };
+    (width, height)
+}
+
 /// Make every `UPDATE` of a blob row for which `condition` (over `OLD` and
 /// `NEW`) holds fail, as a database that went away at that statement would.
 pub async fn fail_blob_updates(app: &TestApp, condition: &str) {

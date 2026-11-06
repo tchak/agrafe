@@ -18,6 +18,7 @@ pub mod vips;
 
 use std::path::Path;
 
+use agrafe_types::ImageFormat;
 use agrafe_types::classify::{self, Category};
 use agrafe_types::geojson::GEOJSON;
 use agrafe_types::gml::GML;
@@ -64,6 +65,22 @@ pub struct Config {
     /// `document.office_formats`.
     #[serde(default)]
     pub pandoc_command: Option<String>,
+    /// The format thumbnails and previews are encoded in, `media.format`:
+    /// WebP by default, JPEG XL opt-in. Each representation records the
+    /// format it was built with and is served as that; changing this
+    /// setting takes a `media.variant_version` bump to regenerate what
+    /// exists. The icons served in a thumbnail's place follow it at once,
+    /// being embedded in every format.
+    #[serde(default)]
+    pub format: ImageFormat,
+    /// `media.webp_fallback`: store a WebP beside every JPEG XL picture,
+    /// transcoded from it, for the clients that cannot decode JPEG XL,
+    /// and serve it to them, by `Accept` or on request. Off by default,
+    /// and refused unless `format` is `"jxl"`: a WebP needs no fallback.
+    /// A second encode, object and digest per picture, so a choice an
+    /// operator writes down rather than one the format implies.
+    #[serde(default)]
+    pub webp_fallback: bool,
     /// The thumbnail box and quality, the `[media.thumbnail]` table.
     #[serde(default)]
     pub thumbnail: Thumbnail,
@@ -114,6 +131,8 @@ impl Default for Config {
             render_document_command: default_render_document_command(),
             render_geo_command: default_render_geo_command(),
             pandoc_command: None,
+            format: ImageFormat::default(),
+            webp_fallback: false,
             thumbnail: Thumbnail::default(),
             preview: Preview::default(),
             embedded_image: EmbeddedImage::default(),
@@ -132,7 +151,9 @@ pub struct Thumbnail {
     pub width: u32,
     /// The box's height in pixels, 256 by default.
     pub height: u32,
-    /// The WebP quality, 80 by default.
+    /// The encoder's quality, `0..=100`, 80 by default. WebP takes it as
+    /// libwebp's quality; for JPEG XL libvips maps it to a Butteraugli
+    /// distance as libjxl does, 1.9 at 80 and 1.0 at 90.
     pub quality: u8,
 }
 
@@ -152,7 +173,7 @@ impl Default for Thumbnail {
 pub struct Preview {
     /// The side of the box in pixels, 2048 by default.
     pub max_dimension: u32,
-    /// The WebP quality, 85 by default.
+    /// The encoder's quality, `0..=100`, 85 by default.
     pub quality: u8,
 }
 
@@ -408,7 +429,7 @@ pub fn plan(content_type: &str) -> Plan {
             fallback: None,
         },
         "image/jpeg" | "image/png" | "image/gif" | "image/webp" | "image/tiff" | "image/heif"
-        | "image/avif" | "image/svg+xml" | "image/jp2" => Plan {
+        | "image/avif" | "image/jxl" | "image/svg+xml" | "image/jp2" => Plan {
             picture: &[Source::Image],
             fallback: None,
         },
@@ -438,7 +459,7 @@ mod tests {
 
     #[test]
     fn plans_by_type() {
-        for image in ["image/jpg", "image/heic", "image/svg+xml"] {
+        for image in ["image/jpg", "image/heic", "image/jxl", "image/svg+xml"] {
             assert_eq!(plan(image).picture, &[Source::Image], "{image}");
             assert_eq!(plan(image).fallback, None, "{image}");
         }

@@ -46,6 +46,7 @@ curl -s "localhost:8080/blobs/$ID/urls" \
 | `query.disposition` | `inline` (default) or `attachment`: whether the browser shows or downloads the file |
 | `query.filename` | The download name, instead of the blob's own. Validated like a filename |
 | `query.wait` | Milliseconds, at most `30000`: how long a preview or thumbnail request waits for a pending render |
+| `query.format` | `webp` or `jxl`: which picture a preview or thumbnail request gets, where the deployment stores a [WebP fallback](representations.md#the-webp-fallback) beside its JPEG XL ones |
 
 The body is optional: an empty request mints the default set. Unknown query
 parameters are refused with `422`, so a backend mistake surfaces when
@@ -134,8 +135,8 @@ curl -s "localhost:8080/blobs/$ID/original/report.pdf" -o report.pdf
 curl -s "localhost:8080/blobs/$ID/thumbnail/report.pdf" -o thumb.webp
 ```
 
-They take the same `disposition`, `filename` and `wait` query parameters,
-unsigned. The private port reports terminal blobs by their state: the
+They take the same `disposition`, `filename`, `wait` and `format` query
+parameters, unsigned. The private port reports terminal blobs by their state: the
 original answers `409`, the thumbnail the icon with
 `X-Representation-State: unavailable`.
 

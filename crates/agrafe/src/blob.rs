@@ -23,6 +23,7 @@ use uuid::Uuid;
 use crate::app::Agrafe;
 use crate::classify::Category;
 use crate::jobs::Priority;
+pub use agrafe_types::ImageFormat;
 pub use repo::{DEFAULT_LIMIT, ListParams, MAX_LIMIT, Page};
 
 /// Why a blob could not be deleted.
@@ -338,7 +339,7 @@ pub enum RepresentationState {
     /// To be rendered by a `render` job, from the upload or from the
     /// lazy repair of a missing object or a stale variant version.
     Pending,
-    /// Rendered and stored; served as WebP.
+    /// Rendered and stored; served in the format the row records.
     Ready,
     /// A renderer rejected the file. Final for this variant version.
     Failed,
@@ -364,10 +365,10 @@ agrafe_types::str_enum!(RepresentationState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Representation {
-    /// A WebP fitted into the `media.thumbnail` box; the category icon is
-    /// served in its place when there is none.
+    /// A picture fitted into the `media.thumbnail` box; the category icon
+    /// is served in its place when there is none.
     Thumbnail,
-    /// A WebP of the whole file bounded by `media.preview.max_dimension`.
+    /// A picture of the whole file bounded by `media.preview.max_dimension`.
     Preview,
 }
 
@@ -377,22 +378,70 @@ agrafe_types::str_enum!(Representation {
 });
 
 /// What the row records of a rendered representation: enough to answer a
-/// conditional or `HEAD` request without reading the object.
+/// conditional or `HEAD` request without reading the object, and to name
+/// what is served.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rendered {
-    /// SHA-256 of the rendered WebP.
+    /// The format the picture was encoded in, `media.format` when it was
+    /// rendered: what its `Content-Type` and download name say.
+    pub format: ImageFormat,
+    /// SHA-256 of the rendered picture.
     pub sha256: [u8; 32],
-    /// Size of the rendered WebP in bytes.
+    /// Size of the rendered picture in bytes.
     pub size: u64,
 }
 
 impl Rendered {
+    pub(crate) fn from_columns(
+        format: Option<&str>,
+        sha256: Option<&[u8]>,
+        size: Option<i64>,
+    ) -> Option<Self> {
+        Some(Self {
+            format: format?.parse().ok()?,
+            sha256: sha256?.try_into().ok()?,
+            size: u64::try_from(size?).ok()?,
+        })
+    }
+}
+
+/// The WebP stored beside a JPEG XL picture for the clients that cannot
+/// decode it, `media.webp_fallback`: the same picture, transcoded, at
+/// `<kind>.webp`. What the row records of it, as [`Rendered`] records the
+/// picture; the format is always WebP, the only one every browser decodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebpFallback {
+    /// SHA-256 of the WebP.
+    pub sha256: [u8; 32],
+    /// Size of the WebP in bytes.
+    pub size: u64,
+}
+
+impl WebpFallback {
     pub(crate) fn from_columns(sha256: Option<&[u8]>, size: Option<i64>) -> Option<Self> {
         Some(Self {
             sha256: sha256?.try_into().ok()?,
             size: u64::try_from(size?).ok()?,
         })
     }
+
+    /// The fallback as what is served: a WebP picture.
+    pub fn rendered(self) -> Rendered {
+        Rendered {
+            format: ImageFormat::Webp,
+            sha256: self.sha256,
+            size: self.size,
+        }
+    }
+}
+
+/// Which of a representation's objects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Object {
+    /// The picture, at `<kind>`, in the format the row records.
+    Picture,
+    /// Its WebP fallback, at `<kind>.webp`, see [`WebpFallback`].
+    Fallback,
 }
 
 /// One derived representation of a blob, a row of `representations`: one
@@ -414,6 +463,12 @@ pub struct RepresentationRow {
     /// The digest and size of what was rendered, recorded with `ready` and
     /// cleared with any other state, which `CHECK`s on the table hold.
     pub rendered: Option<Rendered>,
+    /// The WebP fallback stored beside the picture, when there is one.
+    /// Recorded with the picture; kept, like `version`, through a request
+    /// to regenerate, since the object is still in the bucket and the
+    /// render that replaces the picture replaces or removes it; served
+    /// only with `ready`.
+    pub fallback: Option<WebpFallback>,
     /// Preview only: what it was rendered from, `None` without a rendered
     /// preview.
     pub source: Option<PreviewSource>,
@@ -456,6 +511,12 @@ impl Representations {
     /// What the row of `kind` records of its rendering.
     pub fn rendered(&self, kind: Representation) -> Option<Rendered> {
         self.get(kind).and_then(|row| row.rendered)
+    }
+
+    /// What the row of `kind` records of the WebP fallback in the bucket,
+    /// whatever its state.
+    pub fn fallback(&self, kind: Representation) -> Option<WebpFallback> {
+        self.get(kind).and_then(|row| row.fallback)
     }
 
     /// Every row, in [`Representation`] order.

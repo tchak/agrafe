@@ -43,16 +43,25 @@ The first release.
 - **Encryption at rest**: envelope encryption with streaming AEAD (Tink's
   AES-GCM-HKDF-STREAMING) and wrapped data keys, KEK rotation, and
   `Range` reads of the plaintext.
-- **Previews and thumbnails** in WebP, rendered by `vips` and four helper
+- **Previews and thumbnails** in WebP, or in JPEG XL where `media.format`
+  chooses it, rendered by `vips` and four helper
   binaries in a sandbox of Landlock, seccomp and resource limits, or
-  bubblewrap where the host grants it: images, PDF first pages, embedded
+  bubblewrap where the host grants it: images (JPEG XL among them), PDF
+  first pages, embedded
   images, text, maps of GeoJSON, GPX, KML, KMZ and GML files and zipped
   shapefiles, and, with
-  LibreOffice, office documents; category icons for the rest. Each one
+  LibreOffice, office documents; category icons, in the same format, for
+  the rest. Each one
   is a row of the `representations` table, and the metadata lists them
   as one `representations` object keyed by kind, each entry with its
-  `state` and, once `ready`, the `checksum` and `size` of the WebP; a
-  kind left out at creation is absent.
+  `state` and, once `ready`, the `format`, `checksum` and `size` of the
+  picture; a kind left out at creation is absent. The format is recorded
+  per picture and served as recorded, so switching it is a configuration
+  change and a `media.variant_version` bump, never an API change. With
+  `media.webp_fallback`, a JPEG XL deployment stores a WebP beside each
+  picture, listed under the entry's `fallback`, and serves it to the
+  browsers whose `Accept` does not name `image/jxl`, with `Vary: Accept`,
+  or on the signed `format` query parameter.
 - **Generated files**: spreadsheets, ZIP archives and documents compiled
   from typst, built by jobs from parts sent in pieces. A document is a
   PDF, or from the same template a DOCX or an ODT, offered by

@@ -137,6 +137,14 @@ pub enum JobError {
     Render(#[from] agrafe_render::Error),
     #[error(transparent)]
     Representation(#[from] crate::blob::representation::Error),
+    /// vips would not transcode a picture it had just written to WebP,
+    /// which is the deployment's doing, not the file's: the probe checks
+    /// the saver, and the job fails rather than mark the file.
+    #[error("transcoding the {kind} to its WebP fallback: {rejection}")]
+    Fallback {
+        kind: crate::blob::Representation,
+        rejection: agrafe_render::Rejection,
+    },
     #[error("purge: {0}")]
     Purge(#[from] purge::PurgeError),
     #[error("build: {0}")]
