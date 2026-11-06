@@ -3,7 +3,8 @@
 //! not depend on the fonts, fontconfig or shaping libraries of the host.
 //! The bytes are untrusted, so this runs in the `agrafe-render-text`
 //! helper, in the sandbox; the server does not link this crate. The output
-//! is a PGM for vips to turn into the WebP like any other raster.
+//! is a PGM for vips to turn into the thumbnail, in the configured format,
+//! like any other raster.
 
 use std::borrow::Cow;
 

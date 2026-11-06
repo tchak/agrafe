@@ -142,8 +142,8 @@ get the whole file with `200`.
 
 The thumbnail, an image. Always one while the blob exists: the rendered
 thumbnail or the category icon, in the deployment's `media.format` (WebP
-by default, or JPEG XL). `Content-Type` says which; a client must not
-assume a format.
+by default, or JPEG XL), or in its WebP fallback (below). `Content-Type`
+says which; a client must not assume a format.
 
 **Signed query.** `disposition`, `filename` and `e` as for the original,
 plus `wait`, milliseconds from `0` to `30000` to hold the request while the
@@ -160,7 +160,7 @@ what is served, `.webp` or `.jxl`.
 
 | Header | Value |
 |---|---|
-| `Content-Type` | `image/webp` or `image/jxl`: the format recorded when the thumbnail was rendered, or of its fallback, or the current `media.format` for the icon |
+| `Content-Type` | `image/webp` or `image/jxl`: the format recorded when the thumbnail was rendered, or of its fallback; for the icon, the `format` asked for, else the current `media.format`, or WebP where the deployment stores the fallback and `Accept` does not name `image/jxl` |
 | `X-Representation-State` | `ready`, `pending`, `failed`, `unavailable` or `disabled` |
 | `ETag` | On a rendered thumbnail; the fallback has its own |
 | `Cache-Control` | `private, max-age=86400`, or `no-store` while pending |

@@ -269,7 +269,8 @@ format = "webp"
 # from it, for the browsers that do not decode JPEG XL: a request whose
 # Accept header does not name image/jxl gets the WebP, one that does, or
 # sends no Accept at all, gets the JPEG XL, and a signed `format` query
-# parameter picks either by name.
+# parameter picks either by name. The icons served in a thumbnail's place
+# are chosen the same way.
 # A second encode and a second object per picture. Refused with "webp",
 # which needs no fallback. Turning it on regenerates, on its next request,
 # each JPEG XL picture that has no WebP beside it; to turn it off, unset it

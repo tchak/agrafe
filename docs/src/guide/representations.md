@@ -27,7 +27,8 @@ that: `Content-Type` is `image/webp` or `image/jxl`, the download name
 ends in `.webp` or `.jxl`, and the metadata's entry carries `format`. A
 client reads the type from the response or the metadata and never
 assumes one. The category icons served in a thumbnail's place are in
-`media.format` too, and follow a change of setting at once.
+`media.format` too, and follow a change of setting at once; with [the
+WebP fallback](#the-webp-fallback) they are chosen as the pictures are.
 
 Changing `media.format` affects what is rendered from then on. To convert
 what exists, bump `media.variant_version` with it: every picture is then
