@@ -1086,19 +1086,40 @@ async fn a_replace_detaches_a_blob_reattached_while_it_waited() {
 /// in the other order, as the reaper's batch may, deadlocks with it.
 /// Postgres aborts the replace, which did nothing, and the request says
 /// so: `503 unavailable` with `Retry-After`, not an internal error.
+///
+/// Postgres checks a waiting backend for a deadlock once, a
+/// `deadlock_timeout` (a second) after its wait starts. The replace waits
+/// first and so checks first, and gives way, if the test closes the cycle
+/// within that second; a runner stalled longer leaves the replace's one
+/// check finding no cycle, and the test's own transaction is the one
+/// aborted. That try proves nothing either way, so the test tries again,
+/// at another address.
 #[tokio::test]
 async fn a_replace_a_deadlock_aborted_asks_for_a_retry() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    for owner in ["7", "8", "9"] {
+        if a_replace_loses_a_deadlock(&app, owner).await {
+            return;
+        }
+        eprintln!("the test's transaction lost the deadlock at user {owner}; again");
+    }
+    panic!("the test's own transaction lost the deadlock three times");
+}
+
+/// One try of the test above at `user/<owner>/avatar`: `true` once the
+/// replace was the one aborted and answered as it should, `false` when
+/// Postgres aborted the test's transaction instead.
+async fn a_replace_loses_a_deadlock(app: &TestApp, owner: &str) -> bool {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    let db = TestDatabase::new().await;
-    let app = setup(db).await;
-    let lo = create(&app, raw_blob()).await;
-    let hi = create(&app, raw_blob()).await;
+    let lo = create(app, raw_blob()).await;
+    let hi = create(app, raw_blob()).await;
     for blob in [&lo, &hi] {
-        attach(&app, id_of(blob), attachment("user", "7", "avatar")).await;
+        attach(app, id_of(blob), attachment("user", owner, "avatar")).await;
     }
-    let new = create(&app, raw_blob()).await;
+    let new = create(app, raw_blob()).await;
 
     // Hold the higher row: the replace takes the lower one and waits on
     // it. Then take the lower one: a cycle, which the replace, the one
@@ -1110,14 +1131,11 @@ async fn a_replace_a_deadlock_aborted_asks_for_a_retry() {
         .await
         .unwrap();
     let router = app.private.clone();
-    let new_id = id_of(&new).to_string();
+    let uri = format!("/blobs/{}/attachments", id_of(&new));
+    let body = replacing("user", owner, "avatar");
     let replace = tokio::spawn(async move {
         let res = router
-            .oneshot(json_req(
-                Method::POST,
-                &format!("/blobs/{new_id}/attachments"),
-                replacing("user", "7", "avatar"),
-            ))
+            .oneshot(json_req(Method::POST, &uri, body))
             .await
             .unwrap();
         let status = res.status();
@@ -1145,19 +1163,31 @@ async fn a_replace_a_deadlock_aborted_asks_for_a_retry() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert!(!replace.is_finished(), "waits on the higher row");
-    sqlx::query("SELECT id FROM blobs WHERE id = $1 FOR UPDATE")
+    let closed = sqlx::query("SELECT id FROM blobs WHERE id = $1 FOR UPDATE")
         .bind(parse_id(id_of(&lo)))
         .execute(&mut *tx)
-        .await
-        .unwrap();
+        .await;
+    let lost = match closed {
+        Ok(_) => false,
+        Err(err) if err.as_database_error().and_then(|e| e.code()).as_deref() == Some("40P01") => {
+            true
+        }
+        Err(err) => panic!("taking the lower row: {err}"),
+    };
     tx.rollback().await.unwrap();
 
     let (status, retry_after, body) = within("the replace", replace).await.unwrap();
+    if lost {
+        // The rows were the replace's once the test's transaction let go.
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        return false;
+    }
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
     assert_eq!(body["error"]["code"], "unavailable");
     assert_eq!(retry_after.as_deref(), Some("1"));
     let mut both = vec![id_of(&lo).to_string(), id_of(&hi).to_string()];
     both.sort();
-    assert_eq!(blobs_at(&app, "user", "7", "avatar").await, both);
-    assert_eq!(get_blob(&app, id_of(&new)).await["attachments"], json!([]));
+    assert_eq!(blobs_at(app, "user", owner, "avatar").await, both);
+    assert_eq!(get_blob(app, id_of(&new)).await["attachments"], json!([]));
+    true
 }
