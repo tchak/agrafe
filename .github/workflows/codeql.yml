@@ -1,0 +1,54 @@
+name: CodeQL
+
+# Replaces GitHub's default setup, which analysed every pull request and
+# then the same change again on its push to main. The Rust analysis takes
+# about ten minutes (most of it the queries over the dependency graph) and
+# gates nothing, so it runs once, after the merge, and only when a change
+# could move a finding. The weekly run picks up new queries and models
+# when nothing has been pushed.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "**.rs"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/**"
+      # askama compiles the templates into the handlers' Rust, which is
+      # what the XSS query reads.
+      - "crates/agrafe-dashboard/templates/**"
+      - "**.py"
+      - ".github/workflows/**"
+  schedule:
+    # Mondays, 05:17 UTC.
+    - cron: "17 5 * * 1"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-26.04
+    # Rust takes about ten minutes, the others under one.
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [rust, python, actions]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:${{ matrix.language }}
