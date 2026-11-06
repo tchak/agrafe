@@ -31,5 +31,6 @@ updates:
         patterns: ["*"]
         update-types: [minor, patch]
     ignore:
-      # Its refs name toolchains, and 1.94 is the MSRV: raised by hand.
+      # Its refs name toolchains (`stable`), not versions to bump; the MSRV
+      # job reads its toolchain from Cargo.toml.
       - dependency-name: dtolnay/rust-toolchain

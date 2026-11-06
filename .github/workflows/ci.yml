@@ -163,12 +163,27 @@ jobs:
         env:
           AGRAFE_TEST_BUBBLEWRAP: /usr/bin/bwrap
 
+  # The oldest toolchain the workspace builds with, its `rust-version`.
+  # The job's name carries no version: the main ruleset requires it by
+  # name, and raising the MSRV is a change to Cargo.toml alone.
   msrv:
-    name: MSRV (1.94)
+    name: MSRV
     runs-on: ubuntu-26.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.94
+      - name: Read the MSRV from Cargo.toml
+        id: msrv
+        run: |
+          version=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
+          if [[ -z $version ]]; then
+            echo "::error::Cargo.toml has no rust-version"
+            exit 1
+          fi
+          echo "MSRV $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace --all-targets
