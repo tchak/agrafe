@@ -195,7 +195,7 @@ impl<'a> Render<'a> {
 
     /// The preview the thumbnail derives from: rendered now when it is
     /// pending, or when the thumbnail needs one and the stored one is from
-    /// another variant version or gone, which sets it back to `pending`
+    /// another representation version or gone, which sets it back to `pending`
     /// first. A verdict from this version stands.
     async fn preview(&mut self, pending: bool) -> Result<Preview, JobError> {
         if pending {
@@ -204,7 +204,7 @@ impl<'a> Render<'a> {
         let Some(row) = self.blob.representations.get(Representation::Preview) else {
             return Ok(Preview::Disabled);
         };
-        let current = row.version == Some(self.media().variant_version);
+        let current = row.version == Some(self.media().representation_version);
         Ok(match (row.state, current) {
             (RepresentationState::Ready, true) => match self.stored_preview().await? {
                 Some(path) => Preview::Ready(path),
@@ -482,7 +482,7 @@ impl<'a> Render<'a> {
 
     /// Store what was rendered, if anything, with its WebP fallback where
     /// `media.webp_fallback` asks for one, and record the state on the row
-    /// with the variant version it was built with. `picture` is where
+    /// with the representation version it was built with. `picture` is where
     /// `bytes` were rendered to, which the fallback is transcoded from. A
     /// fallback the row recorded from an earlier render and this one did
     /// not store, the setting turned off since, goes with the row's record
@@ -526,7 +526,7 @@ impl<'a> Render<'a> {
             state,
             source,
             timed_out,
-            self.media().variant_version,
+            self.media().representation_version,
             rendered,
             fallback,
         )

@@ -531,7 +531,7 @@ async fn the_webp_fallback_stands_beside_a_jpeg_xl_picture() {
 /// A JPEG XL picture without the WebP fallback the deployment stores,
 /// rendered before `media.webp_fallback` was turned on, would go to the
 /// browsers the fallback is for as it is: it is regenerated on its first
-/// request, as a picture of another variant version is, so turning the
+/// request, as a picture of another representation version is, so turning the
 /// fallback on takes no bump. An envelope that records no fallback defers
 /// to the row.
 #[tokio::test]
@@ -1803,7 +1803,7 @@ async fn representations_regenerate_when_missing_or_stale() {
     let (_, size) = rendered(&app, &thumbnail).await;
     assert_eq!(size, (256, 128));
 
-    // Built with another variant version: the same, for a preview too.
+    // Built with another representation version: the same, for a preview too.
     sqlx::query("UPDATE representations SET version = 0 WHERE blob_id = $1 AND kind = 'preview'")
         .bind(parse_id(id))
         .execute(app.state.pool())
@@ -1829,7 +1829,7 @@ async fn representations_regenerate_when_missing_or_stale() {
     .fetch_one(app.state.pool())
     .await
     .unwrap();
-    assert_eq!(version, app.state.config().media.variant_version);
+    assert_eq!(version, app.state.config().media.representation_version);
 
     // A failed representation is retried on a version bump as well.
     sqlx::query(
@@ -1964,7 +1964,7 @@ async fn representations_disabled_at_creation_are_never_rendered() {
     icon(&app, &thumbnail, "disabled").await;
     no_preview(&app, &preview, "disabled", "preview disabled for this blob").await;
     // The lazy repair path leaves a disabled representation alone, even
-    // with the variant version it never had.
+    // with the representation version it never had.
     assert_eq!(jobs_for(&app, id).await, Vec::<String>::new());
 
     // The thumbnail alone is rendered, from the original: one row, one

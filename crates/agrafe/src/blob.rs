@@ -337,14 +337,14 @@ impl ScanOutcome {
 #[serde(rename_all = "snake_case")]
 pub enum RepresentationState {
     /// To be rendered by a `render` job, from the upload or from the
-    /// lazy repair of a missing object or a stale variant version.
+    /// lazy repair of a missing object or a stale representation version.
     Pending,
     /// Rendered and stored; served in the format the row records.
     Ready,
-    /// A renderer rejected the file. Final for this variant version.
+    /// A renderer rejected the file. Final for this representation version.
     Failed,
     /// Every source declined the file: nothing renders it. Final for
-    /// this variant version.
+    /// this representation version.
     Unavailable,
     /// Turned off when the blob was created; never rendered, never
     /// regenerated. Never stored: it is the absence of a row in
@@ -456,9 +456,9 @@ pub struct RepresentationRow {
     pub kind: Representation,
     /// Where its rendering stands; never `disabled`.
     pub state: RepresentationState,
-    /// The kind's version it was last built with, `media.variant_version`
-    /// for the pictures; another one makes the read path regenerate it.
-    /// `None` before its first render.
+    /// The kind's version it was last built with,
+    /// `media.representation_version` for the pictures; another one makes the
+    /// read path regenerate it. `None` before its first render.
     pub version: Option<i32>,
     /// The digest and size of what was rendered, recorded with `ready` and
     /// cleared with any other state, which `CHECK`s on the table hold.

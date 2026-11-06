@@ -158,12 +158,12 @@ impl Config {
                 humantime_serde::re::humantime::format_duration(BlobsConfig::MIN_EXPIRES_IN)
             )));
         }
-        if self.media.variant_version < 1 {
+        if self.media.representation_version < 1 {
             // Zero stands for "none" in the envelope, so a zero version
             // would never match and every sealed representation would fall
             // back to the row.
             return Err(ConfigError::Invalid(
-                "media.variant_version must be at least 1".into(),
+                "media.representation_version must be at least 1".into(),
             ));
         }
         if self.media.render.webp_fallback && self.media.render.format != ImageFormat::Jxl {
@@ -1374,7 +1374,7 @@ pub struct MediaConfig {
     /// The version of every derived representation; bumping it regenerates
     /// them all on next request. At least 1, since zero means "none"
     /// inside sealed URLs; 1 by default.
-    pub variant_version: i32,
+    pub representation_version: i32,
     /// Originals above this size get no representations, except the text
     /// thumbnail, which reads only the first few KiB. 64 MiB by default.
     pub max_source_size: ByteSize,
@@ -1402,14 +1402,14 @@ impl<'de> Deserialize<'de> for MediaConfig {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Own {
-            #[serde(default = "default_variant_version")]
-            variant_version: i32,
+            #[serde(default = "default_representation_version")]
+            representation_version: i32,
             #[serde(default = "default_max_source_size")]
             max_source_size: ByteSize,
             #[serde(default)]
             tmp_dir: Option<PathBuf>,
         }
-        const OWN: [&str; 3] = ["variant_version", "max_source_size", "tmp_dir"];
+        const OWN: [&str; 3] = ["representation_version", "max_source_size", "tmp_dir"];
 
         let mut render = Dict::deserialize(deserializer)?;
         let own: Dict = OWN
@@ -1420,7 +1420,7 @@ impl<'de> Deserialize<'de> for MediaConfig {
         let render =
             agrafe_render::Config::deserialize(&Value::from(render)).map_err(D::Error::custom)?;
         Ok(Self {
-            variant_version: own.variant_version,
+            representation_version: own.representation_version,
             max_source_size: own.max_source_size,
             tmp_dir: own.tmp_dir,
             render,
@@ -1428,7 +1428,7 @@ impl<'de> Deserialize<'de> for MediaConfig {
     }
 }
 
-fn default_variant_version() -> i32 {
+fn default_representation_version() -> i32 {
     1
 }
 fn default_max_source_size() -> ByteSize {
@@ -1438,7 +1438,7 @@ fn default_max_source_size() -> ByteSize {
 impl Default for MediaConfig {
     fn default() -> Self {
         Self {
-            variant_version: default_variant_version(),
+            representation_version: default_representation_version(),
             max_source_size: default_max_source_size(),
             tmp_dir: None,
             render: agrafe_render::Config::default(),

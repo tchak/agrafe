@@ -45,7 +45,7 @@ const BACKGROUND: Color = Color {
 };
 
 /// Background requests in flight at once, per process: a
-/// `variant_version` bump re-renders every map blob and must not be a
+/// `representation_version` bump re-renders every map blob and must not be a
 /// burst against the provider.
 const CONCURRENT_FETCHES: usize = 4;
 

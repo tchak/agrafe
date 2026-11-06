@@ -523,8 +523,8 @@ the row up as before.
   what the `GET` that follows says anyway, and a `304` tells a client that
   already holds the bytes that they have not changed, which is still true.
 - A representation is served from the envelope when it records it `ready`
-  with the current variant version: `304` and `HEAD` from the digest and
-  size, the bytes from the bucket. Anything else, a pending render, an
+  with the current representation version: `304` and `HEAD` from the digest
+  and size, the bytes from the bucket. Anything else, a pending render, an
   older version, an object missing or that does not open, is handed to the
   row, which knows better and does the repair.
 - Nothing on the sealed path reads the row, so a blob deleted or expired
@@ -2194,10 +2194,10 @@ subprocess, listing pages with many thumbnails do not stampede, and the
 common "upload then show it" flow gets its thumbnail within seconds.
 
 A lazy path exists only for repair: if the object is missing, or the stored
-representation was built with another `media.variant_version`, the `GET`
-handler sets it back to `pending`, enqueues a generation job (deduplicated
-with any pending one) and serves the placeholder. Bumping the version in
-config therefore regenerates everything on demand, `failed` and
+representation was built with another `media.representation_version`, the
+`GET` handler sets it back to `pending`, enqueues a generation job
+(deduplicated with any pending one) and serves the placeholder. Bumping the
+version in config therefore regenerates everything on demand, `failed` and
 `unavailable` ones included, since a new renderer may do better. Each
 representation records the version it was built with (`version` on its
 row).
@@ -2254,7 +2254,7 @@ Chrome since 155 and Firefox since 158 (both October 2026) decode it by
 default; Edge, the Firefox ESR of 2026 and devices on an old iOS do not
 yet, and the agents of an administration are that tail. So WebP stays
 the default and JPEG XL is opt-in, and switching is a configuration
-change plus a `media.variant_version` bump that regenerates every
+change plus a `media.representation_version` bump that regenerates every
 picture lazily, as any renderer change does, never an API break: the
 default can flip in a later release with a changelog line. Making JPEG
 XL the default now was rejected, since it would need a WebP fallback for
@@ -2307,7 +2307,7 @@ everyone, and nothing varies.
 Turning the fallback on takes no bump: a JPEG XL picture with no WebP
 beside it, rendered before the setting, would go to the very browsers
 the fallback is for, so the read path treats it as it treats a picture
-of another variant version and regenerates it on its first request
+of another representation version and regenerates it on its first request
 (`representation::lacks_fallback`; the sealed path defers such an
 envelope to the row). Turning the fallback off is unsetting the key and
 bumping the version:
@@ -2404,7 +2404,7 @@ first; the thumbnail is the preview fitted into the thumbnail box. The
 original is therefore fetched, decrypted and decoded once, the two pictures
 agree, and a thumbnail regenerated on its own (its object gone) is made
 from the stored preview without touching the original. A preview verdict
-from the current variant version stands: a `failed` or `unavailable`
+from the current representation version stands: a `failed` or `unavailable`
 preview leaves the thumbnail to the plan's fallback (the text sample, the
 first page of a PDF), and without one the thumbnail is `failed` or the
 icon respectively. A PDF whose embedded image is broken thus still shows
@@ -2450,9 +2450,9 @@ and leaves the representation `pending` meanwhile.
 
 vips exits non-zero for a bad file and for a missing loader or an unknown
 option alike, so a libvips built without PDF support, or too old for
-`keep=`, would mark every file `failed` and need a variant version bump
-once fixed. Before a worker starts it therefore renders a text sample, a
-one-pixel PNG, a one-page PDF and an image for each other loader on the
+`keep=`, would mark every file `failed` and need a representation version
+bump once fixed. Before a worker starts it therefore renders a text sample,
+a one-pixel PNG, a one-page PDF and an image for each other loader on the
 allowlist that a libvips may be built without or a distribution packages
 apart (GIF, WebP, TIFF, HEIC, AVIF, JPEG 2000: Debian ships libheif's
 HEVC and AV1 decoders as plugins of their own) through the exact command
@@ -2492,12 +2492,12 @@ as for the original.
 They are small and served whole, with a strong `ETag` of the content and
 `Cache-Control: private, max-age=86400`: not `immutable`, since a version
 bump changes them under the same URL. The `ETag` names the picture of one
-variant version: a sealed URL carries the digest its envelope was minted
-with and serves without the row, so a picture rendered again at the same
-version, its object having gone missing, is served under the old tag
+representation version: a sealed URL carries the digest its envelope was
+minted with and serves without the row, so a picture rendered again at the
+same version, its object having gone missing, is served under the old tag
 until the URL is minted again, which asks of a version that it render one
-picture, the promise `media.variant_version` makes anyway. A row, on the
-other hand, always describes the object in the bucket: the render job
+picture, the promise `media.representation_version` makes anyway. A row, on
+the other hand, always describes the object in the bucket: the render job
 sets a representation back to `pending` before it renders over its
 object, as a request for a stale or missing one does
 (`repo::reset_representation`), and records the new digest with `ready`
@@ -2630,14 +2630,14 @@ the only one that reads these formats is LibreOffice. It is optional
 (`media.office.command`, unset by default): a deployment without it
 behaves as before, the category icon or the embedded-image preview when
 the file is "really an image", and one that turns it on later gets
-thumbnails for existing blobs through the variant version, no backfill.
-LibreOffice does one thing: convert the office file to a PDF in the job's
-work directory, and the first page of that PDF then takes the path a PDF
-thumbnail takes, the same loader sniff, the same box. LibreOffice never
-produces the picture, so there is one raster path, one probed PDF loader,
-and a DOCX and a PDF look the same; exporting PNG from LibreOffice would
-tie the resolution to its export options and add a second raster path for
-nothing. The export asks for the first page only (`PageRange`, the JSON
+thumbnails for existing blobs through the representation version, no
+backfill. LibreOffice does one thing: convert the office file to a PDF in
+the job's work directory, and the first page of that PDF then takes the path
+a PDF thumbnail takes, the same loader sniff, the same box. LibreOffice
+never produces the picture, so there is one raster path, one probed PDF
+loader, and a DOCX and a PDF look the same; exporting PNG from LibreOffice
+would tie the resolution to its export options and add a second raster path
+for nothing. The export asks for the first page only (`PageRange`, the JSON
 filter options of LibreOffice 7.4 and later), so a 300-page document is
 not laid out and written in full; the probe checks the option is honoured
 by each export filter (see "Rendering"). The export filter follows the
@@ -3020,7 +3020,7 @@ on "has preview", never on category. Sources, in order:
 
    Fetching: one request per applicable layer, each under
    `fetch_timeout` and `max_layer_size`, at most four in flight per
-   process, since a `variant_version` bump re-renders every map blob
+   process, since a `representation_version` bump re-renders every map blob
    and must not be a burst against the provider. Up to three redirects
    are followed on the layer's own host and port, never from https to
    http: a provider that sends the worker to another host, an internal

@@ -254,16 +254,16 @@ max_inline_scans = 4
 [media]
 # Bump to regenerate every derived representation on next request. At
 # least 1: zero means "none" inside sealed URLs.
-variant_version = 1
+representation_version = 1
 # What thumbnails and previews are encoded in: "webp", which every browser
 # decodes, or "jxl", JPEG XL, which Safari 17, Chrome 155 and Firefox 158
 # decode and Edge and the Firefox ESR of 2026 do not yet. Each picture
 # records the format it was built with and is served as that, with the
 # matching Content-Type and download extension, so the setting can change
-# at any time: bump `variant_version` with it to regenerate what exists,
-# or leave the pictures as they are until they are rendered again. The
-# icons served in a thumbnail's place follow the setting at once. libvips
-# must be built with libjxl for "jxl"; the startup probe checks.
+# at any time: bump `representation_version` with it to regenerate what
+# exists, or leave the pictures as they are until they are rendered again.
+# The icons served in a thumbnail's place follow the setting at once.
+# libvips must be built with libjxl for "jxl"; the startup probe checks.
 format = "webp"
 # With format = "jxl", store a WebP beside each picture as well, transcoded
 # from it, for the browsers that do not decode JPEG XL: a request whose
@@ -274,7 +274,7 @@ format = "webp"
 # A second encode and a second object per picture. Refused with "webp",
 # which needs no fallback. Turning it on regenerates, on its next request,
 # each JPEG XL picture that has no WebP beside it; to turn it off, unset it
-# and bump `variant_version`: each regeneration removes the WebP.
+# and bump `representation_version`: each regeneration removes the WebP.
 webp_fallback = false
 # The libvips command line tool, run as a sandboxed subprocess for every
 # render. Debian: libvips-tools; macOS: brew install vips. A build with
@@ -374,7 +374,7 @@ max_text_chars = 50
 # texts, spreadsheets, presentations and drawings. Off by default: unset,
 # office files get the category icon, as they do when LibreOffice is not
 # installed. Turning it on later regenerates existing blobs through a
-# `variant_version` bump. Debian: libreoffice-writer-nogui,
+# `representation_version` bump. Debian: libreoffice-writer-nogui,
 # libreoffice-calc-nogui, libreoffice-impress-nogui, libreoffice-draw-nogui,
 # fonts-dejavu-core and fonts-liberation; the startup probe converts a file
 # of each application and fails the worker when one is missing. LibreOffice

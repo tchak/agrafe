@@ -13,7 +13,7 @@
 //! formats.
 //!
 //! The lazy path lives here too: a representation whose object is gone, or
-//! that was built with another variant version, is set back to `pending`
+//! that was built with another representation version, is set back to `pending`
 //! and queued again on first request.
 
 use std::time::{Duration, Instant};
@@ -44,8 +44,8 @@ pub const STATE_HEADER: &str = "x-representation-state";
 
 const WAIT_POLL: Duration = Duration::from_millis(250);
 
-/// Ready representations change only on a variant version bump; the URL's
-/// own expiry bounds how long it works.
+/// Ready representations change only on a representation version bump; the
+/// URL's own expiry bounds how long it works.
 const CACHE_READY: &str = "private, max-age=86400";
 
 /// Signed query parameters the minter may attach to a representation URL.
@@ -246,7 +246,7 @@ pub async fn serve(
 }
 
 /// Serve `kind` from the URL's envelope, with no row to look up, when
-/// the envelope has it rendered with the current variant version, and
+/// the envelope has it rendered with the current representation version, and
 /// with the WebP fallback where the deployment stores one. `None`
 /// otherwise: a render was pending, the version has moved or the fallback
 /// was turned on since the envelope was minted, or the object is gone,
@@ -267,7 +267,7 @@ pub async fn serve_sealed(
     let Some(sealed) = envelope.representation(kind) else {
         return Ok(None);
     };
-    let current = state.config().media.variant_version;
+    let current = state.config().media.representation_version;
     let (Some(rendered), RepresentationState::Ready, Some(version)) =
         (sealed.rendered, sealed.state, sealed.version)
     else {
