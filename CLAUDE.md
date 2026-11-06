@@ -63,9 +63,10 @@ See "Crates" in `DESIGN.md` for the dependency graph.
   trixie runtime with or without LibreOffice (`VARIANT=office`), and the
   configuration file each variant gets.
 - `xtask/` — the workspace's own tasks, `cargo xtask <task>`, never
-  published: `release <version>` cuts a release (see "Releases" in
-  `DESIGN.md`), and the tag it pushes runs `.github/workflows/release.yml`,
-  which takes the GitHub release's text from `notes <version>`.
+  published: `release <version>` opens a release's pull request, `tag
+  <version>` tags the commit it was merged as (see "Releases" in
+  `DESIGN.md`), and that tag runs `.github/workflows/release.yml`, which
+  takes the GitHub release's text from `notes <version>`.
 - `docs/` — the user documentation, an mdBook (`mdbook build docs`,
   `mdbook serve docs`), deployed to GitHub Pages by
   `.github/workflows/docs.yml` on push to `main`. Update it with the

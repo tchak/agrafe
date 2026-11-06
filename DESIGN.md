@@ -4317,10 +4317,34 @@ images' `latest` tag to tell two lines apart, `latest` following any plain
 version tag today. So `0.1` stops moving when `0.2.0` ships, which the
 deployment guide says.
 
-A release is a tag. `cargo xtask release <version>` bumps the version,
-dates the section, commits `Release <version>` on `main`, tags it
-`v<version>` and pushes both with jj; nothing else writes to `main` or
-creates tags. The task is Rust, an `xtask` crate that is never
+A release is a tag on `main`. `main` is protected: every commit reaches
+it through a pull request, the release's too, so a release is two tasks
+either side of a merge. `cargo xtask release <version>` bumps the
+version, dates the section, commits `Release <version>` on top of `main`
+under a `release/v<version>` bookmark, pushes it with jj and opens its
+pull request with `gh`, the release notes as its body; CI runs on it as
+on any other. Once it is merged, `cargo xtask tag <version>` asks GitHub
+which commit the pull request became (the squash, the last commit
+rebased, or the merge commit: the merge method rewrites the commit, so
+the tag cannot be made before), checks that it is on `main@origin` and
+that its tree carries the version and its notes, tags it `v<version>` and
+pushes the tag alone. Nothing else creates tags. The tag is pushed from
+a maintainer's checkout rather than by a workflow on the merge: a tag
+pushed with a workflow's `GITHUB_TOKEN` starts no other workflow, so
+that would take a stored token or an app, and pushing it by hand keeps a
+person deciding when the irreversible publish starts. A pull request
+merged between the two lands its changelog lines under `Unreleased` for
+the next version, since the tag is on the release's own commit.
+
+GitHub holds the rest, as repository settings rather than files: a
+ruleset on `main` requiring pull requests and CI, a ruleset on `v*` tags
+letting maintainers alone create them and nobody move or delete them,
+and the `release` environment, which holds the crates.io credentials,
+restricted to `v*` tags. The workflow itself checks that the tagged
+commit is on `main`, so a tag on a commit that skipped review publishes
+nothing.
+
+The task is Rust, an `xtask` crate that is never
 published, rather than a shell script: versions are ordered by the
 `semver` crate, Cargo's, which puts a pre-release before its release as
 `sort -V` does not; `Cargo.toml` is edited with `toml_edit`, keeping its
@@ -4331,7 +4355,8 @@ changelog section: its notes are `Unreleased`, which the release after it
 takes whole, so the release's entry says everything since the last one. The tag runs `.github/workflows/release.yml`, in the order
 that keeps an irreversible step last but one:
 
-1. the tag against the workspace version and the changelog section;
+1. the tag: its commit on `main`, the workspace at its version, its
+   changelog section;
 2. the CI suite, `ci.yml` called on the tagged commit;
 3. the Docker images, both variants built per architecture on native
    runners and pushed by digest, each run by `scripts/check-image.sh` as

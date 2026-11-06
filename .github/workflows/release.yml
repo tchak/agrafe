@@ -1,8 +1,8 @@
 name: Release
 
-# A v<version> tag, pushed by `cargo xtask release`, releases that commit: the
-# CI suite, then the Docker images, then the crates, then the GitHub
-# release. Publishing to crates.io cannot be undone, so it waits for the
+# A v<version> tag, pushed by `cargo xtask tag` on the commit a release pull
+# request was merged as, releases that commit: the CI suite, then the
+# Docker images, then the crates, then the GitHub release. Publishing to crates.io cannot be undone, so it waits for the
 # rest that can fail; a run that stops partway is re-run as it is, and
 # skips the crates already published.
 on:
@@ -28,6 +28,17 @@ jobs:
       prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # main's history, to find the tagged commit in it.
+          fetch-depth: 0
+      # One line of releases, every commit of it reviewed: a tag on a
+      # commit that never reached main through a pull request stops here.
+      - name: Check that the tagged commit is on main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_REF_NAME ($GITHUB_SHA) is not on main"
+            exit 1
+          fi
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable

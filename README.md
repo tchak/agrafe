@@ -128,7 +128,9 @@ its own. They need `vips` on the `PATH`; ClamAV is faked. The office
 thumbnail tests skip without `soffice`. Test fixtures are built by
 `fixtures/make.py`; regenerate rather than edit them.
 
-Releases are cut with `cargo xtask release <version>`; see
+Releases go through a pull request like any change: `cargo xtask release
+<version>` opens it, and once it is merged `cargo xtask tag <version>`
+tags the merged commit, which starts the release workflow; see
 [DESIGN.md](DESIGN.md#releases).
 
 ## License

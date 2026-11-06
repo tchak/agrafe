@@ -1,5 +1,6 @@
 [alias]
-# The workspace's own tasks (xtask/): `cargo xtask release 0.2.0`.
+# The workspace's own tasks (xtask/): `cargo xtask release 0.2.0`, then
+# `cargo xtask tag 0.2.0` once its pull request is merged.
 xtask = ["run", "--quiet", "--package", "xtask", "--"]
 # Line coverage of the whole workspace, unit and integration tests alike.
 # Needs cargo-llvm-cov (`cargo install cargo-llvm-cov`) and the test
