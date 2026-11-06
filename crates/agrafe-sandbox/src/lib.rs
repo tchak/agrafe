@@ -1205,10 +1205,21 @@ async fn probe_confinement(config: &Config) -> Result<Status, ProbeError> {
 mod tests {
     use super::*;
 
+    /// What the tests run under: a timeout far above any honest run, so
+    /// a tool slow to start on a loaded runner (python3 under the parallel
+    /// suite took over half a second) is not read as one that hung.
     fn config() -> Config {
         Config {
-            timeout: Duration::from_millis(500),
+            timeout: Duration::from_secs(10),
             ..Config::default()
+        }
+    }
+
+    /// For the tests that wait for the wall clock to run out.
+    fn timing_out(config: Config) -> Config {
+        Config {
+            timeout: Duration::from_millis(500),
+            ..config
         }
     }
 
@@ -1261,7 +1272,7 @@ mod tests {
         let mut slow = sh("sleep 5");
         slow.readable("/");
         assert!(matches!(
-            run(slow, &config()).await.unwrap(),
+            run(slow, &timing_out(config())).await.unwrap(),
             Outcome::TimedOut
         ));
 
@@ -1285,7 +1296,7 @@ mod tests {
             .writable(work.path());
         let config = Config {
             isolation: Isolation::Off,
-            ..config()
+            ..timing_out(config())
         };
         assert!(matches!(
             run(command, &config).await.unwrap(),
@@ -2049,10 +2060,7 @@ socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                 eprintln!("skipped: no setsid");
                 return;
             }
-            let config = Config {
-                timeout: Duration::from_millis(500),
-                ..config
-            };
+            let config = timing_out(config);
             let marker = format!("30.{:06}", std::process::id() % 1_000_000);
             let mut escape = sh("(setsid sleep \"$AGRAFE_SANDBOX_MARKER\" || \
                                  sleep \"$AGRAFE_SANDBOX_MARKER\") & wait");
@@ -2557,7 +2565,7 @@ except PermissionError:
         /// out here.
         #[tokio::test]
         async fn timeouts_take_the_namespace_down() {
-            let Some(config) = wrapped().await else {
+            let Some(config) = wrapped().await.map(timing_out) else {
                 return;
             };
             let work = tempdir();
