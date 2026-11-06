@@ -156,6 +156,7 @@ Each entry of `representations`:
 | `format` | string | `webp` or `jxl`: what the picture is encoded in, `media.format` when it was rendered, and so what its route serves. With `ready` only |
 | `checksum` | string | SHA-256 of the rendered picture, base64. With `ready` only |
 | `size` | integer | Bytes of the rendered picture. With `ready` only |
+| `fallback` | object | With `ready`, where the deployment stores a WebP beside its JPEG XL pictures (`media.webp_fallback`): the WebP's `format`, always `webp`, `checksum` and `size`, see [the WebP fallback](../guide/representations.md#the-webp-fallback). Absent otherwise |
 | `source` | string or null | The preview's entry only: `image`, `embedded_image`, `geojson`, `gpx`, `kml` (a KMZ's document too), `shapefile` or `gml` once a preview is rendered |
 
 ### `POST /blobs`
@@ -306,6 +307,7 @@ Mints signed public URLs. The body is optional.
 | `query.disposition` | `inline` or `attachment` |
 | `query.filename` | A download name, validated like a filename |
 | `query.wait` | Milliseconds, `0` to `30000` |
+| `query.format` | `webp` or `jxl`: the picture to serve, where the deployment stores both (`media.webp_fallback`). Refused for a format no picture is stored in |
 
 Answers `200` with a `urls` object:
 
@@ -339,13 +341,14 @@ A blob that is not `ready`, terminal ones included, answers `409`.
 ### `GET /blobs/:id/preview/:filename`
 
 The preview, as on the [public port](public-api.md#get-blobstokenidpreviewfilename).
-Takes `disposition`, `filename` and `wait`. A terminal blob answers `409`.
+Takes `disposition`, `filename`, `wait` and `format`. A terminal blob
+answers `409`.
 
 ### `GET /blobs/:id/thumbnail/:filename`
 
 The thumbnail, as on the [public port](public-api.md#get-blobstokenidthumbnailfilename).
-Takes `disposition`, `filename` and `wait`. A terminal blob answers the
-icon with `X-Representation-State: unavailable`.
+Takes `disposition`, `filename`, `wait` and `format`. A terminal blob
+answers the icon with `X-Representation-State: unavailable`.
 
 ## Attachments
 

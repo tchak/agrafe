@@ -405,6 +405,45 @@ impl Rendered {
     }
 }
 
+/// The WebP stored beside a JPEG XL picture for the clients that cannot
+/// decode it, `media.webp_fallback`: the same picture, transcoded, at
+/// `<kind>.webp`. What the row records of it, as [`Rendered`] records the
+/// picture; the format is always WebP, the only one every browser decodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebpFallback {
+    /// SHA-256 of the WebP.
+    pub sha256: [u8; 32],
+    /// Size of the WebP in bytes.
+    pub size: u64,
+}
+
+impl WebpFallback {
+    pub(crate) fn from_columns(sha256: Option<&[u8]>, size: Option<i64>) -> Option<Self> {
+        Some(Self {
+            sha256: sha256?.try_into().ok()?,
+            size: u64::try_from(size?).ok()?,
+        })
+    }
+
+    /// The fallback as what is served: a WebP picture.
+    pub fn rendered(self) -> Rendered {
+        Rendered {
+            format: ImageFormat::Webp,
+            sha256: self.sha256,
+            size: self.size,
+        }
+    }
+}
+
+/// Which of a representation's objects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Object {
+    /// The picture, at `<kind>`, in the format the row records.
+    Picture,
+    /// Its WebP fallback, at `<kind>.webp`, see [`WebpFallback`].
+    Fallback,
+}
+
 /// One derived representation of a blob, a row of `representations`: one
 /// per blob and kind the blob asked for at creation. A kind with no row
 /// is `disabled`, see [`Representations`]. See [DESIGN.md, "Derived
@@ -424,6 +463,12 @@ pub struct RepresentationRow {
     /// The digest and size of what was rendered, recorded with `ready` and
     /// cleared with any other state, which `CHECK`s on the table hold.
     pub rendered: Option<Rendered>,
+    /// The WebP fallback stored beside the picture, when there is one.
+    /// Recorded with the picture; kept, like `version`, through a request
+    /// to regenerate, since the object is still in the bucket and the
+    /// render that replaces the picture replaces or removes it; served
+    /// only with `ready`.
+    pub fallback: Option<WebpFallback>,
     /// Preview only: what it was rendered from, `None` without a rendered
     /// preview.
     pub source: Option<PreviewSource>,
@@ -466,6 +511,12 @@ impl Representations {
     /// What the row of `kind` records of its rendering.
     pub fn rendered(&self, kind: Representation) -> Option<Rendered> {
         self.get(kind).and_then(|row| row.rendered)
+    }
+
+    /// What the row of `kind` records of the WebP fallback in the bucket,
+    /// whatever its state.
+    pub fn fallback(&self, kind: Representation) -> Option<WebpFallback> {
+        self.get(kind).and_then(|row| row.fallback)
     }
 
     /// Every row, in [`Representation`] order.

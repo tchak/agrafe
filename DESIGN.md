@@ -479,7 +479,8 @@ message = METHOD "\n" expires_unix "\n" path_and_query_after_token
   write_vectors` regenerates both files.
 - Because everything after the token is signed, query parameters are a safe
   way for the minter to control behaviour: `disposition=attachment`, a
-  filename override, `wait=<ms>` for pending representations. When the server
+  filename override, `wait=<ms>` for pending representations, `format` for
+  the picture or its WebP fallback (see "Format"). When the server
   mints, they are validated first, unknown names included, so a backend
   mistake is a `422` on the private port and not a client error on a correctly
   signed URL. A backend that mints its own gets no such check: a bad
@@ -495,7 +496,8 @@ and its KEK id, the stream header and segment size, the size, checksum and
 content type of the original, the category, the scan state and the upload
 time, and for each representation
 the blob has a row for, its kind, state, version, format, digest and
-size, a counted list in which a `disabled` kind is absent as it is in
+size, and the digest and size of its WebP fallback when one is stored,
+a counted list in which a `disabled` kind is absent as it is in
 the table; format in `blob::envelope`). The list carries every row, the two kinds
 there are being the pictures the public port serves; a data representation,
 should one come, would be private-port only and never sealed. It travels as the signed query parameter `e`, so it is
@@ -2258,28 +2260,70 @@ default can flip in a later release with a changelog line. Making JPEG
 XL the default now was rejected, since it would need a WebP fallback for
 the tail, and a fallback stored beside every picture is a second object,
 encode and digest pair per representation, at a billion blobs, paid by
-every deployment for the year or two the tail lasts. Should a deployment
-want JPEG XL before the tail is gone, the fallback is designed, not
-built: `media.webp_fallback = true`, one more object per kind at
-`<kind>.webp` and a nullable digest and size pair on the row and in the
-envelope, a signed `format` query parameter for `<picture>` sources and
-downloads, and content negotiation on `Accept` with `Vary: Accept` when
-the parameter is absent, so an `<img>` tag keeps working everywhere. A
-boolean, not a format: WebP is the only format every browser decodes,
-so the only fallback there is, and the name says so. Explicit, not
-implied by `format = "jxl"`: a second encode, object and digest per
-picture is a cost an operator writes down, a deployment whose clients
-are all known wants JPEG XL without it, and the day the default flips
-to JPEG XL the fallback must not come along for everyone. It is
-refused at startup unless `format` is `"jxl"`, since it means nothing
-otherwise. Regeneration deletes a `<kind>.webp` the setting no longer
-asks for, so turning it off is unsetting the key and bumping the
-version; the release that drops the code makes the key a startup error
-and the same bump clears what is left. AVIF was considered for
-both roles and rejected: as a fallback its own tail (Edge before 121,
-Safari before 16) overlaps the one it would cover, and as an interim
-default it would mean two full regenerations instead of one, for an
-encoder several times slower than WebP's. It stays an input format.
+every deployment for the year or two the tail lasts. A deployment that
+wants JPEG XL before the tail is gone opts into that cost instead, with
+the *WebP fallback*, `media.webp_fallback = true`: the render job
+transcodes each picture it stores to WebP and stores that beside it, at
+`<kind>.webp`, the one object key with an extension, and the row and the
+envelope carry the fallback's digest and size apart from the picture's
+(`fallback_sha256`, `fallback_size`; the metadata's `fallback` entry).
+The fallback is a second generation of the picture, as the thumbnail is
+of the preview, so that every path renders once and one path encodes
+the fallback; a second lossy encode, which adds little at the default
+qualities, a Butteraugli distance of 1.9 for the thumbnail's 80 and 1.45
+for the preview's 85 by libjxl's mapping of quality to distance, which
+libvips uses. A boolean, not a format: WebP is the only
+format every browser decodes, so the only fallback there is, and the
+name says so. Explicit, not implied by `format = "jxl"`: a second
+encode, object and digest per picture is a cost an operator writes
+down, a deployment whose clients are all known wants JPEG XL without
+it, and the day the default flips to JPEG XL the fallback must not come
+along for everyone. It is refused at startup unless `format` is
+`"jxl"`, since it means nothing otherwise, and the probe transcodes a
+picture it just made, so a libvips without the WebP saver fails there.
+
+Which of the two is served is the signed `format` query parameter's
+choice, `webp` or `jxl`, for a `<picture>` source or a download, and
+the request's otherwise: the JPEG XL when `Accept` names `image/jxl`,
+the WebP when it does not, with `Vary: Accept` on the response, so a
+cache keeps them apart and an `<img>` tag works everywhere. A wildcard
+is not a claim: the browsers the fallback is for send `*/*`, and the
+ones that decode JPEG XL say so. A client with no `Accept` at all is no
+browser, since every browser sends one, and gets the picture as stored,
+the way a backend or a script expects it. A format asked for that the
+representation is not stored in gets the picture as stored, under its
+own `Content-Type`, not a `404`: browsers decode a picture by its bytes,
+so a `<picture>` source that promised another format still shows, where
+a `404` is a broken image that no later source repairs, and a format
+switched without a bump leaves such rows behind for as long as the
+operator likes. Minting checks `format` against what the deployment
+stores all the same, so a backend asking for the WebP of a deployment
+without the fallback is told at once, as for any other query parameter.
+The icon follows the same
+rule, being embedded in both formats. A picture without a fallback,
+every picture of a deployment without it, is served as it is to
+everyone, and nothing varies.
+
+Turning the fallback on takes no bump: a JPEG XL picture with no WebP
+beside it, rendered before the setting, would go to the very browsers
+the fallback is for, so the read path treats it as it treats a picture
+of another variant version and regenerates it on its first request
+(`representation::lacks_fallback`; the sealed path defers such an
+envelope to the row). Turning the fallback off is unsetting the key and
+bumping the version:
+the row keeps the fallback's digest and size through a request to
+regenerate, as it keeps `version`, since the object is still in the
+bucket, and the render that replaces the picture replaces the fallback
+or, finding none wanted, deletes it. Only then, so that a deployment
+without the fallback never pays a delete per render; the audit reads
+the pair too, and an object at `<kind>.webp` its row does not record is
+an orphan, a recorded one the bucket lacks a render. The release that
+drops the code makes the key a startup error and the same bump clears
+what is left. AVIF was considered for both roles and rejected: as a
+fallback its own tail (Edge before 121, Safari before 16) overlaps the
+one it would cover, and as an interim default it would mean two full
+regenerations instead of one, for an encoder several times slower than
+WebP's. It stays an input format.
 
 A representation left out of `representations` at creation is `disabled`,
 which is the absence of a row: never stored, so neither the eager render
@@ -2520,7 +2564,7 @@ and no asset directory.
 
 | Blob | Thumbnail | Served | `Cache-Control` |
 |---|---|---|---|
-| `ready` | `ready` | the picture | `private, max-age=86400` |
+| `ready` | `ready` | the picture, or its WebP fallback where one is stored and `format` or `Accept` calls for it | `private, max-age=86400` |
 | `ready` | `pending` | icon, `X-Representation-State: pending` | `no-store` |
 | `ready` | `failed`, `unavailable`, `disabled` | icon, state in the header | `private, max-age=86400` |
 | not yet `ready` | any | icon, `pending` | `no-store` |

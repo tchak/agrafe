@@ -860,8 +860,9 @@ struct Row {
     representations: Vec<Derived>,
 }
 
-/// What an audit needs of a `representations` row: which object it
-/// accounts for, the object's expected length, and when it last moved.
+/// What an audit needs of a `representations` row: which objects it
+/// accounts for, the picture and its WebP fallback when it records one,
+/// their expected lengths, and when it last moved.
 #[derive(Debug, sqlx::FromRow)]
 struct Derived {
     blob_id: Uuid,
@@ -870,6 +871,7 @@ struct Derived {
     #[sqlx(try_from = "String")]
     state: RepresentationState,
     size: Option<i64>,
+    fallback_size: Option<i64>,
     #[sqlx(try_from = "jiff_sqlx::Timestamp")]
     updated_at: Timestamp,
 }
@@ -900,7 +902,7 @@ async fn attach_representations(exec: impl PgExecutor<'_>, rows: &mut [Row]) -> 
     }
     let ids: Vec<Uuid> = rows.iter().map(|row| row.id).collect();
     let derived: Vec<Derived> = sqlx::query_as(
-        "SELECT blob_id, kind, state, size, updated_at FROM representations \
+        "SELECT blob_id, kind, state, size, fallback_size, updated_at FROM representations \
          WHERE blob_id = ANY($1)",
     )
     .bind(&ids)
@@ -1284,6 +1286,48 @@ impl Sweep<'_> {
                         .await;
                 }
                 (None, _) => {}
+            }
+            // The WebP fallback at `<kind>.webp`, which the row records
+            // apart from the picture and keeps through a pending render,
+            // the object being still there for the render to replace or
+            // remove (`key::fallback`).
+            let fallback = key::fallback(row.id, kind);
+            let name = fallback.strip_prefix(prefix.as_str()).unwrap_or(&fallback);
+            let recorded = rep.and_then(|rep| rep.fallback_size);
+            match (seen.remove(name), recorded, rep_state) {
+                (Some(object), Some(size), RepresentationState::Ready) => {
+                    let want = layout.map(|layout| layout.ciphertext_len(size as u64));
+                    if let Some(want) = want
+                        && want != object.size
+                        && settled
+                        && !self.young(object)
+                    {
+                        self.rerender(
+                            row,
+                            kind,
+                            &format!(
+                                "beside a WebP fallback of {} bytes, not the {want} its size \
+                                 calls for",
+                                object.size
+                            ),
+                            lost,
+                        )
+                        .await;
+                    }
+                }
+                (None, Some(_), RepresentationState::Ready) => {
+                    if state == BlobState::Ready && settled {
+                        self.rerender(row, kind, "without its WebP fallback", lost)
+                            .await;
+                    }
+                }
+                // A render is going to replace or remove it.
+                (Some(_), _, RepresentationState::Pending) => {}
+                (Some(object), None, _) => {
+                    self.orphan(object, &format!("the {kind} row records no WebP fallback"))
+                        .await;
+                }
+                _ => {}
             }
         }
 

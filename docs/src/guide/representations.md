@@ -36,6 +36,38 @@ renderer change (see [Regenerating](#regenerating)). Until then, or
 without the bump, old pictures stay in the format they were built with
 and say so.
 
+### The WebP fallback
+
+A deployment that wants JPEG XL while some of its users are on a browser
+that does not decode it sets `media.webp_fallback = true` with
+`media.format = "jxl"`. Each picture is then stored twice, as rendered
+and transcoded to WebP, and the metadata's entry lists the second under
+`fallback`. Which one a request gets:
+
+- `?format=webp` or `?format=jxl` in the signed query names it. A format
+  the picture is not stored in gets the picture as stored, under its own
+  `Content-Type`: browsers decode by the bytes, so it shows, where a `404`
+  would be a broken image. Minting refuses a `format` the deployment does
+  not store, so a backend finds out at once.
+- Without `format`, the request's `Accept` header decides: the JPEG XL
+  when it names `image/jxl`, as Safari, Chrome and Firefox do once they
+  decode it, the WebP otherwise, `*/*` included. A request with no
+  `Accept` header at all, which no browser sends, gets the picture as
+  stored. The response then carries `Vary: Accept`.
+
+So an `<img>` tag works everywhere with no change, a `<picture>` can
+offer both with `format`, and a download names the one it got. The icon
+served in a thumbnail's place follows the same rule. The fallback costs
+a second encode and a second object per picture; a deployment whose
+clients all decode JPEG XL leaves it off, and one on WebP has no use for
+it, which is why the setting is refused without `"jxl"`.
+
+Turning it on takes no bump: a JPEG XL picture rendered before, with no
+WebP beside it, is regenerated on its next request, as a picture of
+another variant version is. Turning it off is unsetting the key and
+bumping `media.variant_version`: each regeneration removes the WebP it no
+longer wants.
+
 ## What gets rendered
 
 | File | Preview | Thumbnail |
@@ -241,8 +273,10 @@ asked for at creation, keyed by kind:
 Each entry carries a `state`, and with `ready` the `format` (`webp` or
 `jxl`, see [Format](#format)), the `checksum` (SHA-256 of the picture,
 base64) and the `size` that the conditional requests below are answered
-from; the preview's entry carries its `source`, what it was rendered
-from. The state is one of:
+from, plus a `fallback` object with the same three fields where a WebP
+fallback is stored (see [The WebP fallback](#the-webp-fallback)); the
+preview's entry carries its `source`, what it was rendered from. The
+state is one of:
 
 | State | Meaning |
 |---|---|
@@ -273,8 +307,9 @@ can tell a placeholder from the final answer.
 
 Ready images carry a strong `ETag` of their content and answer `304` and
 `HEAD` without reading the object, with the `Content-Type` of the format
-they were rendered in. They are not `immutable`: a variant version bump
-changes them under the same URL, their format included.
+they were rendered in; a WebP fallback has an `ETag` of its own. They
+are not `immutable`: a variant version bump changes them under the same
+URL, their format included.
 
 ### Waiting for a render
 

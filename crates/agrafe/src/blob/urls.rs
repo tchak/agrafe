@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::envelope::Envelope;
-use super::{Blob, Representations, create, repo};
+use super::{Blob, ImageFormat, Representations, create, repo};
 use crate::app::Agrafe;
 
 /// Longest a representation request may `wait` for a pending render.
@@ -54,7 +54,7 @@ impl Agrafe {
                 max.as_secs()
             )));
         }
-        validate_query(&opts.query)?;
+        validate_query(&opts.query, &self.config().media.render)?;
         let blob = repo::find(self.pool(), id)
             .await?
             .ok_or(MintError::NotFound)?;
@@ -115,8 +115,14 @@ pub struct MintOptions {
 }
 
 /// Check the query parameters a backend asks to sign into representation
-/// URLs: a bad value is the backend's mistake and is refused now.
-pub(crate) fn validate_query(query: &BTreeMap<String, String>) -> Result<(), MintError> {
+/// URLs: a bad value is the backend's mistake and is refused now. `format`
+/// is checked against what this deployment stores, `media.format` and,
+/// with `media.webp_fallback`, WebP: a `<picture>` source minted for a
+/// format no picture is in would promise every browser what none gets.
+pub(crate) fn validate_query(
+    query: &BTreeMap<String, String>,
+    render: &agrafe_render::Config,
+) -> Result<(), MintError> {
     for (name, value) in query {
         match name.as_str() {
             "disposition" => {
@@ -129,15 +135,37 @@ pub(crate) fn validate_query(query: &BTreeMap<String, String>) -> Result<(), Min
             "wait" => {
                 validate_wait(value).map_err(MintError::Invalid)?;
             }
+            "format" => {
+                let format = validate_format(value).map_err(MintError::Invalid)?;
+                let stored = format == render.format
+                    || (format == ImageFormat::Webp && render.webp_fallback);
+                if !stored {
+                    return Err(MintError::Invalid(format!(
+                        "query format: no picture is stored as {format}; media.format is {} \
+                         and media.webp_fallback is {}",
+                        render.format,
+                        if render.webp_fallback { "on" } else { "off" }
+                    )));
+                }
+            }
             other => {
                 // `e` among them: the envelope is the server's to add.
                 return Err(MintError::Invalid(format!(
-                    "unknown query parameter `{other}`; allowed: disposition, filename, wait"
+                    "unknown query parameter `{other}`; allowed: disposition, filename, format, \
+                     wait"
                 )));
             }
         }
     }
     Ok(())
+}
+
+/// The `format` parameter: `webp` or `jxl`, the picture to serve when a
+/// representation is stored in both.
+pub fn validate_format(value: &str) -> Result<ImageFormat, String> {
+    value
+        .parse()
+        .map_err(|_| format!("format must be webp or jxl, not `{value}`"))
 }
 
 /// The `disposition` parameter: `inline` (default) or `attachment`.
@@ -254,6 +282,28 @@ mod tests {
         assert!(validate_wait("30001").is_err());
         assert!(validate_wait("-1").is_err());
         assert!(validate_wait("soon").is_err());
+    }
+
+    /// A format is accepted when a picture is stored in it: the
+    /// deployment's, and WebP with the fallback on.
+    #[test]
+    fn format_must_be_stored() {
+        let query = |format: &str| BTreeMap::from([("format".to_string(), format.to_string())]);
+        let mut render = agrafe_render::Config::default();
+        assert!(validate_query(&query("webp"), &render).is_ok());
+        let err = validate_query(&query("jxl"), &render).unwrap_err();
+        assert!(
+            err.to_string().contains("no picture is stored as jxl"),
+            "{err}"
+        );
+        let err = validate_query(&query("avif"), &render).unwrap_err();
+        assert!(err.to_string().contains("webp or jxl"), "{err}");
+
+        render.format = ImageFormat::Jxl;
+        assert!(validate_query(&query("jxl"), &render).is_ok());
+        assert!(validate_query(&query("webp"), &render).is_err());
+        render.webp_fallback = true;
+        assert!(validate_query(&query("webp"), &render).is_ok());
     }
 
     #[test]

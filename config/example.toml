@@ -265,6 +265,16 @@ variant_version = 1
 # icons served in a thumbnail's place follow the setting at once. libvips
 # must be built with libjxl for "jxl"; the startup probe checks.
 format = "webp"
+# With format = "jxl", store a WebP beside each picture as well, transcoded
+# from it, for the browsers that do not decode JPEG XL: a request whose
+# Accept header does not name image/jxl gets the WebP, one that does, or
+# sends no Accept at all, gets the JPEG XL, and a signed `format` query
+# parameter picks either by name.
+# A second encode and a second object per picture. Refused with "webp",
+# which needs no fallback. Turning it on regenerates, on its next request,
+# each JPEG XL picture that has no WebP beside it; to turn it off, unset it
+# and bump `variant_version`: each regeneration removes the WebP.
+webp_fallback = false
 # The libvips command line tool, run as a sandboxed subprocess for every
 # render. Debian: libvips-tools; macOS: brew install vips. A build with
 # pdfium renders PDFs more safely than one with poppler.

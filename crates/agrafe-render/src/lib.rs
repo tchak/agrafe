@@ -73,6 +73,14 @@ pub struct Config {
     /// being embedded in every format.
     #[serde(default)]
     pub format: ImageFormat,
+    /// `media.webp_fallback`: store a WebP beside every JPEG XL picture,
+    /// transcoded from it, for the clients that cannot decode JPEG XL,
+    /// and serve it to them, by `Accept` or on request. Off by default,
+    /// and refused unless `format` is `"jxl"`: a WebP needs no fallback.
+    /// A second encode, object and digest per picture, so a choice an
+    /// operator writes down rather than one the format implies.
+    #[serde(default)]
+    pub webp_fallback: bool,
     /// The thumbnail box and quality, the `[media.thumbnail]` table.
     #[serde(default)]
     pub thumbnail: Thumbnail,
@@ -124,6 +132,7 @@ impl Default for Config {
             render_geo_command: default_render_geo_command(),
             pandoc_command: None,
             format: ImageFormat::default(),
+            webp_fallback: false,
             thumbnail: Thumbnail::default(),
             preview: Preview::default(),
             embedded_image: EmbeddedImage::default(),

@@ -57,7 +57,11 @@ The first release.
   `state` and, once `ready`, the `format`, `checksum` and `size` of the
   picture; a kind left out at creation is absent. The format is recorded
   per picture and served as recorded, so switching it is a configuration
-  change and a `media.variant_version` bump, never an API change.
+  change and a `media.variant_version` bump, never an API change. With
+  `media.webp_fallback`, a JPEG XL deployment stores a WebP beside each
+  picture, listed under the entry's `fallback`, and serves it to the
+  browsers whose `Accept` does not name `image/jxl`, with `Vary: Accept`,
+  or on the signed `format` query parameter.
 - **Generated files**: spreadsheets, ZIP archives and documents compiled
   from typst, built by jobs from parts sent in pieces. A document is a
   PDF, or from the same template a DOCX or an ODT, offered by

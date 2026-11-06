@@ -295,6 +295,469 @@ async fn rendered_jxl(app: &TestApp, uri: &str) -> (HeaderMap, (u32, u32)) {
     (headers, jxl_size(&body))
 }
 
+/// The `Accept` header of a browser that decodes JPEG XL, and of one that
+/// does not and offers `*/*` instead.
+const ACCEPTS_JXL: &str =
+    "image/avif,image/jxl,image/webp,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5";
+const ACCEPTS_ANY: &str = "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8";
+
+/// The hex `ETag` of a picture the metadata lists with a base64 checksum.
+fn etag_of(entry: &Value) -> String {
+    use base64::Engine;
+    let digest = base64::engine::general_purpose::STANDARD
+        .decode(entry["checksum"].as_str().unwrap())
+        .unwrap();
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    format!("\"{hex}\"")
+}
+
+/// With `media.webp_fallback`, a WebP is stored beside each JPEG XL
+/// picture and served to the clients that do not say they decode JPEG
+/// XL, or on request, with `Vary: Accept` when the client's header chose.
+#[tokio::test]
+async fn the_webp_fallback_stands_beside_a_jpeg_xl_picture() {
+    use agrafe::blob::ImageFormat;
+
+    let db = TestDatabase::new().await;
+    let app = setup_tuned(db, fake_clamd().await, |c| {
+        c.media.render.format = ImageFormat::Jxl;
+        c.media.render.webp_fallback = true;
+    })
+    .await;
+    let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("rotated.jpg")).await;
+    let id = id_of(&blob);
+    let thumbnail = format!("/blobs/{id}/thumbnail/photo.jpg");
+    let preview = format!("/blobs/{id}/preview/photo.jpg");
+
+    // The icon follows the same rule: WebP for a client that does not
+    // claim JPEG XL, JPEG XL for one that does, the one asked for by name.
+    for (accept, format, size) in [
+        (
+            ACCEPTS_ANY,
+            "image/webp",
+            webp_size as fn(&[u8]) -> (u32, u32),
+        ),
+        (ACCEPTS_JXL, "image/jxl", jxl_size),
+    ] {
+        let (status, headers, body) =
+            fetch(&app.private, get_with(&thumbnail, &[("accept", accept)])).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers["content-type"], format);
+        assert_eq!(headers["vary"], "accept");
+        assert_eq!(state_of(&headers), "pending");
+        assert_eq!(size(&body), (256, 256));
+    }
+    let (_, headers, body) = fetch(
+        &app.private,
+        get_with(&format!("{thumbnail}?format=jxl"), &[]),
+    )
+    .await;
+    assert_eq!(headers["content-type"], "image/jxl");
+    assert!(!headers.contains_key("vary"));
+    assert_eq!(jxl_size(&body), (256, 256));
+
+    assert!(run_job(&app, JobKind::Render).await);
+    let blob = get_blob(&app, id).await;
+    for kind in ["thumbnail", "preview"] {
+        let entry = &blob["representations"][kind];
+        assert_eq!(entry["format"], "jxl");
+        assert_eq!(entry["fallback"]["format"], "webp", "{entry}");
+        assert!(entry["fallback"]["checksum"].is_string());
+        assert!(entry["fallback"]["size"].as_i64().unwrap() > 0);
+        assert_ne!(entry["fallback"]["checksum"], entry["checksum"]);
+    }
+    // Both objects, the fallback under the one key with an extension.
+    for name in ["thumbnail", "thumbnail.webp", "preview", "preview.webp"] {
+        app.state
+            .store()
+            .head(&object_store::path::Path::from(object_key(id, name)))
+            .await
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+    }
+    let picture_etag = etag_of(&blob["representations"]["thumbnail"]);
+    let picture_size = blob["representations"]["thumbnail"]["size"]
+        .as_i64()
+        .unwrap();
+    let fallback_etag = etag_of(&blob["representations"]["thumbnail"]["fallback"]);
+    let fallback_size = blob["representations"]["thumbnail"]["fallback"]["size"]
+        .as_i64()
+        .unwrap();
+
+    // No Accept at all, which no browser sends: the picture as stored.
+    let (status, headers, body) = fetch(&app.private, get_with(&thumbnail, &[])).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["content-type"], "image/jxl");
+    assert_eq!(headers["vary"], "accept");
+    assert_eq!(headers["etag"], picture_etag.as_str());
+    assert_eq!(headers["content-length"], picture_size.to_string().as_str());
+    assert_eq!(jxl_size(&body), (128, 256));
+    // A browser that offers */* and no more: the WebP, which it decodes.
+    let (status, headers, body) = fetch(
+        &app.private,
+        get_with(&thumbnail, &[("accept", ACCEPTS_ANY)]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["content-type"], "image/webp");
+    assert_eq!(headers["vary"], "accept");
+    assert_eq!(headers["etag"], fallback_etag.as_str());
+    assert_eq!(
+        headers["content-length"],
+        fallback_size.to_string().as_str()
+    );
+    assert_eq!(
+        headers["content-disposition"],
+        "inline; filename=\"photo.webp\"; filename*=UTF-8''photo%2Ewebp"
+    );
+    assert_eq!(webp_size(&body), (128, 256), "the same picture");
+    // One that names image/jxl: the picture.
+    let (_, headers, body) =
+        fetch(&app.private, get_with(&preview, &[("accept", ACCEPTS_JXL)])).await;
+    assert_eq!(headers["content-type"], "image/jxl");
+    assert_eq!(headers["vary"], "accept");
+    assert_eq!(jxl_size(&body), (200, 400));
+
+    // Asked for by name, Accept has no say and the response does not vary.
+    let (_, headers, body) = fetch(
+        &app.private,
+        get_with(
+            &format!("{thumbnail}?format=webp"),
+            &[("accept", ACCEPTS_JXL)],
+        ),
+    )
+    .await;
+    assert_eq!(headers["content-type"], "image/webp");
+    assert!(!headers.contains_key("vary"));
+    assert_eq!(webp_size(&body), (128, 256));
+    let (_, headers, body) = fetch(
+        &app.private,
+        get_with(
+            &format!("{thumbnail}?format=jxl"),
+            &[("accept", ACCEPTS_ANY)],
+        ),
+    )
+    .await;
+    assert_eq!(headers["content-type"], "image/jxl");
+    assert_eq!(headers["etag"], picture_etag.as_str());
+    assert!(!headers.contains_key("vary"));
+    assert_eq!(jxl_size(&body), (128, 256));
+    // A format that is not one: the minter's mistake.
+    let (status, _, body) = fetch(
+        &app.private,
+        get_with(&format!("{thumbnail}?format=avif"), &[]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(String::from_utf8_lossy(&body).contains("webp or jxl"));
+
+    // HEAD and 304 from the row, for the chosen one.
+    let head = Request::builder()
+        .method(Method::HEAD)
+        .uri(&thumbnail)
+        .header("accept", ACCEPTS_ANY)
+        .body(Body::empty())
+        .unwrap();
+    let (status, headers, body) = fetch(&app.private, head).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["content-type"], "image/webp");
+    assert_eq!(
+        headers["content-length"],
+        fallback_size.to_string().as_str()
+    );
+    assert!(body.is_empty());
+    let (status, _, _) = fetch(
+        &app.private,
+        get_with(
+            &thumbnail,
+            &[("accept", ACCEPTS_ANY), ("if-none-match", &fallback_etag)],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_MODIFIED);
+    let (status, _, _) = fetch(
+        &app.private,
+        get_with(
+            &thumbnail,
+            &[("accept", ACCEPTS_ANY), ("if-none-match", &picture_etag)],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "the other picture's tag");
+    let (status, _, _) = fetch(
+        &app.private,
+        get_with(&thumbnail, &[("if-none-match", &picture_etag)]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_MODIFIED);
+
+    // The envelope carries the fallback, so the sealed path serves it too,
+    // negotiated or by name.
+    let sealed = public_url(&blob, "thumbnail");
+    let (status, headers, body) =
+        fetch(&app.public, get_with(&sealed, &[("accept", ACCEPTS_ANY)])).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["content-type"], "image/webp");
+    assert_eq!(headers["etag"], fallback_etag.as_str());
+    assert_eq!(headers["vary"], "accept");
+    assert_eq!(webp_size(&body), (128, 256));
+    for accept in [Some(ACCEPTS_JXL), None] {
+        let headers: Vec<(&str, &str)> = accept.map(|a| ("accept", a)).into_iter().collect();
+        let (_, headers, _) = fetch(&app.public, get_with(&sealed, &headers)).await;
+        assert_eq!(headers["content-type"], "image/jxl", "{accept:?}");
+        assert_eq!(headers["etag"], picture_etag.as_str());
+    }
+    let (status, minted) = call(
+        &app.private,
+        json_req(
+            Method::POST,
+            &format!("/blobs/{id}/urls"),
+            json!({"query": {"format": "webp"}}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{minted}");
+    let (_, headers, _) = fetch(
+        &app.public,
+        get_with(
+            &public_path(minted["preview"].as_str().unwrap()),
+            &[("accept", ACCEPTS_JXL)],
+        ),
+    )
+    .await;
+    assert_eq!(headers["content-type"], "image/webp");
+    assert!(!headers.contains_key("vary"));
+}
+
+/// A JPEG XL picture without the WebP fallback the deployment stores,
+/// rendered before `media.webp_fallback` was turned on, would go to the
+/// browsers the fallback is for as it is: it is regenerated on its first
+/// request, as a picture of another variant version is, so turning the
+/// fallback on takes no bump. An envelope that records no fallback defers
+/// to the row.
+#[tokio::test]
+async fn a_picture_without_the_fallback_the_deployment_stores_is_regenerated() {
+    use agrafe::blob::ImageFormat;
+
+    let db = TestDatabase::new().await;
+    let app = setup_tuned(db, fake_clamd().await, |c| {
+        c.media.render.format = ImageFormat::Jxl;
+        c.media.render.webp_fallback = true;
+    })
+    .await;
+    let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("rotated.jpg")).await;
+    let id = id_of(&blob);
+    let thumbnail = format!("/blobs/{id}/thumbnail/photo.jpg");
+    assert!(run_job(&app, JobKind::Render).await);
+
+    // As a render before the setting left it: the picture alone, on the
+    // row and in the bucket.
+    let fallback = object_store::path::Path::from(object_key(id, "thumbnail.webp"));
+    app.state.store().delete(&fallback).await.unwrap();
+    sqlx::query(
+        "UPDATE representations SET fallback_sha256 = NULL, fallback_size = NULL \
+         WHERE blob_id = $1 AND kind = 'thumbnail'",
+    )
+    .bind(parse_id(id))
+    .execute(app.state.pool())
+    .await
+    .unwrap();
+    let blob = get_blob(&app, id).await;
+    assert_eq!(blob["representations"]["thumbnail"]["state"], "ready");
+    assert!(
+        blob["representations"]["thumbnail"]
+            .get("fallback")
+            .is_none()
+    );
+    // Minted now, the envelope records no fallback either.
+    let sealed = public_url(&blob, "thumbnail");
+
+    // The first request gets the icon and queues the render, the sealed
+    // path having handed the picture to the row.
+    let (status, headers, body) =
+        fetch(&app.public, get_with(&sealed, &[("accept", ACCEPTS_ANY)])).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["content-type"], "image/webp");
+    assert_eq!(state_of(&headers), "pending");
+    assert_eq!(webp_size(&body), (256, 256), "the icon");
+    let blob = get_blob(&app, id).await;
+    assert_eq!(blob["representations"]["thumbnail"]["state"], "pending");
+    assert!(run_job(&app, JobKind::Render).await);
+    let blob = get_blob(&app, id).await;
+    assert_eq!(
+        blob["representations"]["thumbnail"]["fallback"]["format"],
+        "webp"
+    );
+    let (status, headers, body) = fetch(
+        &app.private,
+        get_with(&thumbnail, &[("accept", ACCEPTS_ANY)]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["content-type"], "image/webp");
+    assert_eq!(state_of(&headers), "ready");
+    assert_eq!(webp_size(&body), (128, 256));
+    // The stale envelope still defers to the row, which now has both.
+    let (_, headers, body) =
+        fetch(&app.public, get_with(&sealed, &[("accept", ACCEPTS_ANY)])).await;
+    assert_eq!(headers["content-type"], "image/webp");
+    assert_eq!(state_of(&headers), "ready");
+    assert_eq!(webp_size(&body), (128, 256));
+}
+
+/// A deployment without the fallback stores one picture: `format` gets it
+/// whichever it names, nothing varies on `Accept`, and the minter is told
+/// which formats it may ask for.
+#[tokio::test]
+async fn without_the_fallback_there_is_one_picture() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("rotated.jpg")).await;
+    let id = id_of(&blob);
+    let thumbnail = format!("/blobs/{id}/thumbnail/photo.jpg");
+    assert!(run_job(&app, JobKind::Render).await);
+    let blob = get_blob(&app, id).await;
+    assert!(
+        blob["representations"]["thumbnail"]
+            .get("fallback")
+            .is_none()
+    );
+
+    let (_, headers, _) = fetch(
+        &app.private,
+        get_with(&thumbnail, &[("accept", ACCEPTS_JXL)]),
+    )
+    .await;
+    assert_eq!(headers["content-type"], "image/webp");
+    assert!(!headers.contains_key("vary"));
+    let (status, headers, _) = fetch(
+        &app.private,
+        get_with(&format!("{thumbnail}?format=webp"), &[]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["content-type"], "image/webp");
+    // A format the picture is not stored in: what is stored, as it is.
+    let (status, headers, _) = fetch(
+        &app.private,
+        get_with(&format!("{thumbnail}?format=jxl"), &[]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["content-type"], "image/webp");
+    assert!(!headers.contains_key("vary"));
+
+    for (query, status, needle) in [
+        (json!({"format": "webp"}), StatusCode::OK, ""),
+        (
+            json!({"format": "jxl"}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "no picture is stored as jxl",
+        ),
+        (
+            json!({"format": "avif"}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "webp or jxl",
+        ),
+    ] {
+        let (got, body) = call(
+            &app.private,
+            json_req(
+                Method::POST,
+                &format!("/blobs/{id}/urls"),
+                json!({"query": query}),
+            ),
+        )
+        .await;
+        assert_eq!(got, status, "{query}: {body}");
+        if !needle.is_empty() {
+            assert!(
+                body["error"]["message"].as_str().unwrap().contains(needle),
+                "{body}"
+            );
+        }
+    }
+}
+
+/// The fallback turned off and the version bumped: the render that
+/// regenerates the picture removes the fallback the row still records,
+/// and only then, so a deployment without the fallback never deletes.
+#[tokio::test]
+async fn a_fallback_no_longer_wanted_goes_with_the_regeneration() {
+    let db = TestDatabase::new().await;
+    let app = setup(db).await;
+    let blob = ready_file(&app, "photo.jpg", "image/jpeg", &fixture("rotated.jpg")).await;
+    let id = id_of(&blob);
+    let thumbnail = format!("/blobs/{id}/thumbnail/photo.jpg");
+    assert!(run_job(&app, JobKind::Render).await);
+
+    // What a JPEG XL deployment with the fallback left behind, as this
+    // one's configuration finds it: a picture of an older version with its
+    // fallback recorded on the row and in the bucket.
+    let fallback = object_store::path::Path::from(object_key(id, "thumbnail.webp"));
+    app.state
+        .store()
+        .put(&fallback, vec![0u8; 10].into())
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE representations SET version = 0, format = 'jxl', fallback_sha256 = $2, \
+         fallback_size = 10 WHERE blob_id = $1 AND kind = 'thumbnail'",
+    )
+    .bind(parse_id(id))
+    .bind(vec![1u8; 32])
+    .execute(app.state.pool())
+    .await
+    .unwrap();
+    let blob = get_blob(&app, id).await;
+    assert_eq!(blob["representations"]["thumbnail"]["fallback"]["size"], 10);
+
+    // The request notices the version, and the row keeps the fallback
+    // through the pending render, which is not the client's business.
+    icon(&app, &thumbnail, "pending").await;
+    let blob = get_blob(&app, id).await;
+    assert_eq!(blob["representations"]["thumbnail"]["state"], "pending");
+    assert!(
+        blob["representations"]["thumbnail"]
+            .get("fallback")
+            .is_none()
+    );
+    let row: (Option<Vec<u8>>, Option<i64>) = sqlx::query_as(
+        "SELECT fallback_sha256, fallback_size FROM representations \
+         WHERE blob_id = $1 AND kind = 'thumbnail'",
+    )
+    .bind(parse_id(id))
+    .fetch_one(app.state.pool())
+    .await
+    .unwrap();
+    assert_eq!(row, (Some(vec![1u8; 32]), Some(10)), "kept for the render");
+    assert!(run_job(&app, JobKind::Render).await);
+    let (headers, size) = rendered(&app, &thumbnail).await;
+    assert_eq!(size, (128, 256));
+    assert!(!headers.contains_key("vary"));
+    let blob = get_blob(&app, id).await;
+    assert!(
+        blob["representations"]["thumbnail"]
+            .get("fallback")
+            .is_none()
+    );
+    let row: (Option<Vec<u8>>, Option<i64>) = sqlx::query_as(
+        "SELECT fallback_sha256, fallback_size FROM representations \
+         WHERE blob_id = $1 AND kind = 'thumbnail'",
+    )
+    .bind(parse_id(id))
+    .fetch_one(app.state.pool())
+    .await
+    .unwrap();
+    assert_eq!(row, (None, None));
+    assert!(
+        matches!(
+            app.state.store().head(&fallback).await,
+            Err(object_store::Error::NotFound { .. })
+        ),
+        "the fallback object is gone"
+    );
+}
+
 #[tokio::test]
 async fn vector_images_fill_the_box() {
     let db = TestDatabase::new().await;

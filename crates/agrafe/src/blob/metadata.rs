@@ -215,9 +215,25 @@ pub struct RepresentationMetadata {
     /// Size of the rendered picture in bytes, with `ready`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<i64>,
+    /// The WebP stored beside a JPEG XL picture (`media.webp_fallback`),
+    /// with `ready`, when there is one: what `?format=webp`, or a client
+    /// whose `Accept` leaves JPEG XL out, is served.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<FallbackMetadata>,
     /// What the kind records besides.
     #[serde(flatten)]
     pub detail: RepresentationDetail,
+}
+
+/// The WebP fallback of a picture, as the metadata lists it.
+#[derive(Debug, Serialize)]
+pub struct FallbackMetadata {
+    /// Always `webp`, the one format every browser decodes.
+    pub format: ImageFormat,
+    /// SHA-256 of the WebP, base64.
+    pub checksum: String,
+    /// Size of the WebP in bytes.
+    pub size: i64,
 }
 
 /// What a kind records of its own, beyond its state and what was
@@ -242,6 +258,15 @@ impl RepresentationMetadata {
             format: row.rendered.map(|r| r.format),
             checksum: row.rendered.map(|r| STANDARD.encode(r.sha256)),
             size: row.rendered.and_then(|r| i64::try_from(r.size).ok()),
+            // Kept on a pending row for the render to replace or remove,
+            // which is not the client's business; listed with the picture.
+            fallback: row.rendered.and(row.fallback).and_then(|f| {
+                Some(FallbackMetadata {
+                    format: ImageFormat::Webp,
+                    checksum: STANDARD.encode(f.sha256),
+                    size: i64::try_from(f.size).ok()?,
+                })
+            }),
             detail: match row.kind {
                 Representation::Thumbnail => RepresentationDetail::Thumbnail {},
                 Representation::Preview => RepresentationDetail::Preview { source: row.source },

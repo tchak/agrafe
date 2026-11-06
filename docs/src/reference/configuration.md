@@ -197,6 +197,8 @@ above `max_inline_scans` plus `jobs.concurrency.scan`.
 | Key | Default | Description |
 |---|---|---|
 | `variant_version` | `1` | Bump to regenerate every representation on its next request. At least 1 |
+| `format` | `"webp"` | What thumbnails and previews are encoded in: `"webp"` or `"jxl"`. Each picture records its own and is served as recorded; bump `variant_version` to convert what exists |
+| `webp_fallback` | `false` | Store a WebP beside each JPEG XL picture and serve it to clients whose `Accept` leaves `image/jxl` out, or on `format=webp`. Needs `format = "jxl"` |
 | `vips_command` | `"vips"` | The libvips command line tool |
 | `extract_command` | `"agrafe-extract"` | The embedded image helper |
 | `render_text_command` | `"agrafe-render-text"` | The text thumbnail helper |
@@ -403,6 +405,7 @@ message naming the key:
 | `encryption.chunk_size must be at most 16777216 bytes (16 MiB)` | Lower it |
 | `blobs.default_expires_in must be at least 1h: …` | Raise it |
 | `media.variant_version must be at least 1` | Raise it |
+| `media.webp_fallback needs media.format = "jxl": …` | Set the format, or drop the fallback |
 | `media.map.layers[0].url must contain {bbox}` | Add the placeholder; `{width}` and `{height}` likewise |
 | `media.map.layers[0].url must be an http or https URL` | Fix the URL |
 | `archive.max_size must be at most … bytes: …` | Lower it to 309 GiB or less |

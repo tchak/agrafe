@@ -336,6 +336,29 @@ async fn probe_tools(config: &Config, tmp_dir: Option<&Path>) -> Result<(), Prob
             });
         }
     }
+    // The fallback is the picture transcoded, so the probe transcodes the
+    // last picture it made: a libvips without the WebP saver, or without
+    // the JPEG XL loader, is found out here.
+    if config.webp_fallback {
+        let fit = fit.webp_fallback();
+        let fallback = workdir.path().join(fit.file_name("fallback"));
+        let vips = config.vips_command.clone();
+        let what = "the WebP fallback of a picture";
+        let verdict = vips::render(config, &output, Input::Raster, &fallback, fit)
+            .await
+            .map_err(|source| ProbeError::Render {
+                what,
+                vips: vips.clone(),
+                source,
+            })?;
+        if let Verdict::Rejected(rejection) = verdict {
+            return Err(ProbeError::Rejected {
+                what,
+                vips,
+                rejection,
+            });
+        }
+    }
     let geojson = workdir.path().join("point.geojson");
     tokio::fs::write(&geojson, PROBE_GEOJSON).await?;
     let spec = workdir.path().join(geo::SPEC);

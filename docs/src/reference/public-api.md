@@ -147,22 +147,30 @@ assume a format.
 
 **Signed query.** `disposition`, `filename` and `e` as for the original,
 plus `wait`, milliseconds from `0` to `30000` to hold the request while the
-thumbnail is pending or the blob is not yet `ready`. The download name gets
-the extension of what is served, `.webp` or `.jxl`.
+thumbnail is pending or the blob is not yet `ready`, and `format`, `webp`
+or `jxl`, which of the pictures to serve where the deployment stores a
+WebP fallback beside its JPEG XL ones (`media.webp_fallback`); a format
+the thumbnail is not stored in gets it as stored. Without
+`format` the `Accept` header decides: `image/jxl` named in it gets the
+JPEG XL, anything else the WebP, and no header at all the picture as
+stored. The download name gets the extension of
+what is served, `.webp` or `.jxl`.
 
 **Response headers.**
 
 | Header | Value |
 |---|---|
-| `Content-Type` | `image/webp` or `image/jxl`: the format recorded when the thumbnail was rendered, or the current `media.format` for the icon |
+| `Content-Type` | `image/webp` or `image/jxl`: the format recorded when the thumbnail was rendered, or of its fallback, or the current `media.format` for the icon |
 | `X-Representation-State` | `ready`, `pending`, `failed`, `unavailable` or `disabled` |
-| `ETag` | On a rendered thumbnail |
+| `ETag` | On a rendered thumbnail; the fallback has its own |
 | `Cache-Control` | `private, max-age=86400`, or `no-store` while pending |
+| `Vary` | `accept`, when `Accept` chose between a picture and its fallback |
 
 | Status | When |
 |---|---|
 | `200` | The thumbnail or the icon |
 | `304` | `If-None-Match` names the `ETag` of a rendered thumbnail |
+| `400` | `format` is neither `webp` nor `jxl` |
 | `404` | No such blob, terminal, or filename mismatch |
 
 ## `GET /blobs/:token/:id/preview/:filename`
@@ -176,6 +184,7 @@ have one.
 |---|---|
 | `200` | The preview, with `X-Representation-State: ready` |
 | `304` | `If-None-Match` names its `ETag` |
+| `400` | `format` is neither `webp` nor `jxl` |
 | `404` | No preview: `preview is pending`, `preview could not be generated`, `no preview for this file` or `preview disabled for this blob`, with the state in `X-Representation-State`. Also no such blob, terminal, or filename mismatch, without the header |
 | `409` | The blob is not `ready` yet |
 

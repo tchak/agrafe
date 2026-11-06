@@ -62,6 +62,16 @@ impl Fit {
     pub fn file_name(&self, stem: &str) -> String {
         format!("{stem}.{}", self.format.extension())
     }
+
+    /// The same box and quality, encoded as WebP: the fallback stored
+    /// beside a JPEG XL picture (`media.webp_fallback`), transcoded from
+    /// it, which fits the box already.
+    pub fn webp_fallback(self) -> Self {
+        Self {
+            format: ImageFormat::Webp,
+            ..self
+        }
+    }
 }
 
 /// What the input is, which decides whether it may be enlarged.
