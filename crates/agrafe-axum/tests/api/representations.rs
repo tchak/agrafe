@@ -1181,6 +1181,89 @@ async fn presentations_and_drawings_get_their_first_slide_through_libreoffice() 
     .await;
 }
 
+/// The formats LibreOffice reads through its import libraries take the
+/// same path, through the application each opens in: a Pages letter, a
+/// WordPerfect one and an AbiWord one through Writer, a Numbers table
+/// through Calc, each a portrait page; a Keynote deck through Impress, a
+/// 16:9 slide; a Visio drawing and a DXF plan through Draw, portrait
+/// pages too. Each is declared under the type a browser sends, an alias
+/// for some, and classified with its family, the DXF plan a document and
+/// not an image.
+#[tokio::test]
+async fn formats_of_the_import_libraries_get_their_first_page_too() {
+    let db = TestDatabase::new().await;
+    let Some(soffice) = soffice() else {
+        return;
+    };
+    let clamd = fake_clamd().await;
+    // The Keynote deck carries its theme's photographs, about 450 KB.
+    let app = setup_tuned(db, clamd, |c| {
+        c.media.render.office.command = Some(soffice.to_string());
+        c.upload.max_size = bytesize::ByteSize::mib(1);
+    })
+    .await;
+    let mut portrait = Vec::new();
+    for (name, content_type, category) in [
+        (
+            "letter.pages",
+            "application/x-iwork-pages-sffpages",
+            "document",
+        ),
+        (
+            "table.numbers",
+            "application/vnd.apple.numbers",
+            "spreadsheet",
+        ),
+        ("letter.wpd", "application/wordperfect", "document"),
+        ("letter.abw", "application/x-abiword", "document"),
+        (
+            "drawing.vsdx",
+            "application/vnd.ms-visio.drawing",
+            "document",
+        ),
+        ("plan.dxf", "image/vnd.dxf", "document"),
+    ] {
+        let blob = ready_file(&app, name, content_type, &fixture(name)).await;
+        portrait.push((blob, category));
+    }
+    let keynote = (
+        ready_file(
+            &app,
+            "slides.key",
+            "application/vnd.apple.keynote",
+            &fixture("slides.key"),
+        )
+        .await,
+        "presentation",
+    );
+    render_all(&app).await;
+
+    for (blob, category) in portrait.iter().chain([&keynote]) {
+        let id = id_of(blob);
+        let name = blob["filename"].as_str().unwrap();
+        let blob = get_blob(&app, id).await;
+        assert_eq!(blob["category"], *category, "{name}");
+        assert_eq!(
+            blob["representations"]["preview"]["state"], "unavailable",
+            "{name}"
+        );
+        assert_eq!(
+            blob["representations"]["thumbnail"]["state"], "ready",
+            "{name}"
+        );
+    }
+    for (blob, _) in &portrait {
+        let id = id_of(blob);
+        let name = blob["filename"].as_str().unwrap();
+        let (_, (width, height)) = rendered(&app, &format!("/blobs/{id}/thumbnail/{name}")).await;
+        assert_eq!(height, 256, "{name}");
+        assert!((150..=200).contains(&width), "{name}: {width}");
+    }
+    let id = id_of(&keynote.0);
+    let (_, (width, height)) = rendered(&app, &format!("/blobs/{id}/thumbnail/slides.key")).await;
+    assert_eq!((width, height), (256, 144));
+}
+
 #[tokio::test]
 async fn text_files_get_a_thumbnail_and_no_preview() {
     let db = TestDatabase::new().await;

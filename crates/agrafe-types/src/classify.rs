@@ -10,14 +10,15 @@ use crate::office::{self, Application};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Category {
-    /// Any `image/*` type.
+    /// Any `image/*` type but DXF, a drawing LibreOffice's Draw reads.
     Image,
-    /// Word processing and page formats: PDF, Word, ODT, RTF, EPUB, and
-    /// the drawings of Draw (ODG), pages too.
+    /// Word processing and page formats: PDF, Word, ODT, RTF, Pages,
+    /// WordPerfect, Works, AbiWord, EPUB, and the drawings of Draw (ODG,
+    /// Visio, Publisher, DXF), pages too.
     Document,
-    /// Excel, ODS, CSV and TSV.
+    /// Excel, ODS, Numbers, CSV and TSV.
     Spreadsheet,
-    /// PowerPoint and ODP.
+    /// PowerPoint, ODP and Keynote.
     Presentation,
     /// ZIP, gzip, tar, 7z, RAR, bzip2, zstd, xz, lzip, lz4 and compress,
     /// and the ZIPs that are a KMZ, a zipped shapefile, a JAR or an APK.
@@ -71,7 +72,8 @@ pub const ODT: &str = office::ODT;
 /// application that reads it (`office::format`): every Writer and Draw
 /// format is a document, every Calc one a spreadsheet, every Impress one
 /// a presentation, the macro-enabled, template and legacy variants
-/// included. An `application/*` type with a `+json` or `+xml` suffix is
+/// included, and so does a DXF drawing, `image/vnd.dxf`, which is a
+/// document like every Draw format and not an image. An `application/*` type with a `+json` or `+xml` suffix is
 /// text, whatever the registry put before the suffix; another major type
 /// keeps its own category, so `image/svg+xml` is an image.
 pub fn classify(content_type: &str) -> Category {
@@ -173,6 +175,19 @@ mod tests {
             office::OTH,
             office::ODG,
             office::OTG,
+            office::PAGES,
+            "application/x-iwork-pages-sffpages",
+            office::WPD,
+            "application/wordperfect",
+            office::WPS,
+            office::ABW,
+            office::VSD,
+            office::VSDX,
+            office::VSDM,
+            office::PUB,
+            office::DXF,
+            "image/x-dxf",
+            "application/dxf",
             "application/epub+zip",
         ] {
             assert_eq!(classify(document), Category::Document, "{document}");
@@ -186,6 +201,8 @@ mod tests {
             office::XLS,
             ODS,
             office::OTS,
+            office::NUMBERS,
+            "application/x-iwork-numbers-sffnumbers",
             "text/tab-separated-values",
         ] {
             assert_eq!(classify(sheet), Category::Spreadsheet, "{sheet}");
@@ -200,6 +217,8 @@ mod tests {
             office::PPT,
             office::ODP,
             office::OTP,
+            office::KEYNOTE,
+            "application/x-iwork-keynote-sffkey",
         ] {
             assert_eq!(classify(slides), Category::Presentation, "{slides}");
         }
@@ -208,6 +227,8 @@ mod tests {
             classify("application/vnd.ms-excel.addin.macroenabled.12"),
             Category::Other
         );
+        // DWG is no format LibreOffice imports, so it stays an image.
+        assert_eq!(classify("image/vnd.dwg"), Category::Image);
     }
 
     #[test]

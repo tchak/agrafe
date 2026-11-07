@@ -376,8 +376,9 @@ impl Plan {
 /// rendered from it; otherwise a PDF gets its first page as a thumbnail,
 /// and every office format (`agrafe_types::office`: Word, Excel,
 /// PowerPoint and OpenDocument files, their legacy, macro-enabled and
-/// template variants, RTF and drawings) its first page through
-/// LibreOffice when one is configured, else the icon. A GeoJSON, GPX,
+/// template variants, RTF and drawings, Pages, Numbers and Keynote,
+/// Visio, Publisher, WordPerfect, Works, AbiWord and DXF) its first page
+/// through LibreOffice when one is configured, else the icon. A GeoJSON, GPX,
 /// KML or GML file gets a map, and the text sample of the text file it
 /// is when it holds no geometry; a KMZ and a zipped shapefile get a map too, and
 /// the archive icon otherwise. The `text` category, plus CSV and TSV, which classify as
@@ -386,10 +387,12 @@ pub fn plan(content_type: &str) -> Plan {
     let canonical = sniff::canonical(content_type);
     if let Some(format) = formats::format(canonical) {
         // The extractor opens the ZIP of a Writer package for the one
-        // picture it may wrap. The legacy formats and RTF have no
-        // extractor, spreadsheets are never a wrapped picture, and the
-        // first picture of a presentation is as likely its logo as its
-        // slide: those get the page only.
+        // picture it may wrap. The legacy formats, RTF and the formats
+        // LibreOffice reads through its import libraries (iWork,
+        // WordPerfect, Works, AbiWord) have no extractor, spreadsheets
+        // are never a wrapped picture, and the first picture of a
+        // presentation or a drawing is as likely its logo as its slide:
+        // those get the page only.
         let picture: &'static [Source] = match (format.application, format.package) {
             (Application::Writer, Package::Ooxml | Package::Odf) => &[Source::EmbeddedImage],
             _ => &[],
@@ -452,6 +455,7 @@ pub fn plan(content_type: &str) -> Plan {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agrafe_types::office::{ABW, DXF, KEYNOTE, NUMBERS, PAGES, PUB, VSD, VSDM, VSDX, WPD, WPS};
     use agrafe_types::office::{
         DOC, DOCM, DOCX, DOTM, DOTX, ODG, ODM, ODP, ODS, ODT, OTG, OTH, OTM, OTP, OTS, OTT, POTM,
         POTX, PPSM, PPSX, PPT, PPTM, PPTX, RTF, XLS, XLSB, XLSM, XLSX, XLTM, XLTX,
@@ -481,8 +485,40 @@ mod tests {
             );
         }
         for page_only in [
-            DOC, RTF, "text/rtf", XLSX, XLSM, XLTX, XLTM, XLSB, XLS, ODS, OTS, PPTX, PPTM, PPSX,
-            PPSM, POTX, POTM, PPT, ODP, OTP, ODG, OTG,
+            DOC,
+            RTF,
+            "text/rtf",
+            XLSX,
+            XLSM,
+            XLTX,
+            XLTM,
+            XLSB,
+            XLS,
+            ODS,
+            OTS,
+            PPTX,
+            PPTM,
+            PPSX,
+            PPSM,
+            POTX,
+            POTM,
+            PPT,
+            ODP,
+            OTP,
+            ODG,
+            OTG,
+            PAGES,
+            NUMBERS,
+            KEYNOTE,
+            WPD,
+            WPS,
+            ABW,
+            VSD,
+            VSDX,
+            VSDM,
+            PUB,
+            DXF,
+            "image/x-dxf",
         ] {
             assert!(plan(page_only).picture.is_empty(), "{page_only}");
             assert_eq!(

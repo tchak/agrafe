@@ -14,6 +14,28 @@ becomes the GitHub release's notes.
 
 ## [Unreleased]
 
+### Added
+
+- **More formats through LibreOffice**: Apple's Pages, Numbers and
+  Keynote, Visio (VSD, VSDX, VSDM), Publisher, WordPerfect, Works and
+  AbiWord files, and DXF plans get their first page as a thumbnail when
+  `media.office.command` is set, through the application each opens in,
+  and the icon of their family otherwise. macOS's iWork spellings
+  (`application/x-iwork-pages-sffpages`, …) and the common aliases of
+  WordPerfect, Visio, Publisher and DXF are accepted as those types.
+  Existing blobs of these types keep their icon until
+  `media.representation_version` is bumped.
+
+### Changed
+
+- **DXF is a `document`**, not an `image`: `classify("image/vnd.dxf")`
+  answers `Category::Document`, like every format Draw opens. A DXF blob
+  stored before keeps the category it was created with.
+- **`agrafe_types::office::Package` gains `Iwork` and `Native`**, for
+  the iWork packages and for the formats in no container (WordPerfect,
+  AbiWord, DXF). A `match` on it outside the crate that names every
+  variant needs the two new arms. Breaking for the Rust API.
+
 ## [0.1.0] - 2026-11-06
 
 The first release.
