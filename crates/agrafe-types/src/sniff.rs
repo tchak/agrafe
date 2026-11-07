@@ -173,6 +173,16 @@ pub fn canonical(mime: &str) -> &str {
         "application/x-pdf" => "application/pdf",
         "application/x-msword" => "application/msword",
         "text/rtf" => "application/rtf",
+        // macOS's spellings, from the iWork UTIs.
+        "application/x-iwork-pages-sffpages" => "application/vnd.apple.pages",
+        "application/x-iwork-numbers-sffnumbers" => "application/vnd.apple.numbers",
+        "application/x-iwork-keynote-sffkey" => "application/vnd.apple.keynote",
+        "application/wordperfect" | "application/x-wordperfect" | "application/wordperfect5.1" => {
+            "application/vnd.wordperfect"
+        }
+        "application/x-visio" => "application/vnd.visio",
+        "application/x-mspublisher" => "application/vnd.ms-publisher",
+        "application/dxf" | "application/x-dxf" | "image/x-dxf" => "image/vnd.dxf",
         "application/x-sqlite3" => "application/vnd.sqlite3",
         // The names `infer` reports fonts under predate RFC 8081.
         "font/sfnt" => "application/font-sfnt",
@@ -253,9 +263,8 @@ pub(crate) fn container(mime: &str) -> Option<&'static str> {
         | "application/vnd.apple.pages"
         | "application/vnd.apple.numbers"
         | "application/vnd.apple.keynote"
-        | "application/x-iwork-pages-sffpages"
-        | "application/x-iwork-numbers-sffnumbers"
-        | "application/x-iwork-keynote-sffkey"
+        | "application/vnd.ms-visio.drawing"
+        | "application/vnd.ms-visio.drawing.macroenabled.12"
         | "application/vnd.ms-xpsdocument"
         | "application/oxps"
         | "application/vnd.google-earth.kmz"
@@ -270,11 +279,13 @@ pub(crate) fn container(mime: &str) -> Option<&'static str> {
         | "application/vnd.ms-powerpoint"
         | "application/vnd.ms-outlook"
         | "application/vnd.ms-publisher"
+        | "application/vnd.ms-works"
         | "application/vnd.visio" => Some(OLE),
         "image/svg+xml"
         | "application/xhtml+xml"
         | "application/rss+xml"
-        | "application/atom+xml" => Some(XML),
+        | "application/atom+xml"
+        | "application/x-abiword" => Some(XML),
         other if other.ends_with("+xml") => Some(XML),
         _ => None,
     }
@@ -584,6 +595,20 @@ mod tests {
         assert!(compatible("application/octet-stream", "image/png"));
         assert!(compatible("binary/octet-stream", "image/png"));
         assert!(compatible("text/rtf", "application/rtf"));
+
+        // An AbiWord document is XML; WordPerfect and DXF files have no
+        // magic `infer` knows, so nothing contradicts them but magic.
+        assert!(compatible("application/x-abiword", "text/xml"));
+        assert!(!compatible("application/x-abiword", "application/zip"));
+        assert!(!compatible(
+            "application/vnd.wordperfect",
+            "application/zip"
+        ));
+        assert!(!compatible("image/vnd.dxf", "image/png"));
+        assert!(compatible("image/x-dxf", "text/plain"));
+        assert_eq!(sniff(b"\xffWPC\x10\x00\x00\x00\x01\x0a\x00\x01"), None);
+        assert_eq!(sniff(b"  0\nSECTION\n  2\nENTITIES\n"), None);
+        assert_eq!(sniff(b"AutoCAD Binary DXF\r\n\x1a\x00"), None);
     }
 
     /// What the sniffer reports a format as is not a spelling of it: the
@@ -767,6 +792,10 @@ mod tests {
             "application/vnd.apple.numbers",
             "application/vnd.apple.keynote",
             "application/x-iwork-pages-sffpages",
+            "application/x-iwork-numbers-sffnumbers",
+            "application/x-iwork-keynote-sffkey",
+            "application/vnd.ms-visio.drawing",
+            "application/vnd.ms-visio.drawing.macroenabled.12",
             "application/vnd.ms-xpsdocument",
             "application/oxps",
             "application/vnd.sun.xml.writer",
@@ -808,7 +837,10 @@ mod tests {
             "application/vnd.ms-powerpoint",
             "application/vnd.ms-outlook",
             "application/vnd.visio",
+            "application/x-visio",
             "application/vnd.ms-publisher",
+            "application/x-mspublisher",
+            "application/vnd.ms-works",
             OLE,
             "application/octet-stream",
         ] {

@@ -305,8 +305,9 @@ it out.
 
 Optional, for the first-page thumbnails of office files: Word, Excel and
 PowerPoint files, their Office 97-2003, macro-enabled and template
-variants, RTF, and OpenDocument texts, spreadsheets, presentations and
-drawings (see [Previews and
+variants, RTF, OpenDocument texts, spreadsheets, presentations and
+drawings, Pages, Numbers and Keynote, Visio, Publisher, WordPerfect,
+Works and AbiWord files, and DXF plans (see [Previews and
 thumbnails](representations.md#what-gets-rendered)). Without it, office
 files get the icon.
 

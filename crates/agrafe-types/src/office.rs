@@ -2,7 +2,10 @@
 //! how it is packaged, and the extension LibreOffice picks its import
 //! filter from. One table for what is otherwise three: the category a
 //! format classifies as, the plan the renderer gives it, and the package
-//! the extractor opens for its embedded image.
+//! the extractor opens for its embedded image. A format is here when
+//! LibreOffice imports it, Microsoft's and OpenDocument's and the others
+//! it reads through its import libraries: Apple's iWork, Visio,
+//! Publisher, WordPerfect, Works, AbiWord, and DXF drawings.
 //!
 //! The variants are matched on their own content types: a macro-enabled
 //! workbook is not an XLSX to the allowlist (`sniff::canonical` keeps
@@ -16,13 +19,14 @@ use crate::sniff;
 /// classifies as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Application {
-    /// Word processing: Word, OpenDocument text, RTF.
+    /// Word processing: Word, OpenDocument text, RTF, Pages, WordPerfect,
+    /// Works, AbiWord.
     Writer,
-    /// Spreadsheets: Excel, OpenDocument spreadsheet.
+    /// Spreadsheets: Excel, OpenDocument spreadsheet, Numbers.
     Calc,
-    /// Presentations: PowerPoint, OpenDocument presentation.
+    /// Presentations: PowerPoint, OpenDocument presentation, Keynote.
     Impress,
-    /// Drawings: OpenDocument graphics.
+    /// Drawings: OpenDocument graphics, Visio, Publisher, DXF.
     Draw,
 }
 
@@ -32,15 +36,22 @@ pub enum Application {
 pub enum Package {
     /// An Office Open XML package, a ZIP: DOCX, XLSX, PPTX and their
     /// macro-enabled, template and slideshow variants, plus XLSB, whose
-    /// parts are binary in the same package.
+    /// parts are binary in the same package, and Visio's VSDX and VSDM.
     Ooxml,
     /// An OpenDocument package, a ZIP: ODT, ODS, ODP, ODG and their
     /// templates and masters.
     Odf,
-    /// An Office 97-2003 file, an OLE compound file: DOC, XLS, PPT.
+    /// An OLE compound file: the Office 97-2003 DOC, XLS and PPT, Visio's
+    /// VSD, Publisher and Works files.
     Ole,
     /// Rich Text Format, text.
     Rtf,
+    /// An iWork package, a ZIP of Snappy-compressed protobuf archives:
+    /// Pages, Numbers and Keynote.
+    Iwork,
+    /// The format's own encoding, binary or text, in no container:
+    /// WordPerfect, AbiWord's XML, DXF.
+    Native,
 }
 
 /// An office format: what reads it, how it is packaged, and the extension
@@ -120,9 +131,46 @@ pub const ODG: &str = "application/vnd.oasis.opendocument.graphics";
 /// The content type of an OpenDocument drawing template.
 pub const OTG: &str = "application/vnd.oasis.opendocument.graphics-template";
 
+/// The content type of an Apple Pages document;
+/// `application/x-iwork-pages-sffpages` is its alias.
+pub const PAGES: &str = "application/vnd.apple.pages";
+/// The content type of an Apple Numbers spreadsheet;
+/// `application/x-iwork-numbers-sffnumbers` is its alias.
+pub const NUMBERS: &str = "application/vnd.apple.numbers";
+/// The content type of an Apple Keynote presentation;
+/// `application/x-iwork-keynote-sffkey` is its alias.
+pub const KEYNOTE: &str = "application/vnd.apple.keynote";
+
+/// The content type of a WordPerfect document; `application/wordperfect`,
+/// `application/x-wordperfect` and `application/wordperfect5.1` are its
+/// aliases.
+pub const WPD: &str = "application/vnd.wordperfect";
+/// The content type of a Microsoft Works file. The type covers Works'
+/// spreadsheets and databases too; it is read as the word processor's
+/// `.wps`, by far the most common, and a spreadsheet declared as it
+/// fails its conversion.
+pub const WPS: &str = "application/vnd.ms-works";
+/// The content type of an AbiWord document.
+pub const ABW: &str = "application/x-abiword";
+
+/// The content type of a Visio 2003-2010 drawing; `application/x-visio`
+/// is its alias.
+pub const VSD: &str = "application/vnd.visio";
+/// The content type of a Visio drawing (Office Open XML).
+pub const VSDX: &str = "application/vnd.ms-visio.drawing";
+/// The content type of a macro-enabled Visio drawing.
+pub const VSDM: &str = "application/vnd.ms-visio.drawing.macroenabled.12";
+/// The content type of a Publisher document; `application/x-mspublisher`
+/// is its alias.
+pub const PUB: &str = "application/vnd.ms-publisher";
+/// The content type of a DXF drawing, AutoCAD's exchange format, text or
+/// binary; `application/dxf`, `application/x-dxf` and `image/x-dxf` are
+/// its aliases.
+pub const DXF: &str = "image/vnd.dxf";
+
 /// The office format of a content type, `None` for anything else. An
 /// alias is the format of its canonical type (`sniff::canonical`): `text/rtf`
-/// is RTF, `application/x-msword` is DOC.
+/// is RTF, `application/x-msword` is DOC, `image/x-dxf` is DXF.
 pub fn format(content_type: &str) -> Option<Format> {
     use Application::*;
     use Package::*;
@@ -138,6 +186,10 @@ pub fn format(content_type: &str) -> Option<Format> {
         ODM => (Writer, Odf, "odm"),
         OTM => (Writer, Odf, "otm"),
         OTH => (Writer, Odf, "oth"),
+        PAGES => (Writer, Iwork, "pages"),
+        WPD => (Writer, Native, "wpd"),
+        WPS => (Writer, Ole, "wps"),
+        ABW => (Writer, Native, "abw"),
 
         XLSX => (Calc, Ooxml, "xlsx"),
         XLSM => (Calc, Ooxml, "xlsm"),
@@ -147,6 +199,7 @@ pub fn format(content_type: &str) -> Option<Format> {
         XLS => (Calc, Ole, "xls"),
         ODS => (Calc, Odf, "ods"),
         OTS => (Calc, Odf, "ots"),
+        NUMBERS => (Calc, Iwork, "numbers"),
 
         PPTX => (Impress, Ooxml, "pptx"),
         PPTM => (Impress, Ooxml, "pptm"),
@@ -157,9 +210,15 @@ pub fn format(content_type: &str) -> Option<Format> {
         PPT => (Impress, Ole, "ppt"),
         ODP => (Impress, Odf, "odp"),
         OTP => (Impress, Odf, "otp"),
+        KEYNOTE => (Impress, Iwork, "key"),
 
         ODG => (Draw, Odf, "odg"),
         OTG => (Draw, Odf, "otg"),
+        VSD => (Draw, Ole, "vsd"),
+        VSDX => (Draw, Ooxml, "vsdx"),
+        VSDM => (Draw, Ooxml, "vsdm"),
+        PUB => (Draw, Ole, "pub"),
+        DXF => (Draw, Native, "dxf"),
 
         _ => return None,
     };
@@ -195,6 +254,23 @@ mod tests {
         assert_eq!(format(OTP).unwrap().application, Application::Impress);
         assert_eq!(format(ODG).unwrap().application, Application::Draw);
         assert_eq!(format(OTG).unwrap().extension, "otg");
+        // The formats LibreOffice reads through its import libraries.
+        assert_eq!(format(PAGES).unwrap().application, Application::Writer);
+        assert_eq!(format(PAGES).unwrap().package, Package::Iwork);
+        assert_eq!(format(NUMBERS).unwrap().application, Application::Calc);
+        assert_eq!(format(KEYNOTE).unwrap().application, Application::Impress);
+        assert_eq!(format(KEYNOTE).unwrap().extension, "key");
+        assert_eq!(format(WPD).unwrap().package, Package::Native);
+        assert_eq!(format(WPS).unwrap().application, Application::Writer);
+        assert_eq!(format(WPS).unwrap().package, Package::Ole);
+        assert_eq!(format(ABW).unwrap().application, Application::Writer);
+        assert_eq!(format(VSD).unwrap().package, Package::Ole);
+        assert_eq!(format(VSDX).unwrap().package, Package::Ooxml);
+        assert_eq!(format(VSDX).unwrap().application, Application::Draw);
+        assert_eq!(format(VSDM).unwrap().extension, "vsdm");
+        assert_eq!(format(PUB).unwrap().application, Application::Draw);
+        assert_eq!(format(DXF).unwrap().application, Application::Draw);
+        assert_eq!(format(DXF).unwrap().package, Package::Native);
         for other in [
             "application/pdf",
             "text/csv",
@@ -202,6 +278,8 @@ mod tests {
             "application/x-ole-storage",
             "application/vnd.ms-excel.addin.macroenabled.12",
             "application/octet-stream",
+            "image/vnd.dwg",
+            "application/vnd.ms-outlook",
         ] {
             assert_eq!(format(other), None, "{other}");
         }
@@ -211,6 +289,27 @@ mod tests {
     fn aliases_take_their_canonical_format() {
         assert_eq!(format("text/rtf"), format(RTF));
         assert_eq!(format("application/x-msword"), format(DOC));
+        assert_eq!(format("application/x-iwork-pages-sffpages"), format(PAGES));
+        assert_eq!(
+            format("application/x-iwork-numbers-sffnumbers"),
+            format(NUMBERS)
+        );
+        assert_eq!(
+            format("application/x-iwork-keynote-sffkey"),
+            format(KEYNOTE)
+        );
+        for wordperfect in [
+            "application/wordperfect",
+            "application/x-wordperfect",
+            "application/wordperfect5.1",
+        ] {
+            assert_eq!(format(wordperfect), format(WPD), "{wordperfect}");
+        }
+        assert_eq!(format("application/x-visio"), format(VSD));
+        assert_eq!(format("application/x-mspublisher"), format(PUB));
+        for dxf in ["application/dxf", "application/x-dxf", "image/x-dxf"] {
+            assert_eq!(format(dxf), format(DXF), "{dxf}");
+        }
     }
 
     #[test]
@@ -218,6 +317,7 @@ mod tests {
         let types = [
             DOCX, DOCM, DOTX, DOTM, DOC, RTF, ODT, OTT, ODM, OTM, OTH, XLSX, XLSM, XLTX, XLTM,
             XLSB, XLS, ODS, OTS, PPTX, PPTM, PPSX, PPSM, POTX, POTM, PPT, ODP, OTP, ODG, OTG,
+            PAGES, NUMBERS, KEYNOTE, WPD, WPS, ABW, VSD, VSDX, VSDM, PUB, DXF,
         ];
         let mut extensions = std::collections::HashSet::new();
         for content_type in types {
