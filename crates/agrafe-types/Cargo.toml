@@ -7,6 +7,7 @@ rust-version.workspace = true
 description = "Content types, classification and sniffing shared by the agrafe crates"
 repository.workspace = true
 homepage.workspace = true
+readme = "README.md"
 keywords = ["mime", "content-type", "sniffing", "geojson"]
 categories = ["encoding", "parser-implementations"]
 

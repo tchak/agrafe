@@ -20,7 +20,10 @@ A test passing on a small database proves nothing about this.
 
 ## Layout
 
-See "Crates" in `DESIGN.md` for the dependency graph.
+See "Crates" in `DESIGN.md` for the dependency graph. Every published
+crate has a `README.md` of its own, its crates.io page, but
+`agrafe-server`, whose page is the root README; a crate's README changes
+with what it offers.
 
 - `crates/agrafe` — the library: domain, jobs, config, and the `Agrafe`
   handle whose methods are the private API. No axum anywhere in it.
@@ -42,8 +45,7 @@ See "Crates" in `DESIGN.md` for the dependency graph.
 - `crates/agrafe-sandbox` — subprocesses with resource limits.
 - `crates/agrafe-extract`, `crates/agrafe-render-text`,
   `crates/agrafe-render-document`, `crates/agrafe-render-geo` — the
-  sandboxed helpers, each a library plus a binary of the same name, and a
-  `README.md` of its own for its crates.io page. The
+  sandboxed helpers, each a library plus a binary of the same name. The
   server does not link them; it finds the binaries on `PATH`. The document
   one embeds the typst compiler; the geo one parses GeoJSON, GPX, KML,
   KMZ, GML and zipped shapefiles and writes SVG.

@@ -128,9 +128,11 @@ spreadsheets, archives, documents and webhooks.
 
 ## Crates
 
-`agrafe` is the service as a library, with a Rust private API;
-`agrafe-axum` provides its two HTTP interfaces as routers to nest in your
-application, and `agrafe-dashboard` the HTML dashboard; `agrafe-server`
+[`agrafe`](https://crates.io/crates/agrafe) is the service as a library,
+with a Rust private API; [`agrafe-axum`](https://crates.io/crates/agrafe-axum)
+provides its two HTTP interfaces as routers to nest in your application,
+and [`agrafe-dashboard`](https://crates.io/crates/agrafe-dashboard) the
+HTML dashboard; [`agrafe-server`](https://crates.io/crates/agrafe-server)
 is the `agrafe` binary. The rest are its building blocks and the sandboxed
 helper binaries a deployment ships alongside it. See
 [Embedding](https://tchak.github.io/agrafe/guide/embedding.html) and
