@@ -1058,7 +1058,12 @@ formats (DOC, XLS, PPT), RTF and the macro-enabled, template, slideshow
 and master variants (DOCM, DOTX, XLSM, XLSB, PPSX, POTX, OTT, ODM, …)
 with their base, so an `.xlsm` is not `other` and gets the spreadsheet
 icon and filter. Draw's ODG and OTG are `document`s: pages, with nothing
-closer. Every `application/*+json` or `application/*+xml` type is `text` whatever the registry put
+closer, and so are the other formats Draw opens, Visio, Publisher and
+DXF, the last although its type is `image/vnd.dxf`: a plan is a page
+LibreOffice lays out, not a picture vips loads. The formats Writer, Calc
+and Impress read through LibreOffice's import libraries (Pages,
+WordPerfect, Works and AbiWord; Numbers; Keynote) go with their
+application like the others. Every `application/*+json` or `application/*+xml` type is `text` whatever the registry put
 before the suffix (XHTML, RSS, JSON-LD, GeoJSON, GPX, KML, GML), as are JSON
 and the script and configuration types (JavaScript, YAML, TOML, SQL,
 shell, JSON lines), so they get the text sample as a thumbnail; the
@@ -2369,7 +2374,9 @@ Only files with a known source are attempted:
   page, and no preview, and so does every office format in
   `agrafe-types/src/office.rs` (Word, Excel, PowerPoint and OpenDocument
   files, their legacy, macro-enabled and template variants, RTF, Draw
-  drawings) when `media.office.command` names a LibreOffice to convert it
+  drawings, and the formats of LibreOffice's import libraries: Pages,
+  Numbers, Keynote, Visio, Publisher, WordPerfect, Works, AbiWord, DXF)
+  when `media.office.command` names a LibreOffice to convert it
   (see "Thumbnail");
 - text files (the `text` category plus CSV and TSV), thumbnails only;
 - GeoJSON, GPX, KML, KMZ and GML files and zipped shapefiles, as a map (see
@@ -2622,8 +2629,18 @@ the same reason: the Word, Excel and PowerPoint formats, their Office
 and slideshow variants (DOCM, DOTX, DOTM, XLSM, XLTX, XLTM, XLSB, PPTM,
 PPSX, PPSM, POTX, POTM), RTF, and the OpenDocument text, spreadsheet,
 presentation and drawing formats with their templates and masters (ODT,
-OTT, ODM, OTM, OTH, ODS, OTS, ODP, OTP, ODG, OTG), the table in
-`agrafe-types/src/office.rs`. A single forms platform in production
+OTT, ODM, OTM, OTH, ODS, OTS, ODP, OTP, ODG, OTG), and what LibreOffice
+reads through its import libraries (libetonyek for Apple's Pages, Numbers
+and Keynote, which iPhone users send; libvisio for Visio's VSD, VSDX and
+VSDM; libmspub for Publisher; libwpd for WordPerfect; libwps for Works'
+word processor; libabw for AbiWord) and its own DXF filter, for the plans
+of building permits, the table in `agrafe-types/src/office.rs`. Each is a
+row: the application, the package, the extension. Works' one content
+type, `application/vnd.ms-works`, covers its spreadsheets and databases
+too; it is read as the word processor's `.wps`, and a spreadsheet
+declared as it fails its conversion, which is rarer than the whole
+format. DWG is not here: LibreOffice does not import it, and libredwg is
+out of scope. A single forms platform in production
 receives tens of thousands of `.doc` files, thousands of `.pptx` and
 `.rtf`, hundreds of the rest. A faithful page needs a layout engine, and
 the only one that reads these formats is LibreOffice. It is optional
@@ -2671,7 +2688,10 @@ larger and older parser surface than the ZIP formats', and the one
 Office exploits have historically targeted. The sandbox is the same one,
 Landlock, seccomp and the limits, and the bytes were scanned on upload;
 that is the accepted cost of rendering user files at all, and `.doc` is
-the office format citizens send most.
+the office format citizens send most. The import libraries are the same
+bargain at lower traffic: each is one more parser of hostile bytes inside
+the same sandbox, and none adds a process, a dependency or a path to the
+server, which only names the extension.
 
 *Macros.* The macro-enabled variants (DOCM, XLSM, PPTM, …) and the
 legacy formats may carry macros, and a document can bind one to its own

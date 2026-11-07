@@ -10,7 +10,11 @@ cannot be written by hand: they are converted from the ZIP ones by
 LibreOffice, when one is found, and only when missing or with `--legacy`,
 since each conversion stamps the time into the file. `slides.ppt` is about
 600 KB, nearly all of it an uncompressed white thumbnail its PowerPoint 97
-filter always writes, which git stores in about 11 KB. The probe's HEIC
+filter always writes, which git stores in about 11 KB. The iWork fixtures
+(`letter.pages`, `table.numbers`, `slides.key`) are written the same way by
+Pages, Numbers and Keynote themselves, through `osascript`, on a Mac with
+the three installed; `slides.key` is about 450 KB, the photographs of the
+default theme's master slides. The probe's HEIC
 (`pixel.heic`), which Pillow cannot write, is likewise made by `vips` from
 the probe's PNG, only when missing or with `--legacy`; and so is the
 self-signed certificate of the fetch tests' TLS remote
@@ -440,6 +444,80 @@ def rtf(text):
     return ("{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Helvetica;}}\\paperw%d\\paperh%d\\f0\\fs48 %s\\par}" % (A4_TWIPS[0], A4_TWIPS[1], text)).encode("ascii")
 
 
+def wordperfect(text):
+    """A WordPerfect 5.1 document: the 16-byte prefix (the `\\xffWPC`
+    magic, the document's offset, the WordPerfect product and document
+    file type, version 5.1, no encryption) and `text`, ASCII, as one
+    hard-return-ended line."""
+    prefix = b"\xffWPC" + struct.pack("<I", 16) + bytes([1, 0x0A, 0, 1]) + struct.pack("<HH", 0, 0)
+    return prefix + text.encode("ascii") + b"\x0a"
+
+
+def abiword(text):
+    """An AbiWord document: `text` on an A4 page."""
+    return f'''<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE abiword PUBLIC "-//ABISOURCE//DTD AWML 1.0 Strict//EN" "http://www.abisource.com/awml.dtd">
+<abiword xmlns="http://www.abisource.com/awml.dtd" version="3.0.0" fileformat="1.1">
+<pagesize pagetype="A4" orientation="portrait" width="210.000000" height="297.000000" units="mm" page-scale="1.000000"/>
+<section>
+<p>{text}</p>
+</section>
+</abiword>
+'''.encode()
+
+
+VISIO_NS = 'xmlns="http://schemas.microsoft.com/office/visio/2012/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
+# A4 in inches, Visio's unit.
+A4_IN = (8.267716535433071, 11.69291338582677)
+
+
+def visio_rels(rel_type, target):
+    """A relationships part of one relationship, Visio's `rel_type`."""
+    return f'<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.microsoft.com/visio/2010/relationships/{rel_type}" Target="{target}"/></Relationships>'
+
+
+def vsdx(text):
+    """A Visio drawing: one A4 page with a 4 by 2 inch rectangle labelled
+    `text`, a minimal package with no master, theme or window part."""
+    w, h = 4, 2
+    corners = [(0, 0), (w, 0), (w, h), (0, h), (0, 0)]
+    rows = "".join(
+        f'<Row T="{"MoveTo" if n == 0 else "LineTo"}" IX="{n + 1}"><Cell N="X" V="{x}"/><Cell N="Y" V="{y}"/></Row>'
+        for n, (x, y) in enumerate(corners)
+    )
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        zip_entry(z, "[Content_Types].xml", '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/visio/document.xml" ContentType="application/vnd.ms-visio.drawing.main+xml"/><Override PartName="/visio/pages/pages.xml" ContentType="application/vnd.ms-visio.pages+xml"/><Override PartName="/visio/pages/page1.xml" ContentType="application/vnd.ms-visio.page+xml"/></Types>')
+        zip_entry(z, "_rels/.rels", visio_rels("document", "visio/document.xml"))
+        zip_entry(z, "visio/document.xml", f'<?xml version="1.0" encoding="UTF-8"?><VisioDocument {VISIO_NS}/>')
+        zip_entry(z, "visio/_rels/document.xml.rels", visio_rels("pages", "pages/pages.xml"))
+        zip_entry(z, "visio/pages/pages.xml", f'<?xml version="1.0" encoding="UTF-8"?><Pages {VISIO_NS}><Page ID="0" NameU="Page-1" Name="Page-1"><PageSheet><Cell N="PageWidth" V="{A4_IN[0]}"/><Cell N="PageHeight" V="{A4_IN[1]}"/></PageSheet><Rel r:id="rId1"/></Page></Pages>')
+        zip_entry(z, "visio/pages/_rels/pages.xml.rels", visio_rels("page", "page1.xml"))
+        zip_entry(z, "visio/pages/page1.xml", f'<?xml version="1.0" encoding="UTF-8"?><PageContents {VISIO_NS}><Shapes><Shape ID="1" Type="Shape"><Cell N="PinX" V="4"/><Cell N="PinY" V="8"/><Cell N="Width" V="{w}"/><Cell N="Height" V="{h}"/><Cell N="LocPinX" V="{w / 2}"/><Cell N="LocPinY" V="{h / 2}"/><Section N="Geometry" IX="0">{rows}</Section><Text>{text}</Text></Shape></Shapes></PageContents>')
+    return out.getvalue()
+
+
+def dxf(lines):
+    """An ASCII DXF drawing: an ENTITIES section of one LINE per entry of
+    `lines`, (x1, y1, x2, y2) in drawing units, and nothing else, which
+    is all a reader needs."""
+    pairs = []
+
+    def group(code, value):
+        pairs.append(f"{code:>3}\n{value}\n")
+
+    group(0, "SECTION")
+    group(2, "ENTITIES")
+    for x1, y1, x2, y2 in lines:
+        group(0, "LINE")
+        group(8, "0")
+        for code, value in [(10, x1), (20, y1), (30, 0), (11, x2), (21, y2), (31, 0)]:
+            group(code, f"{value:.1f}")
+    group(0, "ENDSEC")
+    group(0, "EOF")
+    return "".join(pairs).encode("ascii")
+
+
 def soffice():
     """The LibreOffice binary, on the PATH or in the macOS bundle, or None."""
     for candidate in [shutil.which("soffice"), "/Applications/LibreOffice.app/Contents/MacOS/soffice"]:
@@ -458,6 +536,52 @@ def legacy(command, source, export):
             check=True, capture_output=True, timeout=300,
         )
         return (Path(tmp) / f"{source.stem}.{export.split(':')[0]}").read_bytes()
+
+
+# What Pages, Numbers and Keynote are told to make, as AppleScript that
+# leaves the new document in `d`: a letter, a table, two slides.
+IWORK = [
+    ("letter.pages", "Pages", 'set d to make new document with properties {body text:"Bonjour, ceci est une lettre."}'),
+    ("table.numbers", "Numbers", """set d to make new document
+tell table 1 of sheet 1 of d
+set value of cell "A1" to "nom"
+set value of cell "B1" to "ville"
+set value of cell "A2" to "Dupont"
+set value of cell "B2" to "Besançon"
+end tell"""),
+    ("slides.key", "Keynote", """set d to make new document
+tell slide 1 of d to set object text of default title item to "Diapositive 1"
+set s to make new slide at end of slides of d
+tell s to set object text of default title item to "Diapositive 2"
+"""),
+]
+
+
+def iwork_app(app):
+    """Whether `app` is installed and `osascript` can drive it."""
+    return shutil.which("osascript") is not None and Path(f"/Applications/{app}.app").is_dir()
+
+
+def iwork_id(app):
+    """The bundle identifier of the iWork `app`, which AppleScript is told
+    to address rather than the name, since a "Pages Creator Studio"
+    installed beside Pages answers to "Pages" too."""
+    return f"com.apple.iWork.{app}"
+
+
+def iwork(app, make, name):
+    """The document `app` saves as `name` after running `make`, through
+    `osascript`. The apps are sandboxed, and a save into the system's
+    temporary directory waits on an access prompt, so the document is
+    saved next to this script; a minute bounds the wait, which leaves the
+    unsaved document open in the app."""
+    with tempfile.TemporaryDirectory(dir=HERE) as tmp:
+        path = Path(tmp).resolve() / name
+        script = f'tell application id "{iwork_id(app)}"\nwith timeout of 60 seconds\n{make}\nsave d in POSIX file "{path}"\nclose d saving no\nend timeout\nend tell'
+        result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=300)
+        if result.returncode != 0:
+            sys.exit(f"{name}: {app} failed: {result.stderr.strip()}")
+        return path.read_bytes()
 
 
 def feature(geometry, properties=None):
@@ -601,6 +725,12 @@ def main():
         "broken.pptx": broken_pptx(),
         "slides.odp": odp(["Diapositive 1", "Diapositive 2"]),
         "drawing.odg": odg(2),
+        # The formats LibreOffice reads through its import libraries that
+        # can be written here: a letter, a drawing, a plan.
+        "letter.wpd": wordperfect("Bonjour, ceci est une lettre."),
+        "letter.abw": abiword("Bonjour, ceci est une lettre."),
+        "drawing.vsdx": vsdx("Plan"),
+        "plan.dxf": dxf([(0, 0, 200, 0), (200, 0, 200, 100), (200, 100, 0, 100), (0, 100, 0, 0), (0, 0, 200, 100)]),
     }
     files.update({name: geojson(value) for name, value in GEOJSON.items()})
     files["places.kmz"] = kmz((HERE / "places.kml").read_bytes(), small_png)
@@ -625,6 +755,16 @@ def main():
         data = legacy(command, HERE / source, export)
         (HERE / name).write_bytes(data)
         print(f"{name}: {len(data)} bytes, from {source}")
+    # The iWork files, from Pages, Numbers and Keynote.
+    for name, app, make in IWORK:
+        if (HERE / name).exists() and "--legacy" not in sys.argv:
+            continue
+        if not iwork_app(app):
+            print(f"{name}: not written, no {app} found")
+            continue
+        data = iwork(app, make, name)
+        (HERE / name).write_bytes(data)
+        print(f"{name}: {len(data)} bytes, from {app}")
     # What a worker renders at startup to check its vips and helper binary.
     PROBE.mkdir(exist_ok=True)
     probe_files = {
