@@ -1,7 +1,7 @@
 # agrafe-axum
 
 [![crates.io](https://img.shields.io/crates/v/agrafe-axum.svg)](https://crates.io/crates/agrafe-axum)
-[![docs.rs](https://img.shields.io/docsrs/agrafe-axum)](https://docs.rs/agrafe-axum)
+[![docs.rs](https://img.shields.io/docsrs/agrafe-axum?label=docs.rs)](https://docs.rs/agrafe-axum)
 
 The HTTP interfaces of [agrafe](https://github.com/tchak/agrafe), the file
 storage service, as [axum](https://github.com/tokio-rs/axum) routers, to
