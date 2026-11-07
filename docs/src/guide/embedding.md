@@ -11,6 +11,41 @@ in-process:
   state applied, ready to nest;
 - `agrafe-dashboard` provides the dashboard as a router of its own.
 
+## Adding the crates
+
+```sh
+cargo add agrafe agrafe-axum
+cargo add agrafe-dashboard   # for the dashboard
+```
+
+Every agrafe crate is released at the same version, and they depend on
+each other at it: keep them on one version, and upgrade them together.
+Before 1.0, `cargo update` stays within the minor version your
+`Cargo.toml` names, since a minor version may break the Rust API; the
+[changelog](../changelog.md) says how. The reference for each crate is on
+docs.rs: [`agrafe`](https://docs.rs/agrafe),
+[`agrafe-axum`](https://docs.rs/agrafe-axum) and
+[`agrafe-dashboard`](https://docs.rs/agrafe-dashboard).
+
+The libraries render through the same sandboxed helpers as the binary,
+which are separate executables: install them where the workers run, from
+the release your crates are at,
+
+```sh
+cargo install --locked agrafe-extract agrafe-render-text \
+  agrafe-render-document agrafe-render-geo
+```
+
+and put them on the `PATH` or name them in `media.extract_command` and its
+siblings. A process that serves the HTTP interfaces and runs no `render` or
+`document` worker needs none of them; see
+[Deployment](deployment.md#what-to-ship).
+
+The migrations are embedded in `agrafe`: `db::migrate` below applies the
+ones of the version you build with, so upgrading the crate is also
+upgrading the schema, forward only, as [Upgrading](deployment.md#upgrading)
+describes.
+
 ## Setting up the handle
 
 ```rust,ignore
@@ -125,7 +160,9 @@ let blob = context.scope(agrafe.create_blob(request)).await?;
 The handlers in `agrafe-axum` are a line or two each over these methods,
 and the mapping of each error onto a status code lives in one place,
 `crates/agrafe-axum/src/error.rs`. Read them as the reference for how each
-method is meant to be called. The crate documentation is built with:
+method is meant to be called, with the crate documentation on
+[docs.rs](https://docs.rs/agrafe), or built locally, for the version in
+your lock file, with:
 
 ```sh
 cargo doc -p agrafe -p agrafe-axum --open

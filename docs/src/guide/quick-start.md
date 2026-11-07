@@ -8,7 +8,7 @@ it compiling.
 
 | Dependency | Why | Install |
 |---|---|---|
-| Rust 1.94 or newer | Building agrafe | [rustup.rs](https://rustup.rs) |
+| Rust 1.94 or newer | Building agrafe from crates.io | [rustup.rs](https://rustup.rs) |
 | Postgres | Metadata and the job queue | `brew install postgresql` / `apt install postgresql` |
 | libvips 8.15 or newer, with its `vips` command | Rendering previews and thumbnails | `brew install vips` / `apt install libvips-tools` |
 | ClamAV's `clamd` | Virus scanning | `brew install clamav` / `apt install clamav-daemon` |
@@ -23,28 +23,41 @@ will want it running before you download anything.
 > upstream libvips 8.18.3 or newer, or a distribution build that backports
 > the security fixes. See [Deployment](deployment.md#libvips).
 
-## Build
+## Install
 
 ```sh
-git clone https://github.com/tchak/agrafe.git
-cd agrafe
-cargo build --workspace --release
-export PATH="$PWD/target/release:$PATH"
+cargo install --locked agrafe-server agrafe-extract agrafe-render-text \
+  agrafe-render-document agrafe-render-geo
 ```
 
-The workspace produces five binaries that ship together: `agrafe`, the
-server, and four sandboxed helpers it runs as subprocesses,
-`agrafe-extract`, `agrafe-render-text`, `agrafe-render-document` and
-`agrafe-render-geo`. The server finds the helpers on the `PATH`.
+This builds the five binaries that ship together, from
+[crates.io](https://crates.io/crates/agrafe-server), into `~/.cargo/bin`:
+`agrafe`, the server, and four sandboxed helpers it runs as
+subprocesses, `agrafe-extract`, `agrafe-render-text`,
+`agrafe-render-document` and `agrafe-render-geo`. The server finds the
+helpers on the `PATH`, and they come from the same release as the
+server: to upgrade, run the same command again, for all five.
+`--locked` builds with the dependency versions the release was tested
+with.
+
+To build from a checkout instead, `cargo build --workspace --release` and
+put `target/release` on the `PATH`; the configuration below is then
+`config/example.toml`. The [Docker images](deployment.md#docker-images)
+need no Rust at all.
 
 ## Configure
 
+The configuration reference, `config/example.toml` in the repository,
+is a working file to start from. Take the one of the release you
+installed:
+
 ```sh
 createdb agrafe_dev
-cp config/example.toml config/agrafe.toml
+curl -fsSL -o agrafe.toml \
+  "https://raw.githubusercontent.com/tchak/agrafe/v$(agrafe -V | cut -d' ' -f2)/config/example.toml"
 ```
 
-Edit `config/agrafe.toml`:
+Edit `agrafe.toml`:
 
 - set `database.url`, for example `postgres://localhost/agrafe_dev`;
 - replace the signing key `signing.keys.k1` and the key-encryption key
@@ -67,8 +80,8 @@ export AGRAFE_ENCRYPTION__KEKS__KEK1=$(openssl rand -base64 32)
 ## Run
 
 ```sh
-agrafe --config config/agrafe.toml migrate
-agrafe --config config/agrafe.toml serve
+agrafe --config agrafe.toml migrate
+agrafe --config agrafe.toml serve
 ```
 
 The private port listens on `127.0.0.1:8080` and the public one on

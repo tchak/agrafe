@@ -42,7 +42,8 @@ See "Crates" in `DESIGN.md` for the dependency graph.
 - `crates/agrafe-sandbox` — subprocesses with resource limits.
 - `crates/agrafe-extract`, `crates/agrafe-render-text`,
   `crates/agrafe-render-document`, `crates/agrafe-render-geo` — the
-  sandboxed helpers, each a library plus a binary of the same name. The
+  sandboxed helpers, each a library plus a binary of the same name, and a
+  `README.md` of its own for its crates.io page. The
   server does not link them; it finds the binaries on `PATH`. The document
   one embeds the typst compiler; the geo one parses GeoJSON, GPX, KML,
   KMZ, GML and zipped shapefiles and writes SVG.
@@ -50,12 +51,15 @@ See "Crates" in `DESIGN.md` for the dependency graph.
   drivers, the icons, the probe, the `[media]` tool config, and the
   fetcher of map backgrounds (`geo`), the one network client in it.
 - `fixtures/` — sample files for tests, with the `make.py` that builds them.
-- `crates/agrafe/migrations/` — sqlx migrations, plain SQL, one file per
-  table, inside the crate so that `cargo publish` packages them. Nothing
-  is deployed yet, so a schema change edits the table's file; no `ALTER`
-  migrations and no backfills until the first deployment. A changed file
-  needs a fresh database (`DROP SCHEMA public CASCADE; CREATE SCHEMA
-  public;`), since sqlx checksums applied migrations.
+- `crates/agrafe/migrations/` — sqlx migrations, plain SQL, inside the
+  crate so that `cargo publish` packages them. Append-only since 0.1.0
+  (see "Migrations" in `DESIGN.md`): a migration in a release tag is
+  never edited, renamed or removed, and a schema change is a new file
+  numbered after the last (`0005_<what>.sql`), `ALTER`s and all; CI
+  fails on a change to a released file. One added since the newest tag
+  may still be edited, which needs a fresh database (`DROP SCHEMA public
+  CASCADE; CREATE SCHEMA public;`), since sqlx checksums applied
+  migrations. No backfills yet: nothing is in production.
 - `config/example.toml` — documented configuration reference.
 - `config/alerts.yml` — the Prometheus rules the monitoring guide includes
   verbatim; `config/alerts.test.yml` tests them with `promtool test rules`,
@@ -77,6 +81,12 @@ See "Crates" in `DESIGN.md` for the dependency graph.
 - `CHANGELOG.md` — Keep a Changelog, one version for every crate. A
   change a user, operator or embedder would notice adds its line under
   `Unreleased` in the same commit; the book includes the file verbatim.
+  Every crate but `xtask` is published to crates.io and the images to
+  `ghcr.io/tchak/agrafe`, so a breaking change (allowed before 1.0, in a
+  minor version) says in its line what breaks and what to do, and a new
+  migration says whether the previous release survives it. CI's `Semver`
+  job (`cargo semver-checks`) runs on a release's pull request and tag
+  only, and fails a Rust API break the bumped version does not allow.
 
 ## Local development
 

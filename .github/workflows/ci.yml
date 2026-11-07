@@ -28,6 +28,27 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+      # A migration in a release is applied in deployed databases, whose
+      # processes refuse to start once its checksum changes: against the
+      # newest tag, the directory may only gain files. See DESIGN.md,
+      # "Migrations".
+      - name: Released migrations are unchanged
+        run: |
+          git fetch --no-tags --depth=1 origin '+refs/tags/v*:refs/tags/v*'
+          # versionsort.suffix puts v0.2.0-rc.1 before v0.2.0.
+          tag=$(git -c versionsort.suffix=- tag --list 'v*' --sort=-v:refname | head -n1)
+          if [[ -z $tag ]]; then
+            echo "no release yet"
+            exit 0
+          fi
+          changed=$(git diff --no-renames --name-status --diff-filter=a \
+            "$tag" HEAD -- crates/agrafe/migrations)
+          if [[ -n $changed ]]; then
+            echo "::error::migrations released in $tag changed; add a new migration instead"
+            echo "$changed"
+            exit 1
+          fi
+          echo "the migrations of $tag are unchanged"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -40,6 +61,37 @@ jobs:
       - run: cargo doc --workspace --no-deps --document-private-items
         env:
           RUSTDOCFLAGS: -D warnings
+
+  # The libraries the crates depend on each other through, those of
+  # `[workspace.dependencies]`, against their newest release on crates.io.
+  # A requirement of `0.1.0` accepts any `0.1.x`, so a patch release that
+  # breaks one breaks every crate built against it. Only where the version
+  # is bumped: the release's pull request, from the `release/v<version>`
+  # bookmark `cargo xtask release` pushes, and its tag, through the release
+  # workflow (a called workflow sees the caller's ref). Between releases the
+  # manifest carries the released version, and a break is allowed before
+  # 1.0: it makes the next release a minor one, which the changelog says.
+  semver:
+    name: Semver
+    if: startsWith(github.head_ref, 'release/v') || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-26.04
+    # Both versions' rustdoc of every dependency, cold.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-directories: target/semver-checks
+      - name: Check the libraries against their newest release
+        run: |
+          packages=$(sed -n '/^\[workspace.dependencies\]/,/^\[/s/^\(agrafe[a-z-]*\) = .*/\1/p' Cargo.toml)
+          args=()
+          for package in $packages; do args+=(-p "$package"); done
+          cargo semver-checks "${args[@]}"
 
   # Two jobs, side by side. `Test` runs the workspace, the API suite's
   # renders confined by Landlock and seccomp, which is what a deployment
