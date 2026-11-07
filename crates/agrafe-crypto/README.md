@@ -1,7 +1,7 @@
 # agrafe-crypto
 
 [![crates.io](https://img.shields.io/crates/v/agrafe-crypto.svg)](https://crates.io/crates/agrafe-crypto)
-[![docs.rs](https://img.shields.io/docsrs/agrafe-crypto)](https://docs.rs/agrafe-crypto)
+[![docs.rs](https://img.shields.io/docsrs/agrafe-crypto?label=docs.rs)](https://docs.rs/agrafe-crypto)
 
 The encryption of [agrafe](https://github.com/tchak/agrafe), the file
 storage service, in a crate of its own so that it can be reviewed in

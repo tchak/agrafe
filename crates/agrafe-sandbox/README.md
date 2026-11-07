@@ -1,7 +1,7 @@
 # agrafe-sandbox
 
 [![crates.io](https://img.shields.io/crates/v/agrafe-sandbox.svg)](https://crates.io/crates/agrafe-sandbox)
-[![docs.rs](https://img.shields.io/docsrs/agrafe-sandbox)](https://docs.rs/agrafe-sandbox)
+[![docs.rs](https://img.shields.io/docsrs/agrafe-sandbox?label=docs.rs)](https://docs.rs/agrafe-sandbox)
 
 Runs decoders and renderers as confined subprocesses, for
 [agrafe](https://github.com/tchak/agrafe), the file storage service: the

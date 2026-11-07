@@ -1,7 +1,7 @@
 # agrafe-types
 
 [![crates.io](https://img.shields.io/crates/v/agrafe-types.svg)](https://crates.io/crates/agrafe-types)
-[![docs.rs](https://img.shields.io/docsrs/agrafe-types)](https://docs.rs/agrafe-types)
+[![docs.rs](https://img.shields.io/docsrs/agrafe-types?label=docs.rs)](https://docs.rs/agrafe-types)
 
 What a file is, for [agrafe](https://github.com/tchak/agrafe), the file
 storage service: content type constants, the classification of a type

@@ -1,7 +1,7 @@
 # agrafe
 
 [![crates.io](https://img.shields.io/crates/v/agrafe.svg)](https://crates.io/crates/agrafe)
-[![docs.rs](https://img.shields.io/docsrs/agrafe)](https://docs.rs/agrafe)
+[![docs.rs](https://img.shields.io/docsrs/agrafe?label=docs.rs)](https://docs.rs/agrafe)
 
 The library of [agrafe](https://github.com/tchak/agrafe), a file storage
 service: encrypted at rest, virus scanned, with previews and thumbnails,

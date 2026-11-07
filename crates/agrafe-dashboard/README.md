@@ -1,7 +1,7 @@
 # agrafe-dashboard
 
 [![crates.io](https://img.shields.io/crates/v/agrafe-dashboard.svg)](https://crates.io/crates/agrafe-dashboard)
-[![docs.rs](https://img.shields.io/docsrs/agrafe-dashboard)](https://docs.rs/agrafe-dashboard)
+[![docs.rs](https://img.shields.io/docsrs/agrafe-dashboard?label=docs.rs)](https://docs.rs/agrafe-dashboard)
 
 The HTML dashboard of [agrafe](https://github.com/tchak/agrafe), the file
 storage service, as an [axum](https://github.com/tokio-rs/axum) router: the

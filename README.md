@@ -1,9 +1,9 @@
 # agrafe
 
 [![crates.io](https://img.shields.io/crates/v/agrafe.svg)](https://crates.io/crates/agrafe)
-[![docs.rs](https://img.shields.io/docsrs/agrafe)](https://docs.rs/agrafe)
+[![docs.rs](https://img.shields.io/docsrs/agrafe?label=docs.rs)](https://docs.rs/agrafe)
+[![Book](https://img.shields.io/badge/book-tchak.github.io%2Fagrafe-blue.svg)](https://tchak.github.io/agrafe/)
 [![CI](https://github.com/tchak/agrafe/actions/workflows/ci.yml/badge.svg)](https://github.com/tchak/agrafe/actions/workflows/ci.yml)
-[![Docs](https://github.com/tchak/agrafe/actions/workflows/docs.yml/badge.svg)](https://tchak.github.io/agrafe/)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![Rust 1.94+](https://img.shields.io/badge/rust-1.94%2B-orange.svg)](https://www.rust-lang.org)
 [![Edition 2024](https://img.shields.io/badge/edition-2024-orange.svg)](https://doc.rust-lang.org/edition-guide/rust-2024/)

@@ -1,7 +1,7 @@
 # agrafe-render
 
 [![crates.io](https://img.shields.io/crates/v/agrafe-render.svg)](https://crates.io/crates/agrafe-render)
-[![docs.rs](https://img.shields.io/docsrs/agrafe-render)](https://docs.rs/agrafe-render)
+[![docs.rs](https://img.shields.io/docsrs/agrafe-render?label=docs.rs)](https://docs.rs/agrafe-render)
 
 The previews and thumbnails of [agrafe](https://github.com/tchak/agrafe),
 the file storage service: which files render and from what (`plan`), the
