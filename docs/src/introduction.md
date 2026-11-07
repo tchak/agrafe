@@ -93,6 +93,12 @@ The reasoning behind each decision lives in
 repository. This book describes what agrafe does and how to use it; the
 design document explains why.
 
+This book documents the newest release, the version at the top of the
+[changelog](changelog.md), and is published with it. The repository's
+`main` branch may be ahead: what it adds since is under `Unreleased` in the
+changelog, and its `docs/` directory is the book as it will be at the next
+release.
+
 ## License
 
 agrafe is licensed under either of the Apache License, Version 2.0 or the

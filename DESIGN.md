@@ -4537,7 +4537,17 @@ that keeps an irreversible step last but one:
    through crates.io's trusted publishing (OIDC, no stored token) once
    the crates exist; the first release, which creates them, uses a
    `CARGO_REGISTRY_TOKEN` secret, deleted afterwards;
-5. the GitHub release, its notes the changelog section.
+5. the GitHub release, its notes the changelog section;
+6. the book, `docs.yml` called on the tag, deployed to GitHub Pages; not
+   for a pre-release.
+
+The book is deployed there and nowhere else, so it documents the newest
+release: deployed from `main` it would describe what is not released yet
+to readers running what is, the configuration keys and routes of a
+version they cannot install. A fix to the book waits for the next
+release, which ships often enough on one line of releases; running
+`docs.yml` by hand on a tag deploys that tag's book again. A pre-release
+deploys nothing, since its readers are not the book's.
 
 The images are Debian trixie, whose libvips carries the security fixes
 (see "libvips" in the deployment guide), built in stages: the

@@ -76,9 +76,12 @@ with what it offers.
   `DESIGN.md`), and that tag runs `.github/workflows/release.yml`, which
   takes the GitHub release's text from `notes <version>`.
 - `docs/` — the user documentation, an mdBook (`mdbook build docs`,
-  `mdbook serve docs`), deployed to GitHub Pages by
-  `.github/workflows/docs.yml` on push to `main`. Update it with the
-  README when a feature lands or a route, key or error changes; the
+  `mdbook serve docs`), deployed to GitHub Pages once per release:
+  `release.yml` calls `.github/workflows/docs.yml` on the tag, after the
+  GitHub release, and not for a pre-release; a pull request only builds
+  it. The published book is the newest release's, so a docs fix reaches
+  it with the next release. Update it with the README when a feature
+  lands or a route, key or error changes, in the same pull request; the
   configuration reference includes `config/example.toml` verbatim.
 - `CHANGELOG.md` — Keep a Changelog, one version for every crate. A
   change a user, operator or embedder would notice adds its line under

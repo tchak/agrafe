@@ -1,15 +1,12 @@
 name: Docs
 
-# The paths are the book and what it includes from outside docs/.
+# The book documents the newest release, so it is deployed once per
+# release: the release workflow calls this one on the tag, after the
+# crates and the GitHub release, and a pre-release deploys nothing. A pull
+# request builds it, so a broken link or include fails before the merge;
+# the paths are the book and what it includes from outside docs/. Run by
+# hand on a tag, it deploys that tag's book again; on a branch, it builds.
 on:
-  push:
-    branches: [main]
-    paths:
-      - docs/**
-      - config/example.toml
-      - config/alerts.yml
-      - CHANGELOG.md
-      - .github/workflows/docs.yml
   pull_request:
     paths:
       - docs/**
@@ -17,6 +14,7 @@ on:
       - config/alerts.yml
       - CHANGELOG.md
       - .github/workflows/docs.yml
+  workflow_call:
   workflow_dispatch:
 
 permissions:
@@ -31,7 +29,7 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install mdBook
         run: |
           mkdir -p "$HOME/.local/bin"
@@ -39,14 +37,17 @@ jobs:
             | tar -xz -C "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: mdbook build docs
-      - uses: actions/upload-pages-artifact@v5
-        if: github.event_name != 'pull_request'
+      # Pinned like the release workflow's actions: this runs in it, with
+      # the right to deploy the site.
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        if: startsWith(github.ref, 'refs/tags/v')
         with:
           path: docs/book
 
   deploy:
     name: Deploy to GitHub Pages
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    # A called workflow sees the caller's ref, the release's tag.
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-26.04
     timeout-minutes: 10
@@ -61,4 +62,4 @@ jobs:
       cancel-in-progress: false
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
