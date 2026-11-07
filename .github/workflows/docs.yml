@@ -3,8 +3,9 @@ name: Docs
 # The book documents the newest release, so it is deployed once per
 # release: the release workflow calls this one on the tag, after the
 # crates and the GitHub release, and a pre-release deploys nothing. A pull
-# request builds it, so a broken link or include fails before the merge;
-# the paths are the book and what it includes from outside docs/. Run by
+# request builds it, so a broken include or placeholder fails before the
+# merge; the paths are the book, what it includes from outside docs/, and
+# its preprocessor with the version it reads. Run by
 # hand on a tag, it deploys that tag's book again; on a branch, it builds.
 on:
   pull_request:
@@ -13,6 +14,8 @@ on:
       - config/example.toml
       - config/alerts.yml
       - CHANGELOG.md
+      - Cargo.toml
+      - xtask/**
       - .github/workflows/docs.yml
   workflow_call:
   workflow_dispatch:
@@ -30,6 +33,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The book's preprocessor is `cargo xtask mdbook`, which mdbook builds
+      # and runs: the versions the book quotes are the manifest's.
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
       - name: Install mdBook
         run: |
           mkdir -p "$HOME/.local/bin"

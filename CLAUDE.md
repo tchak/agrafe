@@ -74,13 +74,17 @@ with what it offers.
   published: `release <version>` opens a release's pull request, `tag
   <version>` tags the commit it was merged as (see "Releases" in
   `DESIGN.md`), and that tag runs `.github/workflows/release.yml`, which
-  takes the GitHub release's text from `notes <version>`.
+  takes the GitHub release's text from `notes <version>`. `mdbook` is
+  the book's preprocessor, which mdbook runs (`docs/book.toml`).
 - `docs/` — the user documentation, an mdBook (`mdbook build docs`,
   `mdbook serve docs`), deployed to GitHub Pages once per release:
   `release.yml` calls `.github/workflows/docs.yml` on the tag, after the
   GitHub release, and not for a pre-release; a pull request only builds
   it. The published book is the newest release's, so a docs fix reaches
-  it with the next release. Update it with the README when a feature
+  it with the next release. A version in the book is a placeholder,
+  `{{version}}`, `{{series}}` (the image's `0.1` tag), `{{next_minor}}` or
+  `{{next_patch}}`, filled in from `Cargo.toml` by its preprocessor,
+  `cargo xtask mdbook`; never write a version number by hand. Update it with the README when a feature
   lands or a route, key or error changes, in the same pull request; the
   configuration reference includes `config/example.toml` verbatim.
 - `CHANGELOG.md` — Keep a Changelog, one version for every crate. A

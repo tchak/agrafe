@@ -4549,6 +4549,14 @@ release, which ships often enough on one line of releases; running
 `docs.yml` by hand on a tag deploys that tag's book again. A pre-release
 deploys nothing, since its readers are not the book's.
 
+Built on the tag, the book quotes the release's own versions: an image tag
+or an example version is a placeholder, `{{version}}` and its siblings,
+which a preprocessor of the book, `cargo xtask mdbook`, fills in from the
+manifest, so no release edits the book to bump them. It is xtask rather
+than an mdbook plugin from crates.io: it reads the version through the
+code `release` bumps it with, its substitution is a unit test, and an
+unknown placeholder fails the build instead of reaching a reader.
+
 The images are Debian trixie, whose libvips carries the security fixes
 (see "libvips" in the deployment guide), built in stages: the
 toolchain in a `rust:*-slim-trixie` stage, the binaries copied into a
