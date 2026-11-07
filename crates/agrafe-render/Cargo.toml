@@ -7,6 +7,7 @@ rust-version.workspace = true
 description = "Derived representations for agrafe: which files render, vips and the sandboxed helpers that do it"
 repository.workspace = true
 homepage.workspace = true
+readme = "README.md"
 keywords = ["thumbnail", "preview", "vips", "render", "sandbox"]
 categories = ["multimedia::images", "rendering"]
 

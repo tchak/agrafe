@@ -289,3 +289,11 @@ cannot leak them. In production, pass them through `AGRAFE_` environment
 variables rather than the file, and the KEKs through `encryption.keks_file`
 where they must not rest on the host at all (see [Keeping the KEKs off the
 host](#keeping-the-keks-off-the-host)).
+
+## Reporting a vulnerability
+
+Report it privately, through GitHub's [private vulnerability
+reporting](https://github.com/tchak/agrafe/security/advisories/new), not in
+a public issue. Only the newest release receives fixes; the
+[security policy](https://github.com/tchak/agrafe/blob/main/SECURITY.md)
+says what is in scope and how a report is handled.

@@ -18,19 +18,24 @@
 //! - `notes <version>` prints a version's release notes, what the
 //!   workflow puts on the GitHub release, after checking that the
 //!   workspace is at that version.
+//!
+//! And one the book runs: `mdbook`, its preprocessor, fills in the
+//! placeholders for the workspace's version (see `book`).
 
+mod book;
 mod changelog;
 mod manifest;
 mod process;
 mod version;
 
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use semver::Version;
 
+use crate::book::BookError;
 use crate::changelog::ChangelogError;
 use crate::manifest::ManifestError;
 use crate::process::CommandError;
@@ -64,6 +69,20 @@ enum Task {
         /// The version released, such as 0.2.0 or 0.2.0-rc.1.
         version: String,
     },
+    /// The book's preprocessor, which mdbook runs (docs/book.toml): fills
+    /// in `{{version}}`, `{{series}}`, `{{next_minor}}` and
+    /// `{{next_patch}}` from the workspace's version.
+    Mdbook {
+        #[command(subcommand)]
+        query: Option<MdbookQuery>,
+    },
+}
+
+/// What mdbook asks a preprocessor before running it.
+#[derive(Subcommand)]
+enum MdbookQuery {
+    /// Whether it handles the renderer: every one, as it only edits text.
+    Supports { renderer: String },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -80,6 +99,10 @@ enum Error {
     Manifest(#[from] ManifestError),
     #[error("CHANGELOG.md: {0}")]
     Changelog(#[from] ChangelogError),
+    #[error("the book: {0}")]
+    Book(#[from] BookError),
+    #[error("reading the book from mdbook: {0}")]
+    Stdin(std::io::Error),
     #[error("{0}")]
     Command(#[from] CommandError),
     #[error("the workspace is at {manifest}, not {version}")]
@@ -118,6 +141,10 @@ fn main() -> ExitCode {
         Task::Release { version } => parse(&version).and_then(|v| release(root, &v)),
         Task::Tag { version } => parse(&version).and_then(|v| tag(root, &v)),
         Task::Notes { version } => parse(&version).and_then(|v| notes(root, &v)),
+        Task::Mdbook {
+            query: Some(MdbookQuery::Supports { .. }),
+        } => Ok(()),
+        Task::Mdbook { query: None } => mdbook(root),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -126,6 +153,23 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Run as the book's preprocessor: the book from mdbook on stdin, back on
+/// stdout with the placeholders filled in.
+fn mdbook(root: &Path) -> Result<(), Error> {
+    let version = manifest::version(&read(&root.join("Cargo.toml"))?)?;
+    let mut input = String::new();
+    std::io::stdin()
+        .read_to_string(&mut input)
+        .map_err(Error::Stdin)?;
+    let book = book::preprocess(&input, &version)?;
+    std::io::stdout()
+        .write_all(book.as_bytes())
+        .map_err(|err| Error::Write {
+            path: "stdout".into(),
+            err,
+        })
 }
 
 fn parse(version: &str) -> Result<Version, Error> {

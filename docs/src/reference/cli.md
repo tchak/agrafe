@@ -10,7 +10,7 @@ agrafe --version
 | Option | Environment | Description |
 |---|---|---|
 | `--config <PATH>` | `AGRAFE_CONFIG` | The TOML configuration file. Optional: without it, the configuration comes from `AGRAFE_` variables alone. A path that does not exist is an error |
-| `--version`, `-V` | | Prints `agrafe` and the release's version, such as `agrafe 0.1.0`, and exits |
+| `--version`, `-V` | | Prints `agrafe` and the release's version, such as `agrafe {{version}}`, and exits |
 
 ## `agrafe migrate`
 

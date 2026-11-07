@@ -8,6 +8,14 @@ src = "src"
 [build]
 build-dir = "book"
 
+# {{version}}, {{series}}, {{next_minor}} and {{next_patch}} in a chapter
+# are the workspace's version, filled in by xtask (xtask/src/book.rs), after
+# the includes so that what they bring in is checked too. The book is
+# deployed from a release's tag, so it quotes that release's versions.
+[preprocessor.version]
+command = "cargo xtask mdbook"
+after = ["links"]
+
 [output.html]
 site-url = "/agrafe/"
 git-repository-url = "https://github.com/tchak/agrafe"

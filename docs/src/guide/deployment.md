@@ -20,6 +20,24 @@ from the same build as the server: they read no configuration, write no
 logs and never touch the network, and the startup probe fails if one of
 them is not what the server expects.
 
+Every release ships them two ways: as the [Docker images](#docker-images)
+below, and as crates on [crates.io](https://crates.io/crates/agrafe-server),
+one per binary, which build for the host they are installed on:
+
+```sh
+cargo install --locked agrafe-server agrafe-extract agrafe-render-text \
+  agrafe-render-document agrafe-render-geo
+```
+
+`agrafe-server` is the crate of the `agrafe` binary. Install the five
+together, and again together on every upgrade: `cargo install` replaces
+each binary on its own, the command line between the server and a helper
+changes with the releases, and the startup probe catches a helper that
+fails its sample files, not every mismatch. `--locked` builds with the dependency versions
+the release was tested with. The Sentry and OpenTelemetry exporters are
+default features of `agrafe-server`; `--no-default-features` builds it
+without them.
+
 Workers also need the `vips` command line tool, built with SVG support
 (rsvg) for the maps; for DOCX and ODT documents, an optional
 [pandoc](#pandoc); and, for office thumbnails, an optional
@@ -38,13 +56,13 @@ Every release publishes two images to the GitHub Container Registry, for
 
 | Image | Contents |
 |---|---|
-| `ghcr.io/tchak/agrafe:0.1.0` | The five binaries, `vips` and fonts, on Debian trixie |
-| `ghcr.io/tchak/agrafe:0.1.0-office` | The same, with LibreOffice and a warmed profile, office thumbnails on, and pandoc, DOCX and ODT documents on |
+| `ghcr.io/tchak/agrafe:{{version}}` | The five binaries, `vips` and fonts, on Debian trixie |
+| `ghcr.io/tchak/agrafe:{{version}}-office` | The same, with LibreOffice and a warmed profile, office thumbnails on, and pandoc, DOCX and ODT documents on |
 
-`0.1` and `0.1-office` point at the newest release of `0.1`, `latest` and
-`latest-office` at the newest release. There is one line of releases: a fix
-ships as the next version on `main`, so `0.1` stops moving once `0.2.0` is
-out, and staying on it means no more fixes, security ones included. Debian trixie is the base for
+`{{series}}` and `{{series}}-office` point at the newest release of
+`{{series}}`, `latest` and `latest-office` at the newest release. There is
+one line of releases: a fix ships as the next version on `main`, so
+`{{series}}` stops moving once `{{next_minor}}` is out, and staying on it means no more fixes, security ones included. Debian trixie is the base for
 its libvips (see [libvips](#libvips)). The images run as the unprivileged
 `agrafe` user, uid and gid 10001 by number, so Kubernetes' `runAsNonRoot`
 accepts them and a volume needs `fsGroup: 10001` or that owner. They run
@@ -64,9 +82,9 @@ in the `-office` image, `media.office`, `media.pandoc_command` and
 own over it, which replaces it whole:
 
 ```sh
-docker run --rm --env-file agrafe.env ghcr.io/tchak/agrafe:0.1.0 migrate
+docker run --rm --env-file agrafe.env ghcr.io/tchak/agrafe:{{version}} migrate
 docker run -d --env-file agrafe.env -p 8080:8080 -p 8081:8081 \
-  ghcr.io/tchak/agrafe:0.1.0
+  ghcr.io/tchak/agrafe:{{version}}
 ```
 
 ```sh
@@ -88,6 +106,27 @@ with the [limits below](#clamav). A default container gets Landlock and
 seccomp with nothing to configure, so `isolation = "required"` holds on
 any host kernel of 5.13 or newer; bubblewrap is [not for
 containers](#bubblewrap).
+
+## Upgrading
+
+Releases follow [Semantic Versioning](https://semver.org): before 1.0, a
+minor version (`{{next_minor}}`, after `{{version}}`) may break the
+configuration, the HTTP APIs or the Rust API, and its
+[changelog](../changelog.md) entry says how; a patch version
+(`{{next_patch}}`) breaks nothing. Read the entries between your version
+and the new one before upgrading.
+
+The database schema only moves forward: a release's migrations apply on
+top of the previous release's, in order, and an applied migration is
+never changed. So upgrading across several releases at once is one
+`agrafe migrate`, run with the new release before its processes start
+(see [Probes](#probes)); the processes of the previous release check only
+the migrations they embed and keep running against the new schema while
+they are replaced, unless the changelog says the release cannot be
+rolled out that way. There are no down migrations: going back to an
+older release means restoring the database from before the upgrade, and
+the older release's `agrafe migrate` refuses a database that has
+migrations it does not know.
 
 ## The sandbox
 
@@ -241,9 +280,9 @@ its API on the plain image, which never runs pandoc, and its `document`
 workers on `-office`, which sets both keys:
 
 ```sh
-# ghcr.io/tchak/agrafe:0.1.0
+# ghcr.io/tchak/agrafe:{{version}}
 AGRAFE_DOCUMENT__OFFICE_FORMATS=true agrafe serve --role api
-# ghcr.io/tchak/agrafe:0.1.0-office
+# ghcr.io/tchak/agrafe:{{version}}-office
 agrafe serve --role worker --kinds render,document
 ```
 

@@ -2,7 +2,8 @@ name: Release
 
 # A v<version> tag, pushed by `cargo xtask tag` on the commit a release pull
 # request was merged as, releases that commit: the CI suite, then the
-# Docker images, then the crates, then the GitHub release. Publishing to crates.io cannot be undone, so it waits for the
+# Docker images, then the crates, then the GitHub release, then the book.
+# Publishing to crates.io cannot be undone, so it waits for the
 # rest that can fail; a run that stops partway is re-run as it is, and
 # skips the crates already published.
 on:
@@ -279,3 +280,16 @@ jobs:
             gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag \
               --title "$GITHUB_REF_NAME" --notes-file notes.md "${flags[@]}"
           fi
+
+  # The book on GitHub Pages documents the newest release: deployed once
+  # the release is out, and not for a pre-release, whose readers are not
+  # the book's.
+  docs:
+    name: Book
+    needs: [check, github]
+    if: needs.check.outputs.prerelease != 'true'
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/docs.yml

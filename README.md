@@ -1,5 +1,7 @@
 # agrafe
 
+[![crates.io](https://img.shields.io/crates/v/agrafe.svg)](https://crates.io/crates/agrafe)
+[![docs.rs](https://img.shields.io/docsrs/agrafe)](https://docs.rs/agrafe)
 [![CI](https://github.com/tchak/agrafe/actions/workflows/ci.yml/badge.svg)](https://github.com/tchak/agrafe/actions/workflows/ci.yml)
 [![Docs](https://github.com/tchak/agrafe/actions/workflows/docs.yml/badge.svg)](https://tchak.github.io/agrafe/)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
@@ -52,27 +54,48 @@ decision.
   signatures and filenames in the process, a bucket audit and an optional HTML
   dashboard.
 
+## Install
+
+Every release is published to [crates.io](https://crates.io/crates/agrafe)
+and as Docker images, `ghcr.io/tchak/agrafe`. A deployment runs the
+`agrafe` binary, from the `agrafe-server` crate, with its four sandboxed
+helpers next to it, all from the same release:
+
+```sh
+cargo install --locked agrafe-server agrafe-extract agrafe-render-text \
+  agrafe-render-document agrafe-render-geo
+```
+
+```sh
+docker pull ghcr.io/tchak/agrafe:latest          # or :latest-office, with LibreOffice and pandoc
+```
+
+To host agrafe inside an axum application instead, add the libraries:
+`cargo add agrafe agrafe-axum` (and `agrafe-dashboard` for the dashboard);
+see [Embedding](https://tchak.github.io/agrafe/guide/embedding.html).
+Before 1.0, a minor version may break the configuration, the HTTP APIs or
+the Rust API, and the [changelog](CHANGELOG.md) says how.
+
 ## Quick start
 
 You need Postgres, [libvips](https://www.libvips.org/) with its `vips`
 command on the `PATH`, and ClamAV's `clamd` (`brew install vips clamav`, or
-`apt install libvips-tools clamav-daemon`).
+`apt install libvips-tools clamav-daemon`). With the binaries installed as
+above:
 
 ```sh
 createdb agrafe_dev
-cp config/example.toml config/agrafe.toml
+curl -fsSL -o agrafe.toml \
+  "https://raw.githubusercontent.com/tchak/agrafe/v$(agrafe -V | cut -d' ' -f2)/config/example.toml"
 # set database.url, and replace the two keys with: openssl rand -base64 32
 
-cargo build --workspace --release
-export PATH="$PWD/target/release:$PATH"   # the helper binaries live here
-
-agrafe --config config/agrafe.toml migrate
-agrafe --config config/agrafe.toml serve
+agrafe --config agrafe.toml migrate
+agrafe --config agrafe.toml serve
 ```
 
 The private interface listens on `127.0.0.1:8080`, the public one on
-`127.0.0.1:8081`. Or run a release's Docker image, `ghcr.io/tchak/agrafe`;
-see [Deployment](https://tchak.github.io/agrafe/guide/deployment.html),
+`127.0.0.1:8081`. To run a release's Docker image instead, see
+[Deployment](https://tchak.github.io/agrafe/guide/deployment.html),
 which also covers the libvips version to run in production.
 
 Upload a file from the backend, then get its signed URLs:
@@ -105,9 +128,11 @@ spreadsheets, archives, documents and webhooks.
 
 ## Crates
 
-`agrafe` is the service as a library, with a Rust private API;
-`agrafe-axum` provides its two HTTP interfaces as routers to nest in your
-application, and `agrafe-dashboard` the HTML dashboard; `agrafe-server`
+[`agrafe`](https://crates.io/crates/agrafe) is the service as a library,
+with a Rust private API; [`agrafe-axum`](https://crates.io/crates/agrafe-axum)
+provides its two HTTP interfaces as routers to nest in your application,
+and [`agrafe-dashboard`](https://crates.io/crates/agrafe-dashboard) the
+HTML dashboard; [`agrafe-server`](https://crates.io/crates/agrafe-server)
 is the `agrafe` binary. The rest are its building blocks and the sandboxed
 helper binaries a deployment ships alongside it. See
 [Embedding](https://tchak.github.io/agrafe/guide/embedding.html) and
@@ -116,6 +141,7 @@ helper binaries a deployment ships alongside it. See
 ## Development
 
 ```sh
+git clone https://github.com/tchak/agrafe.git && cd agrafe
 createdb agrafe_test
 cargo nextest run --workspace
 cargo clippy --all-targets
@@ -126,12 +152,25 @@ Tests connect as the current OS user to `agrafe_test` (set `DATABASE_URL`
 to override), with `CREATEDB`: each integration test creates a database of
 its own. They need `vips` on the `PATH`; ClamAV is faked. The office
 thumbnail tests skip without `soffice`. Test fixtures are built by
-`fixtures/make.py`; regenerate rather than edit them.
+`fixtures/make.py`; regenerate rather than edit them. To run a build of
+the checkout, `cargo build --workspace --release` and put `target/release`
+on the `PATH`: the server finds the helpers there.
+
+A schema change is a new migration under `crates/agrafe/migrations/`:
+a migration that shipped in a release is never edited, and CI refuses a
+change to one; see [DESIGN.md](DESIGN.md#migrations).
 
 Releases go through a pull request like any change: `cargo xtask release
 <version>` opens it, and once it is merged `cargo xtask tag <version>`
 tags the merged commit, which starts the release workflow; see
 [DESIGN.md](DESIGN.md#releases).
+
+## Security
+
+Report a vulnerability privately, through GitHub's [private vulnerability
+reporting](https://github.com/tchak/agrafe/security/advisories/new); see
+[SECURITY.md](SECURITY.md) for what is in scope and which versions receive
+fixes.
 
 ## License
 

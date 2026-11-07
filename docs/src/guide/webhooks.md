@@ -35,7 +35,7 @@ the signal of an abandoned upload.
 ```http
 POST /agrafe/events HTTP/1.1
 content-type: application/json
-user-agent: agrafe/0.1.0
+user-agent: agrafe/{{version}}
 webhook-id: 019a1c2e-7f3b-7c41-9a0e-3f5d2b8c1e44
 webhook-timestamp: 1792393200
 webhook-signature: v1,K5oZfzN95Z9UVu1EsfQmfVNQhnkZ2pj9o9NDN/H/pI4=

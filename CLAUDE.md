@@ -20,7 +20,10 @@ A test passing on a small database proves nothing about this.
 
 ## Layout
 
-See "Crates" in `DESIGN.md` for the dependency graph.
+See "Crates" in `DESIGN.md` for the dependency graph. Every published
+crate has a `README.md` of its own, its crates.io page, but
+`agrafe-server`, whose page is the root README; a crate's README changes
+with what it offers.
 
 - `crates/agrafe` — the library: domain, jobs, config, and the `Agrafe`
   handle whose methods are the private API. No axum anywhere in it.
@@ -50,12 +53,15 @@ See "Crates" in `DESIGN.md` for the dependency graph.
   drivers, the icons, the probe, the `[media]` tool config, and the
   fetcher of map backgrounds (`geo`), the one network client in it.
 - `fixtures/` — sample files for tests, with the `make.py` that builds them.
-- `crates/agrafe/migrations/` — sqlx migrations, plain SQL, one file per
-  table, inside the crate so that `cargo publish` packages them. Nothing
-  is deployed yet, so a schema change edits the table's file; no `ALTER`
-  migrations and no backfills until the first deployment. A changed file
-  needs a fresh database (`DROP SCHEMA public CASCADE; CREATE SCHEMA
-  public;`), since sqlx checksums applied migrations.
+- `crates/agrafe/migrations/` — sqlx migrations, plain SQL, inside the
+  crate so that `cargo publish` packages them. Append-only since 0.1.0
+  (see "Migrations" in `DESIGN.md`): a migration in a release tag is
+  never edited, renamed or removed, and a schema change is a new file
+  numbered after the last (`0005_<what>.sql`), `ALTER`s and all; CI
+  fails on a change to a released file. One added since the newest tag
+  may still be edited, which needs a fresh database (`DROP SCHEMA public
+  CASCADE; CREATE SCHEMA public;`), since sqlx checksums applied
+  migrations. No backfills yet: nothing is in production.
 - `config/example.toml` — documented configuration reference.
 - `config/alerts.yml` — the Prometheus rules the monitoring guide includes
   verbatim; `config/alerts.test.yml` tests them with `promtool test rules`,
@@ -68,15 +74,28 @@ See "Crates" in `DESIGN.md` for the dependency graph.
   published: `release <version>` opens a release's pull request, `tag
   <version>` tags the commit it was merged as (see "Releases" in
   `DESIGN.md`), and that tag runs `.github/workflows/release.yml`, which
-  takes the GitHub release's text from `notes <version>`.
+  takes the GitHub release's text from `notes <version>`. `mdbook` is
+  the book's preprocessor, which mdbook runs (`docs/book.toml`).
 - `docs/` — the user documentation, an mdBook (`mdbook build docs`,
-  `mdbook serve docs`), deployed to GitHub Pages by
-  `.github/workflows/docs.yml` on push to `main`. Update it with the
-  README when a feature lands or a route, key or error changes; the
+  `mdbook serve docs`), deployed to GitHub Pages once per release:
+  `release.yml` calls `.github/workflows/docs.yml` on the tag, after the
+  GitHub release, and not for a pre-release; a pull request only builds
+  it. The published book is the newest release's, so a docs fix reaches
+  it with the next release. A version in the book is a placeholder,
+  `{{version}}`, `{{series}}` (the image's `0.1` tag), `{{next_minor}}` or
+  `{{next_patch}}`, filled in from `Cargo.toml` by its preprocessor,
+  `cargo xtask mdbook`; never write a version number by hand. Update it with the README when a feature
+  lands or a route, key or error changes, in the same pull request; the
   configuration reference includes `config/example.toml` verbatim.
 - `CHANGELOG.md` — Keep a Changelog, one version for every crate. A
   change a user, operator or embedder would notice adds its line under
   `Unreleased` in the same commit; the book includes the file verbatim.
+  Every crate but `xtask` is published to crates.io and the images to
+  `ghcr.io/tchak/agrafe`, so a breaking change (allowed before 1.0, in a
+  minor version) says in its line what breaks and what to do, and a new
+  migration says whether the previous release survives it. CI's `Semver`
+  job (`cargo semver-checks`) runs on a release's pull request and tag
+  only, and fails a Rust API break the bumped version does not allow.
 
 ## Local development
 

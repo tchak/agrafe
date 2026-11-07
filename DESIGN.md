@@ -4385,6 +4385,40 @@ SCHEMA` safe and keeps the unquoted `search_path` and the quoted form
 the same name. The advisory locks are keyed by database and schema, so
 two agrafe installations in two schemas of one database never contend.
 
+## Migrations
+
+The schema is the plain SQL files under `crates/agrafe/migrations/`,
+embedded in `agrafe` by `sqlx::migrate!` and applied by `agrafe migrate`
+or `db::migrate`. Since 0.1.0, the first release, they are append-only: a
+migration that shipped in a release is never edited, renamed or removed,
+and a schema change is a new file numbered after the last one,
+`0005_<what it does>.sql`. sqlx records the checksum of each migration it
+applies, and `check_migrated` refuses to serve against a database whose
+applied migration differs from the one the build embeds, so an edit to a
+released file would stop every deployed process at its next start and
+leave no `migrate` that fixes it. CI holds the rule: its lint job diffs
+the directory against the newest release tag and fails on anything but an
+added file. A migration added since that tag has reached only development
+databases and may still be edited (a database that applied it is reset,
+as before); the release is what freezes it.
+
+A migration keeps the previous release working where it can, adding
+rather than renaming or dropping, so that `migrate` runs ahead of a
+rolling upgrade (see "Upgrading" in the deployment guide). Before 1.0 a
+release may break that, as it may break the APIs: its changelog entry
+then says the old processes stop before `migrate` runs. There are no down
+migrations; going back is restoring the database.
+
+No backfills yet: nothing is in production, so a migration does not
+rewrite existing rows, and a new column is nullable or takes a constant
+default, which Postgres stores in the catalog without touching the table.
+Once a deployment holds data, a change that needs every row is a
+resumable batched job (see "Scale"), never an `UPDATE` in a migration,
+and the DDL is written for billions of rows: an index on `blobs` or
+`attachments` built `CONCURRENTLY` in a file of its own that starts with
+sqlx's `-- no-transaction`, a constraint added `NOT VALID` and validated
+apart.
+
 ## Stack
 
 | Concern | Choice |
@@ -4431,6 +4465,23 @@ the newest tag. A second line would need the tool, the workflow and the
 images' `latest` tag to tell two lines apart, `latest` following any plain
 version tag today. So `0.1` stops moving when `0.2.0` ships, which the
 deployment guide says.
+
+The version says what a release breaks, and before 1.0 the minor is the
+breaking one: `0.2.0` may change the configuration, the HTTP APIs, the
+Rust API or the schema's compatibility with the previous release, `0.1.1`
+none of them. The crates depend on each other with Cargo's default
+requirement, `0.1.0` meaning any `0.1.x`, so a patch that broke one
+library would break every crate built against it from crates.io. CI's
+`Semver` job runs `cargo semver-checks` on the libraries of
+`[workspace.dependencies]` against their newest release, on the release's
+pull request and on its tag alone, where `xtask release` has bumped the
+version: a break the new version does not allow fails, and the release
+does not publish. Between releases the manifest still carries the
+released version, a break is legitimate, and the job would say nothing
+a review of the changelog does not, for ten minutes a run. A break found
+on the release's pull request costs a version number: the release is the
+next minor rather than a patch. The HTTP APIs and the configuration have no such check:
+their changes are read in review, against the changelog.
 
 A release is a tag on `main`. `main` is protected: every commit reaches
 it through a pull request, the release's too, so a release is two tasks
@@ -4486,7 +4537,25 @@ that keeps an irreversible step last but one:
    through crates.io's trusted publishing (OIDC, no stored token) once
    the crates exist; the first release, which creates them, uses a
    `CARGO_REGISTRY_TOKEN` secret, deleted afterwards;
-5. the GitHub release, its notes the changelog section.
+5. the GitHub release, its notes the changelog section;
+6. the book, `docs.yml` called on the tag, deployed to GitHub Pages; not
+   for a pre-release.
+
+The book is deployed there and nowhere else, so it documents the newest
+release: deployed from `main` it would describe what is not released yet
+to readers running what is, the configuration keys and routes of a
+version they cannot install. A fix to the book waits for the next
+release, which ships often enough on one line of releases; running
+`docs.yml` by hand on a tag deploys that tag's book again. A pre-release
+deploys nothing, since its readers are not the book's.
+
+Built on the tag, the book quotes the release's own versions: an image tag
+or an example version is a placeholder, `{{version}}` and its siblings,
+which a preprocessor of the book, `cargo xtask mdbook`, fills in from the
+manifest, so no release edits the book to bump them. It is xtask rather
+than an mdbook plugin from crates.io: it reads the version through the
+code `release` bumps it with, its substitution is a unit test, and an
+unknown placeholder fails the build instead of reaching a reader.
 
 The images are Debian trixie, whose libvips carries the security fixes
 (see "libvips" in the deployment guide), built in stages: the
