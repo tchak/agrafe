@@ -103,7 +103,11 @@ sandboxed process per document, and that page is rendered like a PDF's.
 The formats are those of Writer (DOCX, DOC, RTF, ODT and the DOCM, DOTX,
 DOTM, OTT, ODM, OTM, OTH variants), Calc (XLSX, XLS, ODS and XLSM, XLTX,
 XLTM, XLSB, OTS), Impress (PPTX, PPT, ODP and PPTM, PPSX, PPSM, POTX,
-POTM, OTP) and Draw (ODG, OTG). Macros in a document never run: the
+POTM, OTP) and Draw (ODG, OTG), and those LibreOffice reads through its
+import libraries: Apple's Pages, Numbers and Keynote, WordPerfect, Works
+and AbiWord documents, Visio (VSD, VSDX, VSDM) and Publisher drawings,
+and DXF plans, `image/vnd.dxf`, which are classified as documents, not
+images. Macros in a document never run: the
 conversion loads it in never-execute mode, and the profile it runs with
 pins macro security to "very high", with no trusted location and macro
 execution switched off, besides. Without a converter, office

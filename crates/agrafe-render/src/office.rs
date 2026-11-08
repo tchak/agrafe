@@ -425,6 +425,21 @@ mod tests {
         assert_eq!(document(ODG).unwrap().extension, "odg");
         assert_eq!(document(ODG).unwrap().filter, DRAW);
         assert_eq!(document(OTG).unwrap().filter, DRAW);
+        // The formats of LibreOffice's import libraries, through the
+        // application each opens in.
+        assert_eq!(document(PAGES).unwrap().extension, "pages");
+        assert_eq!(document(PAGES).unwrap().filter, WRITER);
+        assert_eq!(document(NUMBERS).unwrap().filter, CALC);
+        assert_eq!(document(KEYNOTE).unwrap().extension, "key");
+        assert_eq!(document(KEYNOTE).unwrap().filter, IMPRESS);
+        assert_eq!(document(WPD).unwrap().filter, WRITER);
+        assert_eq!(document(WPS).unwrap().extension, "wps");
+        assert_eq!(document(ABW).unwrap().filter, WRITER);
+        assert_eq!(document(VSD).unwrap().filter, DRAW);
+        assert_eq!(document(VSDX).unwrap().extension, "vsdx");
+        assert_eq!(document(PUB).unwrap().filter, DRAW);
+        assert_eq!(document("image/x-dxf").unwrap().extension, "dxf");
+        assert_eq!(document(DXF).unwrap().filter, DRAW);
         assert_eq!(document("application/pdf"), None);
         assert_eq!(document("text/csv"), None);
         assert_eq!(document("application/x-ole-storage"), None);

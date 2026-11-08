@@ -45,7 +45,8 @@ pub struct Extracted {
 /// and for any other content type. The Office Open XML and OpenDocument
 /// variants of a Writer document (`agrafe_types::office`) are the same
 /// package as the DOCX or ODT they derive from, with the same parts; the
-/// binary formats and RTF are not opened.
+/// binary formats, RTF and the other formats LibreOffice imports are not
+/// opened.
 pub fn extract(
     content_type: &str,
     bytes: &[u8],

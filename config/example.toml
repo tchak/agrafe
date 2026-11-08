@@ -370,8 +370,9 @@ max_text_chars = 50
 # A first-page thumbnail for office files through LibreOffice, which
 # converts the file to a PDF in the job's work directory, one short-lived
 # sandboxed process per document: Word, Excel and PowerPoint files, their
-# Office 97-2003, macro-enabled and template variants, RTF, and OpenDocument
-# texts, spreadsheets, presentations and drawings. Off by default: unset,
+# Office 97-2003, macro-enabled and template variants, RTF, OpenDocument
+# texts, spreadsheets, presentations and drawings, Pages, Numbers, Keynote,
+# Visio, Publisher, WordPerfect, Works, AbiWord and DXF. Off by default: unset,
 # office files get the category icon, as they do when LibreOffice is not
 # installed. Turning it on later regenerates existing blobs through a
 # `representation_version` bump. Debian: libreoffice-writer-nogui,
